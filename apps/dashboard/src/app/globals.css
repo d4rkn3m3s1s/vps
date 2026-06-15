@@ -1,0 +1,238 @@
+:root {
+  --bg: #07111f;
+  --bg-soft: rgba(9, 18, 34, 0.78);
+  --panel: rgba(11, 20, 38, 0.9);
+  --panel-border: rgba(161, 178, 208, 0.18);
+  --text: #eff5ff;
+  --muted: #96a6bf;
+  --accent: #55d6be;
+  --accent-2: #7c8cff;
+  --danger: #ff6b6b;
+  --shadow: 0 22px 80px rgba(0, 0, 0, 0.34);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(85, 214, 190, 0.16), transparent 30%),
+    radial-gradient(circle at top right, rgba(124, 140, 255, 0.18), transparent 28%),
+    linear-gradient(180deg, #08111d 0%, #050b14 100%);
+  color: var(--text);
+  font-family: var(--font-sans), 'Trebuchet MS', sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+main {
+  width: min(1400px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0 4rem;
+}
+
+.hero {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.9fr);
+  align-items: stretch;
+}
+
+.hero-card,
+.panel,
+.metric,
+.log-item,
+.job-item {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.hero-card {
+  border-radius: 28px;
+  padding: 2rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero-card::after {
+  content: '';
+  position: absolute;
+  inset: auto -12% -45% auto;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(85, 214, 190, 0.35), transparent 65%);
+  pointer-events: none;
+}
+
+.hero-title {
+  margin: 0;
+  font-size: clamp(2.6rem, 5vw, 5rem);
+  line-height: 0.95;
+  letter-spacing: -0.05em;
+}
+
+.hero-copy {
+  max-width: 58ch;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.65rem 0.9rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 0.92rem;
+}
+
+.sidebar {
+  display: grid;
+  gap: 1rem;
+}
+
+.panel {
+  border-radius: 24px;
+  padding: 1.25rem;
+}
+
+.panel h2,
+.section h2 {
+  margin: 0 0 1rem;
+  font-size: 1.05rem;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+}
+
+.panel-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1rem 0 2rem;
+}
+
+.metric {
+  border-radius: 22px;
+  padding: 1.2rem;
+}
+
+.metric-label {
+  margin: 0 0 0.65rem;
+  color: var(--muted);
+  font-size: 0.86rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.metric-value {
+  margin: 0;
+  font-size: 2rem;
+  letter-spacing: -0.04em;
+}
+
+.metric-sub {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.section {
+  margin-top: 2rem;
+}
+
+.section-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.list-grid {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.emulator-card,
+.job-card,
+.log-card {
+  border-radius: 22px;
+  border: 1px solid var(--panel-border);
+  padding: 1rem 1.1rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+}
+
+.mono {
+  font-family: var(--font-mono), 'SFMono-Regular', Consolas, monospace;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.77rem;
+  border: 1px solid var(--panel-border);
+}
+
+.pill.success {
+  color: #85f7d1;
+  background: rgba(85, 214, 190, 0.12);
+}
+
+.pill.warn {
+  color: #ffd89d;
+  background: rgba(255, 207, 107, 0.12);
+}
+
+.pill.danger {
+  color: #ff9f9f;
+  background: rgba(255, 107, 107, 0.12);
+}
+
+.helper {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 980px) {
+  .hero,
+  .section-grid,
+  .stats {
+    grid-template-columns: 1fr;
+  }
+}

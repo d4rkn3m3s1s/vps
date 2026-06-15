@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmulatorStatus {
+  PENDING
+  RUNNING
+  STOPPED
+  FAILED
+  DELETED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum JobType {
+  EMULATOR_CREATE
+  EMULATOR_START
+  EMULATOR_STOP
+  EMULATOR_DELETE
+  EMULATOR_INSTALL_APK
+  EMULATOR_SCREENSHOT
+  EMULATOR_SHELL
+  EMULATOR_OPEN_APP
+  EMULATOR_CLOSE_APP
+}
+
+enum DeviceStatus {
+  ONLINE
+  OFFLINE
+  STARTING
+  STOPPING
+  ERROR
+  UPDATING
+  REBOOTING
+}
+
+enum SocialProvider {
+  X
+  META
+  INSTAGRAM
+}
+
+model User {
+  id             String          @id @default(cuid())
+  email          String          @unique
+  passwordHash   String
+  role           String          @default("admin")
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  refreshTokens  RefreshToken[]
+  apiKeys        ApiKey[]
+  auditLogs      AuditLog[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ApiKey {
+  id          String   @id @default(cuid())
+  userId      String?
+  keyPrefix   String   @unique
+  keyHash     String   @unique
+  name        String
+  scopes      String[] @default([])
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model Emulator {
+  id            String         @id @default(cuid())
+  name          String
+  image         String
+  status        EmulatorStatus  @default(PENDING)
+  containerId   String?         @unique
+  adbHost       String?
+  adbPort       Int?
+  metadata      Json?
+  createdById   String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  jobs          Job[]
+}
+
+model DeviceGroup {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  devices     Device[]
+}
+
+model Device {
+  id             String        @id @default(cuid())
+  uuid           String        @unique @default(cuid())
+  name           String
+  status         DeviceStatus  @default(OFFLINE)
+  ipAddress      String?
+  adbPort        Int?
+  androidVersion String?
+  cpuUsage       Float         @default(0)
+  memoryUsage    Float         @default(0)
+  diskUsage      Float         @default(0)
+  lastSeen       DateTime?
+  metadata       Json?
+  groupId        String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
+}
+
+model Job {
+  id          String     @id @default(cuid())
+  emulatorId  String?
+  type        JobType
+  status      JobStatus  @default(PENDING)
+  payload     Json
+  result      Json?
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  emulator    Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  userId      String?
+  action      String
+  resourceType String
+  resourceId  String?
+  requestId   String?
+  ip          String?
+  userAgent   String?
+  metadata    Json?
+  createdAt   DateTime  @default(now())
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model SocialAccount {
+  id                 String         @id @default(cuid())
+  provider           SocialProvider
+  providerAccountId  String
+  userId             String
+  displayName        String?
+  username           String?
+  accessTokenEnc     String
+  refreshTokenEnc    String?
+  tokenExpiresAt     DateTime?
+  scopes             String[]       @default([])
+  metadata           Json?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}

@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log*
+dist
+.next
+coverage
+.env
+.env.local
+.env.*.local
+.DS_Store
+.vscode/.ropeproject
+apps/api/prisma/dev.db
+apps/api/prisma/dev.db-journal
+apps/api/prisma/migrations/*/steps.json

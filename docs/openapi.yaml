@@ -1,0 +1,92 @@
+openapi: 3.1.0
+info:
+  title: VPS Android Emulator Platform API
+  version: 1.0.0
+  description: REST API for managing Android emulator containers and ADB jobs.
+servers:
+  - url: http://localhost:4000
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /auth/login:
+    post:
+      summary: Authenticate user and issue tokens
+  /auth/refresh:
+    post:
+      summary: Refresh tokens
+  /emulators:
+    get:
+      summary: List emulators
+    post:
+      summary: Create an emulator
+  /emulators/{id}/start:
+    post:
+      summary: Start emulator
+  /emulators/{id}/stop:
+    post:
+      summary: Stop emulator
+  /emulators/{id}:
+    delete:
+      summary: Delete emulator
+  /emulators/{id}/install:
+    post:
+      summary: Install APK on emulator
+  /emulators/{id}/screenshot:
+    post:
+      summary: Capture emulator screenshot
+  /jobs:
+    get:
+      summary: List jobs
+  /jobs/{id}:
+    get:
+      summary: Get job status
+  /plugins:
+    get:
+      summary: List plugin modules
+  /plugins/{id}:
+    get:
+      summary: Get plugin module details
+  /audit:
+    get:
+      summary: List recent audit events
+  /system/overview:
+    get:
+      summary: Get system telemetry overview
+  /devices:
+    get:
+      summary: List devices
+    post:
+      summary: Create a device
+  /devices/{id}:
+    get:
+      summary: Get a device
+    put:
+      summary: Update a device
+    delete:
+      summary: Delete a device
+  /devices/status/summary:
+    get:
+      summary: Device status summary
+  /devices/{id}/heartbeat:
+    post:
+      summary: Update device heartbeat
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+externalDocs:
+  description: WebSocket stream for live device events
+  url: ws://localhost:4000/ws/devices

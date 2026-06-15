@@ -1,0 +1,162 @@
+import { Prisma } from '@prisma/client';
+import { prisma } from '../../db/prisma';
+import { AppError } from '../../lib/errors';
+import type {
+  DeviceCreateInput,
+  DeviceGroupCreateInput,
+  DeviceGroupUpdateInput,
+  DeviceHeartbeatInput,
+  DeviceUpdateInput
+} from './device.types';
+
+function buildJsonMetadata(metadata: unknown): Prisma.InputJsonValue | undefined {
+  return metadata === undefined ? undefined : (metadata as Prisma.InputJsonValue);
+}
+
+function toDate(value?: string | Date): Date | undefined {
+  if (!value) return undefined;
+  return value instanceof Date ? value : new Date(value);
+}
+
+export class DeviceService {
+  async listDevices() {
+    return prisma.device.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { group: true }
+    });
+  }
+
+  async getDevice(id: string) {
+    return prisma.device.findUnique({
+      where: { id },
+      include: { group: true }
+    });
+  }
+
+  async createDevice(input: DeviceCreateInput) {
+    if (input.groupId) {
+      await this.assertGroupExists(input.groupId);
+    }
+
+    const data: Prisma.DeviceCreateInput = { name: input.name };
+    if (input.ipAddress) data.ipAddress = input.ipAddress;
+    if (typeof input.adbPort === 'number') data.adbPort = input.adbPort;
+    if (input.androidVersion) data.androidVersion = input.androidVersion;
+    if (input.groupId) data.group = { connect: { id: input.groupId } };
+    const metadata = buildJsonMetadata(input.metadata);
+    if (metadata !== undefined) data.metadata = metadata;
+
+    return prisma.device.create({
+      data,
+      include: { group: true }
+    });
+  }
+
+  async updateDevice(id: string, input: DeviceUpdateInput) {
+    await this.assertDeviceExists(id);
+    if (input.groupId) {
+      await this.assertGroupExists(input.groupId);
+    }
+
+    const data: Prisma.DeviceUpdateInput = {};
+    if (input.name) data.name = input.name;
+    if (input.status) data.status = input.status;
+    if (input.ipAddress) data.ipAddress = input.ipAddress;
+    if (typeof input.adbPort === 'number') data.adbPort = input.adbPort;
+    if (input.androidVersion) data.androidVersion = input.androidVersion;
+    if (typeof input.cpuUsage === 'number') data.cpuUsage = input.cpuUsage;
+    if (typeof input.memoryUsage === 'number') data.memoryUsage = input.memoryUsage;
+    if (typeof input.diskUsage === 'number') data.diskUsage = input.diskUsage;
+    if (input.groupId === null) {
+      data.group = { disconnect: true };
+    } else if (input.groupId) {
+      data.group = { connect: { id: input.groupId } };
+    }
+    const metadata = buildJsonMetadata(input.metadata);
+    if (metadata !== undefined) data.metadata = metadata;
+    const lastSeen = toDate(input.lastSeen);
+    if (lastSeen) data.lastSeen = lastSeen;
+
+    return prisma.device.update({
+      where: { id },
+      data,
+      include: { group: true }
+    });
+  }
+
+  async heartbeat(id: string, input: DeviceHeartbeatInput) {
+    await this.assertDeviceExists(id);
+    return prisma.device.update({
+      where: { id },
+      data: {
+        ...(input.status ? { status: input.status } : {}),
+        ...(typeof input.cpuUsage === 'number' ? { cpuUsage: input.cpuUsage } : {}),
+        ...(typeof input.memoryUsage === 'number' ? { memoryUsage: input.memoryUsage } : {}),
+        ...(typeof input.diskUsage === 'number' ? { diskUsage: input.diskUsage } : {}),
+        lastSeen: toDate(input.lastSeen) ?? new Date()
+      },
+      include: { group: true }
+    });
+  }
+
+  async deleteDevice(id: string) {
+    await this.assertDeviceExists(id);
+    return prisma.device.delete({ where: { id } });
+  }
+
+  async listGroups() {
+    return prisma.deviceGroup.findMany({ orderBy: { createdAt: 'desc' }, include: { devices: true } });
+  }
+
+  async createGroup(input: DeviceGroupCreateInput) {
+    return prisma.deviceGroup.create({
+      data: {
+        name: input.name,
+        ...(input.description ? { description: input.description } : {})
+      },
+      include: { devices: true }
+    });
+  }
+
+  async updateGroup(id: string, input: DeviceGroupUpdateInput) {
+    await this.assertGroupExists(id);
+    return prisma.deviceGroup.update({
+      where: { id },
+      data: {
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.description === null ? { description: null } : input.description ? { description: input.description } : {})
+      },
+      include: { devices: true }
+    });
+  }
+
+  async deleteGroup(id: string) {
+    await this.assertGroupExists(id);
+    return prisma.deviceGroup.delete({ where: { id } });
+  }
+
+  async countByStatus() {
+    const [online, offline, starting, stopping, error, updating, rebooting, total] = await Promise.all([
+      prisma.device.count({ where: { status: 'ONLINE' } }),
+      prisma.device.count({ where: { status: 'OFFLINE' } }),
+      prisma.device.count({ where: { status: 'STARTING' } }),
+      prisma.device.count({ where: { status: 'STOPPING' } }),
+      prisma.device.count({ where: { status: 'ERROR' } }),
+      prisma.device.count({ where: { status: 'UPDATING' } }),
+      prisma.device.count({ where: { status: 'REBOOTING' } }),
+      prisma.device.count()
+    ]);
+
+    return { online, offline, starting, stopping, error, updating, rebooting, total };
+  }
+
+  private async assertDeviceExists(id: string): Promise<void> {
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+  }
+
+  private async assertGroupExists(id: string): Promise<void> {
+    const group = await prisma.deviceGroup.findUnique({ where: { id } });
+    if (!group) throw new AppError('Device group not found', 404, 'DEVICE_GROUP_NOT_FOUND');
+  }
+}

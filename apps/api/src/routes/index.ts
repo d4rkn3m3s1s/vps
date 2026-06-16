@@ -1,12 +1,26 @@
 import type { Express } from 'express';
+import { agentRouter } from '../modules/agent/agent.routes';
+import { analyticsRouter } from '../modules/analytics/analytics.routes';
 import { auditRouter } from '../modules/audit/audit.routes';
 import { authRouter } from '../modules/auth/auth.routes';
+import { bulkRouter } from '../modules/bulk/bulk.routes';
+import { catalogRouter } from '../modules/catalog/catalog.routes';
+import { hostsRouter } from '../modules/hosts/hosts.routes';
 import { emulatorRouter } from '../modules/emulators/emulator.routes';
 import { deviceRouter } from '../modules/devices/device.routes';
+import { filesRouter } from '../modules/files/files.routes';
+import { fingerprintRouter } from '../modules/fingerprint/fingerprint.routes';
 import { jobsRouter } from '../modules/jobs/jobs.routes';
+import { libraryRouter } from '../modules/library/library.routes';
+import { permissionsRouter } from '../modules/permissions/permissions.routes';
 import { pluginsRouter } from '../modules/plugins/plugins.routes';
+import { proxyRouter } from '../modules/proxies/proxy.routes';
+import { rpaRouter } from '../modules/rpa/rpa.routes';
+import { schedulerRouter } from '../modules/scheduler/scheduler.routes';
 import { socialRouter } from '../modules/social/social.routes';
 import { systemRouter } from '../modules/system/system.routes';
+import { usersRouter } from '../modules/users/users.routes';
+import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
 
 export function registerRoutes(app: Express): void {
   app.get('/health', (_req, res) => {
@@ -18,7 +32,21 @@ export function registerRoutes(app: Express): void {
   app.use('/emulators', emulatorRouter);
   app.use('/jobs', jobsRouter);
   app.use('/plugins', pluginsRouter);
+  app.use('/proxies', proxyRouter);
   app.use('/social', socialRouter);
   app.use('/audit', auditRouter);
   app.use('/system', systemRouter);
+  app.use('/users', usersRouter);
+  app.use('/library', libraryRouter);
+  app.use('/fingerprints', fingerprintRouter);
+  app.use('/schedules', schedulerRouter);
+  app.use('/analytics', analyticsRouter);
+  app.use('/permissions', permissionsRouter);
+  app.use('/files', filesRouter);
+  app.use('/bulk', bulkRouter);
+  app.use('/rpa', rpaRouter);
+  app.use('/webhooks', webhooksRouter);
+  app.use('/catalog', catalogRouter);
+  app.use('/hosts', hostsRouter);
+  app.use('/agent', agentRouter);
 }

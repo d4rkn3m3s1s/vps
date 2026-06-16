@@ -5,8 +5,11 @@ import { AppError } from '../../lib/errors';
 import { writeAuditLog } from '../audit/audit.service';
 import { deviceHub } from './device.hub';
 import { DeviceService } from './device.service';
+import { createJobRecord } from '../jobs/jobs.service';
 
 const deviceService = new DeviceService();
+
+const shellSchema = z.object({ command: z.string().min(1) });
 
 const deviceCreateSchema = z.object({
   name: z.string().min(2),
@@ -14,6 +17,7 @@ const deviceCreateSchema = z.object({
   adbPort: z.coerce.number().int().positive().optional(),
   androidVersion: z.string().optional(),
   groupId: z.string().optional(),
+  countryCode: z.string().length(2).optional(),
   metadata: z.unknown().optional()
 });
 
@@ -23,6 +27,7 @@ const deviceUpdateSchema = deviceCreateSchema.partial().extend({
   memoryUsage: z.coerce.number().min(0).max(100).optional(),
   diskUsage: z.coerce.number().min(0).max(100).optional(),
   groupId: z.string().nullable().optional(),
+  hostId: z.string().nullable().optional(),
   lastSeen: z.string().datetime().optional()
 });
 
@@ -165,4 +170,23 @@ export async function deleteGroupHandler(req: Request, res: Response): Promise<v
 export async function deviceStatusSummaryHandler(_req: Request, res: Response): Promise<void> {
   const data = await deviceService.countByStatus();
   res.json({ data });
+}
+
+// Runs a raw ADB shell command on the device by recording a SHELL job. The
+// command executes once a KVM host is attached to the fleet.
+export async function deviceShellHandler(req: Request, res: Response): Promise<void> {
+  const id = requireDeviceId(req);
+  const { command } = shellSchema.parse(req.body);
+  const job = await createJobRecord('EMULATOR_SHELL', { deviceId: id, command });
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'device.shell',
+    resourceType: 'device',
+    resourceId: id,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { command }
+  });
+  res.status(201).json({ data: { jobId: job.id } });
 }

@@ -1,0 +1,19 @@
+[Unit]
+Description=VPS Fleet KVM Host Agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Drop your values into /etc/fleet-agent.env (see fleet-agent.env.example).
+EnvironmentFile=/etc/fleet-agent.env
+ExecStart=/usr/bin/node /opt/fleet-agent/agent.mjs
+Restart=always
+RestartSec=5
+# adb needs a writable HOME for its server socket/key.
+Environment=HOME=/root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

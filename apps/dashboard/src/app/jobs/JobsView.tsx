@@ -1,0 +1,194 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { PageHeader } from '../../components/PageHeader';
+import { PageMotion } from '../../components/Motion';
+import { downloadCsv } from '../../lib/csv';
+
+export type Job = {
+  id: string;
+  type: string;
+  status: string;
+  emulatorId: string | null;
+  result?: unknown;
+  error?: string | null;
+  payload?: Record<string, unknown> | null;
+  createdAt: string;
+  finishedAt?: string | null;
+};
+
+function statusClass(status: string): string {
+  switch (status) {
+    case 'COMPLETED':
+      return 'dot dot-online';
+    case 'FAILED':
+      return 'dot dot-error';
+    case 'RUNNING':
+      return 'dot dot-busy';
+    default:
+      return 'dot dot-offline';
+  }
+}
+
+// Pull a base64 screenshot out of a job result, if present.
+function screenshotOf(result: unknown): string | null {
+  if (result && typeof result === 'object' && 'screenshotBase64' in result) {
+    const b = (result as { screenshotBase64?: unknown }).screenshotBase64;
+    if (typeof b === 'string' && b.length > 0) return b;
+  }
+  return null;
+}
+
+export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
+  const [jobs, setJobs] = useState<Job[]>(initialJobs);
+  const [live, setLive] = useState(true);
+  const [selected, setSelected] = useState<Job | null>(null);
+
+  // Live polling: refresh the job list every 4s while enabled.
+  useEffect(() => {
+    if (!live) return undefined;
+    const tick = async () => {
+      try {
+        const res = await fetch('/api/jobs', { cache: 'no-store' });
+        const json = await res.json();
+        if (Array.isArray(json.data)) setJobs(json.data);
+      } catch {
+        /* ignore transient errors */
+      }
+    };
+    const id = setInterval(tick, 4000);
+    return () => clearInterval(id);
+  }, [live]);
+
+  const pending = jobs.filter((j) => j.status === 'PENDING' || j.status === 'RUNNING').length;
+
+  function exportCsv() {
+    downloadCsv(
+      `fleet-jobs-${jobs.length}.csv`,
+      [
+        { key: 'id', label: 'Job ID' },
+        { key: 'type', label: 'Type' },
+        { key: 'status', label: 'Status' },
+        { key: 'target', label: 'Target' },
+        { key: 'createdAt', label: 'Created' }
+      ],
+      jobs.map((j) => ({
+        id: j.id,
+        type: j.type,
+        status: j.status,
+        target: (j.payload?.deviceId as string) ?? j.emulatorId ?? '',
+        createdAt: j.createdAt
+      }))
+    );
+  }
+
+  return (
+    <PageMotion className="page">
+      <PageHeader
+        title="Jobs"
+        subtitle={`${jobs.length} operations · ${pending} in flight`}
+        actions={
+          <>
+            <button type="button" className="btn-ghost" onClick={exportCsv}>⬇ Export CSV</button>
+            <button type="button" className={live ? 'btn-primary' : 'btn-ghost'} onClick={() => setLive((v) => !v)}>
+              {live ? '● Live' : '▷ Paused'}
+            </button>
+          </>
+        }
+      />
+
+      <div className="profile-table-wrap">
+        <table className="profile-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Target</th>
+              <th>Created</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {jobs.length === 0 ? (
+              <tr>
+                <td colSpan={5}>
+                  <div className="table-empty">
+                    <div className="empty-art">☰</div>
+                    <span>No jobs yet</span>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              jobs.map((job) => {
+                const target = (job.payload?.deviceId as string) ?? job.emulatorId ?? '—';
+                return (
+                  <tr key={job.id} onClick={() => setSelected(job)} style={{ cursor: 'pointer' }}>
+                    <td>
+                      <strong>{job.type}</strong>
+                      <div className="helper mono">{job.id.slice(0, 14)}</div>
+                    </td>
+                    <td>
+                      <span className="status-chip">
+                        <span className={statusClass(job.status)} />
+                        {job.status}
+                      </span>
+                    </td>
+                    <td className="mono">{typeof target === 'string' ? target.slice(0, 14) : '—'}</td>
+                    <td className="helper">{new Date(job.createdAt).toLocaleString('tr-TR')}</td>
+                    <td className="helper">view ›</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {selected ? (
+        <div className="modal-overlay" onClick={() => setSelected(null)}>
+          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>{selected.type}</h2>
+              <button type="button" className="modal-close" onClick={() => setSelected(null)}>
+                ✕
+              </button>
+            </header>
+            <div className="fp-grid">
+              <div className="fp-row"><span className="helper">Job ID</span><span className="mono">{selected.id}</span></div>
+              <div className="fp-row"><span className="helper">Status</span><span className="status-chip"><span className={statusClass(selected.status)} /> {selected.status}</span></div>
+              <div className="fp-row"><span className="helper">Created</span><span className="mono">{new Date(selected.createdAt).toLocaleString('tr-TR')}</span></div>
+              <div className="fp-row"><span className="helper">Finished</span><span className="mono">{selected.finishedAt ? new Date(selected.finishedAt).toLocaleString('tr-TR') : '—'}</span></div>
+            </div>
+
+            {selected.error ? (
+              <div className="modal-section">
+                <h3>Error</h3>
+                <pre className="job-pre job-pre-error">{selected.error}</pre>
+              </div>
+            ) : null}
+
+            {screenshotOf(selected.result) ? (
+              <div className="modal-section">
+                <h3>Screenshot</h3>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="job-shot" src={`data:image/png;base64,${screenshotOf(selected.result)}`} alt="screenshot" />
+              </div>
+            ) : null}
+
+            <div className="modal-section">
+              <h3>Payload</h3>
+              <pre className="job-pre">{JSON.stringify(selected.payload ?? {}, null, 2)}</pre>
+            </div>
+
+            {selected.result && !screenshotOf(selected.result) ? (
+              <div className="modal-section">
+                <h3>Result</h3>
+                <pre className="job-pre">{JSON.stringify(selected.result, null, 2)}</pre>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </PageMotion>
+  );
+}

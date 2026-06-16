@@ -32,6 +32,36 @@ enum JobType {
   EMULATOR_SHELL
   EMULATOR_OPEN_APP
   EMULATOR_CLOSE_APP
+  EMULATOR_PUSH_FILE
+  EMULATOR_SET_PROXY
+  RPA_RUN
+}
+
+enum HostStatus {
+  ONLINE
+  OFFLINE
+  DEGRADED
+}
+
+// A registered KVM/emulator host that runs cloud phones. The install.sh agent
+// registers and heartbeats; the dashboard shows capacity and health.
+model Host {
+  id          String     @id @default(cuid())
+  name        String
+  address     String
+  region      String?
+  status      HostStatus @default(OFFLINE)
+  capacity    Int        @default(0)
+  runningPhones Int      @default(0)
+  cpuCores    Int?
+  memoryGb    Int?
+  kvm         Boolean    @default(true)
+  agentKeyHash String?
+  lastSeenAt  DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  devices     Device[]
+  claimedJobs Job[]
 }
 
 enum DeviceStatus {
@@ -50,6 +80,18 @@ enum SocialProvider {
   INSTAGRAM
 }
 
+enum ProxyType {
+  HTTP
+  HTTPS
+  SOCKS5
+}
+
+enum ProxyStatus {
+  UNKNOWN
+  OK
+  FAILED
+}
+
 model User {
   id             String          @id @default(cuid())
   email          String          @unique
@@ -60,6 +102,7 @@ model User {
   refreshTokens  RefreshToken[]
   apiKeys        ApiKey[]
   auditLogs      AuditLog[]
+  socialAccounts SocialAccount[]
 }
 
 model RefreshToken {
@@ -124,9 +167,48 @@ model Device {
   lastSeen       DateTime?
   metadata       Json?
   groupId        String?
+  hostId         String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  host           Host?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
+
+  // Anti-detection device fingerprint (one per cloud phone).
+  fingerprint    DeviceFingerprint?
+  schedules      ScheduledTask[]
+}
+
+// A randomized hardware/identity fingerprint bound to a single cloud phone so
+// each profile looks like a distinct physical device.
+model DeviceFingerprint {
+  id            String   @id @default(cuid())
+  deviceId      String   @unique
+  imei          String
+  androidId     String
+  serialNo      String
+  macAddress    String
+  manufacturer  String
+  model         String
+  brand         String
+  osVersion     String
+  buildNumber   String
+  resolution    String
+  dpi           Int
+  carrier       String
+  mcc           String
+  mnc           String
+  phoneNumber   String?
+  language      String   @default("en")
+  // GPS / SIM geolocation simulation.
+  country       String   @default("US")
+  countryCode   String   @default("US")
+  timezone      String   @default("America/New_York")
+  latitude      Float?
+  longitude     Float?
+  gpsEnabled    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
 
 model Job {
@@ -139,9 +221,12 @@ model Job {
   error       String?
   startedAt   DateTime?
   finishedAt  DateTime?
+  claimedByHostId String?
+  claimedAt   DateTime?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   emulator    Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
+  claimedBy   Host?      @relation(fields: [claimedByHostId], references: [id], onDelete: SetNull)
 }
 
 model AuditLog {
@@ -176,4 +261,187 @@ model SocialAccount {
   user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+}
+
+enum LibraryAssetType {
+  IMAGE
+  VIDEO
+  APK
+  COOKIE
+  OTHER
+}
+
+model LibraryAsset {
+  id          String           @id @default(cuid())
+  name        String
+  type        LibraryAssetType @default(OTHER)
+  sizeBytes   Int              @default(0)
+  url         String?
+  tags        String[]         @default([])
+  metadata    Json?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model Proxy {
+  id          String       @id @default(cuid())
+  label       String
+  type        ProxyType    @default(HTTP)
+  host        String
+  port        Int
+  username    String?
+  // Encrypted at rest (AES-256-GCM). Never returned to clients in plaintext.
+  password    String?
+  group       String?
+  isp         String?
+  remarks     String?
+  exportIp    String?
+  status      ProxyStatus  @default(UNKNOWN)
+  lastCheckedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+enum ScheduleStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum ScheduleRepeat {
+  ONCE
+  HOURLY
+  DAILY
+  WEEKLY
+}
+
+// A recurring or one-off automation task bound to a cloud phone.
+model ScheduledTask {
+  id          String         @id @default(cuid())
+  name        String
+  deviceId    String?
+  jobType     JobType
+  payload     Json
+  repeat      ScheduleRepeat @default(ONCE)
+  status      ScheduleStatus @default(ACTIVE)
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  runCount    Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  device      Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+}
+
+// Per-account engagement metrics powering the AI Analytics dashboard.
+model ContentMetric {
+  id          String   @id @default(cuid())
+  accountId   String?
+  provider    String
+  date        DateTime @default(now())
+  posts       Int      @default(0)
+  likes       Int      @default(0)
+  comments    Int      @default(0)
+  shares      Int      @default(0)
+  followers   Int      @default(0)
+  reach       Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([provider, date])
+}
+
+// Installable app in the Applications catalog.
+model AppCatalogItem {
+  id          String   @id @default(cuid())
+  name        String
+  packageName String   @unique
+  version     String
+  category    String   @default("Social")
+  shortLabel  String
+  color       String   @default("#3a4256")
+  iconUrl     String?
+  apkUrl      String?
+  installs    Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// A pre-built automation template shown in the Automation marketplace.
+model AutomationTemplate {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  platform    String
+  color       String   @default("#3a4256")
+  jobType     JobType  @default(EMULATOR_OPEN_APP)
+  payload     Json     @default("{}")
+  recommended Boolean  @default(false)
+  uses        Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum ListingCategory {
+  TEMPLATE
+  AUTOMATION
+  INTEGRATION
+}
+
+// A FleetHub marketplace listing.
+model MarketplaceListing {
+  id          String          @id @default(cuid())
+  title       String
+  description String
+  category    ListingCategory @default(TEMPLATE)
+  icon        String          @default("◈")
+  price       String          @default("Free")
+  installs    Int             @default(0)
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+}
+
+// A visual RPA automation flow: an ordered list of steps (tap/type/wait/swipe/
+// open-app/shell) that can be dispatched as a job to one or more cloud phones.
+model RpaFlow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  steps       Json     @default("[]")
+  runCount    Int      @default(0)
+  lastRunAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum WebhookEvent {
+  JOB_COMPLETED
+  JOB_FAILED
+  ALL
+}
+
+// Outbound webhook: POSTs a JSON payload to `url` when a matching event fires.
+model Webhook {
+  id          String       @id @default(cuid())
+  label       String
+  url         String
+  event       WebhookEvent @default(ALL)
+  secret      String?
+  active      Boolean      @default(true)
+  lastFiredAt DateTime?
+  failCount   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+// Restricts a member's access to specific device groups (profile-level perms).
+model ProfilePermission {
+  id          String   @id @default(cuid())
+  userId      String
+  groupId     String?
+  deviceId    String?
+  canView     Boolean  @default(true)
+  canControl  Boolean  @default(false)
+  canDelete   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, groupId, deviceId])
 }

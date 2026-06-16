@@ -72,4 +72,57 @@ export class AdbService {
 
     return Buffer.from(result.stdout, 'binary').toString('base64');
   }
+
+  // Pushes a local file onto the device at the given destination path.
+  async push(serial: string, localPath: string, remotePath: string): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'push', localPath, remotePath], 300000);
+  }
+
+  // Triggers a media scan so a pushed image/video shows up in the gallery.
+  async scanMedia(serial: string, remotePath: string): Promise<AdbCommandResult> {
+    return this.run([
+      '-s',
+      serial,
+      'shell',
+      'am',
+      'broadcast',
+      '-a',
+      'android.intent.action.MEDIA_SCANNER_SCAN_FILE',
+      '-d',
+      `file://${remotePath}`
+    ]);
+  }
+
+  // --- Low-level input primitives used by the RPA runner ---
+  async tap(serial: string, x: number, y: number): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'shell', 'input', 'tap', String(x), String(y)]);
+  }
+
+  async swipe(serial: string, x1: number, y1: number, x2: number, y2: number, ms = 300): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'shell', 'input', 'swipe', String(x1), String(y1), String(x2), String(y2), String(ms)]);
+  }
+
+  async inputText(serial: string, text: string): Promise<AdbCommandResult> {
+    // adb input text uses %s for spaces and does not accept raw spaces.
+    const escaped = text.replace(/ /g, '%s');
+    return this.run(['-s', serial, 'shell', 'input', 'text', escaped]);
+  }
+
+  async keyevent(serial: string, keycode: number): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'shell', 'input', 'keyevent', String(keycode)]);
+  }
+
+  // Sets a mock GPS location (requires the device to allow mock locations).
+  async setLocation(serial: string, lat: number, lng: number): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'emu', 'geo', 'fix', String(lng), String(lat)]);
+  }
+
+  // Configures an HTTP/HTTPS proxy on the device via global settings.
+  async setProxy(serial: string, hostPort: string): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', hostPort]);
+  }
+
+  async clearProxy(serial: string): Promise<AdbCommandResult> {
+    return this.run(['-s', serial, 'shell', 'settings', 'put', 'global', 'http_proxy', ':0']);
+  }
 }

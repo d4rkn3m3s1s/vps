@@ -22,6 +22,20 @@ export async function createJob(type: JobType, payload: JobPayload, emulatorId?:
   return { id: job.id };
 }
 
+// Creates a persisted job record WITHOUT enqueuing to BullMQ. Used by dashboard
+// actions (app install, automation task) so they appear in the Jobs list even
+// when no worker is attached to execute emulator side-effects.
+export async function createJobRecord(type: JobType, payload: JobPayload, emulatorId?: string) {
+  return prisma.job.create({
+    data: {
+      type,
+      status: 'PENDING',
+      payload: payload as Prisma.InputJsonValue,
+      ...(emulatorId ? { emulatorId } : {})
+    }
+  });
+}
+
 export async function listJobs() {
   return prisma.job.findMany({ orderBy: { createdAt: 'desc' } });
 }

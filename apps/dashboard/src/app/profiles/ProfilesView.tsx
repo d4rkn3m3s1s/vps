@@ -1,0 +1,805 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+
+export type DeviceGroup = {
+  id: string;
+  name: string;
+};
+
+export type DeviceFingerprint = {
+  imei: string;
+  androidId: string;
+  serialNo: string;
+  macAddress: string;
+  manufacturer: string;
+  model: string;
+  brand: string;
+  osVersion: string;
+  buildNumber: string;
+  resolution: string;
+  dpi: number;
+  carrier: string;
+  mcc: string;
+  mnc: string;
+  phoneNumber: string | null;
+  language: string;
+  country: string;
+  countryCode: string;
+  timezone: string;
+  latitude: number | null;
+  longitude: number | null;
+  gpsEnabled: boolean;
+};
+
+export type DeviceProfile = {
+  id: string;
+  uuid: string;
+  name: string;
+  status: string;
+  ipAddress: string | null;
+  adbPort: number | null;
+  androidVersion: string | null;
+  cpuUsage: number;
+  memoryUsage: number;
+  diskUsage: number;
+  lastSeen: string | null;
+  group?: { id: string; name: string } | null;
+  metadata?: Record<string, unknown> | null;
+  fingerprint?: DeviceFingerprint | null;
+};
+
+export type Country = { countryCode: string; country: string; timezone: string };
+
+type ViewMode = 'card' | 'list';
+
+const STATUS_LABEL: Record<string, string> = {
+  ONLINE: 'Running',
+  OFFLINE: 'Stopped',
+  STARTING: 'Starting',
+  STOPPING: 'Stopping',
+  ERROR: 'Error',
+  UPDATING: 'Updating',
+  REBOOTING: 'Rebooting'
+};
+
+function statusClass(status: string): string {
+  switch (status) {
+    case 'ONLINE':
+      return 'dot dot-online';
+    case 'ERROR':
+      return 'dot dot-error';
+    case 'STARTING':
+    case 'UPDATING':
+    case 'REBOOTING':
+      return 'dot dot-busy';
+    default:
+      return 'dot dot-offline';
+  }
+}
+
+function flag(metadata?: Record<string, unknown> | null): string {
+  const country = (metadata?.country as string) || (metadata?.region as string) || '';
+  return country || 'Global';
+}
+
+const BULK_ACTIONS = ['Start', 'Close', 'Move', 'Push file', 'Check proxy', 'Delete'] as const;
+
+export function ProfilesView({
+  devices,
+  groups,
+  countries = []
+}: {
+  devices: DeviceProfile[];
+  groups: DeviceGroup[];
+  countries?: Country[];
+}) {
+  const router = useRouter();
+  const [query, setQuery] = useState('');
+  const [groupId, setGroupId] = useState<string>('all');
+  const [mode, setMode] = useState<ViewMode>('card');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US' });
+  const [error, setError] = useState<string | null>(null);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveGroup, setMoveGroup] = useState('');
+  const [newGroup, setNewGroup] = useState('');
+  // Fingerprint / GPS detail modal.
+  const [fpDevice, setFpDevice] = useState<DeviceProfile | null>(null);
+  const [gpsForm, setGpsForm] = useState({ gpsEnabled: false, latitude: '', longitude: '', countryCode: '' });
+  const [fpBusy, setFpBusy] = useState(false);
+  // Bulk file push modal.
+  const [pushOpen, setPushOpen] = useState(false);
+  const [pushForm, setPushForm] = useState({ url: '', fileName: '', destination: 'gallery' });
+
+  const filtered = useMemo(() => {
+    return devices.filter((device) => {
+      const matchesGroup =
+        groupId === 'all' ||
+        (groupId === 'ungrouped' ? !device.group : device.group?.id === groupId);
+      const matchesQuery = device.name.toLowerCase().includes(query.trim().toLowerCase());
+      return matchesGroup && matchesQuery;
+    });
+  }, [devices, groupId, query]);
+
+  const allSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.id));
+
+  function toggle(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(() => (allSelected ? new Set() : new Set(filtered.map((d) => d.id))));
+  }
+
+  const selectionCount = selected.size;
+
+  async function createProfile() {
+    if (!form.name.trim()) {
+      setError('Profile name is required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/devices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name.trim(),
+          androidVersion: form.androidVersion,
+          countryCode: form.countryCode
+        })
+      });
+      if (!res.ok) throw new Error(`Create failed (${res.status})`);
+      setCreateOpen(false);
+      setForm({ name: '', androidVersion: '12', countryCode: 'US' });
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Create failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openFingerprint(device: DeviceProfile) {
+    setFpDevice(device);
+    const fp = device.fingerprint;
+    setGpsForm({
+      gpsEnabled: fp?.gpsEnabled ?? false,
+      latitude: fp?.latitude != null ? String(fp.latitude) : '',
+      longitude: fp?.longitude != null ? String(fp.longitude) : '',
+      countryCode: fp?.countryCode ?? ''
+    });
+  }
+
+  async function regenerateFingerprint() {
+    if (!fpDevice) return;
+    setFpBusy(true);
+    try {
+      const res = await fetch(`/api/fingerprints/${fpDevice.id}/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(gpsForm.countryCode ? { countryCode: gpsForm.countryCode } : {})
+      });
+      if (!res.ok) throw new Error(`Regenerate failed (${res.status})`);
+      setFpDevice(null);
+      router.refresh();
+    } finally {
+      setFpBusy(false);
+    }
+  }
+
+  async function saveGps() {
+    if (!fpDevice) return;
+    setFpBusy(true);
+    try {
+      const body: Record<string, unknown> = { gpsEnabled: gpsForm.gpsEnabled };
+      if (gpsForm.latitude) body.latitude = Number(gpsForm.latitude);
+      if (gpsForm.longitude) body.longitude = Number(gpsForm.longitude);
+      if (gpsForm.countryCode) body.countryCode = gpsForm.countryCode;
+      const res = await fetch(`/api/fingerprints/${fpDevice.id}/gps`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`GPS update failed (${res.status})`);
+      setFpDevice(null);
+      router.refresh();
+    } finally {
+      setFpBusy(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (selectionCount === 0) return;
+    if (!confirm(`Delete ${selectionCount} profile(s)? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await Promise.all(
+        Array.from(selected).map((id) => fetch(`/api/devices/${id}`, { method: 'DELETE' }))
+      );
+      setSelected(new Set());
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function moveSelected() {
+    if (selectionCount === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let groupId = moveGroup;
+      if (newGroup.trim()) {
+        const gRes = await fetch('/api/groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newGroup.trim() })
+        });
+        const gJson = await gRes.json().catch(() => ({}));
+        if (!gRes.ok) throw new Error(gJson?.error ?? 'Could not create group');
+        groupId = gJson.data?.id ?? '';
+      }
+      if (!groupId) {
+        setError('Pick a group or enter a new one.');
+        setBusy(false);
+        return;
+      }
+      await Promise.all(
+        Array.from(selected).map((id) =>
+          fetch(`/api/devices/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ groupId })
+          })
+        )
+      );
+      setMoveOpen(false);
+      setMoveGroup('');
+      setNewGroup('');
+      setSelected(new Set());
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Move failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pushFile() {
+    if (selectionCount === 0 || !pushForm.url.trim()) {
+      setError('A file URL is required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/files/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: Array.from(selected),
+          url: pushForm.url.trim(),
+          destination: pushForm.destination,
+          ...(pushForm.fileName.trim() ? { fileName: pushForm.fileName.trim() } : {})
+        })
+      });
+      if (!res.ok) throw new Error(`Push failed (${res.status})`);
+      setPushOpen(false);
+      setPushForm({ url: '', fileName: '', destination: 'gallery' });
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Push failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bulkJob(jobType: string, status: string) {
+    if (selectionCount === 0) return;
+    setBusy(true);
+    try {
+      const ids = Array.from(selected);
+      // Fire one real job per selected device, then reflect the new status.
+      await fetch('/api/bulk/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: ids, jobType })
+      });
+      await Promise.all(
+        ids.map((id) =>
+          fetch(`/api/devices/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+          })
+        )
+      );
+      router.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function runBulk(action: string) {
+    if (action === 'Delete') return deleteSelected();
+    if (action === 'Start') return bulkJob('EMULATOR_START', 'STARTING');
+    if (action === 'Close') return bulkJob('EMULATOR_STOP', 'STOPPING');
+    if (action === 'Push file') {
+      if (selectionCount === 0) return undefined;
+      setPushOpen(true);
+      return undefined;
+    }
+    if (action === 'Move') {
+      setMoveOpen(true);
+      return undefined;
+    }
+    return undefined;
+  }
+
+  return (
+    <div className="profiles">
+      <header className="profiles-topbar">
+        <div className="topbar-left">
+          <select className="group-select" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+            <option value="all">All groups</option>
+            <option value="ungrouped">Ungrouped</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name}
+              </option>
+            ))}
+          </select>
+          <div className="search-box">
+            <span className="search-icon" aria-hidden>
+              ⌕
+            </span>
+            <input
+              type="text"
+              placeholder="Profile name"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="topbar-right">
+          <div className="mode-toggle" role="tablist" aria-label="View mode">
+            <button
+              type="button"
+              className={mode === 'card' ? 'active' : ''}
+              onClick={() => setMode('card')}
+            >
+              Card
+            </button>
+            <button
+              type="button"
+              className={mode === 'list' ? 'active' : ''}
+              onClick={() => setMode('list')}
+            >
+              List
+            </button>
+          </div>
+          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+            + New profile
+          </button>
+        </div>
+      </header>
+
+      <div className={`action-bar${selectionCount > 0 ? ' action-bar-active' : ''}`}>
+        <label className="select-all">
+          <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+          <span>{selectionCount > 0 ? `${selectionCount} selected` : 'Select all'}</span>
+        </label>
+        <div className="action-buttons">
+          {BULK_ACTIONS.map((action) => (
+            <button
+              key={action}
+              type="button"
+              className={action === 'Delete' ? 'action-btn action-danger' : 'action-btn'}
+              disabled={selectionCount === 0 || busy}
+              title={selectionCount === 0 ? 'Select profiles first' : action}
+              onClick={() => runBulk(action)}
+            >
+              {action}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state">
+          <div className="empty-art">☁</div>
+          <h3>No profiles yet</h3>
+          <p>Create your first cloud phone profile to get started.</p>
+          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+            + New profile
+          </button>
+        </div>
+      ) : mode === 'card' ? (
+        <div className="profile-grid">
+          <button type="button" className="create-card" onClick={() => setCreateOpen(true)}>
+            <div className="create-art">+</div>
+            <strong>Create a new profile</strong>
+            <span className="create-cta">Create</span>
+          </button>
+
+          {filtered.map((device) => {
+            const isSelected = selected.has(device.id);
+            return (
+              <article key={device.id} className={`profile-card${isSelected ? ' profile-card-selected' : ''}`}>
+                <div className="card-head">
+                  <label className="card-check">
+                    <input type="checkbox" checked={isSelected} onChange={() => toggle(device.id)} />
+                  </label>
+                  <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
+                    {device.name}
+                  </Link>
+                  <button type="button" className="card-menu" aria-label="More">
+                    ⋮
+                  </button>
+                </div>
+                <ul className="card-meta">
+                  <li>
+                    <span className="meta-icon">▣</span>
+                    <span className="mono">{device.uuid.slice(0, 18)}</span>
+                  </li>
+                  <li>
+                    <span className="meta-icon">⌖</span>
+                    {device.fingerprint?.country ?? flag(device.metadata)}
+                    {device.fingerprint?.gpsEnabled ? <span className="gps-pill">GPS</span> : null}
+                  </li>
+                  <li>
+                    <span className="meta-icon">▤</span>
+                    {device.fingerprint ? `${device.fingerprint.manufacturer} ${device.fingerprint.model}` : 'No fingerprint'}
+                  </li>
+                  <li>
+                    <span className="meta-icon">⌨</span>
+                    Android {device.fingerprint?.osVersion ?? device.androidVersion ?? '—'}
+                  </li>
+                  <li>
+                    <span className="meta-icon">⇄</span>
+                    {device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'No proxy'}
+                  </li>
+                  <li>
+                    <span className="meta-icon">≣</span>
+                    {device.group?.name ?? 'Ungrouped'}
+                  </li>
+                </ul>
+                <div className="card-foot">
+                  <span className="status-chip">
+                    <span className={statusClass(device.status)} />
+                    {STATUS_LABEL[device.status] ?? device.status}
+                  </span>
+                  <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
+                    ⊚ Fingerprint
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="profile-table-wrap">
+          <table className="profile-table">
+            <thead>
+              <tr>
+                <th className="col-check">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+                </th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Location</th>
+                <th>Android</th>
+                <th>Proxy</th>
+                <th>Group</th>
+                <th>CPU / RAM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((device) => {
+                const isSelected = selected.has(device.id);
+                return (
+                  <tr key={device.id} className={isSelected ? 'row-selected' : ''}>
+                    <td className="col-check">
+                      <input type="checkbox" checked={isSelected} onChange={() => toggle(device.id)} />
+                    </td>
+                    <td>
+                      <strong>{device.name}</strong>
+                      <div className="helper mono">{device.uuid.slice(0, 14)}</div>
+                    </td>
+                    <td>
+                      <span className="status-chip">
+                        <span className={statusClass(device.status)} />
+                        {STATUS_LABEL[device.status] ?? device.status}
+                      </span>
+                    </td>
+                    <td>{flag(device.metadata)}</td>
+                    <td>{device.androidVersion ?? '—'}</td>
+                    <td className="mono">{device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : '—'}</td>
+                    <td>{device.group?.name ?? 'Ungrouped'}</td>
+                    <td className="mono">
+                      {Math.round(device.cpuUsage)}% / {Math.round(device.memoryUsage)}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <footer className="profiles-foot">
+        <span className="helper">Total: {filtered.length} records</span>
+      </footer>
+
+      {moveOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setMoveOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Move {selectionCount} profile(s)</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setMoveOpen(false)}>
+                ✕
+              </button>
+            </header>
+            <label className="field">
+              <span>Existing group</span>
+              <select className="field-input" value={moveGroup} onChange={(e) => setMoveGroup(e.target.value)} disabled={!!newGroup}>
+                <option value="">— select —</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Or create new group</span>
+              <input className="field-input" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="e.g. Campaign A" />
+            </label>
+            {error ? <p className="field-error">{error}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => !busy && setMoveOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" disabled={busy} onClick={moveSelected}>
+                {busy ? 'Moving…' : 'Move'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {createOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setCreateOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>New profile</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setCreateOpen(false)}>
+                ✕
+              </button>
+            </header>
+
+            <label className="field">
+              <span>Profile name</span>
+              <input
+                type="text"
+                className="field-input"
+                placeholder="e.g. Cloud phone profile_US_04"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              />
+            </label>
+
+            <div className="field-row">
+              <label className="field">
+                <span>Android version</span>
+                <select
+                  className="field-input"
+                  value={form.androidVersion}
+                  onChange={(e) => setForm((f) => ({ ...f, androidVersion: e.target.value }))}
+                >
+                  <option value="11">Android 11</option>
+                  <option value="12">Android 12</option>
+                  <option value="13">Android 13</option>
+                  <option value="14">Android 14</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Location (SIM / GPS)</span>
+                <select
+                  className="field-input"
+                  value={form.countryCode}
+                  onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value }))}
+                >
+                  {countries.length === 0 ? (
+                    <option value="US">United States</option>
+                  ) : (
+                    countries.map((c) => (
+                      <option key={c.countryCode} value={c.countryCode}>
+                        {c.country}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+            </div>
+
+            <p className="helper">
+              A unique device fingerprint (IMEI, model, carrier, MAC) is generated automatically for this country.
+            </p>
+
+            {error ? <p className="field-error">{error}</p> : null}
+
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => !busy && setCreateOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" disabled={busy} onClick={createProfile}>
+                {busy ? 'Creating…' : 'Create profile'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {fpDevice ? (
+        <div className="modal-overlay" onClick={() => !fpBusy && setFpDevice(null)}>
+          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Device fingerprint — {fpDevice.name}</h2>
+              <button type="button" className="modal-close" onClick={() => !fpBusy && setFpDevice(null)}>
+                ✕
+              </button>
+            </header>
+
+            {fpDevice.fingerprint ? (
+              <div className="fp-grid">
+                <FpRow label="Device" value={`${fpDevice.fingerprint.manufacturer} ${fpDevice.fingerprint.model}`} />
+                <FpRow label="OS / Build" value={`Android ${fpDevice.fingerprint.osVersion} · ${fpDevice.fingerprint.buildNumber}`} />
+                <FpRow label="IMEI" value={fpDevice.fingerprint.imei} mono />
+                <FpRow label="Android ID" value={fpDevice.fingerprint.androidId} mono />
+                <FpRow label="Serial" value={fpDevice.fingerprint.serialNo} mono />
+                <FpRow label="MAC" value={fpDevice.fingerprint.macAddress} mono />
+                <FpRow label="Resolution" value={`${fpDevice.fingerprint.resolution} @ ${fpDevice.fingerprint.dpi}dpi`} />
+                <FpRow label="Carrier" value={`${fpDevice.fingerprint.carrier} (${fpDevice.fingerprint.mcc}/${fpDevice.fingerprint.mnc})`} />
+                <FpRow label="Phone" value={fpDevice.fingerprint.phoneNumber ?? '—'} mono />
+                <FpRow label="Locale" value={`${fpDevice.fingerprint.country} · ${fpDevice.fingerprint.language} · ${fpDevice.fingerprint.timezone}`} />
+              </div>
+            ) : (
+              <p className="helper">No fingerprint yet — regenerate to create one.</p>
+            )}
+
+            <div className="modal-section">
+              <h3>GPS / SIM simulation</h3>
+              <label className="field-check">
+                <input
+                  type="checkbox"
+                  checked={gpsForm.gpsEnabled}
+                  onChange={(e) => setGpsForm((g) => ({ ...g, gpsEnabled: e.target.checked }))}
+                />
+                <span>Enable GPS spoofing</span>
+              </label>
+              <div className="field-row">
+                <label className="field">
+                  <span>Latitude</span>
+                  <input
+                    className="field-input"
+                    value={gpsForm.latitude}
+                    onChange={(e) => setGpsForm((g) => ({ ...g, latitude: e.target.value }))}
+                    placeholder="e.g. 41.0082"
+                  />
+                </label>
+                <label className="field">
+                  <span>Longitude</span>
+                  <input
+                    className="field-input"
+                    value={gpsForm.longitude}
+                    onChange={(e) => setGpsForm((g) => ({ ...g, longitude: e.target.value }))}
+                    placeholder="e.g. 28.9784"
+                  />
+                </label>
+              </div>
+              <label className="field">
+                <span>Country (updates SIM + timezone)</span>
+                <select
+                  className="field-input"
+                  value={gpsForm.countryCode}
+                  onChange={(e) => setGpsForm((g) => ({ ...g, countryCode: e.target.value }))}
+                >
+                  <option value="">— keep current —</option>
+                  {countries.map((c) => (
+                    <option key={c.countryCode} value={c.countryCode}>
+                      {c.country}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" disabled={fpBusy} onClick={regenerateFingerprint}>
+                {fpBusy ? '…' : '↻ Regenerate fingerprint'}
+              </button>
+              <button type="button" className="btn-primary" disabled={fpBusy} onClick={saveGps}>
+                {fpBusy ? 'Saving…' : 'Save GPS'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {pushOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setPushOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Push file to {selectionCount} phone(s)</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setPushOpen(false)}>
+                ✕
+              </button>
+            </header>
+            <label className="field">
+              <span>File URL</span>
+              <input
+                className="field-input mono"
+                value={pushForm.url}
+                onChange={(e) => setPushForm((f) => ({ ...f, url: e.target.value }))}
+                placeholder="https://example.com/video.mp4"
+              />
+            </label>
+            <div className="field-row">
+              <label className="field">
+                <span>File name (optional)</span>
+                <input
+                  className="field-input"
+                  value={pushForm.fileName}
+                  onChange={(e) => setPushForm((f) => ({ ...f, fileName: e.target.value }))}
+                  placeholder="video.mp4"
+                />
+              </label>
+              <label className="field">
+                <span>Destination</span>
+                <select
+                  className="field-input"
+                  value={pushForm.destination}
+                  onChange={(e) => setPushForm((f) => ({ ...f, destination: e.target.value }))}
+                >
+                  <option value="gallery">Gallery (DCIM)</option>
+                  <option value="downloads">Downloads</option>
+                </select>
+              </label>
+            </div>
+            {error ? <p className="field-error">{error}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => !busy && setPushOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" disabled={busy} onClick={pushFile}>
+                {busy ? 'Pushing…' : 'Push file'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FpRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="fp-row">
+      <span className="helper">{label}</span>
+      <span className={mono ? 'mono' : undefined}>{value}</span>
+    </div>
+  );
+}

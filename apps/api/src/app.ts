@@ -31,6 +31,9 @@ export function createApp() {
     });
   });
 
+  app.get('/docs.json', (_req, res) => {
+    res.json(swaggerSpec);
+  });
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
   registerRoutes(app);
   app.use(notFound);

@@ -6,6 +6,7 @@ export type DeviceCreateInput = {
   adbPort?: number | undefined;
   androidVersion?: string | undefined;
   groupId?: string | undefined;
+  countryCode?: string | undefined;
   metadata?: unknown;
 };
 
@@ -19,6 +20,7 @@ export type DeviceUpdateInput = {
   memoryUsage?: number | undefined;
   diskUsage?: number | undefined;
   groupId?: string | null | undefined;
+  hostId?: string | null | undefined;
   metadata?: unknown;
   lastSeen?: string | Date | undefined;
 };

@@ -3,6 +3,7 @@ import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { AdbService } from '../adb/adb.service';
 import { DockerService } from '../emulators/docker.service';
+import { webhooksService } from '../webhooks/webhooks.service';
 import type { JobPayload, JobType } from './job.types';
 
 const dockerService = new DockerService();
@@ -16,6 +17,17 @@ function getSerial(emulator: { adbHost: string | null; adbPort: number | null })
   return `${emulator.adbHost}:${emulator.adbPort}`;
 }
 
+// Resolves an ADB serial from a job payload that carries a Device id (the shape
+// the dashboard sends). Devices expose their ADB endpoint via ipAddress:adbPort.
+async function getDeviceSerial(deviceId: string): Promise<string> {
+  const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+  if (!device.ipAddress || !device.adbPort) {
+    throw new AppError('Device is missing ADB endpoint (awaiting KVM host)', 409, 'DEVICE_AWAITING_ADB');
+  }
+  return `${device.ipAddress}:${device.adbPort}`;
+}
+
 async function updateJob(jobId: string, data: { status: 'RUNNING' | 'COMPLETED' | 'FAILED'; result?: unknown; error?: string }): Promise<void> {
   const updateData: Record<string, unknown> = { status: data.status };
   if (data.status === 'RUNNING') updateData.startedAt = new Date();
@@ -23,7 +35,16 @@ async function updateJob(jobId: string, data: { status: 'RUNNING' | 'COMPLETED' 
   if (data.result !== undefined) updateData.result = data.result;
   if (data.error !== undefined) updateData.error = data.error;
 
-  await prisma.job.update({ where: { id: jobId }, data: updateData });
+  const updated = await prisma.job.update({ where: { id: jobId }, data: updateData });
+
+  // Fire outbound webhooks on terminal states (best-effort, never blocks).
+  if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+    void webhooksService.dispatch(data.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED', {
+      jobId: updated.id,
+      jobType: updated.type,
+      ...(updated.error ? { error: updated.error } : {})
+    });
+  }
 }
 
 export async function processJob(job: BullJob<JobPayload, unknown, JobType>): Promise<unknown> {
@@ -130,6 +151,50 @@ export async function processJob(job: BullJob<JobPayload, unknown, JobType>): Pr
         const result = await adbService.closeApp(serial, packageName);
         await updateJob(job.id as string, { status: 'COMPLETED', result });
         return result;
+      }
+      case 'EMULATOR_PUSH_FILE': {
+        const serial = await getDeviceSerial(String(job.data.deviceId));
+        const url = String(job.data.url ?? '');
+        const fileName = String(job.data.fileName ?? 'file');
+        if (!url) throw new AppError('url is required', 400, 'INVALID_URL');
+        // Download to a temp path, push to the device, then media-scan.
+        const tmp = `/tmp/${Date.now()}-${fileName}`;
+        const dest = job.data.destination === 'downloads' ? `/sdcard/Download/${fileName}` : `/sdcard/DCIM/${fileName}`;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new AppError('Failed to download file', 502, 'DOWNLOAD_FAILED');
+        const { writeFile } = await import('node:fs/promises');
+        await writeFile(tmp, Buffer.from(await resp.arrayBuffer()));
+        await adbService.push(serial, tmp, dest);
+        const scan = await adbService.scanMedia(serial, dest);
+        await updateJob(job.id as string, { status: 'COMPLETED', result: { dest, scan } });
+        return { dest };
+      }
+      case 'EMULATOR_SET_PROXY': {
+        const serial = await getDeviceSerial(String(job.data.deviceId));
+        const host = String(job.data.host ?? '');
+        const port = job.data.port;
+        if (!host || typeof port !== 'number') throw new AppError('host and port are required', 400, 'INVALID_PROXY');
+        const result = await adbService.setProxy(serial, `${host}:${port}`);
+        await updateJob(job.id as string, { status: 'COMPLETED', result });
+        return result;
+      }
+      case 'RPA_RUN': {
+        const serial = await getDeviceSerial(String(job.data.deviceId));
+        const steps = Array.isArray(job.data.steps) ? (job.data.steps as Array<Record<string, unknown>>) : [];
+        const results: unknown[] = [];
+        // Execute each step in order; wait steps just sleep.
+        for (const step of steps) {
+          const type = String(step.type);
+          if (type === 'tap') results.push(await adbService.tap(serial, Number(step.x), Number(step.y)));
+          else if (type === 'swipe') results.push(await adbService.swipe(serial, Number(step.x), Number(step.y), Number(step.x2), Number(step.y2)));
+          else if (type === 'type') results.push(await adbService.inputText(serial, String(step.text ?? '')));
+          else if (type === 'keyevent') results.push(await adbService.keyevent(serial, Number(step.keycode)));
+          else if (type === 'openApp') results.push(await adbService.openApp(serial, String(step.packageName ?? '')));
+          else if (type === 'shell') results.push(await adbService.shell(serial, String(step.command ?? '')));
+          else if (type === 'wait') await new Promise((r) => setTimeout(r, Number(step.ms ?? 1000)));
+        }
+        await updateJob(job.id as string, { status: 'COMPLETED', result: { steps: steps.length, results } });
+        return { steps: steps.length };
       }
       default:
         throw new AppError(`Unsupported job type: ${job.name}`, 400, 'UNSUPPORTED_JOB_TYPE');

@@ -7,6 +7,7 @@ import {
   createGroupHandler,
   deleteDeviceHandler,
   deleteGroupHandler,
+  deviceShellHandler,
   deviceStatusSummaryHandler,
   getDeviceHandler,
   heartbeatDeviceHandler,
@@ -29,3 +30,4 @@ deviceRouter.get('/:id', requireApiKey, asyncHandler(getDeviceHandler));
 deviceRouter.put('/:id', requireApiKey, authenticateJwt, asyncHandler(updateDeviceHandler));
 deviceRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteDeviceHandler));
 deviceRouter.post('/:id/heartbeat', requireApiKey, asyncHandler(heartbeatDeviceHandler));
+deviceRouter.post('/:id/shell', requireApiKey, authenticateJwt, asyncHandler(deviceShellHandler));

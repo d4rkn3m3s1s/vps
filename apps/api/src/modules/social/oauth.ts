@@ -54,7 +54,7 @@ export async function exchangeXCodeForToken(input: {
   code: string;
   redirectUri: string;
   codeVerifier: string;
-}): Promise<{ accessToken: string; refreshToken?: string; expiresIn?: number; scope?: string }> {
+}): Promise<{ accessToken: string; refreshToken?: string | undefined; expiresIn?: number | undefined; scope?: string | undefined }> {
   if (!env.twitterClientId || !env.twitterClientSecret) {
     throw new Error('TWITTER_CLIENT_ID/TWITTER_CLIENT_SECRET are required');
   }
@@ -100,7 +100,7 @@ export async function exchangeXCodeForToken(input: {
   };
 }
 
-export async function fetchXMe(accessToken: string): Promise<{ id: string; name?: string; username?: string }> {
+export async function fetchXMe(accessToken: string): Promise<{ id: string; name?: string | undefined; username?: string | undefined }> {
   const response = await fetch('https://api.twitter.com/2/users/me', {
     headers: {
       Authorization: `Bearer ${accessToken}`

@@ -1,0 +1,54 @@
+# VPS Fleet — Android emulator stack (redroid)
+#
+# redroid runs a real ARM/x86 Android system in a container backed by /dev/kvm.
+# Each service is one cloud phone, exposed over ADB. Scale by copying a service
+# block with a new name + port, or generate them from the control plane.
+#
+# Requires: /dev/kvm, binder_linux + ashmem_linux kernel modules (see install.sh).
+
+services:
+  phone-01:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-phone-01
+    privileged: true
+    ports:
+      - "5555:5555" # ADB
+    volumes:
+      - phone01-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+  phone-02:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-phone-02
+    privileged: true
+    ports:
+      - "5556:5555"
+    volumes:
+      - phone02-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+  # The fleet host agent (optional): polls the control plane for jobs targeting
+  # this host and runs them over ADB. Point FLEET_API_URL at your API.
+  # agent:
+  #   image: vpsfleet/host-agent:latest
+  #   environment:
+  #     FLEET_API_URL: https://api.your-domain.com
+  #     FLEET_HOST_KEY: ${FLEET_HOST_KEY}
+  #   network_mode: host
+  #   restart: unless-stopped
+
+volumes:
+  phone01-data:
+  phone02-data:

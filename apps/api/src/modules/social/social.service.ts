@@ -1,18 +1,18 @@
 import { prisma } from '../../db/prisma';
 import { encryptString, decryptString } from '../../lib/crypto';
-import type { Prisma } from '@prisma/client';
+import type { Prisma, SocialProvider } from '@prisma/client';
 
 export async function upsertSocialAccount(opts: {
   provider: string;
   providerAccountId: string;
   userId: string;
-  displayName?: string;
-  username?: string;
+  displayName?: string | undefined;
+  username?: string | undefined;
   accessToken: string;
-  refreshToken?: string;
-  tokenExpiresAt?: Date;
-  scopes?: string[];
-  metadata?: Record<string, unknown>;
+  refreshToken?: string | undefined;
+  tokenExpiresAt?: Date | undefined;
+  scopes?: string[] | undefined;
+  metadata?: Record<string, unknown> | undefined;
 }) {
   const encAccess = encryptString(opts.accessToken);
   const encRefresh = opts.refreshToken ? encryptString(opts.refreshToken) : undefined;
@@ -20,7 +20,7 @@ export async function upsertSocialAccount(opts: {
   const existing = await prisma.socialAccount.findUnique({
     where: {
       provider_providerAccountId: {
-        provider: opts.provider as Prisma.SocialProvider,
+        provider: opts.provider as SocialProvider,
         providerAccountId: opts.providerAccountId
       }
     }
@@ -30,29 +30,29 @@ export async function upsertSocialAccount(opts: {
     return prisma.socialAccount.update({
       where: { id: existing.id },
       data: {
-        displayName: opts.displayName,
-        username: opts.username,
+        displayName: opts.displayName ?? null,
+        username: opts.username ?? null,
         accessTokenEnc: encAccess,
-        refreshTokenEnc: encRefresh,
-        tokenExpiresAt: opts.tokenExpiresAt,
+        refreshTokenEnc: encRefresh ?? null,
+        tokenExpiresAt: opts.tokenExpiresAt ?? null,
         scopes: opts.scopes ?? [],
-        metadata: opts.metadata ?? {}
+        metadata: (opts.metadata ?? {}) as Prisma.InputJsonValue
       }
     });
   }
 
   return prisma.socialAccount.create({
     data: {
-      provider: opts.provider as Prisma.SocialProvider,
+      provider: opts.provider as SocialProvider,
       providerAccountId: opts.providerAccountId,
       userId: opts.userId,
-      displayName: opts.displayName,
-      username: opts.username,
+      displayName: opts.displayName ?? null,
+      username: opts.username ?? null,
       accessTokenEnc: encAccess,
-      refreshTokenEnc: encRefresh,
-      tokenExpiresAt: opts.tokenExpiresAt,
+      refreshTokenEnc: encRefresh ?? null,
+      tokenExpiresAt: opts.tokenExpiresAt ?? null,
       scopes: opts.scopes ?? [],
-      metadata: opts.metadata ?? {}
+      metadata: (opts.metadata ?? {}) as Prisma.InputJsonValue
     }
   });
 }

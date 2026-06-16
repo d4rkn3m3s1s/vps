@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { generateFingerprintData } from '../fingerprint/fingerprint.service';
 import type {
   DeviceCreateInput,
   DeviceGroupCreateInput,
@@ -22,14 +23,14 @@ export class DeviceService {
   async listDevices() {
     return prisma.device.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { group: true }
+      include: { group: true, fingerprint: true, host: true }
     });
   }
 
   async getDevice(id: string) {
     return prisma.device.findUnique({
       where: { id },
-      include: { group: true }
+      include: { group: true, fingerprint: true, host: true }
     });
   }
 
@@ -46,9 +47,15 @@ export class DeviceService {
     const metadata = buildJsonMetadata(input.metadata);
     if (metadata !== undefined) data.metadata = metadata;
 
+    // Every cloud phone is born with a unique randomized fingerprint so it looks
+    // like a distinct physical device. Country can be pinned at creation.
+    data.fingerprint = {
+      create: generateFingerprintData({ countryCode: input.countryCode })
+    };
+
     return prisma.device.create({
       data,
-      include: { group: true }
+      include: { group: true, fingerprint: true }
     });
   }
 
@@ -72,6 +79,12 @@ export class DeviceService {
     } else if (input.groupId) {
       data.group = { connect: { id: input.groupId } };
     }
+    if (input.hostId === null) {
+      data.host = { disconnect: true };
+    } else if (input.hostId) {
+      await this.assertHostExists(input.hostId);
+      data.host = { connect: { id: input.hostId } };
+    }
     const metadata = buildJsonMetadata(input.metadata);
     if (metadata !== undefined) data.metadata = metadata;
     const lastSeen = toDate(input.lastSeen);
@@ -80,7 +93,7 @@ export class DeviceService {
     return prisma.device.update({
       where: { id },
       data,
-      include: { group: true }
+      include: { group: true, host: true }
     });
   }
 
@@ -158,5 +171,10 @@ export class DeviceService {
   private async assertGroupExists(id: string): Promise<void> {
     const group = await prisma.deviceGroup.findUnique({ where: { id } });
     if (!group) throw new AppError('Device group not found', 404, 'DEVICE_GROUP_NOT_FOUND');
+  }
+
+  private async assertHostExists(id: string): Promise<void> {
+    const host = await prisma.host.findUnique({ where: { id } });
+    if (!host) throw new AppError('Host not found', 404, 'HOST_NOT_FOUND');
   }
 }

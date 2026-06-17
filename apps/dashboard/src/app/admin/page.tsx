@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Save } from 'lucide-react';
+import { Button, Input, Switch } from '@heroui/react';
 
 type Workspace = {
   id: string;
@@ -161,9 +162,8 @@ export default function AdminGeneralPage() {
         <div className="admin-form">
           <div className="admin-field">
             <label htmlFor="workspace-name">Workspace name</label>
-            <input
+            <Input
               id="workspace-name"
-              className="field-input"
               type="text"
               value={name}
               placeholder="Workspace name"
@@ -173,14 +173,13 @@ export default function AdminGeneralPage() {
           </div>
 
           <div className="row">
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={!isAdmin || busy || !trimmedName || unchanged}
-              onClick={save}
+            <Button
+              variant="primary"
+              isDisabled={!isAdmin || busy || !trimmedName || unchanged}
+              onPress={save}
             >
               <Save size={15} /> Save changes
-            </button>
+            </Button>
             {msg ? <span className="helper">{msg}</span> : null}
           </div>
 
@@ -223,12 +222,10 @@ export default function AdminGeneralPage() {
                 </strong>
                 <span>{policy.description}</span>
               </span>
-              <input
-                type="checkbox"
-                role="switch"
-                checked={settings ? settings[policy.key] : false}
-                disabled={!isAdmin || !settings || policyBusy === policy.key}
-                onChange={(e) => togglePolicy(policy.key, e.target.checked)}
+              <Switch
+                isSelected={settings ? Boolean(settings[policy.key]) : false}
+                isDisabled={!isAdmin || !settings || policyBusy === policy.key}
+                onChange={(v: boolean) => togglePolicy(policy.key, v)}
                 aria-label={policy.title}
               />
             </div>
@@ -239,13 +236,12 @@ export default function AdminGeneralPage() {
               <strong>Session expiry (hours)</strong>
               <span>How long an idle session stays valid. (Advisory — applied on next login.)</span>
             </span>
-            <input
-              className="field-input"
+            <Input
               style={{ width: '5rem' }}
               type="number"
               min={1}
               max={720}
-              value={settings?.sessionExpiryHrs ?? 12}
+              value={String(settings?.sessionExpiryHrs ?? 12)}
               disabled={!isAdmin || !settings || policyBusy === 'sessionExpiryHrs'}
               onChange={(e) => {
                 const v = Number(e.target.value);

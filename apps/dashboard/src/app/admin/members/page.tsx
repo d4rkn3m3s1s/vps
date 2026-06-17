@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Shield, Trash2, UserPlus } from 'lucide-react';
+import { Button, Input } from '@heroui/react';
 
 type Member = { id: string; userId: string; email: string; role: string };
 type Workspace = {
@@ -149,16 +150,16 @@ export default function MembersPage() {
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                className="icon-btn"
-                disabled={!isAdmin || busy}
-                onClick={() => void removeMember(m.id, m.email)}
+              <Button
+                isIconOnly
+                variant="ghost"
+                size="sm"
+                isDisabled={!isAdmin || busy}
+                onPress={() => void removeMember(m.id, m.email)}
                 aria-label={`Remove ${m.email}`}
-                title="Remove member"
               >
                 <Trash2 size={14} />
-              </button>
+              </Button>
             </span>
           </div>
         ))}
@@ -167,8 +168,7 @@ export default function MembersPage() {
       {isAdmin ? (
         <div className="panel">
           <div className="member-invite">
-            <input
-              className="field-input"
+            <Input
               type="email"
               placeholder="teammate@company.com"
               value={email}
@@ -183,14 +183,13 @@ export default function MembersPage() {
               <option value="operator">Operator</option>
               <option value="viewer">Viewer</option>
             </select>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy || !email.trim()}
-              onClick={() => void invite()}
+            <Button
+              variant="primary"
+              isDisabled={busy || !email.trim()}
+              onPress={() => void invite()}
             >
               <UserPlus size={15} /> Invite
-            </button>
+            </Button>
           </div>
         </div>
       ) : (

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { Button } from '@heroui/react';
 import { Check, X } from 'lucide-react';
 
 export type OnboardingStep = {
@@ -46,9 +47,9 @@ export function OnboardingChecklist({ steps }: { steps: OnboardingStep[] }) {
             {completed} of {total} steps done · finish setup to unlock the full platform
           </p>
         </div>
-        <button type="button" className="onb-dismiss" onClick={dismiss} aria-label="Dismiss setup guide" title="Dismiss">
+        <Button type="button" className="onb-dismiss" isIconOnly variant="ghost" onPress={dismiss} aria-label="Dismiss setup guide">
           <X size={16} />
-        </button>
+        </Button>
       </div>
 
       <div className="onb-progress">

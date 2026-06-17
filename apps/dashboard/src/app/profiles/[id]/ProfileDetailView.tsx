@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button } from '@heroui/react';
 import { PageHeader } from '../../../components/PageHeader';
 import { PageMotion } from '../../../components/Motion';
 import { AdbAccessPanel } from './AdbAccessPanel';
@@ -152,15 +153,15 @@ export function ProfileDetailView({
         subtitle={`${STATUS_LABEL[device.status] ?? device.status} · ${fp?.country ?? '—'}`}
         actions={
           <>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_START', 'STARTING', 'Start')}>
+            <Button variant="ghost" className="btn-ghost" isDisabled={Boolean(busy)} onPress={() => action('EMULATOR_START', 'STARTING', 'Start')}>
               ▷ Start
-            </button>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_STOP', 'STOPPING', 'Stop')}>
+            </Button>
+            <Button variant="ghost" className="btn-ghost" isDisabled={Boolean(busy)} onPress={() => action('EMULATOR_STOP', 'STOPPING', 'Stop')}>
               ◻ Stop
-            </button>
-            <button type="button" className="btn-primary" disabled={!!busy} onClick={screenshot}>
+            </Button>
+            <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={screenshot}>
               ◰ Screenshot
-            </button>
+            </Button>
           </>
         }
       />

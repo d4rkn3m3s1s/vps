@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { Button, Input } from '@heroui/react';
 
 export type DeviceGroup = {
   id: string;
@@ -442,7 +443,7 @@ export function ProfilesView({
             <span className="search-icon" aria-hidden>
               ⌕
             </span>
-            <input
+            <Input
               type="text"
               placeholder="Profile name"
               value={query}
@@ -452,24 +453,26 @@ export function ProfilesView({
         </div>
         <div className="topbar-right">
           <div className="mode-toggle" role="tablist" aria-label="View mode">
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="sm"
               className={mode === 'card' ? 'active' : ''}
-              onClick={() => setMode('card')}
+              onPress={() => setMode('card')}
             >
               Card
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               className={mode === 'list' ? 'active' : ''}
-              onClick={() => setMode('list')}
+              onPress={() => setMode('list')}
             >
               List
-            </button>
+            </Button>
           </div>
-          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+          <Button variant="primary" className="btn-primary" onPress={() => setCreateOpen(true)}>
             + New profile
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -480,16 +483,17 @@ export function ProfilesView({
         </label>
         <div className="action-buttons">
           {BULK_ACTIONS.map((action) => (
-            <button
+            <Button
               key={action}
-              type="button"
+              variant={action === 'Delete' ? 'danger' : 'ghost'}
+              size="sm"
               className={action === 'Delete' ? 'action-btn action-danger' : 'action-btn'}
-              disabled={selectionCount === 0 || busy}
-              title={selectionCount === 0 ? 'Select profiles first' : action}
-              onClick={() => runBulk(action)}
+              isDisabled={Boolean(selectionCount === 0 || busy)}
+              aria-label={selectionCount === 0 ? 'Select profiles first' : action}
+              onPress={() => runBulk(action)}
             >
               {action}
-            </button>
+            </Button>
           ))}
         </div>
       </div>
@@ -499,17 +503,17 @@ export function ProfilesView({
           <div className="empty-art">☁</div>
           <h3>No profiles yet</h3>
           <p>Create your first cloud phone profile to get started.</p>
-          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
+          <Button variant="primary" className="btn-primary" onPress={() => setCreateOpen(true)}>
             + New profile
-          </button>
+          </Button>
         </div>
       ) : mode === 'card' ? (
         <div className="profile-grid">
-          <button type="button" className="create-card" onClick={() => setCreateOpen(true)}>
+          <Button variant="ghost" className="create-card" onPress={() => setCreateOpen(true)}>
             <div className="create-art">+</div>
             <strong>Create a new profile</strong>
             <span className="create-cta">Create</span>
-          </button>
+          </Button>
 
           {filtered.map((device) => {
             const isSelected = selected.has(device.id);
@@ -522,9 +526,9 @@ export function ProfilesView({
                   <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
                     {device.name}
                   </Link>
-                  <button type="button" className="card-menu" aria-label="More">
+                  <Button variant="ghost" isIconOnly className="card-menu" aria-label="More">
                     ⋮
-                  </button>
+                  </Button>
                 </div>
                 <ul className="card-meta">
                   <li>
@@ -558,9 +562,9 @@ export function ProfilesView({
                     <span className={statusClass(device.status)} />
                     {STATUS_LABEL[device.status] ?? device.status}
                   </span>
-                  <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
+                  <Button variant="ghost" size="sm" className="fp-btn" onPress={() => openFingerprint(device)}>
                     ⊚ Fingerprint
-                  </button>
+                  </Button>
                 </div>
               </article>
             );
@@ -625,9 +629,9 @@ export function ProfilesView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Move {selectionCount} profile(s)</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setMoveOpen(false)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setMoveOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             <label className="field">
               <span>Existing group</span>
@@ -642,16 +646,16 @@ export function ProfilesView({
             </label>
             <label className="field">
               <span>Or create new group</span>
-              <input className="field-input" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="e.g. Campaign A" />
+              <Input className="field-input" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="e.g. Campaign A" />
             </label>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setMoveOpen(false)}>
+              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setMoveOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={moveSelected}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={moveSelected}>
                 {busy ? 'Moving…' : 'Move'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>
@@ -662,14 +666,14 @@ export function ProfilesView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>New profile</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setCreateOpen(false)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setCreateOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
 
             <label className="field">
               <span>Profile name</span>
-              <input
+              <Input
                 type="text"
                 className="field-input"
                 placeholder="e.g. Cloud phone profile_US_04"
@@ -719,12 +723,12 @@ export function ProfilesView({
             {error ? <p className="field-error">{error}</p> : null}
 
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setCreateOpen(false)}>
+              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setCreateOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={createProfile}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={createProfile}>
                 {busy ? 'Creating…' : 'Create profile'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>
@@ -735,9 +739,9 @@ export function ProfilesView({
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Device fingerprint — {fpDevice.name}</h2>
-              <button type="button" className="modal-close" onClick={() => !fpBusy && setFpDevice(null)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !fpBusy && setFpDevice(null)}>
                 ✕
-              </button>
+              </Button>
             </header>
 
             {fpDevice.fingerprint ? (
@@ -770,7 +774,7 @@ export function ProfilesView({
               <div className="field-row">
                 <label className="field">
                   <span>Latitude</span>
-                  <input
+                  <Input
                     className="field-input"
                     value={gpsForm.latitude}
                     onChange={(e) => setGpsForm((g) => ({ ...g, latitude: e.target.value }))}
@@ -779,7 +783,7 @@ export function ProfilesView({
                 </label>
                 <label className="field">
                   <span>Longitude</span>
-                  <input
+                  <Input
                     className="field-input"
                     value={gpsForm.longitude}
                     onChange={(e) => setGpsForm((g) => ({ ...g, longitude: e.target.value }))}
@@ -805,12 +809,12 @@ export function ProfilesView({
             </div>
 
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" disabled={fpBusy} onClick={regenerateFingerprint}>
+              <Button variant="ghost" className="btn-ghost" isDisabled={Boolean(fpBusy)} onPress={regenerateFingerprint}>
                 {fpBusy ? '…' : '↻ Regenerate fingerprint'}
-              </button>
-              <button type="button" className="btn-primary" disabled={fpBusy} onClick={saveGps}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(fpBusy)} onPress={saveGps}>
                 {fpBusy ? 'Saving…' : 'Save GPS'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>
@@ -821,13 +825,13 @@ export function ProfilesView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Push file to {selectionCount} phone(s)</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setPushOpen(false)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setPushOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             <label className="field">
               <span>File URL</span>
-              <input
+              <Input
                 className="field-input mono"
                 value={pushForm.url}
                 onChange={(e) => setPushForm((f) => ({ ...f, url: e.target.value }))}
@@ -837,7 +841,7 @@ export function ProfilesView({
             <div className="field-row">
               <label className="field">
                 <span>File name (optional)</span>
-                <input
+                <Input
                   className="field-input"
                   value={pushForm.fileName}
                   onChange={(e) => setPushForm((f) => ({ ...f, fileName: e.target.value }))}
@@ -858,12 +862,12 @@ export function ProfilesView({
             </div>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setPushOpen(false)}>
+              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setPushOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={pushFile}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={pushFile}>
                 {busy ? 'Pushing…' : 'Push file'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>
@@ -874,9 +878,9 @@ export function ProfilesView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Assign proxy to {selectionCount} phone(s)</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setProxyOpen(false)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setProxyOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             {proxies.length === 0 ? (
               <p className="helper">No proxies configured yet. Add one on the Proxies page first.</p>
@@ -895,12 +899,12 @@ export function ProfilesView({
             )}
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setProxyOpen(false)}>
+              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setProxyOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy || !proxyChoice} onClick={assignProxy}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy || !proxyChoice)} onPress={assignProxy}>
                 {busy ? 'Assigning…' : 'Assign proxy'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>
@@ -911,9 +915,9 @@ export function ProfilesView({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Install app on {selectionCount} phone(s)</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setAppOpen(false)}>
+              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setAppOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             {apps.length === 0 ? (
               <p className="helper">No apps in the catalog yet.</p>
@@ -932,12 +936,12 @@ export function ProfilesView({
             )}
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setAppOpen(false)}>
+              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setAppOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy || !appChoice} onClick={installApp}>
+              </Button>
+              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy || !appChoice)} onPress={installApp}>
                 {busy ? 'Installing…' : 'Install app'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -82,7 +83,7 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
       <PageHeader
         title="Library"
         subtitle="Shared media, APKs, cookies and account assets."
-        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add asset</button>}
+        actions={<Button variant="primary" onPress={() => setOpen(true)}>+ Add asset</Button>}
       />
 
       {assets.length === 0 ? (
@@ -90,7 +91,7 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
           <div className="empty-art">◳</div>
           <h3>No assets yet</h3>
           <p>Add images, videos, APKs or cookie files to reuse across your cloud phones.</p>
-          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add asset</button>
+          <Button variant="primary" onPress={() => setOpen(true)}>+ Add asset</Button>
         </div>
       ) : (
         <div className="app-grid">
@@ -110,14 +111,15 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
                   ) : null}
                 </div>
               </div>
-              <button
-                type="button"
+              <Button
+                variant="danger"
+                size="sm"
                 className="install-btn action-danger"
-                disabled={busyId === a.id}
-                onClick={() => remove(a.id)}
+                isDisabled={busyId === a.id}
+                onPress={() => remove(a.id)}
               >
                 Delete
-              </button>
+              </Button>
             </article>
           ))}
         </div>
@@ -128,13 +130,13 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Add asset</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
+              <Button type="button" className="modal-close" onPress={() => !busy && setOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             <label className="field">
               <span>Name</span>
-              <input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. profile-avatar.png" />
+              <Input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. profile-avatar.png" />
             </label>
             <div className="field-row">
               <label className="field">
@@ -149,21 +151,21 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
               </label>
               <label className="field">
                 <span>Tags (comma separated)</span>
-                <input className="field-input" value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="us, instagram" />
+                <Input className="field-input" value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="us, instagram" />
               </label>
             </div>
             <label className="field">
               <span>URL (optional)</span>
-              <input className="field-input" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://…" />
+              <Input className="field-input" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://…" />
             </label>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
+              <Button variant="ghost" onPress={() => !busy && setOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={add}>
+              </Button>
+              <Button variant="primary" isDisabled={busy} onPress={add}>
                 {busy ? 'Adding…' : 'Add asset'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

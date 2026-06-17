@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -97,16 +98,16 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
       <PageHeader
         title="Proxies"
         subtitle="Assign residential or mobile proxies to your cloud phones."
-        actions={<button type="button" className="btn-primary" onClick={() => setAddOpen(true)}>+ Add proxy</button>}
+        actions={<Button variant="primary" onPress={() => setAddOpen(true)}>+ Add proxy</Button>}
       />
 
       <div className="tabs">
-        <button type="button" className={tab === 'list' ? 'tab tab-active' : 'tab'} onClick={() => setTab('list')}>
+        <Button type="button" className={tab === 'list' ? 'tab tab-active' : 'tab'} onPress={() => setTab('list')}>
           Proxy list
-        </button>
-        <button type="button" className={tab === 'config' ? 'tab tab-active' : 'tab'} onClick={() => setTab('config')}>
+        </Button>
+        <Button type="button" className={tab === 'config' ? 'tab tab-active' : 'tab'} onPress={() => setTab('config')}>
           Proxy configuration
-        </button>
+        </Button>
       </div>
 
       {tab === 'list' ? (
@@ -150,22 +151,22 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                     </td>
                     <td>
                       <div className="action-buttons">
-                        <button
-                          type="button"
-                          className="action-btn"
-                          disabled={busyId === p.id}
-                          onClick={() => checkProxy(p.id)}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          isDisabled={busyId === p.id}
+                          onPress={() => checkProxy(p.id)}
                         >
                           {busyId === p.id ? '…' : 'Check'}
-                        </button>
-                        <button
-                          type="button"
-                          className="action-btn action-danger"
-                          disabled={busyId === p.id}
-                          onClick={() => deleteProxy(p.id)}
+                        </Button>
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          isDisabled={busyId === p.id}
+                          onPress={() => deleteProxy(p.id)}
                         >
                           Delete
-                        </button>
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -189,9 +190,9 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
               <input type="radio" name="proxymode" /> Mobile (4G/5G) proxy
             </label>
           </div>
-          <button type="button" className="btn-primary" onClick={() => alert('Configuration saved (local).')}>
+          <Button variant="primary" onPress={() => alert('Configuration saved (local).')}>
             Save configuration
-          </button>
+          </Button>
         </div>
       )}
 
@@ -200,14 +201,14 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Add proxy</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setAddOpen(false)}>
+              <Button type="button" className="modal-close" onPress={() => !busy && setAddOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
 
             <label className="field">
               <span>Label</span>
-              <input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="e.g. US residential 1" />
+              <Input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="e.g. US residential 1" />
             </label>
 
             <div className="field-row">
@@ -221,41 +222,41 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
               </label>
               <label className="field">
                 <span>Group</span>
-                <input className="field-input" value={form.group} onChange={(e) => setForm((f) => ({ ...f, group: e.target.value }))} placeholder="optional" />
+                <Input className="field-input" value={form.group} onChange={(e) => setForm((f) => ({ ...f, group: e.target.value }))} placeholder="optional" />
               </label>
             </div>
 
             <div className="field-row">
               <label className="field">
                 <span>Host</span>
-                <input className="field-input" value={form.host} onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))} placeholder="proxy.example.com" />
+                <Input className="field-input" value={form.host} onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))} placeholder="proxy.example.com" />
               </label>
               <label className="field">
                 <span>Port</span>
-                <input className="field-input" type="number" value={form.port} onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))} />
+                <Input className="field-input" type="number" value={form.port} onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))} />
               </label>
             </div>
 
             <div className="field-row">
               <label className="field">
                 <span>Username</span>
-                <input className="field-input" value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="optional" />
+                <Input className="field-input" value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="optional" />
               </label>
               <label className="field">
                 <span>Password</span>
-                <input className="field-input" type="password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="optional" />
+                <Input className="field-input" type="password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="optional" />
               </label>
             </div>
 
             {error ? <p className="field-error">{error}</p> : null}
 
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setAddOpen(false)}>
+              <Button variant="ghost" onPress={() => !busy && setAddOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={addProxy}>
+              </Button>
+              <Button variant="primary" isDisabled={busy} onPress={addProxy}>
                 {busy ? 'Adding…' : 'Add proxy'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

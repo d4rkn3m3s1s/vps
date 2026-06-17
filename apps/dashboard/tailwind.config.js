@@ -1,12 +1,11 @@
 /** @type {import('tailwindcss').Config} */
+// Tailwind v4 is CSS-first. HeroUI v3 ships prebuilt CSS (@heroui/styles, imported
+// in globals.css) — it does NOT use a Tailwind plugin. This file (loaded via
+// `@config`) only carries theme extensions (fonts, keyframes). `corePlugins` and
+// `content` are no longer honored in v4 — preflight is deferred at the CSS-import
+// layer instead (see globals.css header).
 module.exports = {
-  // Scan all app/component files for class usage.
-  content: ['./src/**/*.{js,ts,jsx,tsx,mdx}'],
-  // Preflight is disabled: the project already ships a hand-written CSS design
-  // system in globals.css. Leaving Tailwind's base reset on would clobber it.
-  corePlugins: {
-    preflight: false
-  },
+  darkMode: 'class',
   theme: {
     extend: {
       fontFamily: {
@@ -28,6 +27,5 @@ module.exports = {
         }
       }
     }
-  },
-  plugins: []
+  }
 };

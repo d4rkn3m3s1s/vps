@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { ProxyService } from './proxy.service';
 
@@ -29,13 +30,13 @@ function requireId(req: Request): string {
   return id;
 }
 
-export async function listProxiesHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await proxyService.list() });
+export async function listProxiesHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await proxyService.list(getWorkspaceId(req)) });
 }
 
 export async function createProxyHandler(req: Request, res: Response): Promise<void> {
   const input = createSchema.parse(req.body);
-  const proxy = await proxyService.create(input);
+  const proxy = await proxyService.create(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'proxy.create',

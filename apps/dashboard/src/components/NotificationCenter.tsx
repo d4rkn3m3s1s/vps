@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { useFleetEvents } from '../lib/live';
 
 type Notification = {
   id: string;
@@ -82,6 +83,42 @@ export function NotificationCenter() {
       clearInterval(id);
     };
   }, []);
+
+  // Real-time: push notifications the instant a job finishes or an alert fires,
+  // instead of waiting for the 5s poll. Polling stays as a fallback.
+  useFleetEvents(['job.updated', 'alert.fired'], (e) => {
+    if (e.type === 'alert.fired') {
+      const p = (e.payload ?? {}) as { title?: string; detail?: string };
+      const n: Notification = {
+        id: `alert-${e.timestamp ?? Date.now()}`,
+        title: p.title ?? 'Alert',
+        detail: p.detail ?? '',
+        kind: 'err',
+        at: Date.now(),
+        read: false
+      };
+      setItems((prev) => [n, ...prev].slice(0, 50));
+      setToast(n);
+      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+    const job = (e.payload ?? {}) as { id?: string; type?: string; status?: string };
+    if (!job.id || !job.status) return;
+    if (seen.current.get(job.id) === job.status) return;
+    seen.current.set(job.id, job.status);
+    if (job.status !== 'COMPLETED' && job.status !== 'FAILED') return;
+    const n: Notification = {
+      id: `${job.id}-${job.status}`,
+      title: job.status === 'COMPLETED' ? 'Job completed' : 'Job failed',
+      detail: job.type ?? '',
+      kind: KINDS[job.status] ?? 'info',
+      at: Date.now(),
+      read: false
+    };
+    setItems((prev) => [n, ...prev].slice(0, 50));
+    setToast(n);
+    setTimeout(() => setToast(null), 4000);
+  });
 
   const unread = items.filter((i) => !i.read).length;
 

@@ -33,7 +33,21 @@ const envSchema = z.object({
   META_CLIENT_SECRET: z.string().optional(),
   INSTAGRAM_CLIENT_ID: z.string().optional(),
   INSTAGRAM_CLIENT_SECRET: z.string().optional(),
-  SOCIAL_CRYPTO_KEY: z.string().min(16).optional()
+  SOCIAL_CRYPTO_KEY: z.string().min(16).optional(),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_PRICE_PRO: z.string().optional(),
+  STRIPE_PRICE_SCALE: z.string().optional(),
+  // Email (SMTP). When SMTP_HOST is unset the mailer logs to console (dev mode).
+  MAIL_FROM: z.string().default('VPS Fleet <no-reply@vpsfleet.local>'),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true')
 });
 
 const parsed = envSchema.parse(process.env);
@@ -68,5 +82,15 @@ export const env = {
   metaClientSecret: parsed.META_CLIENT_SECRET,
   instagramClientId: parsed.INSTAGRAM_CLIENT_ID,
   instagramClientSecret: parsed.INSTAGRAM_CLIENT_SECRET,
-  socialCryptoKey: parsed.SOCIAL_CRYPTO_KEY
+  socialCryptoKey: parsed.SOCIAL_CRYPTO_KEY,
+  stripeSecretKey: parsed.STRIPE_SECRET_KEY,
+  stripeWebhookSecret: parsed.STRIPE_WEBHOOK_SECRET,
+  stripePricePro: parsed.STRIPE_PRICE_PRO,
+  stripePriceScale: parsed.STRIPE_PRICE_SCALE,
+  mailFrom: parsed.MAIL_FROM,
+  smtpHost: parsed.SMTP_HOST,
+  smtpPort: parsed.SMTP_PORT,
+  smtpUser: parsed.SMTP_USER,
+  smtpPass: parsed.SMTP_PASS,
+  smtpSecure: parsed.SMTP_SECURE
 } as const;

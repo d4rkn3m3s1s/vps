@@ -78,6 +78,49 @@ export class PermissionsService {
       return p.canDelete;
     });
   }
+
+  // Does this user have ANY profile-permission grants? Used to decide whether
+  // granular restriction applies. A user with zero grants is unrestricted (sees
+  // their whole workspace) — grants act as an allowlist only once they exist, so
+  // adding RBAC never silently locks out existing operators.
+  async hasAnyGrants(userId: string): Promise<boolean> {
+    const count = await prisma.profilePermission.count({ where: { userId } });
+    return count > 0;
+  }
+
+  // Filters a device list down to what a user may VIEW. Admins and users with no
+  // grants pass through unchanged; restricted users keep only granted devices.
+  async filterVisibleDevices<T extends { id: string; groupId: string | null }>(
+    userId: string,
+    role: string,
+    devices: T[]
+  ): Promise<T[]> {
+    if (role === 'admin') return devices;
+    if (!(await this.hasAnyGrants(userId))) return devices;
+    const perms = await prisma.profilePermission.findMany({ where: { userId, canView: true } });
+    const grantedDeviceIds = new Set(perms.filter((p) => p.deviceId).map((p) => p.deviceId as string));
+    const grantedGroupIds = new Set(perms.filter((p) => p.groupId).map((p) => p.groupId as string));
+    return devices.filter(
+      (d) => grantedDeviceIds.has(d.id) || (d.groupId !== null && grantedGroupIds.has(d.groupId))
+    );
+  }
+
+  // Throws 403 if the user may not perform `action` on the device. No-op for
+  // admins and for users with no grants (unrestricted).
+  async assertDeviceAccess(
+    userId: string,
+    role: string,
+    deviceId: string,
+    action: 'view' | 'control' | 'delete'
+  ): Promise<void> {
+    if (role === 'admin') return;
+    if (!(await this.hasAnyGrants(userId))) return;
+    const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { groupId: true } });
+    const ok = await this.canAccess(userId, role, deviceId, device?.groupId ?? null, action);
+    if (!ok) {
+      throw new AppError(`You don't have ${action} permission for this device`, 403, 'PROFILE_FORBIDDEN');
+    }
+  }
 }
 
 export const permissionsService = new PermissionsService();

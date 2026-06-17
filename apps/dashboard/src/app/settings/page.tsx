@@ -1,5 +1,7 @@
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
+import { TwoFactorPanel } from '../../components/TwoFactorPanel';
+import { WorkspaceMembers } from '../../components/WorkspaceMembers';
 import { apiCall } from '../../lib/apiClient';
 
 export const metadata = { title: 'Settings · VPS Fleet' };
@@ -9,6 +11,7 @@ type CurrentUser = {
   id: string;
   email: string;
   role: string;
+  twoFactorEnabled?: boolean;
   createdAt?: string;
 };
 
@@ -88,6 +91,16 @@ export default async function SettingsPage() {
       </section>
 
       <section className="section-grid">
+        <div className="panel">
+          <h2>Team · Workspace members</h2>
+          <WorkspaceMembers />
+        </div>
+
+        <div className="panel">
+          <h2>Security · Two-factor authentication</h2>
+          <TwoFactorPanel enabled={Boolean(me?.twoFactorEnabled)} />
+        </div>
+
         <div className="panel">
           <h2>System status</h2>
           <div className="panel-stack">

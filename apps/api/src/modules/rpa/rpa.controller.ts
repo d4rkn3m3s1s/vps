@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { rpaService } from './rpa.service';
 
@@ -33,8 +34,8 @@ function requireId(req: Request): string {
   return id;
 }
 
-export async function listFlowsHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await rpaService.list() });
+export async function listFlowsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await rpaService.list(getWorkspaceId(req)) });
 }
 
 export async function getFlowHandler(req: Request, res: Response): Promise<void> {
@@ -43,7 +44,7 @@ export async function getFlowHandler(req: Request, res: Response): Promise<void>
 
 export async function createFlowHandler(req: Request, res: Response): Promise<void> {
   const input = createSchema.parse(req.body);
-  const flow = await rpaService.create(input);
+  const flow = await rpaService.create(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'rpa.create',

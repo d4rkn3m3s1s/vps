@@ -1,6 +1,9 @@
 import type { Express } from 'express';
 import { agentRouter } from '../modules/agent/agent.routes';
+import { alertsRouter } from '../modules/alerts/alerts.routes';
 import { analyticsRouter } from '../modules/analytics/analytics.routes';
+import { apiKeysRouter } from '../modules/apikeys/apikeys.routes';
+import { billingRouter } from '../modules/billing/billing.routes';
 import { auditRouter } from '../modules/audit/audit.routes';
 import { authRouter } from '../modules/auth/auth.routes';
 import { bulkRouter } from '../modules/bulk/bulk.routes';
@@ -15,12 +18,15 @@ import { libraryRouter } from '../modules/library/library.routes';
 import { permissionsRouter } from '../modules/permissions/permissions.routes';
 import { pluginsRouter } from '../modules/plugins/plugins.routes';
 import { proxyRouter } from '../modules/proxies/proxy.routes';
+import { reportsRouter } from '../modules/reports/reports.routes';
 import { rpaRouter } from '../modules/rpa/rpa.routes';
 import { schedulerRouter } from '../modules/scheduler/scheduler.routes';
 import { socialRouter } from '../modules/social/social.routes';
 import { systemRouter } from '../modules/system/system.routes';
 import { usersRouter } from '../modules/users/users.routes';
+import { vastRouter } from '../modules/vast/vast.routes';
 import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
+import { workspaceRouter } from '../modules/workspace/workspace.routes';
 
 export function registerRoutes(app: Express): void {
   app.get('/health', (_req, res) => {
@@ -49,4 +55,10 @@ export function registerRoutes(app: Express): void {
   app.use('/catalog', catalogRouter);
   app.use('/hosts', hostsRouter);
   app.use('/agent', agentRouter);
+  app.use('/workspaces', workspaceRouter);
+  app.use('/billing', billingRouter);
+  app.use('/alerts', alertsRouter);
+  app.use('/reports', reportsRouter);
+  app.use('/api-keys', apiKeysRouter);
+  app.use('/vast', vastRouter);
 }

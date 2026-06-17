@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { hostsService } from './hosts.service';
 
@@ -26,13 +27,13 @@ function requireId(req: Request): string {
   return id;
 }
 
-export async function listHostsHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await hostsService.list() });
+export async function listHostsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await hostsService.list(getWorkspaceId(req)) });
 }
 
 export async function createHostHandler(req: Request, res: Response): Promise<void> {
   const input = createSchema.parse(req.body);
-  const host = await hostsService.create(input);
+  const host = await hostsService.create(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'host.register',

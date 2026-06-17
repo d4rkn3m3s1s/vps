@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { createJob, createJobRecord, getJob, listJobs } from './jobs.service';
 import { JobTypes } from './job.types';
@@ -26,7 +27,7 @@ function requireJobId(req: Request): string {
 
 export async function getJobsHandler(req: Request, res: Response): Promise<void> {
   const { limit } = jobQuerySchema.parse(req.query);
-  const jobs = await listJobs();
+  const jobs = await listJobs(getWorkspaceId(req));
   res.json({ data: jobs.slice(0, limit) });
 }
 

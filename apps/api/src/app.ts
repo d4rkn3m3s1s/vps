@@ -19,7 +19,12 @@ export function createApp() {
   app.use(helmet());
   app.use(cors({ origin: [env.webBaseUrl], credentials: true }));
   app.use(compression());
-  app.use(express.json({ limit: '10mb' }));
+  // Stripe's webhook needs the raw body for signature verification, so skip the
+  // JSON body parser for that one path (its route mounts express.raw()).
+  app.use((req, res, next) => {
+    if (req.originalUrl === '/billing/webhook') return next();
+    return express.json({ limit: '10mb' })(req, res, next);
+  });
   app.use(express.urlencoded({ extended: true }));
   app.use(apiRateLimiter);
 

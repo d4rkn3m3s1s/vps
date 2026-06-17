@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PageHeader } from '../../../components/PageHeader';
 import { PageMotion } from '../../../components/Motion';
+import { AdbAccessPanel } from './AdbAccessPanel';
 
 export type DetailFingerprint = {
   imei: string;
@@ -258,6 +259,8 @@ export function ProfileDetailView({
           </table>
         </div>
       </div>
+
+      <AdbAccessPanel deviceId={device.id} />
     </PageMotion>
   );
 }

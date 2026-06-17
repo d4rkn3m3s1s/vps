@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 import { downloadCsv } from '../../lib/csv';
+import { useFleetEvents } from '../../lib/live';
 
 export type Job = {
   id: string;
@@ -59,6 +60,15 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
     const id = setInterval(tick, 4000);
     return () => clearInterval(id);
   }, [live]);
+
+  // Real-time: refresh immediately when a job is created or changes status.
+  useFleetEvents(['job.created', 'job.updated'], () => {
+    if (!live) return;
+    fetch('/api/jobs', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((j) => Array.isArray(j.data) && setJobs(j.data))
+      .catch(() => {});
+  });
 
   const pending = jobs.filter((j) => j.status === 'PENDING' || j.status === 'RUNNING').length;
 

@@ -20,21 +20,25 @@ function toDate(value?: string | Date): Date | undefined {
 }
 
 export class DeviceService {
-  async listDevices() {
+  // All reads/writes accept an optional workspaceId. When provided (every
+  // interactive call), results are strictly scoped to that workspace so one
+  // tenant can never see or touch another's devices.
+  async listDevices(workspaceId?: string) {
     return prisma.device.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'desc' },
       include: { group: true, fingerprint: true, host: true }
     });
   }
 
-  async getDevice(id: string) {
-    return prisma.device.findUnique({
-      where: { id },
+  async getDevice(id: string, workspaceId?: string) {
+    return prisma.device.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
       include: { group: true, fingerprint: true, host: true }
     });
   }
 
-  async createDevice(input: DeviceCreateInput) {
+  async createDevice(input: DeviceCreateInput, workspaceId?: string) {
     if (input.groupId) {
       await this.assertGroupExists(input.groupId);
     }
@@ -44,6 +48,7 @@ export class DeviceService {
     if (typeof input.adbPort === 'number') data.adbPort = input.adbPort;
     if (input.androidVersion) data.androidVersion = input.androidVersion;
     if (input.groupId) data.group = { connect: { id: input.groupId } };
+    if (workspaceId) data.workspace = { connect: { id: workspaceId } };
     const metadata = buildJsonMetadata(input.metadata);
     if (metadata !== undefined) data.metadata = metadata;
 
@@ -117,15 +122,12 @@ export class DeviceService {
     return prisma.device.delete({ where: { id } });
   }
 
-  async listGroups() {
-    return prisma.deviceGroup.findMany({ orderBy: { createdAt: 'desc' }, include: { devices: true } });
-  }
-
-  async createGroup(input: DeviceGroupCreateInput) {
+  async createGroup(input: DeviceGroupCreateInput, workspaceId?: string) {
     return prisma.deviceGroup.create({
       data: {
         name: input.name,
-        ...(input.description ? { description: input.description } : {})
+        ...(input.description ? { description: input.description } : {}),
+        ...(workspaceId ? { workspaceId } : {})
       },
       include: { devices: true }
     });
@@ -148,19 +150,28 @@ export class DeviceService {
     return prisma.deviceGroup.delete({ where: { id } });
   }
 
-  async countByStatus() {
+  async countByStatus(workspaceId?: string) {
+    const ws = workspaceId ? { workspaceId } : {};
     const [online, offline, starting, stopping, error, updating, rebooting, total] = await Promise.all([
-      prisma.device.count({ where: { status: 'ONLINE' } }),
-      prisma.device.count({ where: { status: 'OFFLINE' } }),
-      prisma.device.count({ where: { status: 'STARTING' } }),
-      prisma.device.count({ where: { status: 'STOPPING' } }),
-      prisma.device.count({ where: { status: 'ERROR' } }),
-      prisma.device.count({ where: { status: 'UPDATING' } }),
-      prisma.device.count({ where: { status: 'REBOOTING' } }),
-      prisma.device.count()
+      prisma.device.count({ where: { ...ws, status: 'ONLINE' } }),
+      prisma.device.count({ where: { ...ws, status: 'OFFLINE' } }),
+      prisma.device.count({ where: { ...ws, status: 'STARTING' } }),
+      prisma.device.count({ where: { ...ws, status: 'STOPPING' } }),
+      prisma.device.count({ where: { ...ws, status: 'ERROR' } }),
+      prisma.device.count({ where: { ...ws, status: 'UPDATING' } }),
+      prisma.device.count({ where: { ...ws, status: 'REBOOTING' } }),
+      prisma.device.count({ where: { ...ws } })
     ]);
 
     return { online, offline, starting, stopping, error, updating, rebooting, total };
+  }
+
+  async listGroups(workspaceId?: string) {
+    return prisma.deviceGroup.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'desc' },
+      include: { devices: true }
+    });
   }
 
   private async assertDeviceExists(id: string): Promise<void> {

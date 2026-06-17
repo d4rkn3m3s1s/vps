@@ -58,10 +58,18 @@ model Host {
   kvm         Boolean    @default(true)
   agentKeyHash String?
   lastSeenAt  DateTime?
+  // Cloud provider this host was provisioned from (e.g. "vast"), and the
+  // provider-side instance/contract id so we can manage (destroy) it later.
+  provider       String?
+  vastInstanceId String?
+  workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   devices     Device[]
   claimedJobs Job[]
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum DeviceStatus {
@@ -97,12 +105,144 @@ model User {
   email          String          @unique
   passwordHash   String
   role           String          @default("admin")
+  // Two-factor auth (TOTP). Secret is stored AES-256-GCM encrypted; backup
+  // codes are stored as sha256 hashes (one-time use).
+  twoFactorEnabled     Boolean   @default(false)
+  twoFactorSecret      String?
+  twoFactorBackupCodes String[]  @default([])
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
   refreshTokens  RefreshToken[]
   apiKeys        ApiKey[]
   auditLogs      AuditLog[]
   socialAccounts SocialAccount[]
+  memberships    WorkspaceMember[]
+}
+
+// A tenant boundary. Every fleet resource (devices, proxies, jobs, …) belongs to
+// exactly one workspace; members access only their workspaces.
+model Workspace {
+  id          String            @id @default(cuid())
+  name        String
+  slug        String            @unique
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  members     WorkspaceMember[]
+  subscription Subscription?
+  devices       Device[]
+  deviceGroups  DeviceGroup[]
+  proxies       Proxy[]
+  jobs          Job[]
+  rpaFlows      RpaFlow[]
+  schedules     ScheduledTask[]
+  webhooks      Webhook[]
+  hosts         Host[]
+  libraryAssets LibraryAsset[]
+  socialAccounts SocialAccount[]
+  alertRules    AlertRule[]
+  alertEvents   AlertEvent[]
+  settings      WorkspaceSettings?
+}
+
+// One-to-one policy/configuration row for a workspace. Persisted security
+// policies that the API enforces (require2fa, restrictInvites) plus advisory
+// preferences surfaced in the admin UI.
+model WorkspaceSettings {
+  id               String    @id @default(cuid())
+  workspaceId      String    @unique
+  require2fa       Boolean   @default(false)
+  restrictInvites  Boolean   @default(true)
+  strongPasswords  Boolean   @default(true)
+  sessionExpiryHrs Int       @default(12)
+  // Vast.ai GPU-host provider API key (AES-GCM encrypted; never returned raw).
+  vastApiKey       String?
+  updatedAt        DateTime  @updatedAt
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// Join table: which user belongs to which workspace, with what role.
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String    @default("operator") // admin | operator | viewer
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+enum AlertTrigger {
+  JOB_FAILED
+  DEVICE_OFFLINE
+  QUOTA_HIGH
+  HOST_OFFLINE
+}
+
+// A user-defined alerting rule, scoped to a workspace. When its trigger
+// condition occurs the engine creates an AlertEvent and optionally notifies.
+model AlertRule {
+  id          String       @id @default(cuid())
+  workspaceId String
+  name        String
+  trigger     AlertTrigger
+  // Optional threshold (e.g. quota percent for QUOTA_HIGH). 0 = not used.
+  threshold   Int          @default(0)
+  notify      Boolean      @default(true)  // push to the notification center
+  webhook     Boolean      @default(false) // also fire outbound webhooks
+  email       Boolean      @default(false) // also email workspace admins
+  active      Boolean      @default(true)
+  lastFiredAt DateTime?
+  fireCount   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  events      AlertEvent[]
+
+  @@index([workspaceId])
+}
+
+// A recorded firing of an alert rule.
+model AlertEvent {
+  id          String     @id @default(cuid())
+  ruleId      String
+  workspaceId String
+  title       String
+  detail      String
+  acknowledged Boolean   @default(false)
+  createdAt   DateTime   @default(now())
+  rule        AlertRule  @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([ruleId])
+}
+
+// Billing state for a workspace. `plan` is one of the keys in billing.plans.ts
+// (free | pro | scale). Stripe identifiers link to the test-mode customer +
+// subscription; null while on the free plan.
+model Subscription {
+  id                   String             @id @default(cuid())
+  workspaceId          String             @unique
+  plan                 String             @default("free")
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?            @unique
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  workspace            Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
 model RefreshToken {
@@ -118,6 +258,7 @@ model RefreshToken {
 model ApiKey {
   id          String   @id @default(cuid())
   userId      String?
+  workspaceId String?
   keyPrefix   String   @unique
   keyHash     String   @unique
   name        String
@@ -127,6 +268,8 @@ model ApiKey {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
 }
 
 model Emulator {
@@ -146,11 +289,16 @@ model Emulator {
 
 model DeviceGroup {
   id          String    @id @default(cuid())
-  name        String    @unique
+  name        String
   description String?
+  workspaceId String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   devices     Device[]
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
 }
 
 model Device {
@@ -168,14 +316,24 @@ model Device {
   metadata       Json?
   groupId        String?
   hostId         String?
+  workspaceId    String?
+  // External ADB access (TCP bridge). When exposed, the host agent forwards the
+  // device's ADB to a public host:port, optionally restricted to an IP allowlist.
+  adbExposed     Boolean       @default(false)
+  adbPublicHost  String?
+  adbPublicPort  Int?
+  adbAllowlist   String[]      @default([])
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
   host           Host?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Anti-detection device fingerprint (one per cloud phone).
   fingerprint    DeviceFingerprint?
   schedules      ScheduledTask[]
+
+  @@index([workspaceId])
 }
 
 // A randomized hardware/identity fingerprint bound to a single cloud phone so
@@ -223,10 +381,14 @@ model Job {
   finishedAt  DateTime?
   claimedByHostId String?
   claimedAt   DateTime?
+  workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   emulator    Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
   claimedBy   Host?      @relation(fields: [claimedByHostId], references: [id], onDelete: SetNull)
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 model AuditLog {
@@ -239,8 +401,11 @@ model AuditLog {
   ip          String?
   userAgent   String?
   metadata    Json?
+  workspaceId String?
   createdAt   DateTime  @default(now())
   user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
 }
 
 model SocialAccount {
@@ -255,12 +420,15 @@ model SocialAccount {
   tokenExpiresAt     DateTime?
   scopes             String[]       @default([])
   metadata           Json?
+  workspaceId        String?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
   user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace          Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+  @@index([workspaceId])
 }
 
 enum LibraryAssetType {
@@ -279,8 +447,12 @@ model LibraryAsset {
   url         String?
   tags        String[]         @default([])
   metadata    Json?
+  workspaceId String?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 model Proxy {
@@ -298,8 +470,12 @@ model Proxy {
   exportIp    String?
   status      ProxyStatus  @default(UNKNOWN)
   lastCheckedAt DateTime?
+  workspaceId String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum ScheduleStatus {
@@ -327,9 +503,13 @@ model ScheduledTask {
   nextRunAt   DateTime
   lastRunAt   DateTime?
   runCount    Int            @default(0)
+  workspaceId String?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
   device      Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 // Per-account engagement metrics powering the AI Analytics dashboard.
@@ -408,14 +588,28 @@ model RpaFlow {
   steps       Json     @default("[]")
   runCount    Int      @default(0)
   lastRunAt   DateTime?
+  workspaceId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum WebhookEvent {
   JOB_COMPLETED
   JOB_FAILED
+  DEVICE_ONLINE
+  DEVICE_OFFLINE
+  QUOTA_HIGH
+  ALERT_FIRED
   ALL
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
 }
 
 // Outbound webhook: POSTs a JSON payload to `url` when a matching event fires.
@@ -428,8 +622,33 @@ model Webhook {
   active      Boolean      @default(true)
   lastFiredAt DateTime?
   failCount   Int          @default(0)
+  workspaceId String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+
+  @@index([workspaceId])
+}
+
+// One delivery attempt-set for a single event to a single webhook. The queue
+// retries on failure (backoff); each terminal outcome is recorded here for the
+// delivery-history UI and manual redelivery.
+model WebhookDelivery {
+  id           String                @id @default(cuid())
+  webhookId    String
+  event        WebhookEvent
+  payload      Json
+  status       WebhookDeliveryStatus @default(PENDING)
+  attempts     Int                   @default(0)
+  responseCode Int?
+  error        String?
+  createdAt    DateTime              @default(now())
+  deliveredAt  DateTime?
+  webhook      Webhook               @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([status])
 }
 
 // Restricts a member's access to specific device groups (profile-level perms).

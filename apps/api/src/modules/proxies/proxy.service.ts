@@ -12,12 +12,15 @@ function toPublic(proxy: Proxy) {
 }
 
 export class ProxyService {
-  async list() {
-    const rows = await prisma.proxy.findMany({ orderBy: { createdAt: 'desc' } });
+  async list(workspaceId?: string) {
+    const rows = await prisma.proxy.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'desc' }
+    });
     return rows.map(toPublic);
   }
 
-  async create(input: ProxyCreateInput) {
+  async create(input: ProxyCreateInput, workspaceId?: string) {
     const proxy = await prisma.proxy.create({
       data: {
         label: input.label,
@@ -29,7 +32,8 @@ export class ProxyService {
         ...(input.password ? { password: encryptString(input.password) } : {}),
         ...(input.group ? { group: input.group } : {}),
         ...(input.isp ? { isp: input.isp } : {}),
-        ...(input.remarks ? { remarks: input.remarks } : {})
+        ...(input.remarks ? { remarks: input.remarks } : {}),
+        ...(workspaceId ? { workspaceId } : {})
       }
     });
     return toPublic(proxy);

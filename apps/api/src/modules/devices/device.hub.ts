@@ -3,10 +3,19 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { logger } from '../../lib/logger';
 
 export type DeviceHubEvent = {
-  type: 'device.created' | 'device.updated' | 'device.deleted' | 'device.heartbeat';
+  type:
+    | 'device.created'
+    | 'device.updated'
+    | 'device.deleted'
+    | 'device.heartbeat'
+    | 'job.created'
+    | 'job.updated'
+    | 'alert.fired';
   deviceId: string;
   payload: unknown;
   timestamp: string;
+  // Optional workspace scope so clients can filter to their active workspace.
+  workspaceId?: string | undefined;
 };
 
 export class DeviceHub {

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { useI18n } from '../lib/i18n';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 type NavItem = {
   href: string;
@@ -33,6 +34,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: '/', tkey: 'nav.overview', icon: '◴' },
       { href: '/analytics', tkey: 'nav.analytics', icon: '∿' },
+      { href: '/reports', tkey: 'nav.reports', icon: '▦' },
       { href: '/automation', tkey: 'nav.automation', icon: '⚡' },
       { href: '/rpa', tkey: 'nav.rpa', icon: '⚙' },
       { href: '/scheduler', tkey: 'nav.scheduler', icon: '⏱' },
@@ -46,16 +48,18 @@ const NAV: NavGroup[] = [
     tkey: 'group.team',
     items: [
       { href: '/hosts', tkey: 'nav.hosts', icon: '🖥' },
+      { href: '/alerts', tkey: 'nav.alerts', icon: '🔔' },
       { href: '/billing', tkey: 'nav.billing', icon: '▭' },
       { href: '/members', tkey: 'nav.members', icon: '☻' },
       { href: '/webhooks', tkey: 'nav.webhooks', icon: '⇲' },
       { href: '/logs', tkey: 'nav.logs', icon: '☰' },
+      { href: '/admin', tkey: 'nav.admin', icon: '⛨' },
       { href: '/settings', tkey: 'nav.settings', icon: '⚙' }
     ]
   }
 ];
 
-export function Sidebar() {
+export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | undefined }) {
   const pathname = usePathname();
   const router = useRouter();
   const { t } = useI18n();
@@ -91,6 +95,8 @@ export function Sidebar() {
           <span className="brand-sub">Cloud Phones</span>
         </div>
       </div>
+
+      <WorkspaceSwitcher activeId={activeWorkspaceId} />
 
       <button
         type="button"

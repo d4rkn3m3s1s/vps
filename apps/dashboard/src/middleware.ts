@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const PUBLIC_PATHS = ['/login', '/api/auth/login'];
+const PUBLIC_PATHS = ['/login', '/welcome', '/api/auth/login'];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -9,15 +9,15 @@ export function middleware(request: NextRequest) {
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
-  // Logged-in users shouldn't see the login page.
-  if (session && pathname === '/login') {
+  // Logged-in users shouldn't see the login or marketing pages.
+  if (session && (pathname === '/login' || pathname === '/welcome')) {
     return NextResponse.redirect(new URL('/profiles', request.url));
   }
 
-  // Gate everything else behind a session.
+  // Logged-out visitors land on the marketing page, not straight at the form.
   if (!session && !isPublic) {
-    const loginUrl = new URL('/login', request.url);
-    return NextResponse.redirect(loginUrl);
+    const target = new URL('/welcome', request.url);
+    return NextResponse.redirect(target);
   }
 
   return NextResponse.next();

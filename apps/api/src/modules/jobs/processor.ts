@@ -4,6 +4,7 @@ import { AppError } from '../../lib/errors';
 import { AdbService } from '../adb/adb.service';
 import { DockerService } from '../emulators/docker.service';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { deviceHub } from '../devices/device.hub';
 import type { JobPayload, JobType } from './job.types';
 
 const dockerService = new DockerService();
@@ -37,13 +38,26 @@ async function updateJob(jobId: string, data: { status: 'RUNNING' | 'COMPLETED' 
 
   const updated = await prisma.job.update({ where: { id: jobId }, data: updateData });
 
+  // Push a real-time job update to connected dashboards.
+  deviceHub.broadcast({
+    type: 'job.updated',
+    deviceId: (updated.payload as { deviceId?: string } | null)?.deviceId ?? updated.emulatorId ?? '',
+    payload: { id: updated.id, type: updated.type, status: updated.status },
+    timestamp: new Date().toISOString(),
+    workspaceId: updated.workspaceId ?? undefined
+  });
+
   // Fire outbound webhooks on terminal states (best-effort, never blocks).
   if (data.status === 'COMPLETED' || data.status === 'FAILED') {
-    void webhooksService.dispatch(data.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED', {
-      jobId: updated.id,
-      jobType: updated.type,
-      ...(updated.error ? { error: updated.error } : {})
-    });
+    void webhooksService.dispatch(
+      data.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED',
+      {
+        jobId: updated.id,
+        jobType: updated.type,
+        ...(updated.error ? { error: updated.error } : {})
+      },
+      updated.workspaceId ?? undefined
+    );
   }
 }
 

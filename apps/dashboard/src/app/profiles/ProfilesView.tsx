@@ -52,6 +52,8 @@ export type DeviceProfile = {
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
+export type ProxyOption = { id: string; label: string; host: string; port: number; type: string };
+export type AppOption = { id: string; name: string; packageName: string; version: string; apkUrl: string | null };
 
 type ViewMode = 'card' | 'list';
 
@@ -85,16 +87,20 @@ function flag(metadata?: Record<string, unknown> | null): string {
   return country || 'Global';
 }
 
-const BULK_ACTIONS = ['Start', 'Close', 'Move', 'Push file', 'Check proxy', 'Delete'] as const;
+const BULK_ACTIONS = ['Start', 'Close', 'Reboot', 'Move', 'Assign proxy', 'Install app', 'Push file', 'Delete'] as const;
 
 export function ProfilesView({
   devices,
   groups,
-  countries = []
+  countries = [],
+  proxies = [],
+  apps = []
 }: {
   devices: DeviceProfile[];
   groups: DeviceGroup[];
   countries?: Country[];
+  proxies?: ProxyOption[];
+  apps?: AppOption[];
 }) {
   const router = useRouter();
   const [query, setQuery] = useState('');
@@ -115,6 +121,12 @@ export function ProfilesView({
   // Bulk file push modal.
   const [pushOpen, setPushOpen] = useState(false);
   const [pushForm, setPushForm] = useState({ url: '', fileName: '', destination: 'gallery' });
+  // Bulk assign-proxy modal.
+  const [proxyOpen, setProxyOpen] = useState(false);
+  const [proxyChoice, setProxyChoice] = useState('');
+  // Bulk install-app modal.
+  const [appOpen, setAppOpen] = useState(false);
+  const [appChoice, setAppChoice] = useState('');
 
   const filtered = useMemo(() => {
     return devices.filter((device) => {
@@ -332,13 +344,78 @@ export function ProfilesView({
     }
   }
 
+  // Assign one proxy to all selected devices (fires one SET_PROXY job each).
+  async function assignProxy() {
+    if (selectionCount === 0 || !proxyChoice) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/bulk/proxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: Array.from(selected), proxyId: proxyChoice })
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.message ?? 'Could not assign proxy');
+      }
+      setProxyOpen(false);
+      setProxyChoice('');
+      setSelected(new Set());
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not assign proxy');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Install one app on all selected devices (one INSTALL_APK job each).
+  async function installApp() {
+    if (selectionCount === 0 || !appChoice) return;
+    const app = apps.find((a) => a.id === appChoice);
+    if (!app) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/bulk/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceIds: Array.from(selected),
+          jobType: 'EMULATOR_INSTALL_APK',
+          payload: { packageName: app.packageName, apkUrl: app.apkUrl, appName: app.name }
+        })
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.message ?? 'Could not start install');
+      }
+      setAppOpen(false);
+      setAppChoice('');
+      setSelected(new Set());
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start install');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function runBulk(action: string) {
+    if (selectionCount === 0) return undefined;
     if (action === 'Delete') return deleteSelected();
     if (action === 'Start') return bulkJob('EMULATOR_START', 'STARTING');
     if (action === 'Close') return bulkJob('EMULATOR_STOP', 'STOPPING');
+    if (action === 'Reboot') return bulkJob('EMULATOR_START', 'REBOOTING');
     if (action === 'Push file') {
-      if (selectionCount === 0) return undefined;
       setPushOpen(true);
+      return undefined;
+    }
+    if (action === 'Assign proxy') {
+      setProxyOpen(true);
+      return undefined;
+    }
+    if (action === 'Install app') {
+      setAppOpen(true);
       return undefined;
     }
     if (action === 'Move') {
@@ -786,6 +863,80 @@ export function ProfilesView({
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={pushFile}>
                 {busy ? 'Pushing…' : 'Push file'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {proxyOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setProxyOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Assign proxy to {selectionCount} phone(s)</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setProxyOpen(false)}>
+                ✕
+              </button>
+            </header>
+            {proxies.length === 0 ? (
+              <p className="helper">No proxies configured yet. Add one on the Proxies page first.</p>
+            ) : (
+              <label className="field">
+                <span>Proxy</span>
+                <select className="field-input" value={proxyChoice} onChange={(e) => setProxyChoice(e.target.value)}>
+                  <option value="">Select a proxy…</option>
+                  {proxies.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} · {p.type} {p.host}:{p.port}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {error ? <p className="field-error">{error}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => !busy && setProxyOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" disabled={busy || !proxyChoice} onClick={assignProxy}>
+                {busy ? 'Assigning…' : 'Assign proxy'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {appOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setAppOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Install app on {selectionCount} phone(s)</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setAppOpen(false)}>
+                ✕
+              </button>
+            </header>
+            {apps.length === 0 ? (
+              <p className="helper">No apps in the catalog yet.</p>
+            ) : (
+              <label className="field">
+                <span>App</span>
+                <select className="field-input" value={appChoice} onChange={(e) => setAppChoice(e.target.value)}>
+                  <option value="">Select an app…</option>
+                  {apps.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} · v{a.version}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {error ? <p className="field-error">{error}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => !busy && setAppOpen(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn-primary" disabled={busy || !appChoice} onClick={installApp}>
+                {busy ? 'Installing…' : 'Install app'}
               </button>
             </footer>
           </div>

@@ -26,14 +26,17 @@ function toPublic<T extends { agentKeyHash: string | null }>(host: T) {
 }
 
 export class HostsService {
-  async list() {
-    const rows = await prisma.host.findMany({ orderBy: { createdAt: 'desc' } });
+  async list(workspaceId?: string) {
+    const rows = await prisma.host.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'desc' }
+    });
     return rows.map(toPublic);
   }
 
   // Registers a host and returns a one-time agent key (shown once) the host
   // agent uses to authenticate heartbeats.
-  async create(input: HostCreateInput) {
+  async create(input: HostCreateInput, workspaceId?: string) {
     const agentKey = `host_${sha256(input.name + input.address + Date.now()).slice(0, 32)}`;
     const data: Prisma.HostCreateInput = {
       name: input.name,
@@ -43,7 +46,8 @@ export class HostsService {
       ...(typeof input.capacity === 'number' ? { capacity: input.capacity } : {}),
       ...(typeof input.cpuCores === 'number' ? { cpuCores: input.cpuCores } : {}),
       ...(typeof input.memoryGb === 'number' ? { memoryGb: input.memoryGb } : {}),
-      ...(typeof input.kvm === 'boolean' ? { kvm: input.kvm } : {})
+      ...(typeof input.kvm === 'boolean' ? { kvm: input.kvm } : {}),
+      ...(workspaceId ? { workspace: { connect: { id: workspaceId } } } : {})
     };
     const host = await prisma.host.create({ data });
     return { ...toPublic(host), agentKey };

@@ -24,5 +24,13 @@ export async function requireApiKey(req: Request, _res: Response, next: NextFunc
   }
 
   req.apiKey = record;
+
+  // Track usage (fire-and-forget, throttled to ~once/min to avoid a DB write on
+  // every request). Never blocks or fails the request.
+  const lastUsed = record.lastUsedAt?.getTime() ?? 0;
+  if (Date.now() - lastUsed > 60_000) {
+    void prisma.apiKey.update({ where: { id: record.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
+  }
+
   next();
 }

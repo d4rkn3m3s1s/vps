@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -74,7 +75,7 @@ export function MembersView({ members }: { members: Member[] }) {
       <PageHeader
         title="Members"
         subtitle="Team members, roles and permissions."
-        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add member</button>}
+        actions={<Button type="button" variant="primary" className="btn-primary" onPress={() => setOpen(true)}>+ Add member</Button>}
       />
 
       <div className="profile-table-wrap">
@@ -110,14 +111,16 @@ export function MembersView({ members }: { members: Member[] }) {
                   <td className="mono">{m.activityCount}</td>
                   <td className="helper">{new Date(m.createdAt).toLocaleDateString('tr-TR')}</td>
                   <td>
-                    <button
+                    <Button
                       type="button"
+                      variant="danger"
+                      size="sm"
                       className="action-btn action-danger"
-                      disabled={busyId === m.id}
-                      onClick={() => remove(m.id, m.email)}
+                      isDisabled={Boolean(busyId === m.id)}
+                      onPress={() => remove(m.id, m.email)}
                     >
                       Remove
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))
@@ -131,18 +134,18 @@ export function MembersView({ members }: { members: Member[] }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Add member</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
+              <Button type="button" className="modal-close" onPress={() => !busy && setOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
             <label className="field">
               <span>Email</span>
-              <input className="field-input" type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="member@company.com" />
+              <Input className="field-input" type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="member@company.com" />
             </label>
             <div className="field-row">
               <label className="field">
                 <span>Temporary password</span>
-                <input className="field-input" type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="min 8 chars" />
+                <Input className="field-input" type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="min 8 chars" />
               </label>
               <label className="field">
                 <span>Role</span>
@@ -155,12 +158,12 @@ export function MembersView({ members }: { members: Member[] }) {
             </div>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
+              <Button type="button" variant="ghost" className="btn-ghost" onPress={() => !busy && setOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={invite}>
+              </Button>
+              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={invite}>
                 {busy ? 'Adding…' : 'Add member'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

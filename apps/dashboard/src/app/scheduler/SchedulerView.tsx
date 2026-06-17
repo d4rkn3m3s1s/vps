@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -115,9 +116,9 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
         title="Scheduler"
         subtitle="Run automation tasks on a recurring schedule across your cloud phones."
         actions={
-          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
+          <Button type="button" variant="primary" className="btn-primary" onPress={() => setOpen(true)}>
             + New schedule
-          </button>
+          </Button>
         }
       />
 
@@ -166,12 +167,12 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
                   </td>
                   <td>
                     <div className="row-actions">
-                      <button type="button" className="action-btn" onClick={() => toggleStatus(t)} disabled={t.status === 'COMPLETED'}>
+                      <Button type="button" variant="ghost" size="sm" className="action-btn" onPress={() => toggleStatus(t)} isDisabled={Boolean(t.status === 'COMPLETED')}>
                         {t.status === 'ACTIVE' ? 'Pause' : 'Resume'}
-                      </button>
-                      <button type="button" className="action-btn action-danger" onClick={() => remove(t)}>
+                      </Button>
+                      <Button type="button" variant="danger" size="sm" className="action-btn action-danger" onPress={() => remove(t)}>
                         Delete
-                      </button>
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -186,14 +187,14 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>New scheduled task</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
+              <Button type="button" isIconOnly variant="ghost" className="modal-close" onPress={() => !busy && setOpen(false)}>
                 ✕
-              </button>
+              </Button>
             </header>
 
             <label className="field">
               <span>Task name</span>
-              <input
+              <Input
                 className="field-input"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -250,7 +251,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
             {(form.jobType === 'EMULATOR_OPEN_APP' || form.jobType === 'EMULATOR_CLOSE_APP') && (
               <label className="field">
                 <span>Package name</span>
-                <input
+                <Input
                   className="field-input mono"
                   value={form.packageName}
                   onChange={(e) => setForm((f) => ({ ...f, packageName: e.target.value }))}
@@ -260,12 +261,12 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
             )}
 
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
+              <Button type="button" variant="ghost" className="btn-ghost" onPress={() => !busy && setOpen(false)}>
                 Cancel
-              </button>
-              <button type="button" className="btn-primary" disabled={busy} onClick={createTask}>
+              </Button>
+              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={createTask}>
                 {busy ? 'Creating…' : 'Create schedule'}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

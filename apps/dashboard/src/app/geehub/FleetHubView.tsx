@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Button } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
 
@@ -46,14 +47,14 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
       <PageHeader
         title="FleetHub"
         subtitle="Marketplace for templates, automations and integrations."
-        actions={<button type="button" className="btn-primary">+ Submit listing</button>}
+        actions={<Button type="button" variant="primary" className="btn-primary">+ Submit listing</Button>}
       />
 
       <div className="tab-row">
         {CATEGORIES.map((c) => (
-          <button key={c} type="button" className={c === cat ? 'tab tab-active' : 'tab'} onClick={() => setCat(c)}>
+          <Button key={c} type="button" className={c === cat ? 'tab tab-active' : 'tab'} onPress={() => setCat(c)}>
             {c === 'All' ? 'All' : LABEL[c]}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -72,9 +73,9 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
                 <span className="price-tag">{l.price}</span>
               </div>
             </div>
-            <button type="button" className="btn-ghost" disabled={busy === l.id} onClick={() => install(l)}>
+            <Button type="button" variant="ghost" className="btn-ghost" isDisabled={Boolean(busy === l.id)} onPress={() => install(l)}>
               {busy === l.id ? '…' : 'Install'}
-            </button>
+            </Button>
           </MotionItem>
         ))}
       </StaggerGrid>

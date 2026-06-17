@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Button } from '@heroui/react';
 
 const AIGC = [
   { title: 'Image to Video', desc: 'Generate short videos from a single image.' },
@@ -98,9 +99,9 @@ export function AiView() {
           </select>
           <div className="ai-foot-right">
             <span className="helper mono">{prompt.length} / 2000</span>
-            <button type="button" className="ai-send" disabled={prompt.trim().length === 0 || busy} onClick={send}>
+            <Button type="button" className="ai-send" isDisabled={Boolean(prompt.trim().length === 0 || busy)} onPress={send}>
               ➤
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -110,10 +111,10 @@ export function AiView() {
           <h3 className="section-label">✶ AIGC</h3>
           <div className="ai-stack">
             {AIGC.map((item) => (
-              <button type="button" className="ai-card" key={item.title}>
+              <Button type="button" className="ai-card" key={item.title}>
                 <strong>{item.title}</strong>
                 <span className="helper">{item.desc}</span>
-              </button>
+              </Button>
             ))}
           </div>
         </section>
@@ -122,12 +123,12 @@ export function AiView() {
           <h3 className="section-label">⚡ AI automation</h3>
           <div className="ai-stack">
             {AUTOMATION.map((item) => (
-              <button type="button" className="ai-row" key={item.title}>
+              <Button type="button" className="ai-row" key={item.title}>
                 <span className="tpl-badge" style={{ background: item.color }}>
                   {item.icon}
                 </span>
                 {item.title}
-              </button>
+              </Button>
             ))}
           </div>
         </section>
@@ -136,9 +137,9 @@ export function AiView() {
           <h3 className="section-label">✦ Ask AI</h3>
           <div className="ai-stack">
             {ASK.map((q) => (
-              <button type="button" className="ai-row" key={q} disabled={busy} onClick={() => { setPrompt(q); }}>
+              <Button type="button" className="ai-row" key={q} isDisabled={Boolean(busy)} onPress={() => { setPrompt(q); }}>
                 {q}
-              </button>
+              </Button>
             ))}
           </div>
         </section>

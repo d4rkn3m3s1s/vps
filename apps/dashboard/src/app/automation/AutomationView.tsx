@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
 
@@ -79,9 +80,9 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         <p className="helper">{t.description}</p>
         <div className="row" style={{ marginTop: 'auto' }}>
           {t.uses > 0 ? <span className="helper mono">{t.uses} runs</span> : <span />}
-          <button type="button" className="btn-ghost tpl-run" onClick={() => openRun(t)}>
+          <Button type="button" variant="ghost" className="btn-ghost tpl-run" onPress={() => openRun(t)}>
             Use template
-          </button>
+          </Button>
         </div>
       </MotionItem>
     );
@@ -92,14 +93,14 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
       <PageHeader
         title="Automation"
         subtitle="Run no-code RPA templates across your cloud phones."
-        actions={<button type="button" className="btn-primary">+ New task</button>}
+        actions={<Button type="button" variant="primary" className="btn-primary">+ New task</Button>}
       />
 
       <div className="tabs">
         {TABS.map((t) => (
-          <button key={t} type="button" className={tab === t ? 'tab tab-active' : 'tab'} onClick={() => setTab(t)}>
+          <Button key={t} type="button" variant="ghost" className={tab === t ? 'tab tab-active' : 'tab'} onPress={() => setTab(t)}>
             {t}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -108,7 +109,7 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
           <div className="toolbar-row">
             <div className="search-box">
               <span className="search-icon">⌕</span>
-              <input type="text" placeholder="Template name" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <Input type="text" placeholder="Template name" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
           </div>
 
@@ -143,9 +144,9 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Run "{runTpl.title}"</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setRunTpl(null)}>
+              <Button type="button" isIconOnly variant="ghost" className="modal-close" onPress={() => !busy && setRunTpl(null)}>
                 ✕
-              </button>
+              </Button>
             </header>
             <p className="helper">{runTpl.description}</p>
             <div className="modal-section">
@@ -176,9 +177,9 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
             </div>
             <footer className="modal-foot">
               <span className="helper">{picked.size} selected</span>
-              <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmRun}>
+              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy || picked.size === 0)} onPress={confirmRun}>
                 {busy ? 'Starting…' : `Run on ${picked.size} phone(s)`}
-              </button>
+              </Button>
             </footer>
           </div>
         </div>

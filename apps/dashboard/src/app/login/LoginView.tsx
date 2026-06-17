@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowUpRight, Crown } from 'lucide-react';
+import { Button, Input } from '@heroui/react';
 
 const VIDEO_URL =
   'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260606_154941_df1a96e1-a06f-450c-bd02-d863414cc1a0.mp4';
@@ -113,7 +114,7 @@ export function LoginView() {
 
           <label className="mt-7 block">
             <span className="font-inter text-xs uppercase tracking-widest text-white/60">Email</span>
-            <input
+            <Input
               type="email"
               autoComplete="username"
               value={email}
@@ -125,13 +126,13 @@ export function LoginView() {
 
           <label className="mt-4 block">
             <span className="font-inter text-xs uppercase tracking-widest text-white/60">Password</span>
-            <input
+            <Input
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              disabled={needTwoFactor}
+              disabled={Boolean(needTwoFactor)}
               className="mt-2 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-3 font-inter text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-white/50 disabled:opacity-60"
             />
           </label>
@@ -141,7 +142,7 @@ export function LoginView() {
               <span className="font-inter text-xs uppercase tracking-widest text-white/60">
                 Authentication code
               </span>
-              <input
+              <Input
                 type="text"
                 inputMode="numeric"
                 autoComplete="one-time-code"
@@ -159,16 +160,18 @@ export function LoginView() {
 
           {error ? <p className="mt-4 font-inter text-sm text-red-400">{error}</p> : null}
 
-          <button
+          <Button
             type="submit"
-            disabled={busy || (needTwoFactor && twoFactorToken.trim().length < 6)}
+            variant="primary"
+            isPending={Boolean(busy)}
+            isDisabled={Boolean(busy || (needTwoFactor && twoFactorToken.trim().length < 6))}
             className="group mt-7 flex w-full items-center justify-center gap-2 rounded-lg bg-white px-6 py-3.5 font-inter text-xs font-semibold uppercase tracking-widest text-black transition-all hover:bg-white/90 disabled:opacity-60"
           >
             {busy ? 'Signing in…' : needTwoFactor ? 'Verify & sign in' : 'Sign in'}
             {!busy && (
               <ArrowUpRight className="h-4 w-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             )}
-          </button>
+          </Button>
         </form>
       </div>
     </div>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { Button, Input } from '@heroui/react';
 import { BellRing, Plus, Trash2, Check, Mail } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
@@ -119,31 +120,31 @@ export function AlertsView() {
                   </div>
                 </div>
                 <div className="alert-rule-actions">
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
                     className={`pill ${r.email ? 'pill-on' : ''}`}
-                    onClick={() => toggleEmail(r)}
-                    title={r.email ? 'Email notifications on' : 'Email notifications off'}
+                    onPress={() => toggleEmail(r)}
+                    aria-label={r.email ? 'Email notifications on' : 'Email notifications off'}
                   >
                     <Mail size={12} /> Email
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="ghost"
                     className={`pill ${r.active ? 'pill-on' : ''}`}
-                    onClick={() => toggleRule(r)}
+                    onPress={() => toggleRule(r)}
                   >
                     {r.active ? 'Active' : 'Paused'}
-                  </button>
-                  <button type="button" className="icon-btn" onClick={() => deleteRule(r.id)} aria-label="Delete">
+                  </Button>
+                  <Button variant="ghost" isIconOnly className="icon-btn" onPress={() => deleteRule(r.id)} aria-label="Delete">
                     <Trash2 size={15} />
-                  </button>
+                  </Button>
                 </div>
               </div>
             ))}
           </div>
 
           <div className="alert-create">
-            <input
+            <Input
               className="field-input"
               placeholder="Rule name (e.g. Notify on failures)"
               value={name}
@@ -155,12 +156,12 @@ export function AlertsView() {
               ))}
             </select>
             {activeTrigger?.hasThreshold ? (
-              <input
+              <Input
                 className="inline-select"
                 type="number"
                 min={1}
                 max={100}
-                value={threshold}
+                value={String(threshold)}
                 onChange={(e) => setThreshold(Number(e.target.value))}
                 style={{ width: 80 }}
               />
@@ -169,9 +170,9 @@ export function AlertsView() {
               <input type="checkbox" checked={emailOnCreate} onChange={(e) => setEmailOnCreate(e.target.checked)} />
               <Mail size={13} /> Email
             </label>
-            <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={createRule}>
+            <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy || !name.trim())} onPress={createRule}>
               <Plus size={15} /> Add
-            </button>
+            </Button>
           </div>
         </div>
 

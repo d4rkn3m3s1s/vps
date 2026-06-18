@@ -26,6 +26,7 @@ const NAV: NavGroup[] = [
       { href: '/fingerprints', tkey: 'nav.fingerprints', icon: '◉' },
       { href: '/console', tkey: 'nav.console', icon: '▸' },
       { href: '/groups', tkey: 'nav.groups', icon: '▣' },
+      { href: '/distribute', tkey: 'nav.distribute', icon: '⇪' },
       { href: '/proxies', tkey: 'nav.proxies', icon: '⇄' },
       { href: '/library', tkey: 'nav.library', icon: '◳' },
       { href: '/applications', tkey: 'nav.applications', icon: '▤' },
@@ -37,6 +38,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: '/', tkey: 'nav.overview', icon: '◴' },
       { href: '/analytics', tkey: 'nav.analytics', icon: '∿' },
+      { href: '/health', tkey: 'nav.health', icon: '♥' },
       { href: '/reports', tkey: 'nav.reports', icon: '▦' },
       { href: '/automation', tkey: 'nav.automation', icon: '⚡' },
       { href: '/rpa', tkey: 'nav.rpa', icon: '⚙' },

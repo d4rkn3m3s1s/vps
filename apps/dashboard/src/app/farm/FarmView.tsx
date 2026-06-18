@@ -682,7 +682,7 @@ export function FarmView() {
         ) : (
           <div className="farm-grid">
             {campaigns.map((c) => (
-              <article key={c.id} className="farm-card">
+              <article key={c.id} className={`farm-card farm-card-${c.status.toLowerCase()}`}>
                 <div className="farm-card-head">
                   <div>
                     <strong className="farm-card-title">{c.name}</strong>

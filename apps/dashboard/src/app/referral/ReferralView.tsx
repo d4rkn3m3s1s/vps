@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -46,10 +45,10 @@ export function ReferralView({ code }: { code: string }) {
         <h3>Your referral link</h3>
         <p className="helper">Share this link. You earn 20% credit when invitees subscribe.</p>
         <div className="copy-row">
-          <Input className="copy-input mono" readOnly value={link} />
-          <Button type="button" variant="primary" className="btn-primary" onPress={copy}>
+          <input className="copy-input mono" readOnly value={link} />
+          <button type="button" className="btn-primary" onClick={copy}>
             {copied ? '✓ Copied' : 'Copy'}
-          </Button>
+          </button>
         </div>
         <p className="helper" style={{ marginTop: '10px' }}>
           Your code: <span className="mono">{code}</span>

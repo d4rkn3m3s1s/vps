@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -85,12 +84,12 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
         subtitle="Mirror actions from one cloud phone across all others in the group."
         actions={
           <>
-            <Button type="button" variant="ghost" className="btn-ghost" onPress={() => { setSelected(new Set()); setLeader(null); }}>
+            <button type="button" className="btn-ghost" onClick={() => { setSelected(new Set()); setLeader(null); }}>
               Clear
-            </Button>
-            <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(!canSync || syncing)} onPress={startSync}>
+            </button>
+            <button type="button" className="btn-primary" disabled={!canSync || syncing} onClick={startSync}>
               {syncing ? 'Starting…' : `Start sync (${selected.size})`}
-            </Button>
+            </button>
           </>
         }
       />
@@ -129,18 +128,16 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
                   <div className="row" style={{ marginTop: '10px' }}>
                     <span className="helper">{isSel ? 'Selected' : 'Tap to select'}</span>
                     {isSel && (
-                      <Button
+                      <button
                         type="button"
-                        variant={isLeader ? 'primary' : 'ghost'}
-                        size="sm"
                         className={isLeader ? 'btn-primary btn-xs' : 'btn-ghost btn-xs'}
-                        onClick={(e) => e.stopPropagation()}
-                        onPress={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setLeader(d.id);
                         }}
                       >
                         {isLeader ? '★ Leader' : 'Set leader'}
-                      </Button>
+                      </button>
                     )}
                   </div>
                 </article>

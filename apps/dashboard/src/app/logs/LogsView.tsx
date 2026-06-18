@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { Search, Download } from 'lucide-react';
-import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 import { downloadCsv } from '../../lib/csv';
@@ -70,15 +69,15 @@ export function LogsView() {
         title="Audit log"
         subtitle={`${logs.length} entries · operational & security trail`}
         actions={
-          <Button type="button" variant="ghost" className="btn-ghost" onPress={exportCsv} isDisabled={Boolean(logs.length === 0)}>
+          <button type="button" className="btn-ghost" onClick={exportCsv} disabled={logs.length === 0}>
             <Download size={15} /> Export CSV
-          </Button>
+          </button>
         }
       />
 
       <div className="search-box" style={{ maxWidth: 360, marginBottom: '1rem' }}>
         <Search size={15} />
-        <Input
+        <input
           className="search-input"
           placeholder="Search action or resource…"
           value={search}

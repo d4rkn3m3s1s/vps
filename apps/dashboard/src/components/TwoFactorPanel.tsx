@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Input } from '@heroui/react';
 import { ShieldCheck, ShieldAlert, Copy, Check } from 'lucide-react';
 
 type SetupData = { otpauthUrl: string; qrDataUrl: string; secret: string };
@@ -93,9 +92,9 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
           </span>
         </div>
         <p className="helper">Your account is protected by an authenticator app. Login requires a 6-digit code.</p>
-        <Button type="button" variant="danger" className="btn-ghost danger-btn" onPress={disable} isDisabled={Boolean(busy)}>
+        <button type="button" className="btn-ghost danger-btn" onClick={disable} disabled={busy}>
           {busy ? 'Working…' : 'Disable 2FA'}
-        </Button>
+        </button>
         {error ? <p className="field-error">{error}</p> : null}
       </div>
     );
@@ -116,10 +115,10 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
             <code key={c} className="backup-code">{c}</code>
           ))}
         </div>
-        <Button type="button" variant="ghost" className="btn-ghost" onPress={copyBackup}>
+        <button type="button" className="btn-ghost" onClick={copyBackup}>
           {copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy all</>}
-        </Button>
-        <Button type="button" variant="primary" className="btn-primary" onPress={() => setStep('idle')}>Done</Button>
+        </button>
+        <button type="button" className="btn-primary" onClick={() => setStep('idle')}>Done</button>
       </div>
     );
   }
@@ -134,7 +133,7 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         <p className="helper">Or enter this key manually:</p>
         <code className="backup-code">{setup.secret}</code>
         <p className="helper">2. Enter the 6-digit code from your app to confirm.</p>
-        <Input
+        <input
           className="field-input"
           inputMode="numeric"
           placeholder="123456"
@@ -144,12 +143,12 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         />
         {error ? <p className="field-error">{error}</p> : null}
         <div className="quick-grid">
-          <Button type="button" variant="primary" className="btn-primary" onPress={confirmEnable} isDisabled={Boolean(busy || code.length < 6)}>
+          <button type="button" className="btn-primary" onClick={confirmEnable} disabled={busy || code.length < 6}>
             {busy ? 'Verifying…' : 'Enable 2FA'}
-          </Button>
-          <Button type="button" variant="ghost" className="btn-ghost" onPress={() => { setStep('idle'); setError(null); }}>
+          </button>
+          <button type="button" className="btn-ghost" onClick={() => { setStep('idle'); setError(null); }}>
             Cancel
-          </Button>
+          </button>
         </div>
       </div>
     );
@@ -164,9 +163,9 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         </span>
       </div>
       <p className="helper">Add a second layer of security. You&apos;ll need an authenticator app.</p>
-      <Button type="button" variant="primary" className="btn-primary" onPress={beginSetup} isDisabled={Boolean(busy)}>
+      <button type="button" className="btn-primary" onClick={beginSetup} disabled={busy}>
         {busy ? 'Loading…' : 'Set up 2FA'}
-      </Button>
+      </button>
       {error ? <p className="field-error">{error}</p> : null}
     </div>
   );

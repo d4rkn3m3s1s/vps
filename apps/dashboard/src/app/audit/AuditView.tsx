@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Search, Download, RotateCcw } from 'lucide-react';
-import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -96,29 +95,29 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
         title="Audit"
         subtitle="Security and activity log trail."
         actions={
-          <Button type="button" variant="ghost" className="btn-ghost" onPress={exportCsv} isDisabled={Boolean(logs.length === 0)}>
+          <button type="button" className="btn-ghost" onClick={exportCsv} disabled={logs.length === 0}>
             <Download size={15} /> Export CSV
-          </Button>
+          </button>
         }
       />
 
       <div className="audit-filters">
         <div className="search-box">
           <span className="search-icon" aria-hidden><Search size={14} /></span>
-          <Input type="text" placeholder="Action (e.g. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
+          <input type="text" placeholder="Action (e.g. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
         </div>
-        <Input className="field-input" type="text" placeholder="Actor email" value={actor} onChange={(e) => setActor(e.target.value)} />
+        <input className="field-input" type="text" placeholder="Actor email" value={actor} onChange={(e) => setActor(e.target.value)} />
         <label className="audit-date">
           <span className="helper">From</span>
-          <Input className="field-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <input className="field-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label className="audit-date">
           <span className="helper">To</span>
-          <Input className="field-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <input className="field-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
-        <Button type="button" variant="ghost" className="btn-ghost" onPress={reset} aria-label="Clear filters">
+        <button type="button" className="btn-ghost" onClick={reset} title="Clear filters">
           <RotateCcw size={14} /> Reset
-        </Button>
+        </button>
       </div>
 
       <div className="profile-table-wrap">

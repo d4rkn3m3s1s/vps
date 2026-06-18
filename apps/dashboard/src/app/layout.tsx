@@ -21,7 +21,7 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const activeWorkspaceId = (await cookies()).get('fleet_workspace')?.value;
   return (
-    <html lang="tr" className="dark">
+    <html lang="tr">
       <head>
         {/* Hero fonts: PODIUM (display) + Inter (body/UI) used by the landing,
             login, and dashboard welcome strip. */}

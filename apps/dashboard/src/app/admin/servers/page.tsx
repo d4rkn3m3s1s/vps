@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button, Input } from '@heroui/react';
 import { Cpu, Search, Plus, Trash2, Power, PlugZap, RefreshCw } from 'lucide-react';
 
 type Offer = {
@@ -215,17 +214,18 @@ export default function ServersPage() {
               <span className="dot dot-online" />
               Connected
             </span>
-            <Button variant="danger" size="sm" isDisabled={busy} onPress={disconnect}>
+            <button type="button" className="btn-ghost danger-btn" disabled={busy} onClick={disconnect}>
               <Power size={15} /> Disconnect
-            </Button>
+            </button>
           </div>
         ) : (
           <div className="admin-form" style={{ marginTop: '1rem' }}>
             <div className="admin-field">
               <label htmlFor="vast-key">API key</label>
-              <Input
+              <input
                 id="vast-key"
                 type="password"
+                className="field-input mono"
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 placeholder="Vast.ai API key"
@@ -234,9 +234,9 @@ export default function ServersPage() {
             <p className="helper">
               Get your API key from vast.ai → Account → API Keys. It&apos;s stored encrypted and never shown again.
             </p>
-            <Button variant="primary" isDisabled={busy || !apiKeyInput.trim()} isPending={busy} onPress={connect}>
+            <button type="button" className="btn-primary" disabled={busy || !apiKeyInput.trim()} onClick={connect}>
               <PlugZap size={15} /> {busy ? 'Connecting…' : 'Connect'}
-            </Button>
+            </button>
           </div>
         )}
 

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Button } from '@heroui/react';
 import { Download, FileJson } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
@@ -91,12 +90,12 @@ export function ReportsView() {
                 <option key={r.key} value={r.days}>{r.label}</option>
               ))}
             </select>
-            <Button variant="ghost" className="btn-ghost" isDisabled={Boolean(busy)} onPress={exportCsv}>
+            <button type="button" className="btn-ghost" disabled={busy} onClick={exportCsv}>
               <Download size={15} /> CSV
-            </Button>
-            <Button variant="ghost" className="btn-ghost" onPress={exportJson}>
+            </button>
+            <button type="button" className="btn-ghost" onClick={exportJson}>
               <FileJson size={15} /> JSON
-            </Button>
+            </button>
           </>
         }
       />

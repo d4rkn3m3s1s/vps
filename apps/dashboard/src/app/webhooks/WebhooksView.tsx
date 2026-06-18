@@ -1,7 +1,6 @@
 'use client';
 
 import { Fragment, useState } from 'react';
-import { Button, Input } from '@heroui/react';
 import { useRouter } from 'next/navigation';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
@@ -152,9 +151,9 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
         title="Webhooks"
         subtitle="Get notified on your own server when jobs, devices, quota or alerts change. Signed, retried, with delivery history."
         actions={
-          <Button variant="primary" className="btn-primary" onPress={() => setOpen(true)}>
+          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
             + New webhook
-          </Button>
+          </button>
         }
       />
 
@@ -203,18 +202,18 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
                     </td>
                     <td>
                       <div className="row-actions">
-                        <Button variant="ghost" size="sm" className="action-btn" onPress={() => toggleHistory(h.id)}>
+                        <button type="button" className="action-btn" onClick={() => toggleHistory(h.id)}>
                           {expanded === h.id ? 'Hide' : 'History'}
-                        </Button>
-                        <Button variant="ghost" size="sm" className="action-btn" isDisabled={Boolean(busy)} onPress={() => sendTest(h)}>
+                        </button>
+                        <button type="button" className="action-btn" disabled={busy} onClick={() => sendTest(h)}>
                           Test
-                        </Button>
-                        <Button variant="ghost" size="sm" className="action-btn" onPress={() => toggle(h)}>
+                        </button>
+                        <button type="button" className="action-btn" onClick={() => toggle(h)}>
                           {h.active ? 'Pause' : 'Resume'}
-                        </Button>
-                        <Button variant="danger" size="sm" className="action-btn action-danger" onPress={() => remove(h)}>
+                        </button>
+                        <button type="button" className="action-btn action-danger" onClick={() => remove(h)}>
                           Delete
-                        </Button>
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -251,9 +250,9 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
                                     <td className="mono helper">{new Date(d.createdAt).toLocaleString('tr-TR')}</td>
                                     <td>
                                       {d.status === 'FAILED' ? (
-                                        <Button variant="ghost" size="sm" className="action-btn" onPress={() => redeliver(h.id, d.id)}>
+                                        <button type="button" className="action-btn" onClick={() => redeliver(h.id, d.id)}>
                                           Redeliver
-                                        </Button>
+                                        </button>
                                       ) : null}
                                     </td>
                                   </tr>
@@ -277,17 +276,17 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>New webhook</h2>
-              <Button variant="ghost" isIconOnly className="modal-close" onPress={() => !busy && setOpen(false)}>
+              <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
                 ✕
-              </Button>
+              </button>
             </header>
             <label className="field">
               <span>Label</span>
-              <Input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="My server" />
+              <input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="My server" />
             </label>
             <label className="field">
               <span>Endpoint URL</span>
-              <Input className="field-input mono" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://example.com/hook" />
+              <input className="field-input mono" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://example.com/hook" />
             </label>
             <div className="field-row">
               <label className="field">
@@ -302,17 +301,17 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
               </label>
               <label className="field">
                 <span>Signing secret (optional)</span>
-                <Input className="field-input mono" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} placeholder="HMAC secret" />
+                <input className="field-input mono" value={form.secret} onChange={(e) => setForm((f) => ({ ...f, secret: e.target.value }))} placeholder="HMAC secret" />
               </label>
             </div>
             <p className="helper">If a secret is set, each request includes an <span className="mono">X-Fleet-Signature</span> HMAC-SHA256 header.</p>
             <footer className="modal-foot">
-              <Button variant="ghost" className="btn-ghost" onPress={() => !busy && setOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
                 Cancel
-              </Button>
-              <Button variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={create}>
+              </button>
+              <button type="button" className="btn-primary" disabled={busy} onClick={create}>
                 {busy ? 'Creating…' : 'Create webhook'}
-              </Button>
+              </button>
             </footer>
           </div>
         </div>

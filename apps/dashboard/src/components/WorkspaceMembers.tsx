@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Button, Input } from '@heroui/react';
 import { UserPlus, Shield, Trash2 } from 'lucide-react';
 
 type Member = { id: string; userId: string; email: string; role: string };
@@ -100,17 +99,16 @@ export function WorkspaceMembers() {
               {m.role}
             </span>
             {isAdmin ? (
-              <Button
+              <button
                 type="button"
                 className="icon-btn"
-                isIconOnly
-                variant="ghost"
-                isDisabled={Boolean(busy)}
-                onPress={() => removeMember(m.id, m.email)}
+                disabled={busy}
+                onClick={() => removeMember(m.id, m.email)}
                 aria-label={`Remove ${m.email}`}
+                title="Remove member"
               >
                 <Trash2 size={14} />
-              </Button>
+              </button>
             ) : null}
           </span>
         </div>
@@ -118,7 +116,7 @@ export function WorkspaceMembers() {
 
       {isAdmin ? (
         <div className="member-invite">
-          <Input
+          <input
             className="field-input"
             type="email"
             placeholder="teammate@company.com"
@@ -130,9 +128,9 @@ export function WorkspaceMembers() {
             <option value="operator">Operator</option>
             <option value="viewer">Viewer</option>
           </select>
-          <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy || !email.trim())} onPress={invite}>
+          <button type="button" className="btn-primary" disabled={busy || !email.trim()} onClick={invite}>
             <UserPlus size={15} /> Invite
-          </Button>
+          </button>
         </div>
       ) : (
         <p className="helper">Only workspace admins can invite members.</p>

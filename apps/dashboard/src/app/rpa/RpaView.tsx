@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -184,9 +183,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
         title="RPA Studio"
         subtitle="Build visual automation flows and run them across your cloud phones."
         actions={
-          <Button type="button" variant="primary" className="btn-primary" onPress={openNew}>
+          <button type="button" className="btn-primary" onClick={openNew}>
             + New flow
-          </Button>
+          </button>
         }
       />
 
@@ -197,9 +196,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
           <div className="empty-art">⚙</div>
           <h3>No automation flows yet</h3>
           <p>Create a flow of tap / type / swipe / wait steps and dispatch it to your phones.</p>
-          <Button type="button" variant="primary" className="btn-primary" onPress={openNew}>
+          <button type="button" className="btn-primary" onClick={openNew}>
             + New flow
-          </Button>
+          </button>
         </div>
       ) : (
         <div className="app-grid">
@@ -214,15 +213,15 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
               </div>
               <span className="helper mono">{flow.steps.length} steps · ran {flow.runCount}×</span>
               <div className="row-actions flow-actions">
-                <Button type="button" variant="ghost" size="sm" className="action-btn" onPress={() => openEdit(flow)}>
+                <button type="button" className="action-btn" onClick={() => openEdit(flow)}>
                   Edit
-                </Button>
-                <Button type="button" variant="ghost" size="sm" className="action-btn" onPress={() => setRunFlow(flow)}>
+                </button>
+                <button type="button" className="action-btn" onClick={() => setRunFlow(flow)}>
                   Run
-                </Button>
-                <Button type="button" variant="danger" size="sm" className="action-btn action-danger" onPress={() => remove(flow)}>
+                </button>
+                <button type="button" className="action-btn action-danger" onClick={() => remove(flow)}>
                   Delete
-                </Button>
+                </button>
               </div>
             </article>
           ))}
@@ -234,19 +233,19 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>{editing.id ? 'Edit flow' : 'New flow'}</h2>
-              <Button type="button" isIconOnly variant="ghost" className="modal-close" onPress={() => !busy && setEditing(null)}>
+              <button type="button" className="modal-close" onClick={() => !busy && setEditing(null)}>
                 ✕
-              </Button>
+              </button>
             </header>
 
             <div className="field-row">
               <label className="field">
                 <span>Flow name</span>
-                <Input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. IG warm-up" />
+                <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. IG warm-up" />
               </label>
               <label className="field">
                 <span>Description</span>
-                <Input className="field-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="optional" />
+                <input className="field-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="optional" />
               </label>
             </div>
 
@@ -255,9 +254,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                 <h3>Steps ({steps.length})</h3>
                 <div className="step-add">
                   {STEP_TYPES.map((t) => (
-                    <Button key={t} type="button" variant="ghost" size="sm" className="step-add-btn" onPress={() => addStep(t)} aria-label={`Add ${t}`}>
+                    <button key={t} type="button" className="step-add-btn" onClick={() => addStep(t)} title={`Add ${t}`}>
                       {STEP_ICON[t]} {t}
-                    </Button>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -274,38 +273,38 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                         <span className="step-type">{step.type}</span>
                         {step.type === 'tap' && (
                           <span className="step-inputs">
-                            <Input className="mini-input" type="number" value={String(step.x ?? 0)} onChange={(e) => updateStep(i, { x: Number(e.target.value) })} placeholder="x" />
-                            <Input className="mini-input" type="number" value={String(step.y ?? 0)} onChange={(e) => updateStep(i, { y: Number(e.target.value) })} placeholder="y" />
+                            <input className="mini-input" type="number" value={step.x ?? 0} onChange={(e) => updateStep(i, { x: Number(e.target.value) })} placeholder="x" />
+                            <input className="mini-input" type="number" value={step.y ?? 0} onChange={(e) => updateStep(i, { y: Number(e.target.value) })} placeholder="y" />
                           </span>
                         )}
                         {step.type === 'type' && (
-                          <Input className="mini-input wide" value={step.text ?? ''} onChange={(e) => updateStep(i, { text: e.target.value })} placeholder="text to type" />
+                          <input className="mini-input wide" value={step.text ?? ''} onChange={(e) => updateStep(i, { text: e.target.value })} placeholder="text to type" />
                         )}
                         {step.type === 'wait' && (
-                          <Input className="mini-input" type="number" value={String(step.ms ?? 0)} onChange={(e) => updateStep(i, { ms: Number(e.target.value) })} placeholder="ms" />
+                          <input className="mini-input" type="number" value={step.ms ?? 0} onChange={(e) => updateStep(i, { ms: Number(e.target.value) })} placeholder="ms" />
                         )}
                         {step.type === 'swipe' && (
                           <span className="step-inputs">
-                            <Input className="mini-input" type="number" value={String(step.x ?? 0)} onChange={(e) => updateStep(i, { x: Number(e.target.value) })} placeholder="x1" />
-                            <Input className="mini-input" type="number" value={String(step.y ?? 0)} onChange={(e) => updateStep(i, { y: Number(e.target.value) })} placeholder="y1" />
-                            <Input className="mini-input" type="number" value={String(step.x2 ?? 0)} onChange={(e) => updateStep(i, { x2: Number(e.target.value) })} placeholder="x2" />
-                            <Input className="mini-input" type="number" value={String(step.y2 ?? 0)} onChange={(e) => updateStep(i, { y2: Number(e.target.value) })} placeholder="y2" />
+                            <input className="mini-input" type="number" value={step.x ?? 0} onChange={(e) => updateStep(i, { x: Number(e.target.value) })} placeholder="x1" />
+                            <input className="mini-input" type="number" value={step.y ?? 0} onChange={(e) => updateStep(i, { y: Number(e.target.value) })} placeholder="y1" />
+                            <input className="mini-input" type="number" value={step.x2 ?? 0} onChange={(e) => updateStep(i, { x2: Number(e.target.value) })} placeholder="x2" />
+                            <input className="mini-input" type="number" value={step.y2 ?? 0} onChange={(e) => updateStep(i, { y2: Number(e.target.value) })} placeholder="y2" />
                           </span>
                         )}
                         {step.type === 'openApp' && (
-                          <Input className="mini-input wide mono" value={step.packageName ?? ''} onChange={(e) => updateStep(i, { packageName: e.target.value })} placeholder="com.app.package" />
+                          <input className="mini-input wide mono" value={step.packageName ?? ''} onChange={(e) => updateStep(i, { packageName: e.target.value })} placeholder="com.app.package" />
                         )}
                         {step.type === 'shell' && (
-                          <Input className="mini-input wide mono" value={step.command ?? ''} onChange={(e) => updateStep(i, { command: e.target.value })} placeholder="adb shell command" />
+                          <input className="mini-input wide mono" value={step.command ?? ''} onChange={(e) => updateStep(i, { command: e.target.value })} placeholder="adb shell command" />
                         )}
                         {step.type === 'keyevent' && (
-                          <Input className="mini-input" type="number" value={String(step.keycode ?? 0)} onChange={(e) => updateStep(i, { keycode: Number(e.target.value) })} placeholder="keycode" />
+                          <input className="mini-input" type="number" value={step.keycode ?? 0} onChange={(e) => updateStep(i, { keycode: Number(e.target.value) })} placeholder="keycode" />
                         )}
                       </div>
                       <div className="step-ctrls">
-                        <Button type="button" isIconOnly variant="ghost" size="sm" className="step-ctrl" onPress={() => moveStep(i, -1)} isDisabled={Boolean(i === 0)}>↑</Button>
-                        <Button type="button" isIconOnly variant="ghost" size="sm" className="step-ctrl" onPress={() => moveStep(i, 1)} isDisabled={Boolean(i === steps.length - 1)}>↓</Button>
-                        <Button type="button" isIconOnly variant="ghost" size="sm" className="step-ctrl step-del" onPress={() => removeStep(i)}>✕</Button>
+                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, -1)} disabled={i === 0}>↑</button>
+                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}>↓</button>
+                        <button type="button" className="step-ctrl step-del" onClick={() => removeStep(i)}>✕</button>
                       </div>
                     </li>
                   ))
@@ -314,12 +313,12 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
             </div>
 
             <footer className="modal-foot">
-              <Button type="button" variant="ghost" className="btn-ghost" onPress={() => !busy && setEditing(null)}>
+              <button type="button" className="btn-ghost" onClick={() => !busy && setEditing(null)}>
                 Cancel
-              </Button>
-              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy)} onPress={save}>
+              </button>
+              <button type="button" className="btn-primary" disabled={busy} onClick={save}>
                 {busy ? 'Saving…' : 'Save flow'}
-              </Button>
+              </button>
             </footer>
           </div>
         </div>
@@ -330,9 +329,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Run "{runFlow.name}"</h2>
-              <Button type="button" isIconOnly variant="ghost" className="modal-close" onPress={() => !busy && setRunFlow(null)}>
+              <button type="button" className="modal-close" onClick={() => !busy && setRunFlow(null)}>
                 ✕
-              </Button>
+              </button>
             </header>
             <p className="helper">{runFlow.steps.map(describeStep).join(' → ')}</p>
             <div className="modal-section">
@@ -362,12 +361,12 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
               </div>
             </div>
             <footer className="modal-foot">
-              <Button type="button" variant="ghost" className="btn-ghost" onPress={() => !busy && setRunFlow(null)}>
+              <button type="button" className="btn-ghost" onClick={() => !busy && setRunFlow(null)}>
                 Cancel
-              </Button>
-              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy || runDevices.size === 0)} onPress={dispatch}>
+              </button>
+              <button type="button" className="btn-primary" disabled={busy || runDevices.size === 0} onClick={dispatch}>
                 {busy ? 'Dispatching…' : `Run on ${runDevices.size} phone(s)`}
-              </Button>
+              </button>
             </footer>
           </div>
         </div>

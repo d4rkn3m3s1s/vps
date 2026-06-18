@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { ShieldCheck, Plus, Trash2 } from 'lucide-react';
-import { Button } from '@heroui/react';
 
 type User = { id: string; email: string; role: string };
 type Group = { id: string; name: string };
@@ -205,16 +204,16 @@ export default function PermissionsPage() {
                       {p.canDelete ? <span className="policy-tag policy-tag-on">Delete</span> : null}
                     </div>
                   </div>
-                  <Button
-                    isIconOnly
-                    variant="ghost"
-                    size="sm"
-                    isDisabled={busy}
-                    onPress={() => revoke(p)}
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    disabled={busy}
+                    onClick={() => revoke(p)}
                     aria-label="Revoke grant"
+                    title="Revoke"
                   >
                     <Trash2 size={15} />
-                  </Button>
+                  </button>
                 </div>
               ))
             )}
@@ -291,9 +290,9 @@ export default function PermissionsPage() {
               </div>
             </div>
 
-            <Button variant="primary" isDisabled={busy || !targetId} onPress={grant}>
+            <button type="button" className="btn-primary" disabled={busy || !targetId} onClick={grant}>
               <Plus size={15} /> {busy ? 'Granting…' : 'Grant'}
-            </Button>
+            </button>
           </div>
         )}
       </div>

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 import { downloadCsv } from '../../lib/csv';
@@ -100,10 +99,10 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
         subtitle={`${jobs.length} operations · ${pending} in flight`}
         actions={
           <>
-            <Button type="button" variant="ghost" onPress={exportCsv}>⬇ Export CSV</Button>
-            <Button type="button" variant={live ? 'primary' : 'ghost'} onPress={() => setLive((v) => !v)}>
+            <button type="button" className="btn-ghost" onClick={exportCsv}>⬇ Export CSV</button>
+            <button type="button" className={live ? 'btn-primary' : 'btn-ghost'} onClick={() => setLive((v) => !v)}>
               {live ? '● Live' : '▷ Paused'}
-            </Button>
+            </button>
           </>
         }
       />
@@ -160,9 +159,9 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>{selected.type}</h2>
-              <Button type="button" className="modal-close" variant="ghost" isIconOnly onPress={() => setSelected(null)}>
+              <button type="button" className="modal-close" onClick={() => setSelected(null)}>
                 ✕
-              </Button>
+              </button>
             </header>
             <div className="fp-grid">
               <div className="fp-row"><span className="helper">Job ID</span><span className="mono">{selected.id}</span></div>

@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Button } from '@heroui/react';
 import { Check, Zap, ExternalLink } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
@@ -95,9 +94,9 @@ export function BillingView() {
         subtitle={billing ? `Current plan: ${billing.planName} · ${billing.status}` : 'Plans, usage & subscription'}
         actions={
           billing?.plan !== 'free' ? (
-            <Button variant="ghost" className="btn-ghost" isDisabled={busy === 'portal'} onPress={openPortal}>
+            <button type="button" className="btn-ghost" disabled={busy === 'portal'} onClick={openPortal}>
               <ExternalLink size={15} /> Manage subscription
-            </Button>
+            </button>
           ) : undefined
         }
       />
@@ -137,13 +136,13 @@ export function BillingView() {
                     ))}
                   </ul>
                   {current ? (
-                    <Button variant="ghost" className="btn-ghost" isDisabled>Current plan</Button>
+                    <button type="button" className="btn-ghost" disabled>Current plan</button>
                   ) : p.purchasable ? (
-                    <Button variant="primary" className="btn-primary" isDisabled={busy === p.key} onPress={() => upgrade(p.key)}>
+                    <button type="button" className="btn-primary" disabled={busy === p.key} onClick={() => upgrade(p.key)}>
                       <Zap size={15} /> {busy === p.key ? 'Redirecting…' : `Upgrade to ${p.name}`}
-                    </Button>
+                    </button>
                   ) : (
-                    <Button variant="ghost" className="btn-ghost" isDisabled>Downgrade in portal</Button>
+                    <button type="button" className="btn-ghost" disabled>Downgrade in portal</button>
                   )}
                 </div>
               );

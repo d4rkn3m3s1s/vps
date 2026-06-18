@@ -1,7 +1,6 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { Button, Input } from '@heroui/react';
 import { PageHeader } from '../../components/PageHeader';
 import { StaggerGrid, MotionItem, PageMotion } from '../../components/Motion';
 
@@ -81,16 +80,16 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
       <PageHeader
         title="Applications"
         subtitle="Real APK catalog — install on selected cloud phones with one click."
-        actions={<Button type="button" variant="primary" className="btn-primary">⬆ Upload APK</Button>}
+        actions={<button type="button" className="btn-primary">⬆ Upload APK</button>}
       />
 
       <div className="tabs">
-        <Button type="button" variant="ghost" className={tab === 'store' ? 'tab tab-active' : 'tab'} onPress={() => setTab('store')}>
+        <button type="button" className={tab === 'store' ? 'tab tab-active' : 'tab'} onClick={() => setTab('store')}>
           App Store ({apps.length})
-        </Button>
-        <Button type="button" variant="ghost" className={tab === 'team' ? 'tab tab-active' : 'tab'} onPress={() => setTab('team')}>
+        </button>
+        <button type="button" className={tab === 'team' ? 'tab tab-active' : 'tab'} onClick={() => setTab('team')}>
           Team&apos;s applications
-        </Button>
+        </button>
       </div>
 
       <div className="toolbar-row">
@@ -103,7 +102,7 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         </select>
         <div className="search-box">
           <span className="search-icon">⌕</span>
-          <Input type="text" placeholder="Search for keyword" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input type="text" placeholder="Search for keyword" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
       </div>
 
@@ -112,7 +111,7 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
           <div className="empty-art">▤</div>
           <h3>No team applications yet</h3>
           <p>Upload an APK to share it across your team&apos;s cloud phones.</p>
-          <Button type="button" variant="primary" className="btn-primary">⬆ Upload APK</Button>
+          <button type="button" className="btn-primary">⬆ Upload APK</button>
         </div>
       ) : (
         <StaggerGrid className="app-grid">
@@ -128,9 +127,9 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
                   </span>
                 </div>
               </div>
-              <Button type="button" variant="ghost" className="install-btn" onPress={() => openInstall(app)}>
+              <button type="button" className="install-btn" onClick={() => openInstall(app)}>
                 Install
-              </Button>
+              </button>
             </MotionItem>
           ))}
         </StaggerGrid>
@@ -141,9 +140,9 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>Install {installApp.name}</h2>
-              <Button type="button" isIconOnly variant="ghost" className="modal-close" onPress={() => !busy && setInstallApp(null)}>
+              <button type="button" className="modal-close" onClick={() => !busy && setInstallApp(null)}>
                 ✕
-              </Button>
+              </button>
             </header>
             <p className="helper mono">{installApp.packageName} · v{installApp.version}</p>
             <div className="modal-section">
@@ -174,9 +173,9 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
             </div>
             <footer className="modal-foot">
               <span className="helper">{picked.size} selected</span>
-              <Button type="button" variant="primary" className="btn-primary" isDisabled={Boolean(busy || picked.size === 0)} onPress={confirmInstall}>
+              <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmInstall}>
                 {busy ? 'Installing…' : `Install on ${picked.size} phone(s)`}
-              </Button>
+              </button>
             </footer>
           </div>
         </div>

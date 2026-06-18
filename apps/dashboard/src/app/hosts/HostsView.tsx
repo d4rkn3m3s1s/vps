@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { Button, Input } from '@heroui/react';
 import { useRouter } from 'next/navigation';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
@@ -89,9 +88,9 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
         title="Hosts"
         subtitle="KVM servers that run your cloud phones. Register a host, then run install.sh on it."
         actions={
-          <Button type="button" variant="primary" onPress={() => setOpen(true)}>
+          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
             + Register host
-          </Button>
+          </button>
         }
       />
 
@@ -102,9 +101,9 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
           <div className="empty-art">🖥</div>
           <h3>No hosts registered</h3>
           <p>Register a KVM bare-metal server, then run the installer to bring cloud phones online.</p>
-          <Button type="button" variant="primary" onPress={() => setOpen(true)}>
+          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
             + Register host
-          </Button>
+          </button>
         </div>
       ) : (
         <StaggerGrid className="app-grid">
@@ -123,7 +122,7 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
               </div>
               <div className="row">
                 <span className="helper">{h.region ?? 'self-hosted'} · seen {h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString('tr-TR') : 'never'}</span>
-                <Button type="button" variant="danger" size="sm" onPress={() => remove(h)}>Remove</Button>
+                <button type="button" className="action-btn action-danger" onClick={() => remove(h)}>Remove</button>
               </div>
             </MotionItem>
           ))}
@@ -135,54 +134,54 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
               <h2>{agentKey ? 'Host registered' : 'Register host'}</h2>
-              <Button type="button" className="modal-close" variant="ghost" isIconOnly onPress={() => !busy && closeModal()}>✕</Button>
+              <button type="button" className="modal-close" onClick={() => !busy && closeModal()}>✕</button>
             </header>
 
             {agentKey ? (
               <>
                 <p className="helper">Copy this agent key now — it is shown only once. Set it as <span className="mono">FLEET_HOST_KEY</span> on the host.</p>
                 <div className="copy-row">
-                  <Input className="copy-input mono" readOnly value={agentKey} />
-                  <Button type="button" variant="primary" onPress={() => navigator.clipboard?.writeText(agentKey)}>Copy</Button>
+                  <input className="copy-input mono" readOnly value={agentKey} />
+                  <button type="button" className="btn-primary" onClick={() => navigator.clipboard?.writeText(agentKey)}>Copy</button>
                 </div>
                 <pre className="job-pre">{`# On your KVM server:\ncd fleet/deploy/kvm-host\nexport FLEET_HOST_KEY=${agentKey}\nsudo bash install.sh`}</pre>
                 <footer className="modal-foot">
-                  <Button type="button" variant="primary" onPress={closeModal}>Done</Button>
+                  <button type="button" className="btn-primary" onClick={closeModal}>Done</button>
                 </footer>
               </>
             ) : (
               <>
                 <label className="field">
                   <span>Host name</span>
-                  <Input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="hetzner-ax52-fra" />
+                  <input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="hetzner-ax52-fra" />
                 </label>
                 <div className="field-row">
                   <label className="field">
                     <span>Address (IP / host)</span>
-                    <Input className="field-input mono" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} placeholder="10.0.0.5" />
+                    <input className="field-input mono" value={form.address} onChange={(e) => setForm((f) => ({ ...f, address: e.target.value }))} placeholder="10.0.0.5" />
                   </label>
                   <label className="field">
                     <span>Region</span>
-                    <Input className="field-input" value={form.region} onChange={(e) => setForm((f) => ({ ...f, region: e.target.value }))} placeholder="eu-central" />
+                    <input className="field-input" value={form.region} onChange={(e) => setForm((f) => ({ ...f, region: e.target.value }))} placeholder="eu-central" />
                   </label>
                 </div>
                 <div className="field-row">
                   <label className="field">
                     <span>Capacity (phones)</span>
-                    <Input className="field-input" type="number" value={form.capacity} onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))} />
+                    <input className="field-input" type="number" value={form.capacity} onChange={(e) => setForm((f) => ({ ...f, capacity: e.target.value }))} />
                   </label>
                   <label className="field">
                     <span>CPU cores</span>
-                    <Input className="field-input" type="number" value={form.cpuCores} onChange={(e) => setForm((f) => ({ ...f, cpuCores: e.target.value }))} />
+                    <input className="field-input" type="number" value={form.cpuCores} onChange={(e) => setForm((f) => ({ ...f, cpuCores: e.target.value }))} />
                   </label>
                   <label className="field">
                     <span>RAM (GB)</span>
-                    <Input className="field-input" type="number" value={form.memoryGb} onChange={(e) => setForm((f) => ({ ...f, memoryGb: e.target.value }))} />
+                    <input className="field-input" type="number" value={form.memoryGb} onChange={(e) => setForm((f) => ({ ...f, memoryGb: e.target.value }))} />
                   </label>
                 </div>
                 <footer className="modal-foot">
-                  <Button type="button" variant="ghost" onPress={() => !busy && closeModal()}>Cancel</Button>
-                  <Button type="button" variant="primary" isDisabled={busy} onPress={register}>{busy ? 'Registering…' : 'Register'}</Button>
+                  <button type="button" className="btn-ghost" onClick={() => !busy && closeModal()}>Cancel</button>
+                  <button type="button" className="btn-primary" disabled={busy} onClick={register}>{busy ? 'Registering…' : 'Register'}</button>
                 </footer>
               </>
             )}

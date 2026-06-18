@@ -1,13 +1,6 @@
-/* Tailwind v4 + HeroUI v3. We import Tailwind's theme + utilities but DEFER the
-   global preflight reset: the app still ships a large hand-written design system
-   below, and a full base reset would clobber it until every page is migrated to
-   HeroUI. HeroUI v3 ships prebuilt, self-contained component CSS (@heroui/styles),
-   so its components render correctly without the global preflight.
-   @import rules must come first per CSS spec. */
-@import 'tailwindcss/theme.css' layer(theme);
-@import 'tailwindcss/utilities.css' layer(utilities);
-@import '@heroui/styles/css';
-@config '../../tailwind.config.js';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   /* VANGUARD palette — deep navy base, electric-blue accent, enterprise status

@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { KeyRound, Plus, Trash2, Copy, Check } from 'lucide-react';
-import { Button, Input } from '@heroui/react';
 
 type ApiKey = {
   id: string;
@@ -122,9 +121,9 @@ export default function ApiKeysPage() {
                 </div>
               </div>
               {!k.revoked ? (
-                <Button isIconOnly variant="ghost" size="sm" onPress={() => revoke(k)} aria-label={`Revoke ${k.name}`}>
+                <button type="button" className="icon-btn" onClick={() => revoke(k)} aria-label={`Revoke ${k.name}`} title="Revoke">
                   <Trash2 size={15} />
-                </Button>
+                </button>
               ) : null}
             </div>
           ))}
@@ -138,9 +137,9 @@ export default function ApiKeysPage() {
         <div className="admin-form">
           <div className="admin-field">
             <label htmlFor="key-name">Name</label>
-            <Input
+            <input
               id="key-name"
-              type="text"
+              className="field-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. CI pipeline, Zapier"
@@ -157,9 +156,9 @@ export default function ApiKeysPage() {
               ))}
             </div>
           </div>
-          <Button variant="primary" isDisabled={busy || !name.trim()} onPress={create}>
+          <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={create}>
             <Plus size={15} /> {busy ? 'Creating…' : 'Create key'}
-          </Button>
+          </button>
         </div>
       </div>
 
@@ -177,14 +176,14 @@ export default function ApiKeysPage() {
             </p>
             <div className="key-reveal">
               <code className="mono">{revealed}</code>
-              <Button variant="ghost" onPress={copyKey}>
+              <button type="button" className="btn-ghost" onClick={copyKey}>
                 {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy'}
-              </Button>
+              </button>
             </div>
             <footer className="modal-foot">
-              <Button variant="primary" onPress={() => setRevealed(null)}>
+              <button type="button" className="btn-primary" onClick={() => setRevealed(null)}>
                 Done
-              </Button>
+              </button>
             </footer>
           </div>
         </div>

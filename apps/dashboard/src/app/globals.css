@@ -4100,3 +4100,35 @@ main {
 .farm-tl-detail { font-size: 0.78rem; opacity: 0.85; }
 .farm-tl-meta { font-size: 0.7rem; opacity: 0.55; }
 @media (max-width: 760px) { .farm-acct-body { grid-template-columns: 1fr; } }
+
+/* ── Proxy health badge ── */
+.farm-proxy-bad { color: #f87171; font-size: 0.7rem; font-weight: 600; }
+
+/* ── Accounts filter + bulk bars ── */
+.farm-filter-bar { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.8rem; flex-wrap: wrap; }
+.farm-search { display: inline-flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 220px; }
+.farm-search .field-input { flex: 1; }
+.farm-filter-sel { max-width: 180px; }
+.farm-filter-count { margin-left: auto; font-size: 0.78rem; opacity: 0.6; }
+.farm-bulk-bar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.55rem 0.75rem; margin-bottom: 0.75rem; border-radius: 10px; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.25); }
+.farm-bulk-count { font-weight: 600; font-size: 0.82rem; }
+.farm-bulk-tags { display: inline-flex; align-items: center; gap: 0.35rem; }
+.farm-bulk-tags .field-input { max-width: 160px; height: 30px; padding: 0.2rem 0.5rem; }
+.farm-bulk-bar .btn-ghost { display: inline-flex; align-items: center; gap: 4px; padding: 0.25rem 0.6rem; font-size: 0.78rem; }
+.farm-row-sel { background: rgba(56,189,248,0.06); }
+.farm-row-tags { display: inline-flex; gap: 3px; margin-left: 6px; flex-wrap: wrap; }
+.farm-tag-chip { font-size: 0.62rem; padding: 0.05rem 0.35rem; border-radius: 999px; background: rgba(148,163,184,0.18); opacity: 0.85; }
+
+/* ── Live TOTP ── */
+.farm-totp { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.3rem 0; }
+.farm-totp .btn-ghost { display: inline-flex; align-items: center; gap: 5px; }
+.farm-totp-code { display: inline-flex; align-items: center; gap: 0.5rem; cursor: pointer; padding: 0.25rem 0.6rem; border-radius: 8px; background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.3); }
+.farm-totp-digits { font-family: var(--font-mono, monospace); font-size: 1.05rem; font-weight: 700; letter-spacing: 0.08em; color: #34d399; }
+.farm-totp-ttl { font-size: 0.7rem; opacity: 0.7; }
+
+/* ── Health sparkline ── */
+.farm-spark { display: flex; flex-direction: column; gap: 0.3rem; }
+.farm-spark-svg { width: 100%; height: 60px; }
+.farm-spark-meta { display: flex; gap: 1rem; font-size: 0.72rem; opacity: 0.7; }
+.farm-trend-up { color: #34d399; font-weight: 600; }
+.farm-trend-down { color: #f87171; font-weight: 600; }

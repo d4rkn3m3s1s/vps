@@ -145,3 +145,50 @@ export async function exportHandler(req: Request, res: Response): Promise<void> 
   res.setHeader('Content-Disposition', 'attachment; filename="farm-accounts.csv"');
   res.send(csv);
 }
+
+// Generate the current 6-digit TOTP code from the account's encrypted 2FA seed.
+export async function totpHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = String(req.params.deviceId);
+  const data = await farmService.getTotpCode(deviceId);
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'farm.totp.generate',
+    resourceType: 'farm_account',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined
+    // Never log the code itself.
+  });
+  res.json({ data });
+}
+
+// Health-over-time series for one account (charted in the UI).
+export async function healthTrendHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = String(req.params.deviceId);
+  const limit = req.query.limit ? Number(req.query.limit) : 50;
+  res.json({ data: await farmService.getHealthTrend(deviceId, limit) });
+}
+
+// Bulk actions on selected accounts (tags / pause / resume / group).
+const bulkSchema = z.object({
+  deviceIds: z.array(z.string()).min(1).max(2000),
+  action: z.enum(['addTags', 'removeTags', 'pause', 'resume', 'setGroup']),
+  tags: z.array(z.string().max(40)).max(20).optional(),
+  groupId: z.string().optional()
+});
+
+export async function bulkHandler(req: Request, res: Response): Promise<void> {
+  const { deviceIds, action, tags, groupId } = bulkSchema.parse(req.body);
+  const result = await farmService.bulkAction(deviceIds, action, { tags, groupId });
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'farm.bulk',
+    resourceType: 'farm_account',
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { action, count: deviceIds.length, affected: result.affected }
+  });
+  res.json({ data: result });
+}

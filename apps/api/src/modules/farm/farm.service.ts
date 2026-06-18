@@ -1,6 +1,7 @@
+import { generateSync } from 'otplib';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { encryptString } from '../../lib/crypto';
+import { encryptString, decryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 
@@ -179,6 +180,78 @@ export const farmService = {
     await this.logAction({ deviceId, kind: 'manual', detail: 'Hesap kimlik bilgileri güncellendi', warmupStage: updated.warmupStage, workspaceId: updated.workspaceId ?? undefined });
     const { passwordEnc, emailPasswordEnc, totpSecretEnc, ...rest } = updated;
     return { ...rest, hasPassword: Boolean(passwordEnc), hasEmailPassword: Boolean(emailPasswordEnc), hasTotp: Boolean(totpSecretEnc) };
+  },
+
+  // ── Live 2FA code generation ────────────────────────────────────────────
+  // Decrypt the stored TOTP seed and produce the current 6-digit code. The seed
+  // never leaves the server; only the short-lived code is returned (so it can be
+  // typed into a login flow or fed to an RPA step). Includes seconds remaining
+  // in the current 30s window so the UI can show a countdown.
+  async getTotpCode(deviceId: string): Promise<{ code: string; secondsRemaining: number }> {
+    const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
+    if (!acct?.totpSecretEnc) throw new AppError('Bu hesapta kayıtlı 2FA anahtarı yok', 400, 'NO_TOTP_SECRET');
+    let secret: string;
+    try {
+      secret = decryptString(acct.totpSecretEnc);
+    } catch {
+      throw new AppError('2FA anahtarı çözülemedi', 500, 'TOTP_DECRYPT_FAILED');
+    }
+    let code: string;
+    try {
+      const r = generateSync({ secret, strategy: 'totp' }) as unknown;
+      code = typeof r === 'string' ? r : String((r as { token?: string })?.token ?? '');
+    } catch {
+      throw new AppError('Geçersiz 2FA anahtarı', 400, 'INVALID_TOTP_SECRET');
+    }
+    if (!/^\d{6}$/.test(code)) throw new AppError('2FA kodu üretilemedi', 500, 'TOTP_GENERATE_FAILED');
+    const secondsRemaining = 30 - (Math.floor(Date.now() / 1000) % 30);
+    return { code, secondsRemaining };
+  },
+
+  // ── Health trend ────────────────────────────────────────────────────────
+  // Build a chronological health series from the action log's healthAfter
+  // snapshots, so the UI can chart how an account's health moved over time.
+  async getHealthTrend(deviceId: string, limit = 50): Promise<{ at: string; health: number; kind: string }[]> {
+    const rows = await prisma.farmActionLog.findMany({
+      where: { deviceId, healthAfter: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      take: Math.min(500, Math.max(1, limit)),
+      select: { createdAt: true, healthAfter: true, kind: true }
+    });
+    return rows.map((r) => ({ at: r.createdAt.toISOString(), health: r.healthAfter ?? 0, kind: r.kind }));
+  },
+
+  // ── Bulk operations on selected accounts ────────────────────────────────
+  // Apply an action to many devices at once: add/remove tags, pause, resume,
+  // or move to a group. Returns how many were affected.
+  async bulkAction(
+    deviceIds: string[],
+    action: 'addTags' | 'removeTags' | 'pause' | 'resume' | 'setGroup',
+    payload: { tags?: string[] | undefined; groupId?: string | undefined } = {}
+  ): Promise<{ affected: number }> {
+    if (deviceIds.length === 0) return { affected: 0 };
+    let affected = 0;
+    for (const deviceId of deviceIds) {
+      const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
+      if (!acct) continue;
+      if (action === 'addTags' && payload.tags?.length) {
+        const next = Array.from(new Set([...(acct.tags ?? []), ...payload.tags.map((t) => t.trim()).filter(Boolean)]));
+        await prisma.farmAccount.update({ where: { deviceId }, data: { tags: next } });
+      } else if (action === 'removeTags' && payload.tags?.length) {
+        const remove = new Set(payload.tags.map((t) => t.trim()));
+        await prisma.farmAccount.update({ where: { deviceId }, data: { tags: (acct.tags ?? []).filter((t) => !remove.has(t)) } });
+      } else if (action === 'pause') {
+        await this.autoPause(deviceId, 'Operatör tarafından toplu duraklatıldı');
+      } else if (action === 'resume') {
+        await this.resumeAccount(deviceId);
+      } else if (action === 'setGroup') {
+        await prisma.device.update({ where: { id: deviceId }, data: { groupId: payload.groupId || null } }).catch(() => undefined);
+      } else {
+        continue;
+      }
+      affected += 1;
+    }
+    return { affected };
   },
 
   // Ensure a FarmAccount row exists for a device (created lazily as devices farm).
@@ -433,12 +506,17 @@ export const farmService = {
   // Round-robin a proxy from the workspace pool onto the device (records a
   // SET_PROXY job, same path bulk proxy assignment uses).
   async rotateProxyFor(deviceId: string, workspaceId: string | undefined, seed: number) {
-    const proxies = await prisma.proxy.findMany({
+    const all = await prisma.proxy.findMany({
       where: { ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'asc' }
     });
-    if (proxies.length === 0) return;
-    const proxy = proxies[seed % proxies.length]!;
+    if (all.length === 0) return;
+    // Proxy health: prefer proxies that aren't known-dead. A FAILED proxy would
+    // route the session through a broken egress (or worse, leak the real IP), so
+    // we only fall back to the full pool if none are healthy yet.
+    const healthy = all.filter((p) => p.status !== 'FAILED');
+    const pool = healthy.length > 0 ? healthy : all;
+    const proxy = pool[seed % pool.length]!;
     await createJobRecord(
       'EMULATOR_SET_PROXY',
       { deviceId, proxyId: proxy.id, host: proxy.host, port: proxy.port, type: proxy.type } as unknown as JobPayload,
@@ -450,9 +528,10 @@ export const farmService = {
   // ── Analytics ──────────────────────────────────────────────────────────
   async getSummary(workspaceId?: string) {
     const ws = workspaceId ? { workspaceId } : {};
-    const [campaigns, accounts] = await Promise.all([
+    const [campaigns, accounts, proxies] = await Promise.all([
       prisma.farmCampaign.findMany({ where: ws }),
-      prisma.farmAccount.findMany({ where: ws })
+      prisma.farmAccount.findMany({ where: ws }),
+      prisma.proxy.findMany({ where: ws, select: { status: true } })
     ]);
     const total = accounts.length;
     const avgHealth = total ? Math.round(accounts.reduce((s, a) => s + a.healthScore, 0) / total) : 0;
@@ -470,6 +549,12 @@ export const farmService = {
       campaigns: { total: campaigns.length, active: campaigns.filter((c) => c.status === 'ACTIVE').length },
       accounts: { total, paused, atRisk, avgHealth },
       actions: { today: actionsToday, total: totalActions },
+      proxies: {
+        total: proxies.length,
+        healthy: proxies.filter((p) => p.status === 'OK').length,
+        failed: proxies.filter((p) => p.status === 'FAILED').length,
+        unknown: proxies.filter((p) => p.status === 'UNKNOWN').length
+      },
       stageDistribution: stages,
       topActive: [...accounts].sort((a, b) => b.totalActions - a.totalActions).slice(0, 5).map((a) => ({ deviceId: a.deviceId, totalActions: a.totalActions, healthScore: a.healthScore })),
       atRiskList: accounts.filter((a) => a.healthScore < 50).sort((a, b) => a.healthScore - b.healthScore).slice(0, 10).map((a) => ({ deviceId: a.deviceId, healthScore: a.healthScore, paused: a.paused, pausedReason: a.pausedReason }))

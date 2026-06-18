@@ -4,15 +4,18 @@ import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import {
   actionLogHandler,
+  bulkHandler,
   createCampaignHandler,
   deleteCampaignHandler,
   exportHandler,
+  healthTrendHandler,
   importHandler,
   listAccountsHandler,
   listCampaignsHandler,
   resumeHandler,
   summaryHandler,
   tickHandler,
+  totpHandler,
   updateCampaignHandler,
   updateCredentialsHandler
 } from './farm.controller';
@@ -29,5 +32,8 @@ farmRouter.get('/summary', requireApiKey, authenticateJwt, asyncHandler(summaryH
 farmRouter.post('/accounts/:deviceId/resume', requireApiKey, authenticateJwt, asyncHandler(resumeHandler));
 farmRouter.put('/accounts/:deviceId/credentials', requireApiKey, authenticateJwt, asyncHandler(updateCredentialsHandler));
 farmRouter.get('/accounts/:deviceId/log', requireApiKey, authenticateJwt, asyncHandler(actionLogHandler));
+farmRouter.get('/accounts/:deviceId/totp', requireApiKey, authenticateJwt, asyncHandler(totpHandler));
+farmRouter.get('/accounts/:deviceId/health-trend', requireApiKey, authenticateJwt, asyncHandler(healthTrendHandler));
+farmRouter.post('/accounts/bulk', requireApiKey, authenticateJwt, asyncHandler(bulkHandler));
 farmRouter.post('/import', requireApiKey, authenticateJwt, asyncHandler(importHandler));
 farmRouter.post('/tick', requireApiKey, authenticateJwt, asyncHandler(tickHandler));

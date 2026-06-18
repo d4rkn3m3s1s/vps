@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck } from 'lucide-react';
+import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -68,10 +68,12 @@ type Summary = {
   campaigns: { total: number; active: number };
   accounts: { total: number; paused: number; atRisk: number; avgHealth: number };
   actions: { today: number; total: number };
+  proxies: { total: number; healthy: number; failed: number; unknown: number };
   stageDistribution: number[];
   topActive: { deviceId: string; totalActions: number; healthScore: number }[];
   atRiskList: { deviceId: string; healthScore: number; paused: boolean; pausedReason: string | null }[];
 };
+type TrendPoint = { at: string; health: number; kind: string };
 
 const STAGE_LABEL = ['—', 'Yeni', 'Isınıyor', 'Gelişiyor', 'Aktif', 'Olgun'];
 
@@ -106,9 +108,18 @@ export function FarmView() {
   // Credential / timeline drawer for a single account.
   const [acctOpen, setAcctOpen] = useState<Account | null>(null);
   const [acctLog, setAcctLog] = useState<ActionLog[]>([]);
+  const [trend, setTrend] = useState<TrendPoint[]>([]);
+  const [totp, setTotp] = useState<{ code: string; secondsRemaining: number } | null>(null);
   const [cred, setCred] = useState({
     platform: '', username: '', emailAddress: '', password: '', emailPassword: '', totpSecret: '', notes: '', tags: ''
   });
+
+  // Accounts filtering + bulk selection.
+  const [filterText, setFilterText] = useState('');
+  const [filterPlatform, setFilterPlatform] = useState('');
+  const [filterHealth, setFilterHealth] = useState(''); // '' | 'risk' | 'paused' | 'healthy'
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkTags, setBulkTags] = useState('');
 
   const [form, setForm] = useState({
     name: '',
@@ -216,11 +227,65 @@ export function FarmView() {
       tags: (a.tags ?? []).join(', ')
     });
     setAcctLog([]);
+    setTrend([]);
+    setTotp(null);
     try {
-      const res = await fetch(`/api/farm/accounts/${a.deviceId}/log?limit=100`);
-      const json = await res.json();
-      if (Array.isArray(json.data)) setAcctLog(json.data);
+      const [lr, tr] = await Promise.all([
+        fetch(`/api/farm/accounts/${a.deviceId}/log?limit=100`),
+        fetch(`/api/farm/accounts/${a.deviceId}/health-trend?limit=50`)
+      ]);
+      const [lj, tj] = await Promise.all([lr.json(), tr.json()]);
+      if (Array.isArray(lj.data)) setAcctLog(lj.data);
+      if (Array.isArray(tj.data)) setTrend(tj.data);
     } catch { /* ignore */ }
+  }
+
+  // Generate a live TOTP code from the stored 2FA seed.
+  async function genTotp() {
+    if (!acctOpen) return;
+    try {
+      const res = await fetch(`/api/farm/accounts/${acctOpen.deviceId}/totp`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? 'Kod üretilemedi');
+      setTotp(json.data);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : 'Kod üretilemedi');
+    }
+  }
+
+  function copyText(t: string) {
+    try { void navigator.clipboard.writeText(t); flash('Panoya kopyalandı.'); } catch { /* ignore */ }
+  }
+
+  // Bulk action on selected accounts.
+  async function runBulk(action: 'addTags' | 'removeTags' | 'pause' | 'resume', tags?: string[]) {
+    if (selected.size === 0) return flash('Önce hesap seçin.');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/farm/accounts/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: Array.from(selected), action, ...(tags ? { tags } : {}) })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message ?? 'Toplu işlem başarısız');
+      flash(`${json.data?.affected ?? 0} hesap güncellendi.`);
+      setSelected(new Set());
+      setBulkTags('');
+      await loadAll();
+    } catch (e) {
+      flash(e instanceof Error ? e.message : 'Toplu işlem başarısız');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleSelect(deviceId: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(deviceId)) next.delete(deviceId); else next.add(deviceId);
+      return next;
+    });
   }
 
   async function saveCredentials() {
@@ -346,6 +411,21 @@ export function FarmView() {
     }
   }
 
+  // Derived: filtered accounts + the platform options present in the data.
+  const platformOptions = Array.from(new Set(accounts.map((a) => a.platform).filter(Boolean))) as string[];
+  const filteredAccounts = accounts.filter((a) => {
+    if (filterPlatform && a.platform !== filterPlatform) return false;
+    if (filterHealth === 'risk' && !(a.healthScore < 50 && !a.paused)) return false;
+    if (filterHealth === 'paused' && !a.paused) return false;
+    if (filterHealth === 'healthy' && !(a.healthScore >= 70 && !a.paused)) return false;
+    if (filterText) {
+      const q = filterText.toLowerCase();
+      const hay = `${a.device?.name ?? ''} ${a.username ?? ''} ${a.emailAddress ?? ''} ${(a.tags ?? []).join(' ')}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
   return (
     <PageMotion className="page">
       <PageHeader
@@ -408,6 +488,13 @@ export function FarmView() {
             <div className="metric">
               <p className="metric-label">Risk / Duraklatılan</p>
               <p className="metric-value">{summary?.accounts.atRisk ?? 0} / {summary?.accounts.paused ?? 0}</p>
+            </div>
+            <div className="metric">
+              <p className="metric-label"><Globe size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Proxy (sağlıklı / toplam)</p>
+              <p className="metric-value">
+                {summary?.proxies.healthy ?? 0}<span className="metric-sub"> / {summary?.proxies.total ?? 0}</span>
+                {(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad"> · {summary?.proxies.failed} ölü</span> : null}
+              </p>
             </div>
           </div>
 
@@ -504,13 +591,57 @@ export function FarmView() {
           </div>
         ) : (
           <div className="panel">
+            {/* Filter bar */}
+            <div className="farm-filter-bar">
+              <span className="farm-search">
+                <Search size={14} />
+                <input className="field-input" placeholder="Cihaz, kullanıcı, e-posta veya etiket ara…" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
+              </span>
+              <select className="field-input farm-filter-sel" value={filterPlatform} onChange={(e) => setFilterPlatform(e.target.value)}>
+                <option value="">Tüm platformlar</option>
+                {platformOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+              <select className="field-input farm-filter-sel" value={filterHealth} onChange={(e) => setFilterHealth(e.target.value)}>
+                <option value="">Tüm durumlar</option>
+                <option value="healthy">Sağlıklı (≥70)</option>
+                <option value="risk">Risk (&lt;50)</option>
+                <option value="paused">Duraklatılan</option>
+              </select>
+              <span className="helper farm-filter-count">{filteredAccounts.length} / {accounts.length}</span>
+            </div>
+
+            {/* Bulk action bar (shown when rows are selected) */}
+            {selected.size > 0 ? (
+              <div className="farm-bulk-bar">
+                <span className="farm-bulk-count">{selected.size} seçili</span>
+                <span className="farm-bulk-tags">
+                  <Tag size={13} />
+                  <input className="field-input" placeholder="etiket1, etiket2" value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} />
+                  <button type="button" className="btn-ghost" disabled={busy || !bulkTags.trim()} onClick={() => runBulk('addTags', bulkTags.split(',').map((t) => t.trim()).filter(Boolean))}>Ekle</button>
+                  <button type="button" className="btn-ghost" disabled={busy || !bulkTags.trim()} onClick={() => runBulk('removeTags', bulkTags.split(',').map((t) => t.trim()).filter(Boolean))}>Çıkar</button>
+                </span>
+                <button type="button" className="btn-ghost" disabled={busy} onClick={() => runBulk('pause')}><Pause size={13} /> Duraklat</button>
+                <button type="button" className="btn-ghost" disabled={busy} onClick={() => runBulk('resume')}><Play size={13} /> Devam ettir</button>
+                <button type="button" className="btn-ghost" onClick={() => setSelected(new Set())}>Seçimi temizle</button>
+              </div>
+            ) : null}
+
             <div className="health-table">
-              <div className="health-row health-head" style={{ gridTemplateColumns: '1.4fr 0.9fr 0.9fr 0.5fr 0.5fr 0.6fr 0.9fr 1fr 0.8fr' }}>
+              <div className="health-row health-head" style={{ gridTemplateColumns: '28px 1.3fr 0.9fr 0.85fr 0.45fr 0.45fr 0.55fr 0.9fr 0.95fr 0.75fr' }}>
+                <span>
+                  <input type="checkbox" aria-label="Tümünü seç"
+                    checked={filteredAccounts.length > 0 && filteredAccounts.every((a) => selected.has(a.deviceId))}
+                    onChange={(e) => setSelected(e.target.checked ? new Set(filteredAccounts.map((a) => a.deviceId)) : new Set())} />
+                </span>
                 <span>Cihaz</span><span>Hesap</span><span>Aşama</span><span>Gün</span><span>Bugün</span><span>Toplam</span><span>Sağlık</span><span>Durum</span><span>Kimlik</span>
               </div>
-              {accounts.map((a) => (
-                <div key={a.id} className="health-row" style={{ gridTemplateColumns: '1.4fr 0.9fr 0.9fr 0.5fr 0.5fr 0.6fr 0.9fr 1fr 0.8fr' }}>
-                  <span className="health-name">{a.device?.name ?? a.deviceId.slice(0, 8)}</span>
+              {filteredAccounts.map((a) => (
+                <div key={a.id} className={`health-row ${selected.has(a.deviceId) ? 'farm-row-sel' : ''}`} style={{ gridTemplateColumns: '28px 1.3fr 0.9fr 0.85fr 0.45fr 0.45fr 0.55fr 0.9fr 0.95fr 0.75fr' }}>
+                  <span><input type="checkbox" checked={selected.has(a.deviceId)} onChange={() => toggleSelect(a.deviceId)} /></span>
+                  <span className="health-name">
+                    {a.device?.name ?? a.deviceId.slice(0, 8)}
+                    {(a.tags ?? []).length > 0 ? <span className="farm-row-tags">{a.tags.map((t) => <span key={t} className="farm-tag-chip">{t}</span>)}</span> : null}
+                  </span>
                   <span className="farm-acct-id">
                     {a.username ? (
                       <span title={a.platform ?? ''}>{a.platform ? <span className="farm-plat">{a.platform}</span> : null}@{a.username}</span>
@@ -544,6 +675,7 @@ export function FarmView() {
                   </span>
                 </div>
               ))}
+              {filteredAccounts.length === 0 ? <p className="helper" style={{ padding: '1rem' }}>Filtreye uyan hesap yok.</p> : null}
             </div>
           </div>
         )
@@ -668,13 +800,41 @@ export function FarmView() {
                   <label className="distribute-field"><span className="helper">E-posta şifresi {acctOpen.hasEmailPassword ? '(kayıtlı ✓)' : ''}</span><input className="field-input" type="password" autoComplete="new-password" value={cred.emailPassword} onChange={(e) => setCred({ ...cred, emailPassword: e.target.value })} /></label>
                 </div>
                 <label className="distribute-field"><span className="helper">2FA (TOTP) gizli anahtarı {acctOpen.hasTotp ? '(kayıtlı ✓)' : ''}</span><input className="field-input" type="password" autoComplete="off" placeholder="JBSW Y3DP EHPK 3PXP" value={cred.totpSecret} onChange={(e) => setCred({ ...cred, totpSecret: e.target.value })} /></label>
+                {/* Live 2FA code generation from the stored seed. */}
+                {acctOpen.hasTotp ? (
+                  <div className="farm-totp">
+                    <button type="button" className="btn-ghost" onClick={genTotp}><KeyRound size={13} /> 2FA kodu üret</button>
+                    {totp ? (
+                      <span className="farm-totp-code" onClick={() => copyText(totp.code)} title="Kopyalamak için tıkla">
+                        <span className="farm-totp-digits">{totp.code.slice(0, 3)} {totp.code.slice(3)}</span>
+                        <span className="farm-totp-ttl">{totp.secondsRemaining}s</span>
+                        <Copy size={12} />
+                      </span>
+                    ) : <span className="helper">Kasadaki anahtardan anlık kod üretir</span>}
+                  </div>
+                ) : null}
                 <label className="distribute-field"><span className="helper">Etiketler (virgülle)</span><input className="field-input" placeholder="aged, us-geo, buyer" value={cred.tags} onChange={(e) => setCred({ ...cred, tags: e.target.value })} /></label>
                 <label className="distribute-field"><span className="helper">Notlar</span><textarea className="field-input" rows={3} value={cred.notes} onChange={(e) => setCred({ ...cred, notes: e.target.value })} /></label>
               </div>
 
-              {/* ── Action timeline ── */}
+              {/* ── Health trend + action timeline ── */}
               <div className="farm-acct-col">
-                <h3 className="farm-acct-h"><History size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Eylem günlüğü</h3>
+                <h3 className="farm-acct-h"><TrendingUp size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Sağlık trendi</h3>
+                {trend.length < 2 ? (
+                  <p className="helper">Grafik için yeterli veri yok (en az 2 ölçüm gerekir).</p>
+                ) : (
+                  <div className="farm-spark">
+                    <Sparkline points={trend.map((t) => t.health)} />
+                    <div className="farm-spark-meta">
+                      <span>İlk: {trend[0]?.health}</span>
+                      <span>Son: {trend[trend.length - 1]?.health}</span>
+                      <span className={(trend[trend.length - 1]?.health ?? 0) >= (trend[0]?.health ?? 0) ? 'farm-trend-up' : 'farm-trend-down'}>
+                        {((trend[trend.length - 1]?.health ?? 0) - (trend[0]?.health ?? 0)) >= 0 ? '▲' : '▼'} {Math.abs((trend[trend.length - 1]?.health ?? 0) - (trend[0]?.health ?? 0))}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                <h3 className="farm-acct-h" style={{ marginTop: '0.8rem' }}><History size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Eylem günlüğü</h3>
                 {acctLog.length === 0 ? (
                   <p className="helper">Henüz kayıtlı eylem yok.</p>
                 ) : (
@@ -706,5 +866,31 @@ export function FarmView() {
         </div>
       ) : null}
     </PageMotion>
+  );
+}
+
+// Minimal dependency-free SVG sparkline for the health trend. Maps the series
+// into a 0-100 viewBox so health values plot directly.
+function Sparkline({ points }: { points: number[] }) {
+  const w = 260;
+  const h = 60;
+  const n = points.length;
+  if (n < 2) return null;
+  const max = 100;
+  const min = 0;
+  const span = max - min || 1;
+  const coords = points.map((p, i) => {
+    const x = (i / (n - 1)) * w;
+    const y = h - ((p - min) / span) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = points[n - 1] ?? 0;
+  const stroke = last >= 70 ? '#34d399' : last >= 40 ? '#fbbf24' : '#f87171';
+  const areaPath = `M0,${h} L${coords.join(' L')} L${w},${h} Z`;
+  return (
+    <svg className="farm-spark-svg" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label="Sağlık trendi">
+      <path d={areaPath} fill={stroke} fillOpacity={0.12} />
+      <polyline points={coords.join(' ')} fill="none" stroke={stroke} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   );
 }

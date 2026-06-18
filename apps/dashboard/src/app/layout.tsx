@@ -9,6 +9,7 @@ import { I18nProvider } from '../lib/i18n';
 import { LiveProvider } from '../lib/live';
 import { MobileMenuButton } from '../components/MobileMenuButton';
 import { LiveIndicator } from '../components/LiveIndicator';
+import { Preloader } from '../components/Preloader';
 
 const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-sans' });
 const ibmPlexMono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-mono' });
@@ -37,6 +38,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
         />
       </head>
       <body className={`${spaceGrotesk.variable} ${ibmPlexMono.variable}`}>
+        <Preloader />
         <I18nProvider>
           <LiveProvider>
             <div className="app-shell">

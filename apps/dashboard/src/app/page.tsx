@@ -4,7 +4,7 @@ import { PageMotion, StaggerGrid, MotionItem, AnimatedNumber } from '../componen
 import { OnboardingChecklist, type OnboardingStep } from '../components/OnboardingChecklist';
 import { DashboardProvider, Widget } from '../components/Dashboard';
 import { PageHeader } from '../components/PageHeader';
-import { ArrowUpRight } from 'lucide-react';
+import { ArrowUpRight, Smartphone, Network, ListChecks, Boxes } from 'lucide-react';
 import { LiveInfrastructure, type InfraMetric } from '../components/LiveInfrastructure';
 import { DeviceMap, type RegionStat } from '../components/DeviceMap';
 import { AutomationCenter, type AutomationWorkflow } from '../components/AutomationCenter';
@@ -257,21 +257,25 @@ export default async function HomePage() {
       <Widget id="metrics" title="Metrikler">
       <StaggerGrid className="stats">
         <MotionItem className="metric ov-metric">
+          <span className="metric-ico metric-ico-blue"><Smartphone size={18} /></span>
           <p className="metric-label">Bulut telefonlar</p>
           <p className="metric-value"><AnimatedNumber value={d?.total ?? 0} format={false} /></p>
           <p className="metric-sub">{d?.online ?? 0} çevrimiçi · {d?.offline ?? 0} çevrimdışı</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
+          <span className="metric-ico metric-ico-cyan"><Network size={18} /></span>
           <p className="metric-label">Proxyler</p>
           <p className="metric-value"><AnimatedNumber value={proxyCount} format={false} /></p>
           <p className="metric-sub">Yapılandırılmış uç noktalar</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
+          <span className="metric-ico metric-ico-violet"><ListChecks size={18} /></span>
           <p className="metric-label">İşler</p>
           <p className="metric-value"><AnimatedNumber value={sys?.database.jobs ?? 0} format={false} /></p>
           <p className="metric-sub">{pendingJobs} devam ediyor</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
+          <span className="metric-ico metric-ico-green"><Boxes size={18} /></span>
           <p className="metric-label">Eklentiler</p>
           <p className="metric-value"><AnimatedNumber value={sys?.plugins.length ?? 0} format={false} /></p>
           <p className="metric-sub">Sosyal modüller</p>

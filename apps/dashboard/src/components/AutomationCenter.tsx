@@ -35,17 +35,17 @@ export function AutomationCenter({ workflows }: { workflows: AutomationWorkflow[
   // the Scheduler page). Either way we report what happened — no fake success.
   async function run(wf: AutomationWorkflow) {
     if (wf.kind !== 'rpa') {
-      flash('Schedules are managed on the Scheduler page.');
+      flash('Zamanlamalar, Zamanlayıcı sayfasından yönetilir.');
       router.push('/scheduler');
       return;
     }
     setBusy(wf.id);
     try {
       const res = await fetch(`/api/rpa/${wf.id}/run`, { method: 'POST' });
-      flash(res.ok ? `${wf.name} queued` : 'Run failed');
+      flash(res.ok ? `${wf.name} sıraya alındı` : 'Çalıştırma başarısız oldu');
       router.refresh();
     } catch {
-      flash('Run failed');
+      flash('Çalıştırma başarısız oldu');
     } finally {
       setBusy(null);
     }
@@ -55,8 +55,8 @@ export function AutomationCenter({ workflows }: { workflows: AutomationWorkflow[
     return (
       <div className="wf-empty">
         <Workflow size={20} />
-        <span>No automations yet.</span>
-        <a href="/rpa" className="btn-primary">Create one</a>
+        <span>Henüz otomasyon yok.</span>
+        <a href="/rpa" className="btn-primary">Bir tane oluştur</a>
       </div>
     );
   }
@@ -72,27 +72,27 @@ export function AutomationCenter({ workflows }: { workflows: AutomationWorkflow[
                 <span className="wf-ico"><Workflow size={16} /></span>
                 <div>
                   <strong>{wf.name}</strong>
-                  <span className="wf-kind">{wf.kind === 'rpa' ? 'RPA Flow' : 'Scheduled'}</span>
+                  <span className="wf-kind">{wf.kind === 'rpa' ? 'RPA Akışı' : 'Zamanlanmış'}</span>
                 </div>
               </div>
               <span className={`wf-status ${statusTone(wf.status)}`}>{wf.status}</span>
             </header>
 
             <div className="wf-stats">
-              <div><span className="wf-stat-v">{wf.devices}</span><span className="wf-stat-l">Devices</span></div>
-              <div><span className="wf-stat-v">{wf.successRate}%</span><span className="wf-stat-l">Success</span></div>
+              <div><span className="wf-stat-v">{wf.devices}</span><span className="wf-stat-l">Cihaz</span></div>
+              <div><span className="wf-stat-v">{wf.successRate}%</span><span className="wf-stat-l">Başarı</span></div>
               <div>
                 <span className="wf-stat-v">{wf.lastRun ? new Date(wf.lastRun).toLocaleDateString('tr-TR') : '—'}</span>
-                <span className="wf-stat-l">Last run</span>
+                <span className="wf-stat-l">Son çalıştırma</span>
               </div>
             </div>
 
             <div className="wf-actions">
-              <button type="button" className="wf-btn" disabled={busy === wf.id} onClick={() => run(wf)} title="Run now">
-                <Play size={15} /> Run now
+              <button type="button" className="wf-btn" disabled={busy === wf.id} onClick={() => run(wf)} title="Şimdi çalıştır">
+                <Play size={15} /> Şimdi çalıştır
               </button>
-              <a className="wf-btn" href={wf.editHref} title="Edit">
-                <Pencil size={15} /> Edit
+              <a className="wf-btn" href={wf.editHref} title="Düzenle">
+                <Pencil size={15} /> Düzenle
               </a>
             </div>
           </article>

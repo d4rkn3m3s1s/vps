@@ -49,12 +49,12 @@ export function WorkspaceMembers() {
         body: JSON.stringify({ email: email.trim(), role })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Invite failed');
-      flash(`${email.trim()} added as ${role}`);
+      if (!res.ok) throw new Error(json.message ?? 'Davet başarısız oldu');
+      flash(`${email.trim()} ${role} olarak eklendi`);
       setEmail('');
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Invite failed');
+      flash(e instanceof Error ? e.message : 'Davet başarısız oldu');
     } finally {
       setBusy(false);
     }
@@ -62,18 +62,18 @@ export function WorkspaceMembers() {
 
   async function removeMember(memberId: string, memberEmail: string) {
     if (!workspace) return;
-    if (!confirm(`Remove ${memberEmail} from ${workspace.name}?`)) return;
+    if (!confirm(`${memberEmail} kullanıcısı ${workspace.name} çalışma alanından çıkarılsın mı?`)) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/workspaces/${workspace.id}/members/${memberId}`, { method: 'DELETE' });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not remove member');
+        throw new Error(j.message ?? 'Üye çıkarılamadı');
       }
-      flash(`${memberEmail} removed`);
+      flash(`${memberEmail} çıkarıldı`);
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not remove member');
+      flash(e instanceof Error ? e.message : 'Üye çıkarılamadı');
     } finally {
       setBusy(false);
     }
@@ -85,7 +85,7 @@ export function WorkspaceMembers() {
     <div className="panel-stack">
       {workspace ? (
         <div className="row">
-          <span className="helper">Workspace</span>
+          <span className="helper">Çalışma Alanı</span>
           <span className="mono">{workspace.name}</span>
         </div>
       ) : null}
@@ -104,8 +104,8 @@ export function WorkspaceMembers() {
                 className="icon-btn"
                 disabled={busy}
                 onClick={() => removeMember(m.id, m.email)}
-                aria-label={`Remove ${m.email}`}
-                title="Remove member"
+                aria-label={`${m.email} kullanıcısını çıkar`}
+                title="Üyeyi çıkar"
               >
                 <Trash2 size={14} />
               </button>
@@ -124,16 +124,16 @@ export function WorkspaceMembers() {
             onChange={(e) => setEmail(e.target.value)}
           />
           <select className="inline-select" value={role} onChange={(e) => setRole(e.target.value)}>
-            <option value="admin">Admin</option>
-            <option value="operator">Operator</option>
-            <option value="viewer">Viewer</option>
+            <option value="admin">Yönetici</option>
+            <option value="operator">Operatör</option>
+            <option value="viewer">İzleyici</option>
           </select>
           <button type="button" className="btn-primary" disabled={busy || !email.trim()} onClick={invite}>
-            <UserPlus size={15} /> Invite
+            <UserPlus size={15} /> Davet et
           </button>
         </div>
       ) : (
-        <p className="helper">Only workspace admins can invite members.</p>
+        <p className="helper">Yalnızca çalışma alanı yöneticileri üye davet edebilir.</p>
       )}
 
       {msg ? <p className="helper">{msg}</p> : null}

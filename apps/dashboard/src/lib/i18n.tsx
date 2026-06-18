@@ -55,13 +55,13 @@ type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (key: string) => string 
 const I18nCtx = createContext<Ctx>({ lang: 'en', setLang: () => {}, t: (k) => k });
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>('en');
+  // The product ships Turkish-first; English is a fallback only.
+  const [lang, setLangState] = useState<Lang>('tr');
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem('fleet.lang') as Lang | null;
       if (saved === 'en' || saved === 'tr') setLangState(saved);
-      else if (navigator.language.startsWith('tr')) setLangState('tr');
     } catch {
       /* ignore */
     }

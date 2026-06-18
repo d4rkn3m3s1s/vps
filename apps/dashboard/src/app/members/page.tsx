@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { MembersView, type Member } from './MembersView';
 
-export const metadata = { title: 'Members · VPS Fleet' };
+export const metadata = { title: 'Üyeler · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function MembersPage() {

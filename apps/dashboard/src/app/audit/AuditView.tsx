@@ -92,11 +92,11 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Audit"
-        subtitle="Security and activity log trail."
+        title="Denetim"
+        subtitle="Güvenlik ve etkinlik kayıt izi."
         actions={
           <button type="button" className="btn-ghost" onClick={exportCsv} disabled={logs.length === 0}>
-            <Download size={15} /> Export CSV
+            <Download size={15} /> CSV Dışa Aktar
           </button>
         }
       />
@@ -104,19 +104,19 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
       <div className="audit-filters">
         <div className="search-box">
           <span className="search-icon" aria-hidden><Search size={14} /></span>
-          <input type="text" placeholder="Action (e.g. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
+          <input type="text" placeholder="İşlem (örn. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
         </div>
-        <input className="field-input" type="text" placeholder="Actor email" value={actor} onChange={(e) => setActor(e.target.value)} />
+        <input className="field-input" type="text" placeholder="Kullanıcı e-postası" value={actor} onChange={(e) => setActor(e.target.value)} />
         <label className="audit-date">
-          <span className="helper">From</span>
+          <span className="helper">Başlangıç</span>
           <input className="field-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
         </label>
         <label className="audit-date">
-          <span className="helper">To</span>
+          <span className="helper">Bitiş</span>
           <input className="field-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
         </label>
-        <button type="button" className="btn-ghost" onClick={reset} title="Clear filters">
-          <RotateCcw size={14} /> Reset
+        <button type="button" className="btn-ghost" onClick={reset} title="Filtreleri temizle">
+          <RotateCcw size={14} /> Sıfırla
         </button>
       </div>
 
@@ -124,22 +124,22 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
         <table className="profile-table">
           <thead>
             <tr>
-              <th>Action</th>
-              <th>Resource</th>
-              <th>User</th>
+              <th>İşlem</th>
+              <th>Kaynak</th>
+              <th>Kullanıcı</th>
               <th>IP</th>
-              <th>Time</th>
+              <th>Zaman</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={5}><div className="table-empty"><span>Loading…</span></div></td></tr>
+              <tr><td colSpan={5}><div className="table-empty"><span>Yükleniyor…</span></div></td></tr>
             ) : logs.length === 0 ? (
               <tr>
                 <td colSpan={5}>
                   <div className="table-empty">
                     <div className="empty-art">☰</div>
-                    <span>No matching audit entries</span>
+                    <span>Eşleşen denetim kaydı yok</span>
                   </div>
                 </td>
               </tr>
@@ -148,7 +148,7 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
                 <tr key={l.id}>
                   <td><strong>{l.action}</strong></td>
                   <td className="mono helper">{l.resourceType}{l.resourceId ? `:${l.resourceId.slice(0, 8)}` : ''}</td>
-                  <td>{l.user?.email ?? 'system'}</td>
+                  <td>{l.user?.email ?? 'sistem'}</td>
                   <td className="mono helper">{l.ip ?? '—'}</td>
                   <td className="helper">{new Date(l.createdAt).toLocaleString('tr-TR')}</td>
                 </tr>
@@ -158,7 +158,7 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
         </table>
       </div>
 
-      <p className="helper" style={{ marginTop: '0.75rem' }}>{logs.length} entries shown (max 200). Export includes the filtered set.</p>
+      <p className="helper" style={{ marginTop: '0.75rem' }}>{logs.length} kayıt gösteriliyor (en fazla 200). Dışa aktarma, filtrelenen kümeyi içerir.</p>
     </PageMotion>
   );
 }

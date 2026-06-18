@@ -5,7 +5,7 @@ import './globals.css';
 import { Sidebar } from '../components/Sidebar';
 import { CommandPalette } from '../components/CommandPalette';
 import { NotificationCenter } from '../components/NotificationCenter';
-import { I18nProvider, LanguageSwitcher } from '../lib/i18n';
+import { I18nProvider } from '../lib/i18n';
 import { LiveProvider } from '../lib/live';
 import { MobileMenuButton } from '../components/MobileMenuButton';
 import { LiveIndicator } from '../components/LiveIndicator';
@@ -14,8 +14,8 @@ const spaceGrotesk = Space_Grotesk({ subsets: ['latin'], variable: '--font-sans'
 const ibmPlexMono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
-  title: 'VPS Fleet · Cloud Phones',
-  description: 'Manage and control Android cloud phone fleets from a secure dashboard.'
+  title: 'VPS Fleet · Bulut Telefonlar',
+  description: 'Android bulut telefon filolarınızı güvenli bir panelden yönetin ve kontrol edin.'
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -46,7 +46,6 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   <MobileMenuButton />
                   <span className="topbar-spacer" />
                   <LiveIndicator />
-                  <LanguageSwitcher />
                   <NotificationCenter />
                 </div>
                 {children}

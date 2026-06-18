@@ -38,7 +38,13 @@ type Account = {
   device?: { id: string; name: string; status: string } | null;
 };
 
-const STAGE_LABEL = ['—', 'New', 'Warming', 'Building', 'Active', 'Mature'];
+const STAGE_LABEL = ['—', 'Yeni', 'Isınıyor', 'Gelişiyor', 'Aktif', 'Olgun'];
+
+const STATUS_LABEL: Record<string, string> = {
+  ACTIVE: 'aktif',
+  PAUSED: 'duraklatıldı',
+  COMPLETED: 'tamamlandı'
+};
 
 export function FarmView() {
   const [tab, setTab] = useState<'campaigns' | 'accounts'>('campaigns');
@@ -81,7 +87,7 @@ export function FarmView() {
       if (Array.isArray(gJson.data)) setGroups(gJson.data);
       if (Array.isArray(aJson.data)) setAccounts(aJson.data);
     } catch {
-      flash('Could not load farm data.');
+      flash('Çiftlik verileri yüklenemedi.');
     }
   }
 
@@ -90,7 +96,7 @@ export function FarmView() {
   }, []);
 
   async function createCampaign() {
-    if (!form.name.trim()) return flash('Campaign name is required.');
+    if (!form.name.trim()) return flash('Kampanya adı gereklidir.');
     setBusy(true);
     try {
       const body = {
@@ -110,13 +116,13 @@ export function FarmView() {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not create campaign');
+      if (!res.ok) throw new Error(json.message ?? 'Kampanya oluşturulamadı');
       setCreateOpen(false);
       setForm({ ...form, name: '' });
-      flash('Campaign created and running.');
+      flash('Kampanya oluşturuldu ve çalışıyor.');
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not create campaign');
+      flash(e instanceof Error ? e.message : 'Kampanya oluşturulamadı');
     } finally {
       setBusy(false);
     }
@@ -131,25 +137,25 @@ export function FarmView() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
       });
-      if (!res.ok) throw new Error('Could not update');
+      if (!res.ok) throw new Error('Güncellenemedi');
       await loadAll();
     } catch {
-      flash('Could not update campaign.');
+      flash('Kampanya güncellenemedi.');
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(c: Campaign) {
-    if (!confirm(`Delete campaign "${c.name}"?`)) return;
+    if (!confirm(`"${c.name}" kampanyası silinsin mi?`)) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/farm/campaigns/${c.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('Could not delete');
-      flash('Campaign deleted.');
+      if (!res.ok) throw new Error('Silinemedi');
+      flash('Kampanya silindi.');
       await loadAll();
     } catch {
-      flash('Could not delete campaign.');
+      flash('Kampanya silinemedi.');
     } finally {
       setBusy(false);
     }
@@ -160,11 +166,11 @@ export function FarmView() {
     try {
       const res = await fetch('/api/farm/tick', { method: 'POST' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Tick failed');
-      flash(`Engine ran: ${json.data?.dispatched ?? 0} action(s) dispatched across ${json.data?.campaigns ?? 0} campaign(s).`);
+      if (!res.ok) throw new Error(json.message ?? 'Motor çalıştırılamadı');
+      flash(`Motor çalıştı: ${json.data?.campaigns ?? 0} kampanyada ${json.data?.dispatched ?? 0} işlem gönderildi.`);
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Tick failed');
+      flash(e instanceof Error ? e.message : 'Motor çalıştırılamadı');
     } finally {
       setBusy(false);
     }
@@ -173,15 +179,15 @@ export function FarmView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Farm"
-        subtitle="Humanized, scheduled account warmup across your device fleet."
+        title="Çiftlik"
+        subtitle="Cihaz filonuzda insansı, zamanlanmış hesap ısıtma."
         actions={
           <>
             <button type="button" className="btn-ghost" disabled={busy} onClick={runNow} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Zap size={14} /> Run engine now
+              <Zap size={14} /> Motoru şimdi çalıştır
             </button>
             <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <Plus size={14} /> New campaign
+              <Plus size={14} /> Yeni kampanya
             </button>
           </>
         }
@@ -189,10 +195,10 @@ export function FarmView() {
 
       <div className="tabs">
         <button type="button" className={tab === 'campaigns' ? 'tab tab-active' : 'tab'} onClick={() => setTab('campaigns')}>
-          Campaigns ({campaigns.length})
+          Kampanyalar ({campaigns.length})
         </button>
         <button type="button" className={tab === 'accounts' ? 'tab tab-active' : 'tab'} onClick={() => setTab('accounts')}>
-          Warmup accounts ({accounts.length})
+          Isıtma hesapları ({accounts.length})
         </button>
       </div>
 
@@ -202,8 +208,8 @@ export function FarmView() {
         campaigns.length === 0 ? (
           <div className="empty-state">
             <div className="empty-art">🌱</div>
-            <h3>No campaigns yet</h3>
-            <p>Create a campaign to run an RPA flow across a device group on a humanized schedule.</p>
+            <h3>Henüz kampanya yok</h3>
+            <p>Bir cihaz grubunda insansı bir zamanlamayla RPA akışı çalıştırmak için bir kampanya oluşturun.</p>
           </div>
         ) : (
           <div className="farm-grid">
@@ -212,23 +218,23 @@ export function FarmView() {
                 <div className="farm-card-head">
                   <div>
                     <strong className="farm-card-title">{c.name}</strong>
-                    <span className={`farm-status farm-status-${c.status.toLowerCase()}`}>{c.status.toLowerCase()}</span>
+                    <span className={`farm-status farm-status-${c.status.toLowerCase()}`}>{STATUS_LABEL[c.status] ?? c.status.toLowerCase()}</span>
                   </div>
                   <div className="farm-card-actions">
-                    <button type="button" className="icon-btn" disabled={busy} onClick={() => toggleStatus(c)} title={c.status === 'ACTIVE' ? 'Pause' : 'Resume'}>
+                    <button type="button" className="icon-btn" disabled={busy} onClick={() => toggleStatus(c)} title={c.status === 'ACTIVE' ? 'Duraklat' : 'Devam ettir'}>
                       {c.status === 'ACTIVE' ? <Pause size={14} /> : <Play size={14} />}
                     </button>
-                    <button type="button" className="icon-btn danger-btn" disabled={busy} onClick={() => remove(c)} title="Delete">
+                    <button type="button" className="icon-btn danger-btn" disabled={busy} onClick={() => remove(c)} title="Sil">
                       <Trash2 size={14} />
                     </button>
                   </div>
                 </div>
                 <div className="farm-card-meta">
-                  <span><Sprout size={12} /> {c.rpaFlow?.name ?? <em className="farm-warn">no flow</em>}</span>
-                  <span><Activity size={12} /> {c.group?.name ?? <em className="farm-warn">no group</em>} · {c.deviceCount ?? 0} phones</span>
-                  <span><Clock size={12} /> every {c.minIntervalMin}–{c.maxIntervalMin}m · {c.activeFromHour}:00–{c.activeToHour}:00</span>
-                  <span>≤ {c.maxActionsPerDay}/day · ±{c.jitterPct}% jitter</span>
-                  <span className="helper">{c.runCount} runs · next {new Date(c.nextRunAt).toLocaleTimeString()}</span>
+                  <span><Sprout size={12} /> {c.rpaFlow?.name ?? <em className="farm-warn">akış yok</em>}</span>
+                  <span><Activity size={12} /> {c.group?.name ?? <em className="farm-warn">grup yok</em>} · {c.deviceCount ?? 0} telefon</span>
+                  <span><Clock size={12} /> her {c.minIntervalMin}–{c.maxIntervalMin} dk · {c.activeFromHour}:00–{c.activeToHour}:00</span>
+                  <span>≤ {c.maxActionsPerDay}/gün · ±%{c.jitterPct} sapma</span>
+                  <span className="helper">{c.runCount} çalışma · sıradaki {new Date(c.nextRunAt).toLocaleTimeString('tr-TR')}</span>
                 </div>
               </article>
             ))}
@@ -238,14 +244,14 @@ export function FarmView() {
         accounts.length === 0 ? (
           <div className="empty-state">
             <div className="empty-art">📈</div>
-            <h3>No warmup data yet</h3>
-            <p>Accounts appear here automatically once a campaign starts farming their devices.</p>
+            <h3>Henüz ısıtma verisi yok</h3>
+            <p>Bir kampanya cihazlarını işlemeye başladığında hesaplar burada otomatik olarak görünür.</p>
           </div>
         ) : (
           <div className="panel">
             <div className="health-table">
               <div className="health-row health-head" style={{ gridTemplateColumns: '1.4fr 1fr 0.8fr 0.8fr 1fr 0.9fr' }}>
-                <span>Device</span><span>Stage</span><span>Days</span><span>Today</span><span>Total</span><span>Health</span>
+                <span>Cihaz</span><span>Aşama</span><span>Gün</span><span>Bugün</span><span>Toplam</span><span>Sağlık</span>
               </div>
               {accounts.map((a) => (
                 <div key={a.id} className="health-row" style={{ gridTemplateColumns: '1.4fr 1fr 0.8fr 0.8fr 1fr 0.9fr' }}>
@@ -270,46 +276,46 @@ export function FarmView() {
       {createOpen ? (
         <div className="modal-overlay" onClick={() => !busy && setCreateOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <header className="modal-head"><h2>New farm campaign</h2></header>
+            <header className="modal-head"><h2>Yeni çiftlik kampanyası</h2></header>
             <div className="modal-body farm-form">
               <label className="distribute-field">
-                <span className="helper">Campaign name</span>
-                <input className="field-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. TikTok warmup" />
+                <span className="helper">Kampanya adı</span>
+                <input className="field-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="örn. TikTok ısıtma" />
               </label>
               <div className="farm-form-row">
                 <label className="distribute-field">
-                  <span className="helper">RPA flow (the actions)</span>
+                  <span className="helper">RPA akışı (işlemler)</span>
                   <select className="field-input" value={form.rpaFlowId} onChange={(e) => setForm({ ...form, rpaFlowId: e.target.value })}>
-                    <option value="">— choose flow —</option>
+                    <option value="">— akış seçin —</option>
                     {flows.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                   </select>
                 </label>
                 <label className="distribute-field">
-                  <span className="helper">Target device group</span>
+                  <span className="helper">Hedef cihaz grubu</span>
                   <select className="field-input" value={form.groupId} onChange={(e) => setForm({ ...form, groupId: e.target.value })}>
-                    <option value="">— choose group —</option>
+                    <option value="">— grup seçin —</option>
                     {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                   </select>
                 </label>
               </div>
               <div className="farm-form-row">
-                <label className="distribute-field"><span className="helper">Min interval (min)</span><input className="field-input" type="number" value={form.minIntervalMin} onChange={(e) => setForm({ ...form, minIntervalMin: e.target.value })} /></label>
-                <label className="distribute-field"><span className="helper">Max interval (min)</span><input className="field-input" type="number" value={form.maxIntervalMin} onChange={(e) => setForm({ ...form, maxIntervalMin: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Min aralık (dk)</span><input className="field-input" type="number" value={form.minIntervalMin} onChange={(e) => setForm({ ...form, minIntervalMin: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Maks aralık (dk)</span><input className="field-input" type="number" value={form.maxIntervalMin} onChange={(e) => setForm({ ...form, maxIntervalMin: e.target.value })} /></label>
               </div>
               <div className="farm-form-row">
-                <label className="distribute-field"><span className="helper">Max actions / day</span><input className="field-input" type="number" value={form.maxActionsPerDay} onChange={(e) => setForm({ ...form, maxActionsPerDay: e.target.value })} /></label>
-                <label className="distribute-field"><span className="helper">Jitter %</span><input className="field-input" type="number" value={form.jitterPct} onChange={(e) => setForm({ ...form, jitterPct: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Maks işlem / gün</span><input className="field-input" type="number" value={form.maxActionsPerDay} onChange={(e) => setForm({ ...form, maxActionsPerDay: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Sapma %</span><input className="field-input" type="number" value={form.jitterPct} onChange={(e) => setForm({ ...form, jitterPct: e.target.value })} /></label>
               </div>
               <div className="farm-form-row">
-                <label className="distribute-field"><span className="helper">Active from (hour)</span><input className="field-input" type="number" min={0} max={23} value={form.activeFromHour} onChange={(e) => setForm({ ...form, activeFromHour: e.target.value })} /></label>
-                <label className="distribute-field"><span className="helper">Active to (hour)</span><input className="field-input" type="number" min={1} max={24} value={form.activeToHour} onChange={(e) => setForm({ ...form, activeToHour: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Başlangıç saati</span><input className="field-input" type="number" min={0} max={23} value={form.activeFromHour} onChange={(e) => setForm({ ...form, activeFromHour: e.target.value })} /></label>
+                <label className="distribute-field"><span className="helper">Bitiş saati</span><input className="field-input" type="number" min={1} max={24} value={form.activeToHour} onChange={(e) => setForm({ ...form, activeToHour: e.target.value })} /></label>
               </div>
-              <p className="helper">The engine runs the flow on one eligible phone per interval, never exceeding the daily cap or the device's warmup-stage limit, and only within active hours.</p>
+              <p className="helper">Motor, akışı her aralıkta uygun bir telefonda çalıştırır; günlük sınırı veya cihazın ısıtma aşaması limitini asla aşmaz ve yalnızca aktif saatler içinde çalışır.</p>
             </div>
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => setCreateOpen(false)} disabled={busy}>Cancel</button>
+              <button type="button" className="btn-ghost" onClick={() => setCreateOpen(false)} disabled={busy}>İptal</button>
               <button type="button" className="btn-primary" onClick={createCampaign} disabled={busy || !form.name.trim()}>
-                {busy ? 'Creating…' : 'Create campaign'}
+                {busy ? 'Oluşturuluyor…' : 'Kampanya oluştur'}
               </button>
             </footer>
           </div>

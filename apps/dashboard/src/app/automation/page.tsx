@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { AutomationView, type Template, type AutoDevice } from './AutomationView';
 
-export const metadata = { title: 'Automation · VPS Fleet' };
+export const metadata = { title: 'Otomasyon · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function AutomationPage() {

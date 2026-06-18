@@ -58,11 +58,11 @@ export type DetailJob = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  ONLINE: 'Running',
-  OFFLINE: 'Stopped',
-  STARTING: 'Starting',
-  STOPPING: 'Stopping',
-  ERROR: 'Error'
+  ONLINE: 'Çalışıyor',
+  OFFLINE: 'Durduruldu',
+  STARTING: 'Başlatılıyor',
+  STOPPING: 'Durduruluyor',
+  ERROR: 'Hata'
 };
 
 function statusDot(status: string): string {
@@ -105,7 +105,7 @@ export function ProfileDetailView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
       });
-      flash(`${label} queued`);
+      flash(`${label} sıraya alındı`);
       router.refresh();
     } finally {
       setBusy(null);
@@ -113,14 +113,14 @@ export function ProfileDetailView({
   }
 
   async function screenshot() {
-    setBusy('Screenshot');
+    setBusy('Ekran görüntüsü');
     try {
       await fetch('/api/bulk/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceIds: [device.id], jobType: 'EMULATOR_SCREENSHOT' })
       });
-      flash('Screenshot queued — see Jobs');
+      flash('Ekran görüntüsü sıraya alındı — Görevler bölümüne bakın');
       router.refresh();
     } finally {
       setBusy(null);
@@ -138,7 +138,7 @@ export function ProfileDetailView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hostId: next === '' ? null : next })
       });
-      flash(next === '' ? 'Host cleared' : 'Host assigned');
+      flash(next === '' ? 'Sunucu kaldırıldı' : 'Sunucu atandı');
       router.refresh();
     } finally {
       setBusy(null);
@@ -152,14 +152,14 @@ export function ProfileDetailView({
         subtitle={`${STATUS_LABEL[device.status] ?? device.status} · ${fp?.country ?? '—'}`}
         actions={
           <>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_START', 'STARTING', 'Start')}>
-              ▷ Start
+            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_START', 'STARTING', 'Başlat')}>
+              ▷ Başlat
             </button>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_STOP', 'STOPPING', 'Stop')}>
-              ◻ Stop
+            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_STOP', 'STOPPING', 'Durdur')}>
+              ◻ Durdur
             </button>
             <button type="button" className="btn-primary" disabled={!!busy} onClick={screenshot}>
-              ◰ Screenshot
+              ◰ Ekran görüntüsü
             </button>
           </>
         }
@@ -169,26 +169,26 @@ export function ProfileDetailView({
 
       <section className="section-grid">
         <div className="panel">
-          <h2>Live status</h2>
+          <h2>Canlı durum</h2>
           <div className="panel-stack">
             <div className="row">
-              <span className="helper">State</span>
+              <span className="helper">Durum</span>
               <span className="status-chip"><span className={statusDot(device.status)} /> {STATUS_LABEL[device.status] ?? device.status}</span>
             </div>
             <div className="row"><span className="helper">CPU</span><span className="mono">{Math.round(device.cpuUsage)}%</span></div>
-            <div className="row"><span className="helper">Memory</span><span className="mono">{Math.round(device.memoryUsage)}%</span></div>
+            <div className="row"><span className="helper">Bellek</span><span className="mono">{Math.round(device.memoryUsage)}%</span></div>
             <div className="row"><span className="helper">Disk</span><span className="mono">{Math.round(device.diskUsage)}%</span></div>
-            <div className="row"><span className="helper">ADB endpoint</span><span className="mono">{device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'awaiting host'}</span></div>
-            <div className="row"><span className="helper">Group</span><span>{device.group?.name ?? 'Ungrouped'}</span></div>
+            <div className="row"><span className="helper">ADB uç noktası</span><span className="mono">{device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'sunucu bekleniyor'}</span></div>
+            <div className="row"><span className="helper">Grup</span><span>{device.group?.name ?? 'Grupsuz'}</span></div>
             <div className="row">
-              <span className="helper">KVM host</span>
+              <span className="helper">KVM sunucusu</span>
               <select
                 className="inline-select"
                 value={hostId}
                 disabled={busy === 'Host'}
                 onChange={(e) => assignHost(e.target.value)}
               >
-                <option value="">Unassigned</option>
+                <option value="">Atanmamış</option>
                 {hosts.map((h) => (
                   <option key={h.id} value={h.id}>
                     {h.name}
@@ -197,43 +197,43 @@ export function ProfileDetailView({
                 ))}
               </select>
             </div>
-            <div className="row"><span className="helper">Last seen</span><span className="mono">{device.lastSeen ? new Date(device.lastSeen).toLocaleString('tr-TR') : 'never'}</span></div>
+            <div className="row"><span className="helper">Son görülme</span><span className="mono">{device.lastSeen ? new Date(device.lastSeen).toLocaleString('tr-TR') : 'hiç'}</span></div>
           </div>
         </div>
 
         <div className="panel">
-          <h2>Device fingerprint</h2>
+          <h2>Cihaz parmak izi</h2>
           {fp ? (
             <div className="panel-stack">
               <div className="row"><span className="helper">Model</span><span>{fp.manufacturer} {fp.model}</span></div>
               <div className="row"><span className="helper">OS</span><span className="mono">Android {fp.osVersion}</span></div>
               <div className="row"><span className="helper">IMEI</span><span className="mono">{fp.imei}</span></div>
               <div className="row"><span className="helper">MAC</span><span className="mono">{fp.macAddress}</span></div>
-              <div className="row"><span className="helper">Screen</span><span className="mono">{fp.resolution} @ {fp.dpi}dpi</span></div>
-              <div className="row"><span className="helper">Carrier</span><span>{fp.carrier}</span></div>
-              <div className="row"><span className="helper">Locale</span><span>{fp.country} · {fp.language} · {fp.timezone}</span></div>
+              <div className="row"><span className="helper">Ekran</span><span className="mono">{fp.resolution} @ {fp.dpi}dpi</span></div>
+              <div className="row"><span className="helper">Operatör</span><span>{fp.carrier}</span></div>
+              <div className="row"><span className="helper">Yerel ayar</span><span>{fp.country} · {fp.language} · {fp.timezone}</span></div>
               <div className="row">
                 <span className="helper">GPS</span>
                 <span className="mono">
-                  {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'disabled'}
+                  {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'devre dışı'}
                 </span>
               </div>
             </div>
           ) : (
-            <p className="helper">No fingerprint generated.</p>
+            <p className="helper">Parmak izi oluşturulmadı.</p>
           )}
         </div>
       </section>
 
       <div className="panel" style={{ marginTop: '1rem' }}>
-        <h2>Job history ({jobs.length})</h2>
+        <h2>Görev geçmişi ({jobs.length})</h2>
         <div className="profile-table-wrap">
           <table className="profile-table">
             <thead>
               <tr>
-                <th>Type</th>
-                <th>Status</th>
-                <th>When</th>
+                <th>Tür</th>
+                <th>Durum</th>
+                <th>Zaman</th>
               </tr>
             </thead>
             <tbody>
@@ -242,7 +242,7 @@ export function ProfileDetailView({
                   <td colSpan={3}>
                     <div className="table-empty">
                       <div className="empty-art">☰</div>
-                      <span>No jobs for this profile yet</span>
+                      <span>Bu profil için henüz görev yok</span>
                     </div>
                   </td>
                 </tr>

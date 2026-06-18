@@ -17,9 +17,9 @@ type Summary = {
 };
 
 const RANGES = [
-  { key: '7', label: 'Last 7 days', days: 7 },
-  { key: '30', label: 'Last 30 days', days: 30 },
-  { key: '90', label: 'Last 90 days', days: 90 }
+  { key: '7', label: 'Son 7 gün', days: 7 },
+  { key: '30', label: 'Son 30 gün', days: 30 },
+  { key: '90', label: 'Son 90 gün', days: 90 }
 ];
 
 export function ReportsView() {
@@ -49,13 +49,13 @@ export function ReportsView() {
       downloadCsv(
         `fleet-report-${days}d-${rows.length}.csv`,
         [
-          { key: 'id', label: 'Job ID' },
-          { key: 'type', label: 'Type' },
-          { key: 'status', label: 'Status' },
-          { key: 'deviceId', label: 'Device' },
-          { key: 'createdAt', label: 'Created' },
-          { key: 'finishedAt', label: 'Finished' },
-          { key: 'error', label: 'Error' }
+          { key: 'id', label: 'Görev ID' },
+          { key: 'type', label: 'Tür' },
+          { key: 'status', label: 'Durum' },
+          { key: 'deviceId', label: 'Cihaz' },
+          { key: 'createdAt', label: 'Oluşturulma' },
+          { key: 'finishedAt', label: 'Tamamlanma' },
+          { key: 'error', label: 'Hata' }
         ],
         rows
       );
@@ -81,8 +81,8 @@ export function ReportsView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Reports"
-        subtitle="Workspace operational summary & export"
+        title="Raporlar"
+        subtitle="Çalışma alanı operasyonel özeti ve dışa aktarma"
         actions={
           <>
             <select className="inline-select" value={days} onChange={(e) => setDays(Number(e.target.value))}>
@@ -101,17 +101,17 @@ export function ReportsView() {
       />
 
       <div className="stats">
-        <div className="metric"><p className="metric-label">Jobs in range</p><p className="metric-value">{s?.jobs.inRange ?? 0}</p><p className="metric-sub">{s?.jobs.total ?? 0} total</p></div>
-        <div className="metric"><p className="metric-label">Success rate</p><p className="metric-value">{s?.jobs.successRate ?? 0}%</p><p className="metric-sub">{s?.jobs.completed ?? 0} ok · {s?.jobs.failed ?? 0} failed</p></div>
-        <div className="metric"><p className="metric-label">Devices</p><p className="metric-value">{s?.devices.total ?? 0}</p><p className="metric-sub">{s?.devices.online ?? 0} online</p></div>
-        <div className="metric"><p className="metric-label">Alerts fired</p><p className="metric-value">{s?.alertEvents ?? 0}</p><p className="metric-sub">in range</p></div>
+        <div className="metric"><p className="metric-label">Aralıktaki görevler</p><p className="metric-value">{s?.jobs.inRange ?? 0}</p><p className="metric-sub">{s?.jobs.total ?? 0} toplam</p></div>
+        <div className="metric"><p className="metric-label">Başarı oranı</p><p className="metric-value">{s?.jobs.successRate ?? 0}%</p><p className="metric-sub">{s?.jobs.completed ?? 0} başarılı · {s?.jobs.failed ?? 0} başarısız</p></div>
+        <div className="metric"><p className="metric-label">Cihazlar</p><p className="metric-value">{s?.devices.total ?? 0}</p><p className="metric-sub">{s?.devices.online ?? 0} çevrimiçi</p></div>
+        <div className="metric"><p className="metric-label">Tetiklenen uyarılar</p><p className="metric-value">{s?.alertEvents ?? 0}</p><p className="metric-sub">aralıkta</p></div>
       </div>
 
       <div className="panel">
-        <h2>Jobs by type</h2>
+        <h2>Türe göre görevler</h2>
         <div className="panel-stack">
           {!s || s.jobsByType.length === 0 ? (
-            <p className="helper">No jobs in this range.</p>
+            <p className="helper">Bu aralıkta görev yok.</p>
           ) : (
             s.jobsByType.map((row) => {
               const max = s.jobsByType[0]?.count || 1;

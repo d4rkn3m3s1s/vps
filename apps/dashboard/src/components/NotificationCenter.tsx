@@ -22,10 +22,10 @@ const KINDS: Record<string, 'ok' | 'err' | 'info'> = {
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+  if (s < 60) return `${s}sn önce`;
+  if (s < 3600) return `${Math.floor(s / 60)}dk önce`;
+  if (s < 86400) return `${Math.floor(s / 3600)}sa önce`;
+  return `${Math.floor(s / 86400)}g önce`;
 }
 
 export function NotificationCenter() {
@@ -57,7 +57,7 @@ export function NotificationCenter() {
           if (prev !== j.status && (j.status === 'COMPLETED' || j.status === 'FAILED')) {
             fresh.push({
               id: `${j.id}-${j.status}`,
-              title: j.status === 'COMPLETED' ? 'Job completed' : 'Job failed',
+              title: j.status === 'COMPLETED' ? 'İş tamamlandı' : 'İş başarısız oldu',
               detail: j.type,
               kind: KINDS[j.status] ?? 'info',
               at: Date.now(),
@@ -91,7 +91,7 @@ export function NotificationCenter() {
       const p = (e.payload ?? {}) as { title?: string; detail?: string };
       const n: Notification = {
         id: `alert-${e.timestamp ?? Date.now()}`,
-        title: p.title ?? 'Alert',
+        title: p.title ?? 'Uyarı',
         detail: p.detail ?? '',
         kind: 'err',
         at: Date.now(),
@@ -109,7 +109,7 @@ export function NotificationCenter() {
     if (job.status !== 'COMPLETED' && job.status !== 'FAILED') return;
     const n: Notification = {
       id: `${job.id}-${job.status}`,
-      title: job.status === 'COMPLETED' ? 'Job completed' : 'Job failed',
+      title: job.status === 'COMPLETED' ? 'İş tamamlandı' : 'İş başarısız oldu',
       detail: job.type ?? '',
       kind: KINDS[job.status] ?? 'info',
       at: Date.now(),
@@ -129,7 +129,7 @@ export function NotificationCenter() {
 
   return (
     <>
-      <button type="button" className="notif-bell" onClick={toggle} aria-label="Notifications">
+      <button type="button" className="notif-bell" onClick={toggle} aria-label="Bildirimler">
         <span className="notif-bell-icon">◔</span>
         {unread > 0 ? <span className="notif-badge">{unread > 9 ? '9+' : unread}</span> : null}
       </button>
@@ -146,16 +146,16 @@ export function NotificationCenter() {
               transition={{ type: 'spring', stiffness: 420, damping: 32 }}
             >
               <div className="notif-head">
-                <strong>Notifications</strong>
+                <strong>Bildirimler</strong>
                 {items.length > 0 ? (
                   <button type="button" className="notif-clear" onClick={() => setItems([])}>
-                    Clear
+                    Temizle
                   </button>
                 ) : null}
               </div>
               <div className="notif-list">
                 {items.length === 0 ? (
-                  <div className="notif-empty">No notifications yet</div>
+                  <div className="notif-empty">Henüz bildirim yok</div>
                 ) : (
                   items.map((n) => (
                     <div className="notif-item" key={n.id}>

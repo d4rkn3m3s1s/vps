@@ -21,7 +21,7 @@ export type Proxy = {
 
 function StatusDot({ status }: { status: string }) {
   const cls = status === 'OK' ? 'dot dot-online' : status === 'FAILED' ? 'dot dot-error' : 'dot dot-offline';
-  const label = status === 'OK' ? 'Working' : status === 'FAILED' ? 'Failed' : 'Unchecked';
+  const label = status === 'OK' ? 'Çalışıyor' : status === 'FAILED' ? 'Başarısız' : 'Denetlenmedi';
   return (
     <span className="status-chip">
       <span className={cls} />
@@ -63,7 +63,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
 
   async function addProxy() {
     if (!form.label.trim() || !form.host.trim() || !form.port) {
-      setError('Label, host and port are required.');
+      setError('Etiket, sunucu ve port zorunludur.');
       return;
     }
     setBusy(true);
@@ -82,12 +82,12 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
           group: form.group || undefined
         })
       });
-      if (!res.ok) throw new Error(`Add failed (${res.status})`);
+      if (!res.ok) throw new Error(`Ekleme başarısız (${res.status})`);
       setAddOpen(false);
       setForm({ label: '', type: 'HTTP', host: '', port: '8080', username: '', password: '', group: '' });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Add failed');
+      setError(err instanceof Error ? err.message : 'Ekleme başarısız');
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   }
 
   async function deleteProxy(id: string) {
-    if (!confirm('Delete this proxy?')) return;
+    if (!confirm('Bu proxy silinsin mi?')) return;
     setBusyId(id);
     try {
       await fetch(`/api/proxies/${id}`, { method: 'DELETE' });
@@ -117,17 +117,17 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Proxies"
-        subtitle="Assign residential or mobile proxies to your cloud phones."
-        actions={<button type="button" className="btn-primary" onClick={() => setAddOpen(true)}>+ Add proxy</button>}
+        title="Proxy'ler"
+        subtitle="Bulut telefonlarınıza konut veya mobil proxy atayın."
+        actions={<button type="button" className="btn-primary" onClick={() => setAddOpen(true)}>+ Proxy ekle</button>}
       />
 
       <div className="tabs">
         <button type="button" className={tab === 'list' ? 'tab tab-active' : 'tab'} onClick={() => setTab('list')}>
-          Proxy list
+          Proxy listesi
         </button>
         <button type="button" className={tab === 'config' ? 'tab tab-active' : 'tab'} onClick={() => setTab('config')}>
-          Proxy configuration
+          Proxy yapılandırması
         </button>
       </div>
 
@@ -136,13 +136,13 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
           <table className="profile-table">
             <thead>
               <tr>
-                <th>Label</th>
-                <th>Type</th>
-                <th>Proxy info</th>
-                <th>Export IP</th>
-                <th>Group</th>
-                <th>Status</th>
-                <th>Operation</th>
+                <th>Etiket</th>
+                <th>Tür</th>
+                <th>Proxy bilgisi</th>
+                <th>Dışa Çıkış IP</th>
+                <th>Grup</th>
+                <th>Durum</th>
+                <th>İşlem</th>
               </tr>
             </thead>
             <tbody>
@@ -151,7 +151,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                   <td colSpan={7}>
                     <div className="table-empty">
                       <div className="empty-art">⌖</div>
-                      <span>No data now</span>
+                      <span>Şu anda veri yok</span>
                     </div>
                   </td>
                 </tr>
@@ -166,7 +166,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                       {p.host}:{p.port}
                     </td>
                     <td className="mono">{p.exportIp ?? '—'}</td>
-                    <td>{p.group ?? 'Ungrouped'}</td>
+                    <td>{p.group ?? 'Gruplanmamış'}</td>
                     <td>
                       <StatusDot status={p.status} />
                     </td>
@@ -178,7 +178,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                           disabled={busyId === p.id}
                           onClick={() => checkProxy(p.id)}
                         >
-                          {busyId === p.id ? '…' : 'Check'}
+                          {busyId === p.id ? '…' : 'Denetle'}
                         </button>
                         <button
                           type="button"
@@ -186,7 +186,7 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                           disabled={busyId === p.id}
                           onClick={() => deleteProxy(p.id)}
                         >
-                          Delete
+                          Sil
                         </button>
                       </div>
                     </td>
@@ -198,21 +198,21 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
         </div>
       ) : (
         <div className="config-card">
-          <h3>Default proxy mode</h3>
-          <p className="helper">Choose how new cloud phones connect to the internet.</p>
+          <h3>Varsayılan proxy modu</h3>
+          <p className="helper">Yeni bulut telefonların internete nasıl bağlanacağını seçin.</p>
           <div className="radio-stack">
             <label className="radio-row">
-              <input type="radio" name="proxymode" checked={proxyMode === 'direct'} onChange={() => setProxyMode('direct')} /> Direct (host network)
+              <input type="radio" name="proxymode" checked={proxyMode === 'direct'} onChange={() => setProxyMode('direct')} /> Doğrudan (sunucu ağı)
             </label>
             <label className="radio-row">
-              <input type="radio" name="proxymode" checked={proxyMode === 'residential'} onChange={() => setProxyMode('residential')} /> Residential proxy pool
+              <input type="radio" name="proxymode" checked={proxyMode === 'residential'} onChange={() => setProxyMode('residential')} /> Konut proxy havuzu
             </label>
             <label className="radio-row">
-              <input type="radio" name="proxymode" checked={proxyMode === 'mobile'} onChange={() => setProxyMode('mobile')} /> Mobile (4G/5G) proxy
+              <input type="radio" name="proxymode" checked={proxyMode === 'mobile'} onChange={() => setProxyMode('mobile')} /> Mobil (4G/5G) proxy
             </label>
           </div>
           <button type="button" className="btn-primary" onClick={saveProxyMode}>
-            {savedMode ? 'Saved ✓' : 'Save configuration'}
+            {savedMode ? 'Kaydedildi ✓' : 'Yapılandırmayı kaydet'}
           </button>
         </div>
       )}
@@ -221,20 +221,20 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
         <div className="modal-overlay" onClick={() => !busy && setAddOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Add proxy</h2>
+              <h2>Proxy ekle</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setAddOpen(false)}>
                 ✕
               </button>
             </header>
 
             <label className="field">
-              <span>Label</span>
-              <input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="e.g. US residential 1" />
+              <span>Etiket</span>
+              <input className="field-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))} placeholder="örn. ABD konut 1" />
             </label>
 
             <div className="field-row">
               <label className="field">
-                <span>Type</span>
+                <span>Tür</span>
                 <select className="field-input" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
                   <option value="HTTP">HTTP</option>
                   <option value="HTTPS">HTTPS</option>
@@ -242,14 +242,14 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
                 </select>
               </label>
               <label className="field">
-                <span>Group</span>
-                <input className="field-input" value={form.group} onChange={(e) => setForm((f) => ({ ...f, group: e.target.value }))} placeholder="optional" />
+                <span>Grup</span>
+                <input className="field-input" value={form.group} onChange={(e) => setForm((f) => ({ ...f, group: e.target.value }))} placeholder="isteğe bağlı" />
               </label>
             </div>
 
             <div className="field-row">
               <label className="field">
-                <span>Host</span>
+                <span>Sunucu</span>
                 <input className="field-input" value={form.host} onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))} placeholder="proxy.example.com" />
               </label>
               <label className="field">
@@ -260,12 +260,12 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
 
             <div className="field-row">
               <label className="field">
-                <span>Username</span>
-                <input className="field-input" value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="optional" />
+                <span>Kullanıcı adı</span>
+                <input className="field-input" value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="isteğe bağlı" />
               </label>
               <label className="field">
-                <span>Password</span>
-                <input className="field-input" type="password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="optional" />
+                <span>Parola</span>
+                <input className="field-input" type="password" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="isteğe bağlı" />
               </label>
             </div>
 
@@ -273,10 +273,10 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setAddOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={addProxy}>
-                {busy ? 'Adding…' : 'Add proxy'}
+                {busy ? 'Ekleniyor…' : 'Proxy ekle'}
               </button>
             </footer>
           </div>

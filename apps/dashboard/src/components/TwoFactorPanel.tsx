@@ -22,11 +22,11 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
     try {
       const res = await fetch('/api/auth/2fa/setup', { method: 'POST' });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Setup failed');
+      if (!res.ok) throw new Error(json.message ?? 'Kurulum başarısız oldu');
       setSetup(json.data as SetupData);
       setStep('setup');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Setup failed');
+      setError(e instanceof Error ? e.message : 'Kurulum başarısız oldu');
     } finally {
       setBusy(false);
     }
@@ -42,20 +42,20 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         body: JSON.stringify({ token: code.trim() })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Invalid code');
+      if (!res.ok) throw new Error(json.message ?? 'Geçersiz kod');
       setBackupCodes((json.data as { backupCodes: string[] }).backupCodes);
       setStep('backup');
       setCode('');
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Invalid code');
+      setError(e instanceof Error ? e.message : 'Geçersiz kod');
     } finally {
       setBusy(false);
     }
   }
 
   async function disable() {
-    const token = prompt('Enter a current 2FA code (or a backup code) to disable 2FA:');
+    const token = prompt('2FA özelliğini devre dışı bırakmak için geçerli bir 2FA kodu (veya yedek kod) girin:');
     if (!token) return;
     setBusy(true);
     setError(null);
@@ -66,10 +66,10 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         body: JSON.stringify({ token: token.trim() })
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.message ?? 'Failed to disable');
+      if (!res.ok) throw new Error(json.message ?? 'Devre dışı bırakılamadı');
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to disable');
+      setError(e instanceof Error ? e.message : 'Devre dışı bırakılamadı');
     } finally {
       setBusy(false);
     }
@@ -88,12 +88,12 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
       <div className="panel-stack">
         <div className="row">
           <span className="status-chip">
-            <ShieldCheck size={16} color="#22C55E" /> Two-factor authentication is ON
+            <ShieldCheck size={16} color="#22C55E" /> İki faktörlü kimlik doğrulama AÇIK
           </span>
         </div>
-        <p className="helper">Your account is protected by an authenticator app. Login requires a 6-digit code.</p>
+        <p className="helper">Hesabınız bir kimlik doğrulama uygulamasıyla korunuyor. Giriş için 6 haneli bir kod gerekir.</p>
         <button type="button" className="btn-ghost danger-btn" onClick={disable} disabled={busy}>
-          {busy ? 'Working…' : 'Disable 2FA'}
+          {busy ? 'İşleniyor…' : '2FA\'yı devre dışı bırak'}
         </button>
         {error ? <p className="field-error">{error}</p> : null}
       </div>
@@ -105,10 +105,10 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
     return (
       <div className="panel-stack">
         <div className="row">
-          <span className="status-chip"><ShieldCheck size={16} color="#22C55E" /> 2FA enabled!</span>
+          <span className="status-chip"><ShieldCheck size={16} color="#22C55E" /> 2FA etkinleştirildi!</span>
         </div>
         <p className="helper">
-          Save these one-time backup codes somewhere safe. Each works once if you lose your authenticator.
+          Bu tek kullanımlık yedek kodları güvenli bir yerde saklayın. Kimlik doğrulayıcınızı kaybederseniz her biri bir kez çalışır.
         </p>
         <div className="backup-grid">
           {backupCodes.map((c) => (
@@ -116,9 +116,9 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
           ))}
         </div>
         <button type="button" className="btn-ghost" onClick={copyBackup}>
-          {copied ? <><Check size={15} /> Copied</> : <><Copy size={15} /> Copy all</>}
+          {copied ? <><Check size={15} /> Kopyalandı</> : <><Copy size={15} /> Tümünü kopyala</>}
         </button>
-        <button type="button" className="btn-primary" onClick={() => setStep('idle')}>Done</button>
+        <button type="button" className="btn-primary" onClick={() => setStep('idle')}>Tamam</button>
       </div>
     );
   }
@@ -127,12 +127,12 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
   if (step === 'setup' && setup) {
     return (
       <div className="panel-stack">
-        <p className="helper">1. Scan this QR with Google Authenticator, Authy, or 1Password.</p>
+        <p className="helper">1. Bu QR kodunu Google Authenticator, Authy veya 1Password ile tarayın.</p>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={setup.qrDataUrl} alt="2FA QR code" className="twofa-qr" />
-        <p className="helper">Or enter this key manually:</p>
+        <img src={setup.qrDataUrl} alt="2FA QR kodu" className="twofa-qr" />
+        <p className="helper">Veya bu anahtarı elle girin:</p>
         <code className="backup-code">{setup.secret}</code>
-        <p className="helper">2. Enter the 6-digit code from your app to confirm.</p>
+        <p className="helper">2. Onaylamak için uygulamanızdaki 6 haneli kodu girin.</p>
         <input
           className="field-input"
           inputMode="numeric"
@@ -144,10 +144,10 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         {error ? <p className="field-error">{error}</p> : null}
         <div className="quick-grid">
           <button type="button" className="btn-primary" onClick={confirmEnable} disabled={busy || code.length < 6}>
-            {busy ? 'Verifying…' : 'Enable 2FA'}
+            {busy ? 'Doğrulanıyor…' : '2FA\'yı etkinleştir'}
           </button>
           <button type="button" className="btn-ghost" onClick={() => { setStep('idle'); setError(null); }}>
-            Cancel
+            İptal
           </button>
         </div>
       </div>
@@ -159,12 +159,12 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
     <div className="panel-stack">
       <div className="row">
         <span className="status-chip">
-          <ShieldAlert size={16} color="#F59E0B" /> Two-factor authentication is OFF
+          <ShieldAlert size={16} color="#F59E0B" /> İki faktörlü kimlik doğrulama KAPALI
         </span>
       </div>
-      <p className="helper">Add a second layer of security. You&apos;ll need an authenticator app.</p>
+      <p className="helper">İkinci bir güvenlik katmanı ekleyin. Bir kimlik doğrulama uygulamasına ihtiyacınız olacak.</p>
       <button type="button" className="btn-primary" onClick={beginSetup} disabled={busy}>
-        {busy ? 'Loading…' : 'Set up 2FA'}
+        {busy ? 'Yükleniyor…' : '2FA kur'}
       </button>
       {error ? <p className="field-error">{error}</p> : null}
     </div>

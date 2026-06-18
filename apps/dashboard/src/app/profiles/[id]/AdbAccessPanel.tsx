@@ -29,7 +29,7 @@ function CopyRow({ label, value }: { label: string; value: string }) {
     <div className="adb-cmd-row">
       <span className="helper adb-cmd-label">{label}</span>
       <code className="mono adb-cmd">{value}</code>
-      <button type="button" className="icon-btn" onClick={copy} title="Copy" aria-label={`Copy ${label}`}>
+      <button type="button" className="icon-btn" onClick={copy} title="Kopyala" aria-label={`${label} kopyala`}>
         {copied ? <Check size={14} /> : <Copy size={14} />}
       </button>
     </div>
@@ -65,10 +65,10 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
         setPublicPort(json.data.publicPort ? String(json.data.publicPort) : '');
         setAllowlist((json.data.allowlist ?? []).join(', '));
       } else {
-        flash(json.message ?? 'Could not load ADB info');
+        flash(json.message ?? 'ADB bilgisi yüklenemedi');
       }
     } catch {
-      flash('Could not load ADB info');
+      flash('ADB bilgisi yüklenemedi');
     }
   }
 
@@ -87,11 +87,11 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
         body: JSON.stringify({ command: cmd.trim() })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Command failed');
+      if (!res.ok) throw new Error(json.message ?? 'Komut başarısız');
       const d = json.data;
-      setOutput([d.stdout, d.stderr].filter(Boolean).join('\n') || `(exit ${d.exitCode}, no output)`);
+      setOutput([d.stdout, d.stderr].filter(Boolean).join('\n') || `(çıkış ${d.exitCode}, çıktı yok)`);
     } catch (e) {
-      setOutput(e instanceof Error ? e.message : 'Command failed');
+      setOutput(e instanceof Error ? e.message : 'Komut başarısız');
     } finally {
       setBusy(false);
     }
@@ -111,29 +111,29 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not expose');
-      flash('ADB port exposed');
+      if (!res.ok) throw new Error(json.message ?? 'Yayınlanamadı');
+      flash('ADB portu yayınlandı');
       await load();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not expose');
+      flash(e instanceof Error ? e.message : 'Yayınlanamadı');
     } finally {
       setBusy(false);
     }
   }
 
   async function unexpose() {
-    if (!confirm('Stop exposing this device’s ADB port to the outside?')) return;
+    if (!confirm('Bu cihazın ADB portunun dışarıya yayınlanması durdurulsun mu?')) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/devices/${deviceId}/adb/expose`, { method: 'DELETE' });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not unexpose');
+        throw new Error(j.message ?? 'Yayın durdurulamadı');
       }
-      flash('ADB exposure disabled');
+      flash('ADB yayını devre dışı bırakıldı');
       await load();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not unexpose');
+      flash(e instanceof Error ? e.message : 'Yayın durdurulamadı');
     } finally {
       setBusy(false);
     }
@@ -142,32 +142,32 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
   return (
     <div className="panel" style={{ marginTop: '1rem' }}>
       <h2>
-        <Terminal size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> External ADB access
+        <Terminal size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Harici ADB erişimi
       </h2>
       <p className="helper" style={{ marginTop: '-0.25rem' }}>
-        Connect to this cloud phone from your own machine with <span className="mono">adb</span> or{' '}
-        <span className="mono">scrcpy</span>.
+        Bu bulut telefona kendi makinenizden <span className="mono">adb</span> veya{' '}
+        <span className="mono">scrcpy</span> ile bağlanın.
       </p>
 
       {info ? (
         <>
           <div className="adb-status-row">
             {info.exposed ? (
-              <span className="status-chip"><Wifi size={13} /> Public ADB on {info.publicHost}:{info.publicPort}</span>
+              <span className="status-chip"><Wifi size={13} /> Genel ADB: {info.publicHost}:{info.publicPort}</span>
             ) : (
-              <span className="status-chip"><WifiOff size={13} /> Host-network only (not publicly exposed)</span>
+              <span className="status-chip"><WifiOff size={13} /> Yalnızca sunucu ağı (genele yayınlanmadı)</span>
             )}
           </div>
 
           <div className="adb-cmd-block">
-            <CopyRow label="Connect" value={info.commands.connect} />
+            <CopyRow label="Bağlan" value={info.commands.connect} />
             <CopyRow label="Shell" value={info.commands.shell} />
-            <CopyRow label="Screen (scrcpy)" value={info.commands.scrcpy} />
+            <CopyRow label="Ekran (scrcpy)" value={info.commands.scrcpy} />
           </div>
 
           {/* Exec console */}
           <div className="adb-exec">
-            <label className="adb-cmd-label helper">Run a shell command</label>
+            <label className="adb-cmd-label helper">Bir shell komutu çalıştır</label>
             <div className="adb-exec-row">
               <input
                 className="field-input mono"
@@ -177,7 +177,7 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
                 onKeyDown={(e) => { if (e.key === 'Enter') void runExec(); }}
               />
               <button type="button" className="btn-primary" disabled={busy || !cmd.trim()} onClick={runExec}>
-                {busy ? 'Running…' : 'Run'}
+                {busy ? 'Çalışıyor…' : 'Çalıştır'}
               </button>
             </div>
             {output !== null ? <pre className="adb-output mono">{output}</pre> : null}
@@ -186,23 +186,23 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
           {/* Expose controls */}
           <div className="adb-expose">
             <h3 className="adb-subhead">
-              <ShieldAlert size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Public exposure
+              <ShieldAlert size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Genel yayın
             </h3>
             <p className="helper">
-              Opening a public ADB port grants full device control. Always set an IP allowlist. Admin only.
+              Genel bir ADB portu açmak, cihaz üzerinde tam denetim sağlar. Daima bir IP izin listesi ayarlayın. Yalnızca yönetici.
             </p>
             <div className="adb-expose-grid">
-              <input className="field-input" value={publicHost} onChange={(e) => setPublicHost(e.target.value)} placeholder="Public host (default: device host)" />
-              <input className="field-input" value={publicPort} onChange={(e) => setPublicPort(e.target.value)} placeholder="Public port" type="number" />
-              <input className="field-input" value={allowlist} onChange={(e) => setAllowlist(e.target.value)} placeholder="Allowlist e.g. 1.2.3.4, 10.0.0.0/24" />
+              <input className="field-input" value={publicHost} onChange={(e) => setPublicHost(e.target.value)} placeholder="Genel sunucu (varsayılan: cihaz sunucusu)" />
+              <input className="field-input" value={publicPort} onChange={(e) => setPublicPort(e.target.value)} placeholder="Genel port" type="number" />
+              <input className="field-input" value={allowlist} onChange={(e) => setAllowlist(e.target.value)} placeholder="İzin listesi örn. 1.2.3.4, 10.0.0.0/24" />
             </div>
             <div className="adb-expose-actions">
               <button type="button" className="btn-primary" disabled={busy} onClick={expose}>
-                {info.exposed ? 'Update exposure' : 'Expose ADB port'}
+                {info.exposed ? 'Yayını güncelle' : 'ADB portunu yayınla'}
               </button>
               {info.exposed ? (
                 <button type="button" className="btn-ghost danger-btn" disabled={busy} onClick={unexpose}>
-                  Stop exposing
+                  Yayını durdur
                 </button>
               ) : null}
             </div>
@@ -211,7 +211,7 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
           {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
         </>
       ) : (
-        <p className="helper">{msg ?? 'Loading ADB info…'}</p>
+        <p className="helper">{msg ?? 'ADB bilgisi yükleniyor…'}</p>
       )}
     </div>
   );

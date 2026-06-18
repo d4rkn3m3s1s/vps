@@ -50,7 +50,7 @@ export function BillingView() {
     fetch('/api/billing')
       .then((r) => r.json())
       .then((j) => setBilling(j.data ?? null))
-      .catch(() => setError('Could not load billing'));
+      .catch(() => setError('Faturalama bilgileri yüklenemedi'));
   }, []);
 
   async function upgrade(plan: string) {
@@ -67,9 +67,9 @@ export function BillingView() {
         window.location.href = json.url; // redirect to Stripe Checkout
         return;
       }
-      throw new Error(json.message ?? 'Could not start checkout');
+      throw new Error(json.message ?? 'Ödeme başlatılamadı');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Checkout failed');
+      setError(e instanceof Error ? e.message : 'Ödeme başarısız oldu');
       setBusy(null);
     }
   }
@@ -80,9 +80,9 @@ export function BillingView() {
       const res = await fetch('/api/billing/portal', { method: 'POST' });
       const json = await res.json();
       if (json.url) window.location.href = json.url;
-      else throw new Error(json.message ?? 'No billing account yet');
+      else throw new Error(json.message ?? 'Henüz bir faturalama hesabı yok');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not open portal');
+      setError(e instanceof Error ? e.message : 'Portal açılamadı');
       setBusy(null);
     }
   }
@@ -90,12 +90,12 @@ export function BillingView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Billing"
-        subtitle={billing ? `Current plan: ${billing.planName} · ${billing.status}` : 'Plans, usage & subscription'}
+        title="Faturalama"
+        subtitle={billing ? `Mevcut plan: ${billing.planName} · ${billing.status}` : 'Planlar, kullanım & abonelik'}
         actions={
           billing?.plan !== 'free' ? (
             <button type="button" className="btn-ghost" disabled={busy === 'portal'} onClick={openPortal}>
-              <ExternalLink size={15} /> Manage subscription
+              <ExternalLink size={15} /> Aboneliği yönet
             </button>
           ) : undefined
         }
@@ -104,8 +104,8 @@ export function BillingView() {
       {!billing?.billingConfigured ? (
         <div className="panel" style={{ borderColor: 'rgba(245,158,11,0.4)' }}>
           <p className="helper">
-            ⚠ Stripe is not configured yet. Add <code>STRIPE_SECRET_KEY</code> + price IDs to the API <code>.env</code> to
-            enable real checkout. Plans and quota enforcement already work.
+            ⚠ Stripe henüz yapılandırılmadı. Gerçek ödemeyi etkinleştirmek için API <code>.env</code> dosyasına <code>STRIPE_SECRET_KEY</code>
+            ve fiyat kimliklerini ekleyin. Planlar ve kota uygulaması hâlihazırda çalışmaktadır.
           </p>
         </div>
       ) : null}
@@ -115,10 +115,10 @@ export function BillingView() {
       {billing ? (
         <>
           <div className="panel">
-            <h2>Usage</h2>
+            <h2>Kullanım</h2>
             <div className="usage-grid">
-              <UsageBar label="Cloud phones" used={billing.usage.devices.used} limit={billing.usage.devices.limit} />
-              <UsageBar label="Team members" used={billing.usage.members.used} limit={billing.usage.members.limit} />
+              <UsageBar label="Bulut telefonlar" used={billing.usage.devices.used} limit={billing.usage.devices.limit} />
+              <UsageBar label="Ekip üyeleri" used={billing.usage.members.used} limit={billing.usage.members.limit} />
             </div>
           </div>
 
@@ -127,7 +127,7 @@ export function BillingView() {
               const current = p.key === billing.plan;
               return (
                 <div key={p.key} className={`plan-tier${current ? ' plan-tier-current' : ''}`}>
-                  {current ? <span className="plan-tier-badge">Current</span> : null}
+                  {current ? <span className="plan-tier-badge">Mevcut</span> : null}
                   <h3>{p.name}</h3>
                   <div className="plan-tier-price">{p.priceLabel}</div>
                   <ul className="plan-tier-features">
@@ -136,13 +136,13 @@ export function BillingView() {
                     ))}
                   </ul>
                   {current ? (
-                    <button type="button" className="btn-ghost" disabled>Current plan</button>
+                    <button type="button" className="btn-ghost" disabled>Mevcut plan</button>
                   ) : p.purchasable ? (
                     <button type="button" className="btn-primary" disabled={busy === p.key} onClick={() => upgrade(p.key)}>
-                      <Zap size={15} /> {busy === p.key ? 'Redirecting…' : `Upgrade to ${p.name}`}
+                      <Zap size={15} /> {busy === p.key ? 'Yönlendiriliyor…' : `${p.name} planına yükselt`}
                     </button>
                   ) : (
-                    <button type="button" className="btn-ghost" disabled>Downgrade in portal</button>
+                    <button type="button" className="btn-ghost" disabled>Portalda düşür</button>
                   )}
                 </div>
               );
@@ -150,7 +150,7 @@ export function BillingView() {
           </div>
         </>
       ) : (
-        <div className="panel"><p className="helper">Loading billing…</p></div>
+        <div className="panel"><p className="helper">Faturalama bilgileri yükleniyor…</p></div>
       )}
     </PageMotion>
   );

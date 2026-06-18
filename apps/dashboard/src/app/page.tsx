@@ -111,42 +111,42 @@ export default async function HomePage() {
   const onboardingSteps: OnboardingStep[] = [
     {
       key: 'device',
-      title: 'Deploy your first cloud phone',
-      description: 'Spin up a profile to start running Android in the cloud.',
+      title: 'İlk bulut telefonunuzu kurun',
+      description: 'Android\'i bulutta çalıştırmaya başlamak için bir profil oluşturun.',
       href: '/profiles',
-      cta: 'Add phone',
+      cta: 'Telefon ekle',
       done: (d?.total ?? 0) > 0
     },
     {
       key: 'proxy',
-      title: 'Connect a proxy',
-      description: 'Route device traffic through your own proxy endpoints.',
+      title: 'Bir proxy bağlayın',
+      description: 'Cihaz trafiğini kendi proxy uç noktalarınız üzerinden yönlendirin.',
       href: '/proxies',
-      cta: 'Add proxy',
+      cta: 'Proxy ekle',
       done: proxyCount > 0
     },
     {
       key: 'job',
-      title: 'Run your first job',
-      description: 'Install an app, take a screenshot, or run an automation.',
+      title: 'İlk işinizi çalıştırın',
+      description: 'Bir uygulama yükleyin, ekran görüntüsü alın veya bir otomasyon çalıştırın.',
       href: '/profiles',
-      cta: 'Run a job',
+      cta: 'İş çalıştır',
       done: totalJobs > 0
     },
     {
       key: 'team',
-      title: 'Invite a teammate',
-      description: 'Add operators or viewers to your workspace.',
+      title: 'Bir ekip arkadaşı davet edin',
+      description: 'Çalışma alanınıza operatörler veya izleyiciler ekleyin.',
       href: '/admin/members',
-      cta: 'Invite',
+      cta: 'Davet et',
       done: hasTeam
     },
     {
       key: '2fa',
-      title: 'Secure your account with 2FA',
-      description: 'Enable two-factor authentication for sign-in.',
+      title: 'Hesabınızı 2FA ile güvenceye alın',
+      description: 'Giriş için iki faktörlü kimlik doğrulamayı etkinleştirin.',
       href: '/settings',
-      cta: 'Enable 2FA',
+      cta: '2FA\'yı etkinleştir',
       done: has2fa
     }
   ];
@@ -164,10 +164,10 @@ export default async function HomePage() {
   const storagePct = sys ? Math.min(100, 30 + Math.round((sys.database.jobs + sys.database.auditLogs) / 8)) : 0;
   const tone = (p: number): InfraMetric['tone'] => (p >= 85 ? 'error' : p >= 65 ? 'warning' : p >= 40 ? 'accent' : 'success');
   const infraMetrics: InfraMetric[] = [
-    { key: 'cpu', label: 'CPU Usage', percent: cpuPct, detail: `${sys?.queue.active ?? 0} active jobs · ${sys?.docker.runningContainers ?? 0} containers`, tone: tone(cpuPct) },
-    { key: 'memory', label: 'Memory Usage', percent: memPct, detail: `${sys?.memory.usedMb ?? 0} / ${sys?.memory.totalMb ?? 0} MB`, tone: tone(memPct) },
-    { key: 'network', label: 'Queue Throughput', percent: queueLoad, detail: `${sys?.queue.waiting ?? 0} waiting · ${sys?.queue.active ?? 0} active`, tone: tone(queueLoad) },
-    { key: 'storage', label: 'Storage Usage', percent: storagePct, detail: `${sys?.database.jobs ?? 0} jobs · ${sys?.database.auditLogs ?? 0} logs`, tone: tone(storagePct) }
+    { key: 'cpu', label: 'CPU Kullanımı', percent: cpuPct, detail: `${sys?.queue.active ?? 0} aktif iş · ${sys?.docker.runningContainers ?? 0} konteyner`, tone: tone(cpuPct) },
+    { key: 'memory', label: 'Bellek Kullanımı', percent: memPct, detail: `${sys?.memory.usedMb ?? 0} / ${sys?.memory.totalMb ?? 0} MB`, tone: tone(memPct) },
+    { key: 'network', label: 'Kuyruk Verimi', percent: queueLoad, detail: `${sys?.queue.waiting ?? 0} bekliyor · ${sys?.queue.active ?? 0} aktif`, tone: tone(queueLoad) },
+    { key: 'storage', label: 'Depolama Kullanımı', percent: storagePct, detail: `${sys?.database.jobs ?? 0} iş · ${sys?.database.auditLogs ?? 0} günlük`, tone: tone(storagePct) }
   ];
 
   // ── Device map (real device countries → regions) ───────────────────────────
@@ -226,8 +226,8 @@ export default async function HomePage() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Overview"
-        subtitle="Your cloud phone fleet at a glance."
+        title="Genel Bakış"
+        subtitle="Bulut telefon filonuza tek bakışta göz atın."
         actions={
           <>
             <Link
@@ -235,7 +235,7 @@ export default async function HomePage() {
               className="btn-primary"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
             >
-              New phone
+              Yeni telefon
               <ArrowUpRight size={16} />
             </Link>
             <Link
@@ -243,7 +243,7 @@ export default async function HomePage() {
               className="btn-ghost"
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
             >
-              View platform
+              Platformu görüntüle
               <ArrowUpRight size={16} />
             </Link>
           </>
@@ -253,44 +253,44 @@ export default async function HomePage() {
       {!onboardingDismissed ? <OnboardingChecklist steps={onboardingSteps} /> : null}
 
       <DashboardProvider>
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Fleet Metrics</div>
-      <Widget id="metrics" title="Metrics">
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Filo Metrikleri</div>
+      <Widget id="metrics" title="Metrikler">
       <StaggerGrid className="stats">
         <MotionItem className="metric ov-metric">
-          <p className="metric-label">Cloud phones</p>
+          <p className="metric-label">Bulut telefonlar</p>
           <p className="metric-value"><AnimatedNumber value={d?.total ?? 0} format={false} /></p>
-          <p className="metric-sub">{d?.online ?? 0} online · {d?.offline ?? 0} offline</p>
+          <p className="metric-sub">{d?.online ?? 0} çevrimiçi · {d?.offline ?? 0} çevrimdışı</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
-          <p className="metric-label">Proxies</p>
+          <p className="metric-label">Proxyler</p>
           <p className="metric-value"><AnimatedNumber value={proxyCount} format={false} /></p>
-          <p className="metric-sub">Configured endpoints</p>
+          <p className="metric-sub">Yapılandırılmış uç noktalar</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
-          <p className="metric-label">Jobs</p>
+          <p className="metric-label">İşler</p>
           <p className="metric-value"><AnimatedNumber value={sys?.database.jobs ?? 0} format={false} /></p>
-          <p className="metric-sub">{pendingJobs} in flight</p>
+          <p className="metric-sub">{pendingJobs} devam ediyor</p>
         </MotionItem>
         <MotionItem className="metric ov-metric">
-          <p className="metric-label">Plugins</p>
+          <p className="metric-label">Eklentiler</p>
           <p className="metric-value"><AnimatedNumber value={sys?.plugins.length ?? 0} format={false} /></p>
-          <p className="metric-sub">Social modules</p>
+          <p className="metric-sub">Sosyal modüller</p>
         </MotionItem>
       </StaggerGrid>
       </Widget>
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Operations</div>
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Operasyonlar</div>
       <section className="section-grid">
-        <Widget id="health" title="System health">
+        <Widget id="health" title="Sistem durumu">
         <div className="panel ov-panel">
-          <h2><span className="ov-ico">◆</span> System health</h2>
+          <h2><span className="ov-ico">◆</span> Sistem durumu</h2>
           <div className="panel-stack">
             <div className="row">
               <span className="helper">PostgreSQL</span>
               <span className="status-chip"><span className={healthClass(sys?.database.status)} /> {sys?.database.status ?? 'unknown'}</span>
             </div>
             <div className="row">
-              <span className="helper">Redis queue</span>
+              <span className="helper">Redis kuyruğu</span>
               <span className="status-chip"><span className={healthClass(sys?.queue.status)} /> {sys?.queue.status ?? 'unknown'}</span>
             </div>
             <div className="row">
@@ -298,57 +298,57 @@ export default async function HomePage() {
               <span className="status-chip"><span className={healthClass(sys?.docker.status)} /> {sys?.docker.status ?? 'unknown'}</span>
             </div>
             <div className="row">
-              <span className="helper">Memory</span>
+              <span className="helper">Bellek</span>
               <span className="mono">{sys?.memory.usagePercent ?? 0}% · {sys?.memory.usedMb ?? 0}/{sys?.memory.totalMb ?? 0} MB</span>
             </div>
             <div className="row">
-              <span className="helper">Queue</span>
+              <span className="helper">Kuyruk</span>
               <span className="mono">
-                {sys?.queue.waiting ?? 0} waiting · {sys?.queue.active ?? 0} active · {sys?.queue.failed ?? 0} failed
+                {sys?.queue.waiting ?? 0} bekliyor · {sys?.queue.active ?? 0} aktif · {sys?.queue.failed ?? 0} başarısız
               </span>
             </div>
           </div>
         </div>
         </Widget>
 
-        <Widget id="quick-actions" title="Quick actions">
+        <Widget id="quick-actions" title="Hızlı işlemler">
         <div className="panel ov-panel">
-          <h2><span className="ov-ico">⚡</span> Quick actions</h2>
+          <h2><span className="ov-ico">⚡</span> Hızlı işlemler</h2>
           <div className="quick-grid">
-            <Link href="/profiles" className="quick-tile ov-quick">📱 Deploy cloud phone</Link>
-            <Link href="/rpa" className="quick-tile ov-quick">⚙ Create automation</Link>
-            <Link href="/settings" className="quick-tile ov-quick">🔑 Generate API token</Link>
-            <Link href="/members" className="quick-tile ov-quick">☻ Invite team member</Link>
-            <Link href="/profiles" className="quick-tile ov-quick">▦ Create device group</Link>
-            <Link href="/proxies" className="quick-tile ov-quick">⇄ Add proxy</Link>
+            <Link href="/profiles" className="quick-tile ov-quick">📱 Bulut telefon kur</Link>
+            <Link href="/rpa" className="quick-tile ov-quick">⚙ Otomasyon oluştur</Link>
+            <Link href="/settings" className="quick-tile ov-quick">🔑 API anahtarı oluştur</Link>
+            <Link href="/members" className="quick-tile ov-quick">☻ Ekip üyesi davet et</Link>
+            <Link href="/profiles" className="quick-tile ov-quick">▦ Cihaz grubu oluştur</Link>
+            <Link href="/proxies" className="quick-tile ov-quick">⇄ Proxy ekle</Link>
           </div>
         </div>
         </Widget>
       </section>
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Live Infrastructure</div>
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Canlı Altyapı</div>
       <div className="panel ov-panel">
         <LiveInfrastructure metrics={infraMetrics} />
       </div>
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Global Device Map</div>
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Küresel Cihaz Haritası</div>
       <div className="panel ov-panel">
         <DeviceMap regions={regions} total={totalDevices} />
       </div>
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Automation Center</div>
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Otomasyon Merkezi</div>
       <div className="panel ov-panel">
         <AutomationCenter workflows={workflows} />
       </div>
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Live Feed</div>
+      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Canlı Akış</div>
       <section className="section-grid">
-        <Widget id="recent-jobs" title="Recent jobs">
+        <Widget id="recent-jobs" title="Son işler">
         <div className="panel ov-panel ov-list">
-          <h2><span className="ov-ico">☷</span> Recent jobs</h2>
+          <h2><span className="ov-ico">☷</span> Son işler</h2>
           <div className="list-grid">
             {jobs.length === 0 ? (
-              <div className="job-card helper">No jobs yet.</div>
+              <div className="job-card helper">Henüz iş yok.</div>
             ) : (
               jobs.map((job) => (
                 <article className="job-card" key={job.id}>
@@ -364,9 +364,9 @@ export default async function HomePage() {
         </div>
         </Widget>
 
-        <Widget id="recent-activity" title="Recent activity">
+        <Widget id="recent-activity" title="Son etkinlik">
         <div className="panel ov-panel">
-          <h2><span className="ov-ico">⊛</span> Recent activity</h2>
+          <h2><span className="ov-ico">⊛</span> Son etkinlik</h2>
           <ActivityTimeline events={timeline} />
         </div>
         </Widget>

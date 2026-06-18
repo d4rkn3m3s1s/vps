@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { ApplicationsView, type AppItem, type AppDevice } from './ApplicationsView';
 
-export const metadata = { title: 'Applications · VPS Fleet' };
+export const metadata = { title: 'Uygulamalar · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function ApplicationsPage() {

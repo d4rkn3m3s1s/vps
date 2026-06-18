@@ -41,12 +41,12 @@ export function OnboardingChecklist({ steps }: { steps: OnboardingStep[] }) {
     <div className="onb-card">
       <div className="onb-head">
         <div>
-          <h2 className="onb-title">Get started with VPS Fleet</h2>
+          <h2 className="onb-title">VPS Fleet ile başlayın</h2>
           <p className="onb-sub">
-            {completed} of {total} steps done · finish setup to unlock the full platform
+            {total} adımdan {completed} tanesi tamamlandı · platformun tamamını açmak için kurulumu bitirin
           </p>
         </div>
-        <button type="button" className="onb-dismiss" onClick={dismiss} aria-label="Dismiss setup guide" title="Dismiss">
+        <button type="button" className="onb-dismiss" onClick={dismiss} aria-label="Kurulum rehberini kapat" title="Kapat">
           <X size={16} />
         </button>
       </div>
@@ -68,7 +68,7 @@ export function OnboardingChecklist({ steps }: { steps: OnboardingStep[] }) {
                 <span>{step.description}</span>
               </span>
               {step.done ? (
-                <span className="onb-step-status">Done</span>
+                <span className="onb-step-status">Tamamlandı</span>
               ) : (
                 <Link href={step.href} className={isNext ? 'btn-primary onb-step-cta' : 'btn-ghost onb-step-cta'}>
                   {step.cta}

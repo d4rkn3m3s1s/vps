@@ -103,19 +103,19 @@ export function AlertsView() {
 
   return (
     <PageMotion className="page">
-      <PageHeader title="Alerts" subtitle={`${rules.length} rules · ${events.length} recent events`} />
+      <PageHeader title="Uyarılar" subtitle={`${rules.length} kural · ${events.length} son olay`} />
 
       <div className="section-grid">
         <div className="panel">
-          <h2><BellRing size={16} style={{ marginRight: 6 }} /> Alert rules</h2>
+          <h2><BellRing size={16} style={{ marginRight: 6 }} /> Uyarı kuralları</h2>
           <div className="panel-stack">
-            {rules.length === 0 ? <p className="helper">No rules yet. Create one below.</p> : null}
+            {rules.length === 0 ? <p className="helper">Henüz kural yok. Aşağıdan bir tane oluşturun.</p> : null}
             {rules.map((r) => (
               <div className="row alert-rule-row" key={r.id}>
                 <div>
                   <strong>{r.name}</strong>
                   <div className="helper">
-                    {r.trigger}{r.threshold > 0 ? ` ≥ ${r.threshold}%` : ''} · fired {r.fireCount}×
+                    {r.trigger}{r.threshold > 0 ? ` ≥ ${r.threshold}%` : ''} · {r.fireCount}× tetiklendi
                   </div>
                 </div>
                 <div className="alert-rule-actions">
@@ -123,18 +123,18 @@ export function AlertsView() {
                     type="button"
                     className={`pill ${r.email ? 'pill-on' : ''}`}
                     onClick={() => toggleEmail(r)}
-                    title={r.email ? 'Email notifications on' : 'Email notifications off'}
+                    title={r.email ? 'E-posta bildirimleri açık' : 'E-posta bildirimleri kapalı'}
                   >
-                    <Mail size={12} /> Email
+                    <Mail size={12} /> E-posta
                   </button>
                   <button
                     type="button"
                     className={`pill ${r.active ? 'pill-on' : ''}`}
                     onClick={() => toggleRule(r)}
                   >
-                    {r.active ? 'Active' : 'Paused'}
+                    {r.active ? 'Etkin' : 'Duraklatıldı'}
                   </button>
-                  <button type="button" className="icon-btn" onClick={() => deleteRule(r.id)} aria-label="Delete">
+                  <button type="button" className="icon-btn" onClick={() => deleteRule(r.id)} aria-label="Sil">
                     <Trash2 size={15} />
                   </button>
                 </div>
@@ -145,7 +145,7 @@ export function AlertsView() {
           <div className="alert-create">
             <input
               className="field-input"
-              placeholder="Rule name (e.g. Notify on failures)"
+              placeholder="Kural adı (örn. Başarısızlıklarda bildir)"
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -165,27 +165,27 @@ export function AlertsView() {
                 style={{ width: 80 }}
               />
             ) : null}
-            <label className="alert-email-check" title="Email workspace admins when this rule fires">
+            <label className="alert-email-check" title="Bu kural tetiklendiğinde çalışma alanı yöneticilerine e-posta gönder">
               <input type="checkbox" checked={emailOnCreate} onChange={(e) => setEmailOnCreate(e.target.checked)} />
-              <Mail size={13} /> Email
+              <Mail size={13} /> E-posta
             </label>
             <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={createRule}>
-              <Plus size={15} /> Add
+              <Plus size={15} /> Ekle
             </button>
           </div>
         </div>
 
         <div className="panel">
-          <h2>Recent alert events</h2>
+          <h2>Son uyarı olayları</h2>
           <div className="list-grid">
             {events.length === 0 ? (
-              <div className="log-card helper">No alerts fired yet.</div>
+              <div className="log-card helper">Henüz tetiklenen uyarı yok.</div>
             ) : (
               events.map((e) => (
                 <article className="log-card" key={e.id}>
                   <div className="row">
                     <strong>{e.title}</strong>
-                    {e.acknowledged ? <span className="pill pill-on"><Check size={12} /> ack</span> : null}
+                    {e.acknowledged ? <span className="pill pill-on"><Check size={12} /> onaylandı</span> : null}
                   </div>
                   <div className="helper">{e.detail}</div>
                   <div className="helper mono">

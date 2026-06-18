@@ -65,13 +65,13 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
       );
       const failed = results.filter((r) => !r.ok).length;
       if (failed > 0) {
-        flash({ kind: 'err', text: `${failed} job(s) failed to queue.` });
+        flash({ kind: 'err', text: `${failed} iş kuyruğa alınamadı.` });
       } else {
-        flash({ kind: 'ok', text: `Sync queued: 1 leader + ${followers.length} follower(s).` });
+        flash({ kind: 'ok', text: `Senkronizasyon kuyruğa alındı: 1 lider + ${followers.length} takipçi.` });
         router.refresh();
       }
     } catch {
-      flash({ kind: 'err', text: 'Could not reach the API.' });
+      flash({ kind: 'err', text: 'API\'ye ulaşılamadı.' });
     } finally {
       setSyncing(false);
     }
@@ -80,15 +80,15 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Synchronizer"
-        subtitle="Mirror actions from one cloud phone across all others in the group."
+        title="Senkronize Edici"
+        subtitle="Bir bulut telefonun eylemlerini gruptaki diğer tüm telefonlara yansıtın."
         actions={
           <>
             <button type="button" className="btn-ghost" onClick={() => { setSelected(new Set()); setLeader(null); }}>
-              Clear
+              Temizle
             </button>
             <button type="button" className="btn-primary" disabled={!canSync || syncing} onClick={startSync}>
-              {syncing ? 'Starting…' : `Start sync (${selected.size})`}
+              {syncing ? 'Başlatılıyor…' : `Senkronizasyonu başlat (${selected.size})`}
             </button>
           </>
         }
@@ -99,13 +99,13 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
       {devices.length === 0 ? (
         <div className="empty-state">
           <div className="empty-art">⧉</div>
-          <h3>No cloud phones yet</h3>
-          <p>Create profiles first, then select two or more here to mirror their inputs.</p>
+          <h3>Henüz bulut telefon yok</h3>
+          <p>Önce profiller oluşturun, ardından girişlerini yansıtmak için burada iki veya daha fazlasını seçin.</p>
         </div>
       ) : (
         <>
           <p className="helper" style={{ marginBottom: '14px' }}>
-            Select 2+ phones, then mark one as the <strong>leader</strong>. Its inputs mirror to every follower.
+            2 veya daha fazla telefon seçin, ardından birini <strong>lider</strong> olarak işaretleyin. Girişleri her takipçiye yansıtılır.
           </p>
           <div className="profile-grid">
             {devices.map((d) => {
@@ -121,12 +121,12 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
                     <strong>{d.name}</strong>
                     <span className="status-chip">
                       <span className={d.status === 'ONLINE' ? 'dot dot-online' : 'dot dot-offline'} />
-                      {d.status === 'ONLINE' ? 'Running' : 'Stopped'}
+                      {d.status === 'ONLINE' ? 'Çalışıyor' : 'Durduruldu'}
                     </span>
                   </div>
                   <div className="helper">Android {d.androidVersion ?? '—'}</div>
                   <div className="row" style={{ marginTop: '10px' }}>
-                    <span className="helper">{isSel ? 'Selected' : 'Tap to select'}</span>
+                    <span className="helper">{isSel ? 'Seçili' : 'Seçmek için dokun'}</span>
                     {isSel && (
                       <button
                         type="button"
@@ -136,7 +136,7 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
                           setLeader(d.id);
                         }}
                       >
-                        {isLeader ? '★ Leader' : 'Set leader'}
+                        {isLeader ? '★ Lider' : 'Lider yap'}
                       </button>
                     )}
                   </div>

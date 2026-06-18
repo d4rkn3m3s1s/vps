@@ -16,7 +16,7 @@ export type Listing = {
 };
 
 const CATEGORIES = ['All', 'TEMPLATE', 'AUTOMATION', 'INTEGRATION'];
-const LABEL: Record<string, string> = { TEMPLATE: 'Template', AUTOMATION: 'Automation', INTEGRATION: 'Integration' };
+const LABEL: Record<string, string> = { TEMPLATE: 'Şablon', AUTOMATION: 'Otomasyon', INTEGRATION: 'Entegrasyon' };
 
 export function FleetHubView({ listings }: { listings: Listing[] }) {
   const router = useRouter();
@@ -31,10 +31,10 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
     try {
       const res = await fetch(`/api/catalog/listings/${l.id}/install`, { method: 'POST' });
       if (!res.ok) throw new Error();
-      setToast(`Installed ${l.title}`);
+      setToast(`${l.title} kuruldu`);
       router.refresh();
     } catch {
-      setToast(`Failed to install ${l.title}`);
+      setToast(`${l.title} kurulamadı`);
     } finally {
       setBusy(null);
       setTimeout(() => setToast(null), 2500);
@@ -45,13 +45,13 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
     <PageMotion className="page">
       <PageHeader
         title="FleetHub"
-        subtitle="Marketplace for templates, automations and integrations."
+        subtitle="Şablonlar, otomasyonlar ve entegrasyonlar için pazar yeri."
       />
 
       <div className="tab-row">
         {CATEGORIES.map((c) => (
           <button key={c} type="button" className={c === cat ? 'tab tab-active' : 'tab'} onClick={() => setCat(c)}>
-            {c === 'All' ? 'All' : LABEL[c]}
+            {c === 'All' ? 'Tümü' : LABEL[c]}
           </button>
         ))}
       </div>
@@ -67,12 +67,12 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
               </div>
               <p className="helper">{l.description}</p>
               <div className="row" style={{ marginTop: '8px' }}>
-                <span className="helper mono">↓ {l.installs.toLocaleString()} installs</span>
+                <span className="helper mono">↓ {l.installs.toLocaleString()} kurulum</span>
                 <span className="price-tag">{l.price}</span>
               </div>
             </div>
             <button type="button" className="btn-ghost" disabled={busy === l.id} onClick={() => install(l)}>
-              {busy === l.id ? '…' : 'Install'}
+              {busy === l.id ? '…' : 'Kur'}
             </button>
           </MotionItem>
         ))}

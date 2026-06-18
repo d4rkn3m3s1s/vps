@@ -47,46 +47,46 @@ export default async function AdminSystemPage() {
     <>
       <section className="section-grid">
         <div className="panel">
-          <h2>Infrastructure health</h2>
+          <h2>Altyapı sağlığı</h2>
           <div className="panel-stack">
             <div className="row">
               <span className="helper">PostgreSQL</span>
               <span className="status-chip">
                 <span className={sys?.database.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.database.status ?? 'unknown'}
+                {sys?.database.status ?? 'bilinmiyor'}
               </span>
             </div>
             <div className="row">
-              <span className="helper">Redis queue</span>
+              <span className="helper">Redis kuyruğu</span>
               <span className="status-chip">
                 <span className={sys?.queue.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.queue.status ?? 'unknown'}
+                {sys?.queue.status ?? 'bilinmiyor'}
               </span>
             </div>
             <div className="row">
               <span className="helper">Docker</span>
               <span className="status-chip">
                 <span className={sys?.docker.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.docker.status ?? 'unknown'}
+                {sys?.docker.status ?? 'bilinmiyor'}
               </span>
             </div>
           </div>
         </div>
 
         <div className="panel">
-          <h2>Service</h2>
+          <h2>Servis</h2>
           <div className="panel-stack">
             <div className="row">
-              <span className="helper">Environment</span>
+              <span className="helper">Ortam</span>
               <span className="mono">{sys?.service.nodeEnv ?? '—'}</span>
             </div>
             <div className="row">
-              <span className="helper">API uptime</span>
+              <span className="helper">API çalışma süresi</span>
               <span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>
             </div>
             <div className="row">
-              <span className="helper">Region</span>
-              <span className="mono">self-hosted</span>
+              <span className="helper">Bölge</span>
+              <span className="mono">kendi sunucumuzda</span>
             </div>
           </div>
         </div>
@@ -94,17 +94,17 @@ export default async function AdminSystemPage() {
 
       <section className="section-grid">
         <div className="panel">
-          <h2>Hosts</h2>
+          <h2>Ana makineler</h2>
           <div className="panel-stack">
             {hosts.length === 0 ? (
-              <span className="helper">No hosts registered.</span>
+              <span className="helper">Kayıtlı ana makine yok.</span>
             ) : (
               hosts.map((h) => (
                 <div className="row" key={h.id}>
                   <span className="mono">{h.name}</span>
                   <span className="status-chip">
                     <span className={h.status === 'ONLINE' ? 'dot dot-online' : 'dot dot-error'} />
-                    {h.status} · {h.runningPhones}/{h.capacity} phones · {h.cpuCores ?? '—'}c / {h.memoryGb ?? '—'}GB
+                    {h.status} · {h.runningPhones}/{h.capacity} telefon · {h.cpuCores ?? '—'}c / {h.memoryGb ?? '—'}GB
                   </span>
                 </div>
               ))
@@ -113,16 +113,16 @@ export default async function AdminSystemPage() {
         </div>
 
         <div className="panel">
-          <h2>Installed modules</h2>
+          <h2>Yüklü modüller</h2>
           <div className="panel-stack">
             {(sys?.plugins ?? []).length === 0 ? (
-              <span className="helper">No social modules installed.</span>
+              <span className="helper">Yüklü sosyal modül yok.</span>
             ) : (
               (sys?.plugins ?? []).map((p) => (
                 <div className="row" key={p.id}>
                   <span className="mono">{p.displayName}</span>
                   <span className="status-chip">
-                    <span className="dot dot-online" /> active
+                    <span className="dot dot-online" /> etkin
                   </span>
                 </div>
               ))
@@ -133,14 +133,14 @@ export default async function AdminSystemPage() {
 
       <section className="section-grid">
         <div className="panel">
-          <h2>Agent connectivity</h2>
+          <h2>Aracı bağlantısı</h2>
           <div className="panel-stack">
             <p className="helper">
-              Host agents authenticate with the API key configured server-side. The key is never exposed to the
-              dashboard and is provisioned once when a host is registered.
+              Ana makine aracıları, sunucu tarafında yapılandırılan API anahtarıyla kimlik doğrular. Anahtar hiçbir zaman
+              panele açık edilmez ve bir ana makine kaydedildiğinde yalnızca bir kez sağlanır.
             </p>
             <div className="row">
-              <span className="helper">Online hosts</span>
+              <span className="helper">Çevrimiçi ana makineler</span>
               <span className="role-badge">{onlineHosts} / {hosts.length}</span>
             </div>
           </div>

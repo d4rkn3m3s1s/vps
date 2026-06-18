@@ -10,14 +10,14 @@ type Line = { kind: 'cmd' | 'out' | 'err' | 'info'; text: string };
 
 // Quick shell snippets surfaced as one-click buttons.
 const QUICK_CMDS: { label: string; cmd: string }[] = [
-  { label: 'Device model', cmd: 'getprop ro.product.model' },
-  { label: 'Android version', cmd: 'getprop ro.build.version.release' },
-  { label: 'Battery', cmd: 'dumpsys battery | grep level' },
-  { label: 'IP address', cmd: 'ip addr show wlan0' },
-  { label: 'Installed apps', cmd: 'pm list packages -3' },
-  { label: 'Screen state', cmd: 'dumpsys power | grep "Display Power"' },
-  { label: 'Uptime', cmd: 'uptime' },
-  { label: 'Running procs', cmd: 'ps -A | head -20' }
+  { label: 'Cihaz modeli', cmd: 'getprop ro.product.model' },
+  { label: 'Android sürümü', cmd: 'getprop ro.build.version.release' },
+  { label: 'Batarya', cmd: 'dumpsys battery | grep level' },
+  { label: 'IP adresi', cmd: 'ip addr show wlan0' },
+  { label: 'Yüklü uygulamalar', cmd: 'pm list packages -3' },
+  { label: 'Ekran durumu', cmd: 'dumpsys power | grep "Display Power"' },
+  { label: 'Çalışma süresi', cmd: 'uptime' },
+  { label: 'Çalışan işlemler', cmd: 'ps -A | head -20' }
 ];
 
 export function ConsoleView() {
@@ -41,7 +41,7 @@ export function ConsoleView() {
         setDevices(ds);
         if (ds[0]) setSelected(ds[0].id);
       } catch {
-        push({ kind: 'err', text: 'Could not load devices.' });
+        push({ kind: 'err', text: 'Cihazlar yüklenemedi.' });
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -50,7 +50,7 @@ export function ConsoleView() {
   // Reset the terminal when switching devices.
   useEffect(() => {
     if (!selected) return;
-    setLines([{ kind: 'info', text: `Connected to "${activeDevice?.name ?? selected}". Type a command or use the toolbar.` }]);
+    setLines([{ kind: 'info', text: `"${activeDevice?.name ?? selected}" cihazına bağlanıldı. Bir komut yazın veya araç çubuğunu kullanın.` }]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
 
@@ -78,15 +78,15 @@ export function ConsoleView() {
       });
       const json = await res.json();
       if (!res.ok) {
-        push({ kind: 'err', text: json.message ?? `Error ${res.status}` });
+        push({ kind: 'err', text: json.message ?? `Hata ${res.status}` });
         return;
       }
       const d = json.data ?? {};
       if (d.stdout) push({ kind: 'out', text: d.stdout.trimEnd() });
       if (d.stderr) push({ kind: 'err', text: d.stderr.trimEnd() });
-      if (!d.stdout && !d.stderr) push({ kind: 'info', text: `(exit ${d.exitCode ?? 0}, no output)` });
+      if (!d.stdout && !d.stderr) push({ kind: 'info', text: `(çıkış ${d.exitCode ?? 0}, çıktı yok)` });
     } catch {
-      push({ kind: 'err', text: 'Request failed — the device may be offline.' });
+      push({ kind: 'err', text: 'İstek başarısız — cihaz çevrimdışı olabilir.' });
     } finally {
       setBusy(false);
     }
@@ -104,13 +104,13 @@ export function ConsoleView() {
       });
       const json = await res.json();
       if (!res.ok) {
-        push({ kind: 'err', text: json.message ?? `${label} failed` });
+        push({ kind: 'err', text: json.message ?? `${label} başarısız` });
         return;
       }
       const jobId = json.data?.jobIds?.[0];
-      push({ kind: 'info', text: `${label} queued${jobId ? ` (job ${jobId.slice(0, 8)}…)` : ''} — the host agent will apply it.` });
+      push({ kind: 'info', text: `${label} sıraya alındı${jobId ? ` (görev ${jobId.slice(0, 8)}…)` : ''} — sunucu aracısı bunu uygulayacak.` });
     } catch {
-      push({ kind: 'err', text: `${label} failed` });
+      push({ kind: 'err', text: `${label} başarısız` });
     } finally {
       setBusy(false);
     }
@@ -118,15 +118,15 @@ export function ConsoleView() {
 
   async function reboot() {
     if (!selected) return;
-    if (!confirm('Reboot this cloud phone?')) return;
+    if (!confirm('Bu bulut telefon yeniden başlatılsın mı?')) return;
     // Reboot is issued directly over the live ADB bridge (synchronous).
     await runShell('reboot');
   }
 
   function installApk() {
-    const apkPath = prompt('APK path on the host (e.g. /data/apks/app.apk):');
+    const apkPath = prompt('Sunucudaki APK yolu (örn. /data/apks/app.apk):');
     if (!apkPath || !apkPath.trim()) return;
-    void quickAction('EMULATOR_INSTALL_APK', 'Install APK', { apkPath: apkPath.trim() });
+    void quickAction('EMULATOR_INSTALL_APK', 'APK yükleme', { apkPath: apkPath.trim() });
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -156,11 +156,11 @@ export function ConsoleView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Device console"
-        subtitle="Live shell and remote control for a single cloud phone — over the real ADB bridge."
+        title="Cihaz konsolu"
+        subtitle="Tek bir bulut telefon için canlı shell ve uzaktan kontrol — gerçek ADB köprüsü üzerinden."
         actions={
           <select className="field-input" value={selected ?? ''} onChange={(e) => setSelected(e.target.value)}>
-            {devices.length === 0 ? <option value="">No devices</option> : null}
+            {devices.length === 0 ? <option value="">Cihaz yok</option> : null}
             {devices.map((d) => (
               <option key={d.id} value={d.id}>
                 {d.name}
@@ -173,21 +173,21 @@ export function ConsoleView() {
 
       {/* Action toolbar */}
       <div className="console-toolbar">
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_START', 'Start')}>
-          <Play size={14} /> Start
+        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_START', 'Başlatma')}>
+          <Play size={14} /> Başlat
         </button>
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_STOP', 'Stop')}>
-          <Square size={14} /> Stop
+        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_STOP', 'Durdurma')}>
+          <Square size={14} /> Durdur
         </button>
         <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={reboot}>
-          <RotateCcw size={14} /> Reboot
+          <RotateCcw size={14} /> Yeniden başlat
         </button>
         <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={installApk}>
-          <Package size={14} /> Install APK
+          <Package size={14} /> APK yükle
         </button>
         <span className="console-spacer" />
         <button type="button" className="btn-ghost" disabled={!lines.length} onClick={() => setLines([])}>
-          <Trash2 size={14} /> Clear
+          <Trash2 size={14} /> Temizle
         </button>
       </div>
 
@@ -214,20 +214,20 @@ export function ConsoleView() {
               value={cmd}
               onChange={(e) => setCmd(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={selected ? 'Type a shell command and hit Enter…' : 'Select a device first'}
+              placeholder={selected ? 'Bir shell komutu yazıp Enter tuşuna basın…' : 'Önce bir cihaz seçin'}
               disabled={busy || !selected}
               autoFocus
             />
           </div>
           <p className="helper console-hint">
-            Live <span className="mono">adb shell</span> over the device bridge. ↑/↓ for history. Start/Stop/Install run
-            through the host agent job queue.
+            Cihaz köprüsü üzerinden canlı <span className="mono">adb shell</span>. Geçmiş için ↑/↓. Başlat/Durdur/Yükle
+            işlemleri sunucu aracısı görev kuyruğu üzerinden çalışır.
           </p>
         </div>
 
         {/* Quick commands */}
         <div className="panel">
-          <h2>Quick commands</h2>
+          <h2>Hızlı komutlar</h2>
           <div className="console-quick">
             {QUICK_CMDS.map((q) => (
               <button

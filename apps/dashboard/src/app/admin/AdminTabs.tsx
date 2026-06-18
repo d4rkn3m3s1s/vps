@@ -5,13 +5,13 @@ import { usePathname } from 'next/navigation';
 import { Settings, Users, Server, CreditCard, KeyRound, ShieldCheck, Cpu } from 'lucide-react';
 
 const TABS = [
-  { href: '/admin', label: 'General', icon: Settings, exact: true },
-  { href: '/admin/members', label: 'Members & roles', icon: Users, exact: false },
-  { href: '/admin/permissions', label: 'Permissions', icon: ShieldCheck, exact: false },
-  { href: '/admin/api-keys', label: 'API keys', icon: KeyRound, exact: false },
-  { href: '/admin/servers', label: 'GPU servers (Vast.ai)', icon: Cpu, exact: false },
-  { href: '/admin/system', label: 'System & infra', icon: Server, exact: false },
-  { href: '/admin/billing', label: 'Billing & quota', icon: CreditCard, exact: false }
+  { href: '/admin', label: 'Genel', icon: Settings, exact: true },
+  { href: '/admin/members', label: 'Üyeler & roller', icon: Users, exact: false },
+  { href: '/admin/permissions', label: 'İzinler', icon: ShieldCheck, exact: false },
+  { href: '/admin/api-keys', label: 'API anahtarları', icon: KeyRound, exact: false },
+  { href: '/admin/servers', label: 'GPU sunucuları (Vast.ai)', icon: Cpu, exact: false },
+  { href: '/admin/system', label: 'Sistem & altyapı', icon: Server, exact: false },
+  { href: '/admin/billing', label: 'Faturalama & kota', icon: CreditCard, exact: false }
 ];
 
 export function AdminTabs() {

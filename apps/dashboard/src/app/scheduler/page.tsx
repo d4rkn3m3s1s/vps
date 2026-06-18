@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { SchedulerView, type ScheduledTask, type SchedulerDevice } from './SchedulerView';
 
-export const metadata = { title: 'Scheduler · VPS Fleet' };
+export const metadata = { title: 'Zamanlayıcı · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function SchedulerPage() {

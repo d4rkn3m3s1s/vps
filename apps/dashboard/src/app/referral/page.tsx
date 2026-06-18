@@ -1,7 +1,7 @@
 import { apiCall } from '../../lib/apiClient';
 import { ReferralView, type ReferralData } from './ReferralView';
 
-export const metadata = { title: 'Referral · VPS Fleet' };
+export const metadata = { title: 'Davet · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function ReferralPage() {

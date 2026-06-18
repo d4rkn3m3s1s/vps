@@ -58,13 +58,13 @@ export type AppOption = { id: string; name: string; packageName: string; version
 type ViewMode = 'card' | 'list';
 
 const STATUS_LABEL: Record<string, string> = {
-  ONLINE: 'Running',
-  OFFLINE: 'Stopped',
-  STARTING: 'Starting',
-  STOPPING: 'Stopping',
-  ERROR: 'Error',
-  UPDATING: 'Updating',
-  REBOOTING: 'Rebooting'
+  ONLINE: 'Çalışıyor',
+  OFFLINE: 'Durduruldu',
+  STARTING: 'Başlatılıyor',
+  STOPPING: 'Durduruluyor',
+  ERROR: 'Hata',
+  UPDATING: 'Güncelleniyor',
+  REBOOTING: 'Yeniden başlatılıyor'
 };
 
 function statusClass(status: string): string {
@@ -84,10 +84,10 @@ function statusClass(status: string): string {
 
 function flag(metadata?: Record<string, unknown> | null): string {
   const country = (metadata?.country as string) || (metadata?.region as string) || '';
-  return country || 'Global';
+  return country || 'Küresel';
 }
 
-const BULK_ACTIONS = ['Start', 'Close', 'Reboot', 'Move', 'Assign proxy', 'Install app', 'Push file', 'Delete'] as const;
+const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'Dosya gönder', 'Sil'] as const;
 
 export function ProfilesView({
   devices,
@@ -157,7 +157,7 @@ export function ProfilesView({
 
   async function createProfile() {
     if (!form.name.trim()) {
-      setError('Profile name is required.');
+      setError('Profil adı gereklidir.');
       return;
     }
     setBusy(true);
@@ -172,12 +172,12 @@ export function ProfilesView({
           countryCode: form.countryCode
         })
       });
-      if (!res.ok) throw new Error(`Create failed (${res.status})`);
+      if (!res.ok) throw new Error(`Oluşturma başarısız (${res.status})`);
       setCreateOpen(false);
       setForm({ name: '', androidVersion: '12', countryCode: 'US' });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Create failed');
+      setError(err instanceof Error ? err.message : 'Oluşturma başarısız');
     } finally {
       setBusy(false);
     }
@@ -203,7 +203,7 @@ export function ProfilesView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(gpsForm.countryCode ? { countryCode: gpsForm.countryCode } : {})
       });
-      if (!res.ok) throw new Error(`Regenerate failed (${res.status})`);
+      if (!res.ok) throw new Error(`Yeniden oluşturma başarısız (${res.status})`);
       setFpDevice(null);
       router.refresh();
     } finally {
@@ -224,7 +224,7 @@ export function ProfilesView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!res.ok) throw new Error(`GPS update failed (${res.status})`);
+      if (!res.ok) throw new Error(`GPS güncellemesi başarısız (${res.status})`);
       setFpDevice(null);
       router.refresh();
     } finally {
@@ -234,7 +234,7 @@ export function ProfilesView({
 
   async function deleteSelected() {
     if (selectionCount === 0) return;
-    if (!confirm(`Delete ${selectionCount} profile(s)? This cannot be undone.`)) return;
+    if (!confirm(`${selectionCount} profil silinsin mi? Bu işlem geri alınamaz.`)) return;
     setBusy(true);
     try {
       await Promise.all(
@@ -260,11 +260,11 @@ export function ProfilesView({
           body: JSON.stringify({ name: newGroup.trim() })
         });
         const gJson = await gRes.json().catch(() => ({}));
-        if (!gRes.ok) throw new Error(gJson?.error ?? 'Could not create group');
+        if (!gRes.ok) throw new Error(gJson?.error ?? 'Grup oluşturulamadı');
         groupId = gJson.data?.id ?? '';
       }
       if (!groupId) {
-        setError('Pick a group or enter a new one.');
+        setError('Bir grup seçin veya yeni bir grup girin.');
         setBusy(false);
         return;
       }
@@ -283,7 +283,7 @@ export function ProfilesView({
       setSelected(new Set());
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Move failed');
+      setError(err instanceof Error ? err.message : 'Taşıma başarısız');
     } finally {
       setBusy(false);
     }
@@ -291,7 +291,7 @@ export function ProfilesView({
 
   async function pushFile() {
     if (selectionCount === 0 || !pushForm.url.trim()) {
-      setError('A file URL is required.');
+      setError('Dosya URL adresi gereklidir.');
       return;
     }
     setBusy(true);
@@ -307,12 +307,12 @@ export function ProfilesView({
           ...(pushForm.fileName.trim() ? { fileName: pushForm.fileName.trim() } : {})
         })
       });
-      if (!res.ok) throw new Error(`Push failed (${res.status})`);
+      if (!res.ok) throw new Error(`Gönderme başarısız (${res.status})`);
       setPushOpen(false);
       setPushForm({ url: '', fileName: '', destination: 'gallery' });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Push failed');
+      setError(err instanceof Error ? err.message : 'Gönderme başarısız');
     } finally {
       setBusy(false);
     }
@@ -356,14 +356,14 @@ export function ProfilesView({
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not assign proxy');
+        throw new Error(j.message ?? 'Proxy atanamadı');
       }
       setProxyOpen(false);
       setProxyChoice('');
       setSelected(new Set());
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not assign proxy');
+      setError(e instanceof Error ? e.message : 'Proxy atanamadı');
     } finally {
       setBusy(false);
     }
@@ -387,14 +387,14 @@ export function ProfilesView({
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not start install');
+        throw new Error(j.message ?? 'Yükleme başlatılamadı');
       }
       setAppOpen(false);
       setAppChoice('');
       setSelected(new Set());
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not start install');
+      setError(e instanceof Error ? e.message : 'Yükleme başlatılamadı');
     } finally {
       setBusy(false);
     }
@@ -402,23 +402,23 @@ export function ProfilesView({
 
   function runBulk(action: string) {
     if (selectionCount === 0) return undefined;
-    if (action === 'Delete') return deleteSelected();
-    if (action === 'Start') return bulkJob('EMULATOR_START', 'STARTING');
-    if (action === 'Close') return bulkJob('EMULATOR_STOP', 'STOPPING');
-    if (action === 'Reboot') return bulkJob('EMULATOR_START', 'REBOOTING');
-    if (action === 'Push file') {
+    if (action === 'Sil') return deleteSelected();
+    if (action === 'Başlat') return bulkJob('EMULATOR_START', 'STARTING');
+    if (action === 'Kapat') return bulkJob('EMULATOR_STOP', 'STOPPING');
+    if (action === 'Yeniden başlat') return bulkJob('EMULATOR_START', 'REBOOTING');
+    if (action === 'Dosya gönder') {
       setPushOpen(true);
       return undefined;
     }
-    if (action === 'Assign proxy') {
+    if (action === 'Proxy ata') {
       setProxyOpen(true);
       return undefined;
     }
-    if (action === 'Install app') {
+    if (action === 'Uygulama yükle') {
       setAppOpen(true);
       return undefined;
     }
-    if (action === 'Move') {
+    if (action === 'Taşı') {
       setMoveOpen(true);
       return undefined;
     }
@@ -430,8 +430,8 @@ export function ProfilesView({
       <header className="profiles-topbar">
         <div className="topbar-left">
           <select className="group-select" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-            <option value="all">All groups</option>
-            <option value="ungrouped">Ungrouped</option>
+            <option value="all">Tüm gruplar</option>
+            <option value="ungrouped">Grupsuz</option>
             {groups.map((group) => (
               <option key={group.id} value={group.id}>
                 {group.name}
@@ -444,31 +444,31 @@ export function ProfilesView({
             </span>
             <input
               type="text"
-              placeholder="Profile name"
+              placeholder="Profil adı"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
         </div>
         <div className="topbar-right">
-          <div className="mode-toggle" role="tablist" aria-label="View mode">
+          <div className="mode-toggle" role="tablist" aria-label="Görünüm modu">
             <button
               type="button"
               className={mode === 'card' ? 'active' : ''}
               onClick={() => setMode('card')}
             >
-              Card
+              Kart
             </button>
             <button
               type="button"
               className={mode === 'list' ? 'active' : ''}
               onClick={() => setMode('list')}
             >
-              List
+              Liste
             </button>
           </div>
           <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
-            + New profile
+            + Yeni profil
           </button>
         </div>
       </header>
@@ -476,16 +476,16 @@ export function ProfilesView({
       <div className={`action-bar${selectionCount > 0 ? ' action-bar-active' : ''}`}>
         <label className="select-all">
           <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-          <span>{selectionCount > 0 ? `${selectionCount} selected` : 'Select all'}</span>
+          <span>{selectionCount > 0 ? `${selectionCount} seçili` : 'Tümünü seç'}</span>
         </label>
         <div className="action-buttons">
           {BULK_ACTIONS.map((action) => (
             <button
               key={action}
               type="button"
-              className={action === 'Delete' ? 'action-btn action-danger' : 'action-btn'}
+              className={action === 'Sil' ? 'action-btn action-danger' : 'action-btn'}
               disabled={selectionCount === 0 || busy}
-              title={selectionCount === 0 ? 'Select profiles first' : action}
+              title={selectionCount === 0 ? 'Önce profilleri seçin' : action}
               onClick={() => runBulk(action)}
             >
               {action}
@@ -497,18 +497,18 @@ export function ProfilesView({
       {filtered.length === 0 ? (
         <div className="empty-state">
           <div className="empty-art">☁</div>
-          <h3>No profiles yet</h3>
-          <p>Create your first cloud phone profile to get started.</p>
+          <h3>Henüz profil yok</h3>
+          <p>Başlamak için ilk bulut telefon profilinizi oluşturun.</p>
           <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
-            + New profile
+            + Yeni profil
           </button>
         </div>
       ) : mode === 'card' ? (
         <div className="profile-grid">
           <button type="button" className="create-card" onClick={() => setCreateOpen(true)}>
             <div className="create-art">+</div>
-            <strong>Create a new profile</strong>
-            <span className="create-cta">Create</span>
+            <strong>Yeni bir profil oluştur</strong>
+            <span className="create-cta">Oluştur</span>
           </button>
 
           {filtered.map((device) => {
@@ -522,7 +522,7 @@ export function ProfilesView({
                   <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
                     {device.name}
                   </Link>
-                  <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Open device" title="Open device">
+                  <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Cihazı aç" title="Cihazı aç">
                     ⋮
                   </Link>
                 </div>
@@ -538,7 +538,7 @@ export function ProfilesView({
                   </li>
                   <li>
                     <span className="meta-icon">▤</span>
-                    {device.fingerprint ? `${device.fingerprint.manufacturer} ${device.fingerprint.model}` : 'No fingerprint'}
+                    {device.fingerprint ? `${device.fingerprint.manufacturer} ${device.fingerprint.model}` : 'Parmak izi yok'}
                   </li>
                   <li>
                     <span className="meta-icon">⌨</span>
@@ -546,11 +546,11 @@ export function ProfilesView({
                   </li>
                   <li>
                     <span className="meta-icon">⇄</span>
-                    {device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'No proxy'}
+                    {device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'Proxy yok'}
                   </li>
                   <li>
                     <span className="meta-icon">≣</span>
-                    {device.group?.name ?? 'Ungrouped'}
+                    {device.group?.name ?? 'Grupsuz'}
                   </li>
                 </ul>
                 <div className="card-foot">
@@ -559,7 +559,7 @@ export function ProfilesView({
                     {STATUS_LABEL[device.status] ?? device.status}
                   </span>
                   <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
-                    ⊚ Fingerprint
+                    ⊚ Parmak izi
                   </button>
                 </div>
               </article>
@@ -574,12 +574,12 @@ export function ProfilesView({
                 <th className="col-check">
                   <input type="checkbox" checked={allSelected} onChange={toggleAll} />
                 </th>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Location</th>
+                <th>Ad</th>
+                <th>Durum</th>
+                <th>Konum</th>
                 <th>Android</th>
                 <th>Proxy</th>
-                <th>Group</th>
+                <th>Grup</th>
                 <th>CPU / RAM</th>
               </tr>
             </thead>
@@ -617,22 +617,22 @@ export function ProfilesView({
       )}
 
       <footer className="profiles-foot">
-        <span className="helper">Total: {filtered.length} records</span>
+        <span className="helper">Toplam: {filtered.length} kayıt</span>
       </footer>
 
       {moveOpen ? (
         <div className="modal-overlay" onClick={() => !busy && setMoveOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Move {selectionCount} profile(s)</h2>
+              <h2>{selectionCount} profili taşı</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setMoveOpen(false)}>
                 ✕
               </button>
             </header>
             <label className="field">
-              <span>Existing group</span>
+              <span>Mevcut grup</span>
               <select className="field-input" value={moveGroup} onChange={(e) => setMoveGroup(e.target.value)} disabled={!!newGroup}>
-                <option value="">— select —</option>
+                <option value="">— seçin —</option>
                 {groups.map((g) => (
                   <option key={g.id} value={g.id}>
                     {g.name}
@@ -641,16 +641,16 @@ export function ProfilesView({
               </select>
             </label>
             <label className="field">
-              <span>Or create new group</span>
-              <input className="field-input" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="e.g. Campaign A" />
+              <span>Veya yeni grup oluştur</span>
+              <input className="field-input" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} placeholder="örn. Kampanya A" />
             </label>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setMoveOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={moveSelected}>
-                {busy ? 'Moving…' : 'Move'}
+                {busy ? 'Taşınıyor…' : 'Taşı'}
               </button>
             </footer>
           </div>
@@ -661,18 +661,18 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !busy && setCreateOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>New profile</h2>
+              <h2>Yeni profil</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setCreateOpen(false)}>
                 ✕
               </button>
             </header>
 
             <label className="field">
-              <span>Profile name</span>
+              <span>Profil adı</span>
               <input
                 type="text"
                 className="field-input"
-                placeholder="e.g. Cloud phone profile_US_04"
+                placeholder="örn. Bulut telefon profili_US_04"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               />
@@ -680,7 +680,7 @@ export function ProfilesView({
 
             <div className="field-row">
               <label className="field">
-                <span>Android version</span>
+                <span>Android sürümü</span>
                 <select
                   className="field-input"
                   value={form.androidVersion}
@@ -693,14 +693,14 @@ export function ProfilesView({
                 </select>
               </label>
               <label className="field">
-                <span>Location (SIM / GPS)</span>
+                <span>Konum (SIM / GPS)</span>
                 <select
                   className="field-input"
                   value={form.countryCode}
                   onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value }))}
                 >
                   {countries.length === 0 ? (
-                    <option value="US">United States</option>
+                    <option value="US">Amerika Birleşik Devletleri</option>
                   ) : (
                     countries.map((c) => (
                       <option key={c.countryCode} value={c.countryCode}>
@@ -713,17 +713,17 @@ export function ProfilesView({
             </div>
 
             <p className="helper">
-              A unique device fingerprint (IMEI, model, carrier, MAC) is generated automatically for this country.
+              Bu ülke için benzersiz bir cihaz parmak izi (IMEI, model, operatör, MAC) otomatik olarak oluşturulur.
             </p>
 
             {error ? <p className="field-error">{error}</p> : null}
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setCreateOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={createProfile}>
-                {busy ? 'Creating…' : 'Create profile'}
+                {busy ? 'Oluşturuluyor…' : 'Profil oluştur'}
               </button>
             </footer>
           </div>
@@ -734,7 +734,7 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !fpBusy && setFpDevice(null)}>
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Device fingerprint — {fpDevice.name}</h2>
+              <h2>Cihaz parmak izi — {fpDevice.name}</h2>
               <button type="button" className="modal-close" onClick={() => !fpBusy && setFpDevice(null)}>
                 ✕
               </button>
@@ -742,34 +742,34 @@ export function ProfilesView({
 
             {fpDevice.fingerprint ? (
               <div className="fp-grid">
-                <FpRow label="Device" value={`${fpDevice.fingerprint.manufacturer} ${fpDevice.fingerprint.model}`} />
-                <FpRow label="OS / Build" value={`Android ${fpDevice.fingerprint.osVersion} · ${fpDevice.fingerprint.buildNumber}`} />
+                <FpRow label="Cihaz" value={`${fpDevice.fingerprint.manufacturer} ${fpDevice.fingerprint.model}`} />
+                <FpRow label="OS / Yapı" value={`Android ${fpDevice.fingerprint.osVersion} · ${fpDevice.fingerprint.buildNumber}`} />
                 <FpRow label="IMEI" value={fpDevice.fingerprint.imei} mono />
                 <FpRow label="Android ID" value={fpDevice.fingerprint.androidId} mono />
-                <FpRow label="Serial" value={fpDevice.fingerprint.serialNo} mono />
+                <FpRow label="Seri No" value={fpDevice.fingerprint.serialNo} mono />
                 <FpRow label="MAC" value={fpDevice.fingerprint.macAddress} mono />
-                <FpRow label="Resolution" value={`${fpDevice.fingerprint.resolution} @ ${fpDevice.fingerprint.dpi}dpi`} />
-                <FpRow label="Carrier" value={`${fpDevice.fingerprint.carrier} (${fpDevice.fingerprint.mcc}/${fpDevice.fingerprint.mnc})`} />
-                <FpRow label="Phone" value={fpDevice.fingerprint.phoneNumber ?? '—'} mono />
-                <FpRow label="Locale" value={`${fpDevice.fingerprint.country} · ${fpDevice.fingerprint.language} · ${fpDevice.fingerprint.timezone}`} />
+                <FpRow label="Çözünürlük" value={`${fpDevice.fingerprint.resolution} @ ${fpDevice.fingerprint.dpi}dpi`} />
+                <FpRow label="Operatör" value={`${fpDevice.fingerprint.carrier} (${fpDevice.fingerprint.mcc}/${fpDevice.fingerprint.mnc})`} />
+                <FpRow label="Telefon" value={fpDevice.fingerprint.phoneNumber ?? '—'} mono />
+                <FpRow label="Yerel ayar" value={`${fpDevice.fingerprint.country} · ${fpDevice.fingerprint.language} · ${fpDevice.fingerprint.timezone}`} />
               </div>
             ) : (
-              <p className="helper">No fingerprint yet — regenerate to create one.</p>
+              <p className="helper">Henüz parmak izi yok — oluşturmak için yeniden üretin.</p>
             )}
 
             <div className="modal-section">
-              <h3>GPS / SIM simulation</h3>
+              <h3>GPS / SIM simülasyonu</h3>
               <label className="field-check">
                 <input
                   type="checkbox"
                   checked={gpsForm.gpsEnabled}
                   onChange={(e) => setGpsForm((g) => ({ ...g, gpsEnabled: e.target.checked }))}
                 />
-                <span>Enable GPS spoofing</span>
+                <span>GPS sahteciliğini etkinleştir</span>
               </label>
               <div className="field-row">
                 <label className="field">
-                  <span>Latitude</span>
+                  <span>Enlem</span>
                   <input
                     className="field-input"
                     value={gpsForm.latitude}
@@ -778,7 +778,7 @@ export function ProfilesView({
                   />
                 </label>
                 <label className="field">
-                  <span>Longitude</span>
+                  <span>Boylam</span>
                   <input
                     className="field-input"
                     value={gpsForm.longitude}
@@ -788,13 +788,13 @@ export function ProfilesView({
                 </label>
               </div>
               <label className="field">
-                <span>Country (updates SIM + timezone)</span>
+                <span>Ülke (SIM + saat dilimini günceller)</span>
                 <select
                   className="field-input"
                   value={gpsForm.countryCode}
                   onChange={(e) => setGpsForm((g) => ({ ...g, countryCode: e.target.value }))}
                 >
-                  <option value="">— keep current —</option>
+                  <option value="">— mevcut kalsın —</option>
                   {countries.map((c) => (
                     <option key={c.countryCode} value={c.countryCode}>
                       {c.country}
@@ -806,10 +806,10 @@ export function ProfilesView({
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" disabled={fpBusy} onClick={regenerateFingerprint}>
-                {fpBusy ? '…' : '↻ Regenerate fingerprint'}
+                {fpBusy ? '…' : '↻ Parmak izini yeniden üret'}
               </button>
               <button type="button" className="btn-primary" disabled={fpBusy} onClick={saveGps}>
-                {fpBusy ? 'Saving…' : 'Save GPS'}
+                {fpBusy ? 'Kaydediliyor…' : 'GPS kaydet'}
               </button>
             </footer>
           </div>
@@ -820,13 +820,13 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !busy && setPushOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Push file to {selectionCount} phone(s)</h2>
+              <h2>{selectionCount} telefona dosya gönder</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setPushOpen(false)}>
                 ✕
               </button>
             </header>
             <label className="field">
-              <span>File URL</span>
+              <span>Dosya URL</span>
               <input
                 className="field-input mono"
                 value={pushForm.url}
@@ -836,7 +836,7 @@ export function ProfilesView({
             </label>
             <div className="field-row">
               <label className="field">
-                <span>File name (optional)</span>
+                <span>Dosya adı (isteğe bağlı)</span>
                 <input
                   className="field-input"
                   value={pushForm.fileName}
@@ -845,24 +845,24 @@ export function ProfilesView({
                 />
               </label>
               <label className="field">
-                <span>Destination</span>
+                <span>Hedef</span>
                 <select
                   className="field-input"
                   value={pushForm.destination}
                   onChange={(e) => setPushForm((f) => ({ ...f, destination: e.target.value }))}
                 >
-                  <option value="gallery">Gallery (DCIM)</option>
-                  <option value="downloads">Downloads</option>
+                  <option value="gallery">Galeri (DCIM)</option>
+                  <option value="downloads">İndirilenler</option>
                 </select>
               </label>
             </div>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setPushOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={pushFile}>
-                {busy ? 'Pushing…' : 'Push file'}
+                {busy ? 'Gönderiliyor…' : 'Dosya gönder'}
               </button>
             </footer>
           </div>
@@ -873,18 +873,18 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !busy && setProxyOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Assign proxy to {selectionCount} phone(s)</h2>
+              <h2>{selectionCount} telefona proxy ata</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setProxyOpen(false)}>
                 ✕
               </button>
             </header>
             {proxies.length === 0 ? (
-              <p className="helper">No proxies configured yet. Add one on the Proxies page first.</p>
+              <p className="helper">Henüz proxy yapılandırılmadı. Önce Proxy'ler sayfasından bir tane ekleyin.</p>
             ) : (
               <label className="field">
                 <span>Proxy</span>
                 <select className="field-input" value={proxyChoice} onChange={(e) => setProxyChoice(e.target.value)}>
-                  <option value="">Select a proxy…</option>
+                  <option value="">Bir proxy seçin…</option>
                   {proxies.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.label} · {p.type} {p.host}:{p.port}
@@ -896,10 +896,10 @@ export function ProfilesView({
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setProxyOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy || !proxyChoice} onClick={assignProxy}>
-                {busy ? 'Assigning…' : 'Assign proxy'}
+                {busy ? 'Atanıyor…' : 'Proxy ata'}
               </button>
             </footer>
           </div>
@@ -910,18 +910,18 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !busy && setAppOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Install app on {selectionCount} phone(s)</h2>
+              <h2>{selectionCount} telefona uygulama yükle</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setAppOpen(false)}>
                 ✕
               </button>
             </header>
             {apps.length === 0 ? (
-              <p className="helper">No apps in the catalog yet.</p>
+              <p className="helper">Katalogda henüz uygulama yok.</p>
             ) : (
               <label className="field">
-                <span>App</span>
+                <span>Uygulama</span>
                 <select className="field-input" value={appChoice} onChange={(e) => setAppChoice(e.target.value)}>
-                  <option value="">Select an app…</option>
+                  <option value="">Bir uygulama seçin…</option>
                   {apps.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} · v{a.version}
@@ -933,10 +933,10 @@ export function ProfilesView({
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setAppOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy || !appChoice} onClick={installApp}>
-                {busy ? 'Installing…' : 'Install app'}
+                {busy ? 'Yükleniyor…' : 'Uygulama yükle'}
               </button>
             </footer>
           </div>

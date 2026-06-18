@@ -65,7 +65,7 @@ export function FingerprintsView() {
         if (Array.isArray(cJson.data)) setCountries(cJson.data);
         if (ds[0] && !selected) setSelected(ds[0].id);
       } catch {
-        flash('Could not load devices or country catalog.');
+        flash('Cihazlar veya ülke kataloğu yüklenemedi.');
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -89,10 +89,10 @@ export function FingerprintsView() {
           setLat(d.latitude != null ? String(d.latitude) : '');
           setLng(d.longitude != null ? String(d.longitude) : '');
         } else {
-          flash(json.message ?? 'No fingerprint for this device yet.');
+          flash(json.message ?? 'Bu cihaz için henüz parmak izi yok.');
         }
       } catch {
-        if (!cancelled) flash('Could not load fingerprint.');
+        if (!cancelled) flash('Parmak izi yüklenemedi.');
       }
     })();
     return () => {
@@ -112,14 +112,14 @@ export function FingerprintsView() {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Regenerate failed');
+      if (!res.ok) throw new Error(json.message ?? 'Yeniden oluşturma başarısız');
       const d = json.data as Fp;
       setFp(d);
       setLat(d.latitude != null ? String(d.latitude) : '');
       setLng(d.longitude != null ? String(d.longitude) : '');
-      flash('New device identity generated.');
+      flash('Yeni cihaz kimliği oluşturuldu.');
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Regenerate failed');
+      flash(e instanceof Error ? e.message : 'Yeniden oluşturma başarısız');
     } finally {
       setBusy(false);
     }
@@ -139,11 +139,11 @@ export function FingerprintsView() {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not save GPS');
+      if (!res.ok) throw new Error(json.message ?? 'GPS kaydedilemedi');
       if (json.data) setFp(json.data as Fp);
-      flash('GPS location updated.');
+      flash('GPS konumu güncellendi.');
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not save GPS');
+      flash(e instanceof Error ? e.message : 'GPS kaydedilemedi');
     } finally {
       setBusy(false);
     }
@@ -152,18 +152,18 @@ export function FingerprintsView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Device identities"
-        subtitle="Manage the fingerprint, SIM locale, and GPS of each cloud phone — the anti-detection layer."
+        title="Cihaz kimlikleri"
+        subtitle="Her bulut telefonun parmak izini, SIM yerel ayarını ve GPS'ini yönetin — algılama önleme katmanı."
       />
 
       <div className="section-grid">
         {/* Device picker */}
         <div className="panel">
           <h2>
-            <Smartphone size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Cloud phones
+            <Smartphone size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Bulut telefonlar
           </h2>
           {devices.length === 0 ? (
-            <p className="helper">No devices yet. Create a cloud phone first.</p>
+            <p className="helper">Henüz cihaz yok. Önce bir bulut telefon oluşturun.</p>
           ) : (
             <div className="fp-device-list">
               {devices.map((d) => (
@@ -184,37 +184,37 @@ export function FingerprintsView() {
         {/* Fingerprint detail */}
         <div className="panel">
           <h2>
-            <Fingerprint size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Identity
+            <Fingerprint size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Kimlik
           </h2>
           {!fp ? (
-            <p className="helper">{selected ? 'Loading identity…' : 'Select a device.'}</p>
+            <p className="helper">{selected ? 'Kimlik yükleniyor…' : 'Bir cihaz seçin.'}</p>
           ) : (
             <>
               <div className="fp-grid">
-                <FpField label="Manufacturer" value={fp.manufacturer} />
+                <FpField label="Üretici" value={fp.manufacturer} />
                 <FpField label="Model" value={fp.model} />
-                <FpField label="Brand" value={fp.brand} />
-                <FpField label="OS version" value={fp.osVersion} />
-                <FpField label="Build" value={fp.buildNumber} />
-                <FpField label="Resolution" value={`${fp.resolution} · ${fp.dpi}dpi`} />
+                <FpField label="Marka" value={fp.brand} />
+                <FpField label="OS sürümü" value={fp.osVersion} />
+                <FpField label="Yapı" value={fp.buildNumber} />
+                <FpField label="Çözünürlük" value={`${fp.resolution} · ${fp.dpi}dpi`} />
                 <FpField label="IMEI" value={fp.imei} mono />
                 <FpField label="Android ID" value={fp.androidId} mono />
-                <FpField label="Serial" value={fp.serialNo} mono />
+                <FpField label="Seri No" value={fp.serialNo} mono />
                 <FpField label="MAC" value={fp.macAddress} mono />
-                <FpField label="Carrier" value={`${fp.carrier} (${fp.mcc}/${fp.mnc})`} />
-                <FpField label="Phone number" value={fp.phoneNumber ?? '—'} mono />
-                <FpField label="Language" value={fp.language} />
-                <FpField label="Timezone" value={fp.timezone} />
+                <FpField label="Operatör" value={`${fp.carrier} (${fp.mcc}/${fp.mnc})`} />
+                <FpField label="Telefon numarası" value={fp.phoneNumber ?? '—'} mono />
+                <FpField label="Dil" value={fp.language} />
+                <FpField label="Saat dilimi" value={fp.timezone} />
               </div>
 
               {/* Regenerate */}
               <div className="fp-action-block">
                 <h3 className="adb-subhead">
-                  <Globe2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Regenerate identity
+                  <Globe2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Kimliği yeniden oluştur
                 </h3>
                 <p className="helper">
-                  Generate a fresh, internally-consistent device fingerprint (IMEI, Android ID, MAC, SIM) for the
-                  chosen country. Use this to rotate identity between sessions.
+                  Seçilen ülke için tutarlı ve yeni bir cihaz parmak izi (IMEI, Android ID, MAC, SIM) oluşturun.
+                  Oturumlar arasında kimliği değiştirmek için bunu kullanın.
                 </p>
                 <div className="fp-action-row">
                   <select
@@ -222,7 +222,7 @@ export function FingerprintsView() {
                     value={regenCountry}
                     onChange={(e) => setRegenCountry(e.target.value)}
                   >
-                    <option value="">Random country</option>
+                    <option value="">Rastgele ülke</option>
                     {countries.map((c) => (
                       <option key={c.countryCode} value={c.countryCode}>
                         {c.country} ({c.countryCode}) · {c.timezone}
@@ -230,11 +230,11 @@ export function FingerprintsView() {
                     ))}
                   </select>
                   <label className="fp-check">
-                    <input type="checkbox" checked={regenGps} onChange={(e) => setRegenGps(e.target.checked)} /> GPS on
+                    <input type="checkbox" checked={regenGps} onChange={(e) => setRegenGps(e.target.checked)} /> GPS açık
                   </label>
                   <button type="button" className="btn-primary" disabled={busy} onClick={regenerate}>
                     <RefreshCw size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-                    {busy ? 'Working…' : 'Regenerate'}
+                    {busy ? 'İşleniyor…' : 'Yeniden oluştur'}
                   </button>
                 </div>
               </div>
@@ -242,27 +242,27 @@ export function FingerprintsView() {
               {/* GPS */}
               <div className="fp-action-block">
                 <h3 className="adb-subhead">
-                  <MapPin size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS location
+                  <MapPin size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS konumu
                 </h3>
                 <p className="helper">
-                  Current: {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'GPS disabled'}.{' '}
-                  Set precise coordinates or leave blank to keep the country-derived location.
+                  Mevcut: {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'GPS devre dışı'}.{' '}
+                  Kesin koordinatlar girin veya ülkeden türetilen konumu korumak için boş bırakın.
                 </p>
                 <div className="fp-action-row">
                   <input
                     className="field-input mono"
                     value={lat}
                     onChange={(e) => setLat(e.target.value)}
-                    placeholder="Latitude (e.g. 40.7128)"
+                    placeholder="Enlem (örn. 40.7128)"
                   />
                   <input
                     className="field-input mono"
                     value={lng}
                     onChange={(e) => setLng(e.target.value)}
-                    placeholder="Longitude (e.g. -74.0060)"
+                    placeholder="Boylam (örn. -74.0060)"
                   />
                   <button type="button" className="btn-ghost" disabled={busy} onClick={saveGps}>
-                    <Signal size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Save GPS
+                    <Signal size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS kaydet
                   </button>
                 </div>
                 {fp.latitude != null && fp.longitude != null ? (
@@ -272,7 +272,7 @@ export function FingerprintsView() {
                     target="_blank"
                     rel="noreferrer"
                   >
-                    View on map ↗
+                    Haritada görüntüle ↗
                   </a>
                 ) : null}
               </div>

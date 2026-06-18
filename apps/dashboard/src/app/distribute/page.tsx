@@ -1,6 +1,6 @@
 import { DistributeView } from './DistributeView';
 
-export const metadata = { title: 'File distribution · VPS Fleet' };
+export const metadata = { title: 'Dosya Dağıtımı · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default function DistributePage() {

@@ -4,7 +4,7 @@ import { TwoFactorPanel } from '../../components/TwoFactorPanel';
 import { WorkspaceMembers } from '../../components/WorkspaceMembers';
 import { apiCall } from '../../lib/apiClient';
 
-export const metadata = { title: 'Settings · VPS Fleet' };
+export const metadata = { title: 'Ayarlar · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 type CurrentUser = {
@@ -42,49 +42,49 @@ export default async function SettingsPage() {
 
   return (
     <PageMotion className="page">
-      <PageHeader title="Settings" subtitle="Workspace and account configuration." />
+      <PageHeader title="Ayarlar" subtitle="Çalışma alanı ve hesap yapılandırması." />
 
       <section className="section-grid">
         <div className="panel">
-          <h2>Account</h2>
+          <h2>Hesap</h2>
           <div className="panel-stack">
             <div className="row">
-              <span className="helper">Email</span>
+              <span className="helper">E-posta</span>
               <span className="mono">{me?.email ?? '—'}</span>
             </div>
             <div className="row">
-              <span className="helper">Role</span>
+              <span className="helper">Rol</span>
               <span className={`role-badge role-${(me?.role ?? 'member').toLowerCase()}`}>{me?.role ?? '—'}</span>
             </div>
             <div className="row">
-              <span className="helper">User ID</span>
+              <span className="helper">Kullanıcı kimliği</span>
               <span className="mono">{me?.id?.slice(0, 12) ?? '—'}</span>
             </div>
             <div className="row">
-              <span className="helper">Member since</span>
+              <span className="helper">Üyelik tarihi</span>
               <span className="mono">{me?.createdAt ? new Date(me.createdAt).toLocaleDateString('tr-TR') : '—'}</span>
             </div>
           </div>
         </div>
 
         <div className="panel">
-          <h2>Workspace</h2>
+          <h2>Çalışma Alanı</h2>
           <div className="panel-stack">
             <div className="row">
-              <span className="helper">Name</span>
+              <span className="helper">Ad</span>
               <span className="mono">VPS Fleet</span>
             </div>
             <div className="row">
-              <span className="helper">Environment</span>
+              <span className="helper">Ortam</span>
               <span className="mono">{sys?.service.nodeEnv ?? '—'}</span>
             </div>
             <div className="row">
-              <span className="helper">API uptime</span>
+              <span className="helper">API çalışma süresi</span>
               <span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>
             </div>
             <div className="row">
-              <span className="helper">Region</span>
-              <span className="mono">self-hosted</span>
+              <span className="helper">Bölge</span>
+              <span className="mono">kendi sunucumuzda</span>
             </div>
           </div>
         </div>
@@ -92,53 +92,53 @@ export default async function SettingsPage() {
 
       <section className="section-grid">
         <div className="panel">
-          <h2>Team · Workspace members</h2>
+          <h2>Ekip · Çalışma alanı üyeleri</h2>
           <WorkspaceMembers />
         </div>
 
         <div className="panel">
-          <h2>Security · Two-factor authentication</h2>
+          <h2>Güvenlik · İki adımlı doğrulama (2FA)</h2>
           <TwoFactorPanel enabled={Boolean(me?.twoFactorEnabled)} />
         </div>
 
         <div className="panel">
-          <h2>System status</h2>
+          <h2>Sistem durumu</h2>
           <div className="panel-stack">
             <div className="row">
               <span className="helper">PostgreSQL</span>
               <span className="status-chip">
                 <span className={sys?.database.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.database.status ?? 'unknown'}
+                {sys?.database.status ?? 'bilinmiyor'}
               </span>
             </div>
             <div className="row">
-              <span className="helper">Redis queue</span>
+              <span className="helper">Redis kuyruğu</span>
               <span className="status-chip">
                 <span className={sys?.queue.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.queue.status ?? 'unknown'}
+                {sys?.queue.status ?? 'bilinmiyor'}
               </span>
             </div>
             <div className="row">
               <span className="helper">Docker</span>
               <span className="status-chip">
                 <span className={sys?.docker.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                {sys?.docker.status ?? 'unknown'}
+                {sys?.docker.status ?? 'bilinmiyor'}
               </span>
             </div>
           </div>
         </div>
 
         <div className="panel">
-          <h2>Installed modules</h2>
+          <h2>Yüklü modüller</h2>
           <div className="panel-stack">
             {(sys?.plugins ?? []).length === 0 ? (
-              <span className="helper">No social modules installed.</span>
+              <span className="helper">Yüklü sosyal modül yok.</span>
             ) : (
               (sys?.plugins ?? []).map((p) => (
                 <div className="row" key={p.id}>
                   <span className="mono">{p.displayName}</span>
                   <span className="status-chip">
-                    <span className="dot dot-online" /> active
+                    <span className="dot dot-online" /> etkin
                   </span>
                 </div>
               ))
@@ -148,18 +148,18 @@ export default async function SettingsPage() {
       </section>
 
       <section className="panel danger-panel">
-        <h2>Danger zone</h2>
-        <p className="helper">These actions are irreversible. Proceed with caution.</p>
+        <h2>Tehlikeli bölge</h2>
+        <p className="helper">Bu işlemler geri alınamaz. Dikkatli ilerleyin.</p>
         <div className="quick-grid">
           <button type="button" className="btn-ghost danger-btn" disabled>
-            Reset workspace data
+            Çalışma alanı verilerini sıfırla
           </button>
           <button type="button" className="btn-ghost danger-btn" disabled>
-            Delete account
+            Hesabı sil
           </button>
         </div>
         <p className="helper" style={{ marginTop: '12px' }}>
-          Destructive operations are disabled in this build. Enable them once a backup policy is configured.
+          Yıkıcı işlemler bu sürümde devre dışıdır. Bir yedekleme politikası yapılandırıldığında bunları etkinleştirin.
         </p>
       </section>
     </PageMotion>

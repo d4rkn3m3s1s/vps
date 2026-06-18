@@ -47,7 +47,7 @@ export function DistributeView() {
           if (onlyWithUrl[0]) setAssetId(onlyWithUrl[0].id);
         }
       } catch {
-        flash('Could not load devices, groups, or library.');
+        flash('Cihazlar, gruplar veya kütüphane yüklenemedi.');
       }
     })();
   }, []);
@@ -78,13 +78,13 @@ export function DistributeView() {
 
   async function distribute() {
     const deviceIds = Array.from(selected);
-    if (deviceIds.length === 0) return flash('Select at least one device.');
+    if (deviceIds.length === 0) return flash('En az bir cihaz seçin.');
     const body: Record<string, unknown> = { deviceIds, destination };
     if (source === 'library') {
-      if (!assetId) return flash('Choose a library asset.');
+      if (!assetId) return flash('Bir kütüphane öğesi seçin.');
       body.libraryAssetId = assetId;
     } else {
-      if (!url.trim()) return flash('Enter a file URL.');
+      if (!url.trim()) return flash('Bir dosya URL adresi girin.');
       body.url = url.trim();
       if (fileName.trim()) body.fileName = fileName.trim();
     }
@@ -96,11 +96,11 @@ export function DistributeView() {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Distribution failed');
-      flash(`Queued delivery to ${json.data?.pushed ?? deviceIds.length} device(s).`);
+      if (!res.ok) throw new Error(json.message ?? 'Dağıtım başarısız');
+      flash(`${json.data?.pushed ?? deviceIds.length} cihaza teslimat sıraya alındı.`);
       setSelected(new Set());
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Distribution failed');
+      flash(e instanceof Error ? e.message : 'Dağıtım başarısız');
     } finally {
       setBusy(false);
     }
@@ -111,27 +111,27 @@ export function DistributeView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="File distribution"
-        subtitle="Push a file to many cloud phones at once — from your library or any URL."
+        title="Dosya dağıtımı"
+        subtitle="Bir dosyayı kütüphanenizden veya herhangi bir URL'den birçok bulut telefona aynı anda gönderin."
       />
 
       <div className="section-grid distribute-grid">
         {/* Target devices */}
         <div className="panel">
-          <h2>Target devices ({selected.size} selected)</h2>
+          <h2>Hedef cihazlar ({selected.size} seçili)</h2>
           <div className="distribute-filter-row">
             <select className="field-input" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
-              <option value="">All devices</option>
+              <option value="">Tüm cihazlar</option>
               {groups.map((g) => (
                 <option key={g.id} value={g.id}>{g.name}</option>
               ))}
             </select>
             <button type="button" className="btn-ghost" onClick={selectAllVisible} disabled={visibleDevices.length === 0}>
-              {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />} Select all
+              {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />} Tümünü seç
             </button>
           </div>
           {visibleDevices.length === 0 ? (
-            <p className="helper">No devices{groupFilter ? ' in this group' : ''}.</p>
+            <p className="helper">{groupFilter ? 'Bu grupta cihaz yok' : 'Cihaz yok'}.</p>
           ) : (
             <div className="distribute-device-list">
               {visibleDevices.map((d) => (
@@ -147,10 +147,10 @@ export function DistributeView() {
 
         {/* Source + send */}
         <div className="panel">
-          <h2>File to send</h2>
+          <h2>Gönderilecek dosya</h2>
           <div className="distribute-source-tabs">
             <button type="button" className={source === 'library' ? 'tab tab-active' : 'tab'} onClick={() => setSource('library')}>
-              <FolderDown size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Library
+              <FolderDown size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Kütüphane
             </button>
             <button type="button" className={source === 'url' ? 'tab tab-active' : 'tab'} onClick={() => setSource('url')}>
               <Link2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> URL
@@ -159,9 +159,9 @@ export function DistributeView() {
 
           {source === 'library' ? (
             <div className="distribute-field">
-              <label className="helper">Library asset</label>
+              <label className="helper">Kütüphane öğesi</label>
               {assets.length === 0 ? (
-                <p className="helper">No library assets with a URL yet. Add one in the Library, or use a URL.</p>
+                <p className="helper">Henüz URL'si olan kütüphane öğesi yok. Kütüphaneye bir tane ekleyin veya bir URL kullanın.</p>
               ) : (
                 <select className="field-input" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
                   {assets.map((a) => (
@@ -173,27 +173,27 @@ export function DistributeView() {
           ) : (
             <>
               <div className="distribute-field">
-                <label className="helper">File URL</label>
+                <label className="helper">Dosya URL</label>
                 <input className="field-input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/photo.jpg" />
               </div>
               <div className="distribute-field">
-                <label className="helper">File name (optional)</label>
+                <label className="helper">Dosya adı (isteğe bağlı)</label>
                 <input className="field-input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="photo.jpg" />
               </div>
             </>
           )}
 
           <div className="distribute-field">
-            <label className="helper">Save to</label>
+            <label className="helper">Kaydedilecek yer</label>
             <select className="field-input" value={destination} onChange={(e) => setDestination(e.target.value as 'gallery' | 'downloads')}>
-              <option value="gallery">Gallery</option>
-              <option value="downloads">Downloads</option>
+              <option value="gallery">Galeri</option>
+              <option value="downloads">İndirilenler</option>
             </select>
           </div>
 
           <button type="button" className="btn-primary distribute-send" disabled={busy || selected.size === 0} onClick={distribute}>
             <Send size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-            {busy ? 'Sending…' : `Distribute to ${selected.size} device${selected.size === 1 ? '' : 's'}`}
+            {busy ? 'Gönderiliyor…' : `${selected.size} cihaza dağıt`}
           </button>
 
           {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}

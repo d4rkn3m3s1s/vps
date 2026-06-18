@@ -1,7 +1,7 @@
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
-export const metadata = { title: 'Resources · VPS Fleet' };
+export const metadata = { title: 'Kaynaklar · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 // The API docs are served by the backend itself. We expose a browser-reachable
@@ -20,64 +20,64 @@ type Resource = {
 const RESOURCES: Resource[] = [
   {
     icon: '⚡',
-    title: 'API Reference (Swagger)',
-    desc: 'Interactive OpenAPI explorer — try every endpoint live with your token.',
+    title: 'API Referansı (Swagger)',
+    desc: 'Etkileşimli OpenAPI gezgini — her uç noktayı token\'ınızla canlı olarak deneyin.',
     href: `${API_PUBLIC_URL}/docs`,
-    cta: 'Open Swagger UI',
+    cta: 'Swagger arayüzünü aç',
     external: true
   },
   {
     icon: '◇',
-    title: 'OpenAPI Spec',
-    desc: 'Raw machine-readable schema for code generation and Postman import.',
+    title: 'OpenAPI Şeması',
+    desc: 'Kod üretimi ve Postman içe aktarımı için ham, makine tarafından okunabilir şema.',
     href: `${API_PUBLIC_URL}/docs.json`,
-    cta: 'View spec',
+    cta: 'Şemayı görüntüle',
     external: true
   },
   {
     icon: '▦',
-    title: 'Create your first profile',
-    desc: 'Spin up a cloud phone profile, assign a proxy and start automating.',
+    title: 'İlk profilinizi oluşturun',
+    desc: 'Bir bulut telefon profili oluşturun, bir proxy atayın ve otomasyona başlayın.',
     href: '/profiles',
-    cta: 'Go to Profiles'
+    cta: 'Profillere git'
   },
   {
     icon: '⇄',
-    title: 'Connect a proxy',
-    desc: 'Add SOCKS5/HTTP proxies and verify their exit IP before assigning.',
+    title: 'Bir proxy bağlayın',
+    desc: 'SOCKS5/HTTP proxyler ekleyin ve atamadan önce çıkış IP\'lerini doğrulayın.',
     href: '/proxies',
-    cta: 'Manage proxies'
+    cta: 'Proxyleri yönet'
   },
   {
     icon: '✦',
-    title: 'Automate with Fleet AI',
-    desc: 'Ask the built-in Claude assistant to plan and script device tasks.',
+    title: 'Fleet AI ile otomatikleştirin',
+    desc: 'Yerleşik Claude asistanından cihaz görevlerini planlamasını ve betiklemesini isteyin.',
     href: '/ai',
-    cta: 'Open Fleet AI'
+    cta: 'Fleet AI\'yı aç'
   },
   {
     icon: '☻',
-    title: 'Invite your team',
-    desc: 'Add members with roles and share access to the fleet.',
+    title: 'Ekibinizi davet edin',
+    desc: 'Rollerle üyeler ekleyin ve filoya erişimi paylaşın.',
     href: '/members',
-    cta: 'Manage members'
+    cta: 'Üyeleri yönet'
   }
 ];
 
 const GUIDES = [
-  { q: 'Why does “Start” keep a phone in PENDING?', a: 'Cloud phones run on a KVM-enabled host. Until you attach an Android host, jobs are recorded but not executed. See the server setup guide.' },
-  { q: 'How do I add a proxy?', a: 'Go to Proxies → Add proxy. Enter host/port/credentials, then hit Check to confirm the exit IP.' },
-  { q: 'Where are my API keys?', a: 'API keys are issued per user. Backend writes require a JWT exchanged from your API key automatically.' },
-  { q: 'How does the Synchronizer work?', a: 'Select two or more phones, mark one as leader, and its inputs mirror to the followers in real time once the host is attached.' }
+  { q: '“Başlat” neden bir telefonu PENDING durumunda tutuyor?', a: 'Bulut telefonlar KVM destekli bir sunucuda çalışır. Bir Android sunucu bağlayana kadar işler kaydedilir ancak çalıştırılmaz. Sunucu kurulum rehberine bakın.' },
+  { q: 'Nasıl proxy eklerim?', a: 'Proxyler → Proxy ekle bölümüne gidin. Sunucu/port/kimlik bilgilerini girin, ardından çıkış IP\'sini doğrulamak için Kontrol et\'e basın.' },
+  { q: 'API anahtarlarım nerede?', a: 'API anahtarları kullanıcı başına verilir. Arka uç yazma işlemleri, API anahtarınızdan otomatik olarak alınan bir JWT gerektirir.' },
+  { q: 'Senkronizatör nasıl çalışır?', a: 'İki veya daha fazla telefon seçin, birini lider olarak işaretleyin; sunucu bağlandıktan sonra liderin girişleri gerçek zamanlı olarak takipçilere yansıtılır.' }
 ];
 
 export default function ResourcesPage() {
   return (
     <PageMotion className="page">
-      <PageHeader title="Resources" subtitle="Guides, API docs and tutorials." />
+      <PageHeader title="Kaynaklar" subtitle="Rehberler, API belgeleri ve eğitimler." />
 
       <section>
-        <h2 className="section-title">Quick start</h2>
+        <h2 className="section-title">Hızlı başlangıç</h2>
         <div className="app-grid">
           {RESOURCES.map((r) => (
             <article className="app-card" key={r.title}>
@@ -99,7 +99,7 @@ export default function ResourcesPage() {
       </section>
 
       <section style={{ marginTop: '32px' }}>
-        <h2 className="section-title">FAQ</h2>
+        <h2 className="section-title">Sıkça Sorulan Sorular</h2>
         <div className="list-grid">
           {GUIDES.map((g) => (
             <article className="log-card" key={g.q}>

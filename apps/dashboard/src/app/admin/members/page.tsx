@@ -66,11 +66,11 @@ export default function MembersPage() {
         body: JSON.stringify({ role: newRole })
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.message ?? 'Could not change role');
-      flash(`${member.email} is now ${newRole}`);
+      if (!res.ok) throw new Error(json.message ?? 'Rol değiştirilemedi');
+      flash(`${member.email} artık ${newRole}`);
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not change role');
+      flash(e instanceof Error ? e.message : 'Rol değiştirilemedi');
     } finally {
       setBusy(false);
     }
@@ -78,7 +78,7 @@ export default function MembersPage() {
 
   async function removeMember(memberId: string, memberEmail: string) {
     if (!workspace) return;
-    if (!confirm(`Remove ${memberEmail} from ${workspace.name}?`)) return;
+    if (!confirm(`${memberEmail} kullanıcısı ${workspace.name} alanından çıkarılsın mı?`)) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/workspaces/${workspace.id}/members/${memberId}`, {
@@ -86,12 +86,12 @@ export default function MembersPage() {
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not remove member');
+        throw new Error(j.message ?? 'Üye çıkarılamadı');
       }
-      flash(`${memberEmail} removed`);
+      flash(`${memberEmail} çıkarıldı`);
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not remove member');
+      flash(e instanceof Error ? e.message : 'Üye çıkarılamadı');
     } finally {
       setBusy(false);
     }
@@ -107,12 +107,12 @@ export default function MembersPage() {
         body: JSON.stringify({ email: email.trim(), role: inviteRole })
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.message ?? 'Invite failed');
-      flash(`${email.trim()} added as ${inviteRole}`);
+      if (!res.ok) throw new Error(json.message ?? 'Davet başarısız oldu');
+      flash(`${email.trim()} ${inviteRole} olarak eklendi`);
       setEmail('');
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Invite failed');
+      flash(e instanceof Error ? e.message : 'Davet başarısız oldu');
     } finally {
       setBusy(false);
     }
@@ -126,14 +126,13 @@ export default function MembersPage() {
       <div className="panel">
         {workspace ? (
           <div className="row">
-            <span className="helper">Workspace</span>
+            <span className="helper">Çalışma alanı</span>
             <span className="mono">{workspace.name}</span>
           </div>
         ) : null}
         <div className="row">
           <span className="helper">
-            {members.length} member{members.length === 1 ? '' : 's'} · {adminCount} admin
-            {adminCount === 1 ? '' : 's'}
+            {members.length} üye · {adminCount} yönetici
           </span>
         </div>
 
@@ -150,7 +149,7 @@ export default function MembersPage() {
                 value={m.role}
                 disabled={!isAdmin || busy}
                 onChange={(e) => void changeRole(m, e.target.value)}
-                aria-label={`Role for ${m.email}`}
+                aria-label={`${m.email} için rol`}
               >
                 {ROLES.map((r) => (
                   <option key={r} value={r}>
@@ -163,8 +162,8 @@ export default function MembersPage() {
                 className="icon-btn"
                 disabled={!isAdmin || busy}
                 onClick={() => void removeMember(m.id, m.email)}
-                aria-label={`Remove ${m.email}`}
-                title="Remove member"
+                aria-label={`${m.email} kullanıcısını çıkar`}
+                title="Üyeyi çıkar"
               >
                 <Trash2 size={14} />
               </button>
@@ -179,7 +178,7 @@ export default function MembersPage() {
             <input
               className="field-input"
               type="email"
-              placeholder="teammate@company.com"
+              placeholder="ekip-uyesi@sirket.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />
@@ -188,9 +187,9 @@ export default function MembersPage() {
               value={inviteRole}
               onChange={(e) => setInviteRole(e.target.value)}
             >
-              <option value="admin">Admin</option>
-              <option value="operator">Operator</option>
-              <option value="viewer">Viewer</option>
+              <option value="admin">Yönetici</option>
+              <option value="operator">Operatör</option>
+              <option value="viewer">İzleyici</option>
             </select>
             <button
               type="button"
@@ -198,12 +197,12 @@ export default function MembersPage() {
               disabled={busy || !email.trim()}
               onClick={() => void invite()}
             >
-              <UserPlus size={15} /> Invite
+              <UserPlus size={15} /> Davet et
             </button>
           </div>
         </div>
       ) : (
-        <p className="helper">Only workspace admins can manage members.</p>
+        <p className="helper">Üyeleri yalnızca çalışma alanı yöneticileri yönetebilir.</p>
       )}
 
       {msg ? <p className="helper">{msg}</p> : null}

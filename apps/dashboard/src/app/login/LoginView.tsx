@@ -41,12 +41,12 @@ export function LoginView() {
         return;
       }
       if (!res.ok) {
-        throw new Error((json as { error?: string }).error ?? 'Sign in failed.');
+        throw new Error((json as { error?: string }).error ?? 'Giriş yapılamadı.');
       }
       router.replace('/profiles');
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign in failed.');
+      setError(err instanceof Error ? err.message : 'Giriş yapılamadı.');
     } finally {
       setBusy(false);
     }
@@ -78,7 +78,7 @@ export function LoginView() {
           href="/welcome"
           className="hidden items-center gap-2 border border-white/30 px-6 py-3 text-xs uppercase tracking-widest text-white transition-all hover:border-white/60 hover:bg-white/10 sm:flex"
         >
-          Back to Home
+          Ana Sayfaya Dön
           <ArrowUpRight className="h-4 w-4" />
         </Link>
       </header>
@@ -90,16 +90,16 @@ export function LoginView() {
           <div className="mb-6 flex items-center gap-2 animate-fade-up">
             <Crown className="h-4 w-4 text-white/70" />
             <span className="font-inter text-xs uppercase tracking-[0.3em] text-white/70 sm:text-sm">
-              World-Class Cloud Phone Platform
+              Dünya Standartlarında Bulut Telefon Platformu
             </span>
           </div>
           <h1 className="font-podium uppercase leading-[0.92] tracking-tight text-white animate-fade-up-delay-1">
-            <span className="block text-[clamp(2.8rem,6vw,5.5rem)]">Welcome</span>
-            <span className="block text-[clamp(2.8rem,6vw,5.5rem)]">Back.</span>
+            <span className="block text-[clamp(2.8rem,6vw,5.5rem)]">Tekrar</span>
+            <span className="block text-[clamp(2.8rem,6vw,5.5rem)]">Hoş Geldiniz.</span>
           </h1>
           <p className="mt-6 max-w-md font-inter text-sm leading-relaxed text-white/70 animate-fade-up-delay-2 sm:text-base">
-            Sign in to command your Android cloud fleet —{' '}
-            <span className="font-bold text-white">deploy, automate, scale.</span>
+            Android bulut filonuzu yönetmek için giriş yapın —{' '}
+            <span className="font-bold text-white">kurun, otomatikleştirin, ölçeklendirin.</span>
           </p>
         </div>
 
@@ -108,11 +108,11 @@ export function LoginView() {
           onSubmit={submit}
           className="w-full max-w-md rounded-2xl border border-white/15 bg-black/40 p-8 backdrop-blur-xl animate-fade-up-delay-1 sm:p-10"
         >
-          <h2 className="font-podium text-3xl font-bold uppercase tracking-wide text-white">Sign in</h2>
-          <p className="mt-2 font-inter text-sm text-white/60">Manage your Android cloud phone fleet.</p>
+          <h2 className="font-podium text-3xl font-bold uppercase tracking-wide text-white">Giriş yap</h2>
+          <p className="mt-2 font-inter text-sm text-white/60">Android bulut telefon filonuzu yönetin.</p>
 
           <label className="mt-7 block">
-            <span className="font-inter text-xs uppercase tracking-widest text-white/60">Email</span>
+            <span className="font-inter text-xs uppercase tracking-widest text-white/60">E-posta</span>
             <input
               type="email"
               autoComplete="username"
@@ -124,7 +124,7 @@ export function LoginView() {
           </label>
 
           <label className="mt-4 block">
-            <span className="font-inter text-xs uppercase tracking-widest text-white/60">Password</span>
+            <span className="font-inter text-xs uppercase tracking-widest text-white/60">Parola</span>
             <input
               type="password"
               autoComplete="current-password"
@@ -139,7 +139,7 @@ export function LoginView() {
           {needTwoFactor ? (
             <label className="mt-4 block">
               <span className="font-inter text-xs uppercase tracking-widest text-white/60">
-                Authentication code
+                Doğrulama kodu
               </span>
               <input
                 type="text"
@@ -147,12 +147,12 @@ export function LoginView() {
                 autoComplete="one-time-code"
                 value={twoFactorToken}
                 onChange={(e) => setTwoFactorToken(e.target.value)}
-                placeholder="6-digit code or backup code"
+                placeholder="6 haneli kod veya yedek kod"
                 autoFocus
                 className="mt-2 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-3 font-inter text-sm tracking-widest text-white placeholder-white/30 outline-none transition-colors focus:border-white/50"
               />
               <span className="mt-2 block font-inter text-xs text-white/40">
-                Enter the code from your authenticator app.
+                Kimlik doğrulama uygulamanızdaki kodu girin.
               </span>
             </label>
           ) : null}
@@ -164,7 +164,7 @@ export function LoginView() {
             disabled={busy || (needTwoFactor && twoFactorToken.trim().length < 6)}
             className="group mt-7 flex w-full items-center justify-center gap-2 rounded-lg bg-white px-6 py-3.5 font-inter text-xs font-semibold uppercase tracking-widest text-black transition-all hover:bg-white/90 disabled:opacity-60"
           >
-            {busy ? 'Signing in…' : needTwoFactor ? 'Verify & sign in' : 'Sign in'}
+            {busy ? 'Giriş yapılıyor…' : needTwoFactor ? 'Doğrula ve giriş yap' : 'Giriş yap'}
             {!busy && (
               <ArrowUpRight className="h-4 w-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             )}

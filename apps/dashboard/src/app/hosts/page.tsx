@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { HostsView, type Host } from './HostsView';
 
-export const metadata = { title: 'Hosts · VPS Fleet' };
+export const metadata = { title: 'Sunucular · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function HostsPage() {

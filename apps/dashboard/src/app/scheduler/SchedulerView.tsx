@@ -61,7 +61,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
 
   async function createTask() {
     if (!form.name.trim() || !form.nextRunAt) {
-      flash({ kind: 'err', text: 'Name and first run time are required.' });
+      flash({ kind: 'err', text: 'Ad ve ilk çalışma zamanı zorunludur.' });
       return;
     }
     setBusy(true);
@@ -81,13 +81,13 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
           payload
         })
       });
-      if (!res.ok) throw new Error(`Create failed (${res.status})`);
+      if (!res.ok) throw new Error(`Oluşturma başarısız (${res.status})`);
       setOpen(false);
       setForm({ name: '', jobType: 'EMULATOR_OPEN_APP', deviceId: '', repeat: 'DAILY', nextRunAt: '', packageName: '' });
-      flash({ kind: 'ok', text: 'Scheduled task created.' });
+      flash({ kind: 'ok', text: 'Zamanlanmış görev oluşturuldu.' });
       router.refresh();
     } catch (err) {
-      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Create failed' });
+      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Oluşturma başarısız' });
     } finally {
       setBusy(false);
     }
@@ -104,7 +104,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
   }
 
   async function remove(task: ScheduledTask) {
-    if (!confirm(`Delete schedule "${task.name}"?`)) return;
+    if (!confirm(`"${task.name}" zamanlaması silinsin mi?`)) return;
     await fetch(`/api/schedules/${task.id}`, { method: 'DELETE' });
     router.refresh();
   }
@@ -112,11 +112,11 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Scheduler"
-        subtitle="Run automation tasks on a recurring schedule across your cloud phones."
+        title="Zamanlayıcı"
+        subtitle="Bulut telefonlarınızda otomasyon görevlerini tekrarlayan bir zamanlamayla çalıştırın."
         actions={
           <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
-            + New schedule
+            + Yeni zamanlama
           </button>
         }
       />
@@ -127,13 +127,13 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
         <table className="profile-table">
           <thead>
             <tr>
-              <th>Task</th>
-              <th>Type</th>
-              <th>Device</th>
-              <th>Repeat</th>
-              <th>Next run</th>
-              <th>Runs</th>
-              <th>Status</th>
+              <th>Görev</th>
+              <th>Tür</th>
+              <th>Cihaz</th>
+              <th>Tekrar</th>
+              <th>Sonraki çalışma</th>
+              <th>Çalışma sayısı</th>
+              <th>Durum</th>
               <th />
             </tr>
           </thead>
@@ -143,7 +143,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
                 <td colSpan={8}>
                   <div className="table-empty">
                     <div className="empty-art">⏱</div>
-                    <span>No scheduled tasks yet</span>
+                    <span>Henüz zamanlanmış görev yok</span>
                   </div>
                 </td>
               </tr>
@@ -167,10 +167,10 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
                   <td>
                     <div className="row-actions">
                       <button type="button" className="action-btn" onClick={() => toggleStatus(t)} disabled={t.status === 'COMPLETED'}>
-                        {t.status === 'ACTIVE' ? 'Pause' : 'Resume'}
+                        {t.status === 'ACTIVE' ? 'Duraklat' : 'Sürdür'}
                       </button>
                       <button type="button" className="action-btn action-danger" onClick={() => remove(t)}>
-                        Delete
+                        Sil
                       </button>
                     </div>
                   </td>
@@ -185,25 +185,25 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
         <div className="modal-overlay" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>New scheduled task</h2>
+              <h2>Yeni zamanlanmış görev</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
                 ✕
               </button>
             </header>
 
             <label className="field">
-              <span>Task name</span>
+              <span>Görev adı</span>
               <input
                 className="field-input"
                 value={form.name}
                 onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="e.g. Daily Instagram warm-up"
+                placeholder="örn. Günlük Instagram ısınması"
               />
             </label>
 
             <div className="field-row">
               <label className="field">
-                <span>Action</span>
+                <span>Eylem</span>
                 <select className="field-input" value={form.jobType} onChange={(e) => setForm((f) => ({ ...f, jobType: e.target.value }))}>
                   {JOB_TYPES.map((j) => (
                     <option key={j} value={j}>
@@ -213,7 +213,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
                 </select>
               </label>
               <label className="field">
-                <span>Repeat</span>
+                <span>Tekrar</span>
                 <select className="field-input" value={form.repeat} onChange={(e) => setForm((f) => ({ ...f, repeat: e.target.value }))}>
                   {REPEATS.map((r) => (
                     <option key={r} value={r}>
@@ -226,9 +226,9 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
 
             <div className="field-row">
               <label className="field">
-                <span>Device (optional)</span>
+                <span>Cihaz (isteğe bağlı)</span>
                 <select className="field-input" value={form.deviceId} onChange={(e) => setForm((f) => ({ ...f, deviceId: e.target.value }))}>
-                  <option value="">— all / none —</option>
+                  <option value="">— tümü / hiçbiri —</option>
                   {devices.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
@@ -237,7 +237,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
                 </select>
               </label>
               <label className="field">
-                <span>First run</span>
+                <span>İlk çalışma</span>
                 <input
                   type="datetime-local"
                   className="field-input"
@@ -249,7 +249,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
 
             {(form.jobType === 'EMULATOR_OPEN_APP' || form.jobType === 'EMULATOR_CLOSE_APP') && (
               <label className="field">
-                <span>Package name</span>
+                <span>Paket adı</span>
                 <input
                   className="field-input mono"
                   value={form.packageName}
@@ -261,10 +261,10 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={createTask}>
-                {busy ? 'Creating…' : 'Create schedule'}
+                {busy ? 'Oluşturuluyor…' : 'Zamanlama oluştur'}
               </button>
             </footer>
           </div>

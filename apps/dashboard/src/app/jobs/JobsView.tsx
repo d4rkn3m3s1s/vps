@@ -76,11 +76,11 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
     downloadCsv(
       `fleet-jobs-${jobs.length}.csv`,
       [
-        { key: 'id', label: 'Job ID' },
-        { key: 'type', label: 'Type' },
-        { key: 'status', label: 'Status' },
-        { key: 'target', label: 'Target' },
-        { key: 'createdAt', label: 'Created' }
+        { key: 'id', label: 'Görev ID' },
+        { key: 'type', label: 'Tür' },
+        { key: 'status', label: 'Durum' },
+        { key: 'target', label: 'Hedef' },
+        { key: 'createdAt', label: 'Oluşturulma' }
       ],
       jobs.map((j) => ({
         id: j.id,
@@ -95,13 +95,13 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Jobs"
-        subtitle={`${jobs.length} operations · ${pending} in flight`}
+        title="Görevler"
+        subtitle={`${jobs.length} işlem · ${pending} devam ediyor`}
         actions={
           <>
-            <button type="button" className="btn-ghost" onClick={exportCsv}>⬇ Export CSV</button>
+            <button type="button" className="btn-ghost" onClick={exportCsv}>⬇ CSV Dışa Aktar</button>
             <button type="button" className={live ? 'btn-primary' : 'btn-ghost'} onClick={() => setLive((v) => !v)}>
-              {live ? '● Live' : '▷ Paused'}
+              {live ? '● Canlı' : '▷ Duraklatıldı'}
             </button>
           </>
         }
@@ -111,10 +111,10 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
         <table className="profile-table">
           <thead>
             <tr>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Target</th>
-              <th>Created</th>
+              <th>Tür</th>
+              <th>Durum</th>
+              <th>Hedef</th>
+              <th>Oluşturulma</th>
               <th />
             </tr>
           </thead>
@@ -124,7 +124,7 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
                 <td colSpan={5}>
                   <div className="table-empty">
                     <div className="empty-art">☰</div>
-                    <span>No jobs yet</span>
+                    <span>Henüz görev yok</span>
                   </div>
                 </td>
               </tr>
@@ -145,7 +145,7 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
                     </td>
                     <td className="mono">{typeof target === 'string' ? target.slice(0, 14) : '—'}</td>
                     <td className="helper">{new Date(job.createdAt).toLocaleString('tr-TR')}</td>
-                    <td className="helper">view ›</td>
+                    <td className="helper">görüntüle ›</td>
                   </tr>
                 );
               })
@@ -164,35 +164,35 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
               </button>
             </header>
             <div className="fp-grid">
-              <div className="fp-row"><span className="helper">Job ID</span><span className="mono">{selected.id}</span></div>
-              <div className="fp-row"><span className="helper">Status</span><span className="status-chip"><span className={statusClass(selected.status)} /> {selected.status}</span></div>
-              <div className="fp-row"><span className="helper">Created</span><span className="mono">{new Date(selected.createdAt).toLocaleString('tr-TR')}</span></div>
-              <div className="fp-row"><span className="helper">Finished</span><span className="mono">{selected.finishedAt ? new Date(selected.finishedAt).toLocaleString('tr-TR') : '—'}</span></div>
+              <div className="fp-row"><span className="helper">Görev ID</span><span className="mono">{selected.id}</span></div>
+              <div className="fp-row"><span className="helper">Durum</span><span className="status-chip"><span className={statusClass(selected.status)} /> {selected.status}</span></div>
+              <div className="fp-row"><span className="helper">Oluşturulma</span><span className="mono">{new Date(selected.createdAt).toLocaleString('tr-TR')}</span></div>
+              <div className="fp-row"><span className="helper">Tamamlanma</span><span className="mono">{selected.finishedAt ? new Date(selected.finishedAt).toLocaleString('tr-TR') : '—'}</span></div>
             </div>
 
             {selected.error ? (
               <div className="modal-section">
-                <h3>Error</h3>
+                <h3>Hata</h3>
                 <pre className="job-pre job-pre-error">{selected.error}</pre>
               </div>
             ) : null}
 
             {screenshotOf(selected.result) ? (
               <div className="modal-section">
-                <h3>Screenshot</h3>
+                <h3>Ekran Görüntüsü</h3>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="job-shot" src={`data:image/png;base64,${screenshotOf(selected.result)}`} alt="screenshot" />
               </div>
             ) : null}
 
             <div className="modal-section">
-              <h3>Payload</h3>
+              <h3>Yük (Payload)</h3>
               <pre className="job-pre">{JSON.stringify(selected.payload ?? {}, null, 2)}</pre>
             </div>
 
             {selected.result && !screenshotOf(selected.result) ? (
               <div className="modal-section">
-                <h3>Result</h3>
+                <h3>Sonuç</h3>
                 <pre className="job-pre">{JSON.stringify(selected.result, null, 2)}</pre>
               </div>
             ) : null}

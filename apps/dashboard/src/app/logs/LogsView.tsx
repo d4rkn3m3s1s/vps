@@ -47,11 +47,11 @@ export function LogsView() {
     downloadCsv(
       `fleet-audit-${logs.length}.csv`,
       [
-        { key: 'action', label: 'Action' },
-        { key: 'resourceType', label: 'Resource' },
-        { key: 'user', label: 'User' },
+        { key: 'action', label: 'İşlem' },
+        { key: 'resourceType', label: 'Kaynak' },
+        { key: 'user', label: 'Kullanıcı' },
         { key: 'ip', label: 'IP' },
-        { key: 'createdAt', label: 'Time' }
+        { key: 'createdAt', label: 'Zaman' }
       ],
       logs.map((l) => ({
         action: l.action,
@@ -66,11 +66,11 @@ export function LogsView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Audit log"
-        subtitle={`${logs.length} entries · operational & security trail`}
+        title="Denetim kaydı"
+        subtitle={`${logs.length} kayıt · operasyonel ve güvenlik izi`}
         actions={
           <button type="button" className="btn-ghost" onClick={exportCsv} disabled={logs.length === 0}>
-            <Download size={15} /> Export CSV
+            <Download size={15} /> CSV Dışa Aktar
           </button>
         }
       />
@@ -79,7 +79,7 @@ export function LogsView() {
         <Search size={15} />
         <input
           className="search-input"
-          placeholder="Search action or resource…"
+          placeholder="İşlem veya kaynak ara…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           style={{ border: 'none', background: 'transparent', color: 'inherit', outline: 'none', width: '100%' }}
@@ -90,11 +90,11 @@ export function LogsView() {
         <table className="profile-table">
           <thead>
             <tr>
-              <th>Action</th>
-              <th>Resource</th>
-              <th>User</th>
+              <th>İşlem</th>
+              <th>Kaynak</th>
+              <th>Kullanıcı</th>
               <th>IP</th>
-              <th>Time</th>
+              <th>Zaman</th>
             </tr>
           </thead>
           <tbody>
@@ -103,7 +103,7 @@ export function LogsView() {
                 <td colSpan={5}>
                   <div className="table-empty">
                     <div className="empty-art">☰</div>
-                    <span>{loading ? 'Loading…' : 'No audit entries'}</span>
+                    <span>{loading ? 'Yükleniyor…' : 'Denetim kaydı yok'}</span>
                   </div>
                 </td>
               </tr>
@@ -112,7 +112,7 @@ export function LogsView() {
                 <tr key={l.id}>
                   <td><strong>{l.action}</strong></td>
                   <td className="mono">{l.resourceType}</td>
-                  <td className="helper">{l.user?.email ?? 'system'}</td>
+                  <td className="helper">{l.user?.email ?? 'sistem'}</td>
                   <td className="helper mono">{l.ip ?? '—'}</td>
                   <td className="helper">{new Date(l.createdAt).toLocaleString('tr-TR')}</td>
                 </tr>

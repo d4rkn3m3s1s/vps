@@ -32,7 +32,7 @@ export function DeviceMap({ regions, total }: { regions: RegionStat[]; total: nu
               key={r.region}
               className="map-pin"
               style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-              title={`${r.region}: ${r.count} devices`}
+              title={`${r.region}: ${r.count} cihaz`}
             >
               <span className="map-pin-pulse" style={{ width: size, height: size }} />
               <span className="map-pin-dot" style={{ width: size * 0.45, height: size * 0.45 }} />
@@ -42,7 +42,7 @@ export function DeviceMap({ regions, total }: { regions: RegionStat[]; total: nu
         })}
         <div className="map-legend">
           <Globe size={14} />
-          <span>{total} devices live across {regions.filter((r) => r.count > 0).length} regions</span>
+          <span>{regions.filter((r) => r.count > 0).length} bölgede {total} cihaz aktif</span>
         </div>
       </div>
 
@@ -57,7 +57,7 @@ export function DeviceMap({ regions, total }: { regions: RegionStat[]; total: nu
               <div className="map-row-fill" style={{ width: `${Math.max(r.share, r.count > 0 ? 6 : 0)}%` }} />
             </div>
             <div className="map-row-sub">
-              {r.online} online · {r.share}% of fleet
+              {r.online} çevrimiçi · filonun %{r.share}'i
             </div>
           </div>
         ))}

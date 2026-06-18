@@ -51,7 +51,7 @@ export default function AdminBillingPage() {
       const json: { data?: Billing } = await res.json();
       setBilling(json.data ?? null);
     } catch {
-      setError('Could not load billing');
+      setError('Faturalama bilgileri yüklenemedi');
     }
   }, []);
 
@@ -73,9 +73,9 @@ export default function AdminBillingPage() {
         window.location.href = json.url; // redirect to Stripe Checkout
         return;
       }
-      throw new Error(json.message ?? 'Could not start checkout');
+      throw new Error(json.message ?? 'Ödeme başlatılamadı');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Checkout failed');
+      setError(e instanceof Error ? e.message : 'Ödeme başarısız oldu');
       setBusy(null);
     }
   }
@@ -86,15 +86,15 @@ export default function AdminBillingPage() {
       const res = await fetch('/api/billing/portal', { method: 'POST' });
       const json = await res.json();
       if (json.url) window.location.href = json.url;
-      else throw new Error(json.message ?? 'No billing account yet');
+      else throw new Error(json.message ?? 'Henüz bir faturalama hesabı yok');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not open portal');
+      setError(e instanceof Error ? e.message : 'Portal açılamadı');
       setBusy(null);
     }
   }
 
   async function cancelSubscription() {
-    if (!window.confirm('Cancel your subscription? You keep access until the end of the current period.')) return;
+    if (!window.confirm('Aboneliğiniz iptal edilsin mi? Mevcut dönemin sonuna kadar erişiminiz devam eder.')) return;
     setBusy('cancel');
     setError(null);
     setFlash(null);
@@ -102,12 +102,12 @@ export default function AdminBillingPage() {
       const res = await fetch('/api/billing/cancel', { method: 'POST' });
       if (!res.ok) {
         const json: { message?: string } = await res.json();
-        throw new Error(json.message ?? 'Could not cancel subscription');
+        throw new Error(json.message ?? 'Abonelik iptal edilemedi');
       }
       await loadBilling();
-      setFlash('Subscription set to cancel at period end.');
+      setFlash('Abonelik, dönem sonunda iptal edilecek şekilde ayarlandı.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not cancel subscription');
+      setError(e instanceof Error ? e.message : 'Abonelik iptal edilemedi');
     } finally {
       setBusy(null);
     }
@@ -121,12 +121,12 @@ export default function AdminBillingPage() {
       const res = await fetch('/api/billing/resume', { method: 'POST' });
       if (!res.ok) {
         const json: { message?: string } = await res.json();
-        throw new Error(json.message ?? 'Could not resume subscription');
+        throw new Error(json.message ?? 'Abonelik devam ettirilemedi');
       }
       await loadBilling();
-      setFlash('Subscription resumed.');
+      setFlash('Abonelik devam ettirildi.');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not resume subscription');
+      setError(e instanceof Error ? e.message : 'Abonelik devam ettirilemedi');
     } finally {
       setBusy(null);
     }
@@ -142,8 +142,8 @@ export default function AdminBillingPage() {
       {!billing?.billingConfigured ? (
         <div className="panel" style={{ borderColor: 'rgba(245,158,11,0.4)' }}>
           <p className="helper">
-            ⚠ Stripe is not configured yet. Add <code>STRIPE_SECRET_KEY</code> + price IDs to the API <code>.env</code> to
-            enable real checkout. Plans and quota enforcement already work.
+            ⚠ Stripe henüz yapılandırılmadı. Gerçek ödemeyi etkinleştirmek için API <code>.env</code> dosyasına <code>STRIPE_SECRET_KEY</code>
+            ve fiyat kimliklerini ekleyin. Planlar ve kota uygulaması hâlihazırda çalışmaktadır.
           </p>
         </div>
       ) : null}
@@ -154,22 +154,22 @@ export default function AdminBillingPage() {
       {billing ? (
         <>
           <div className="panel">
-            <h2>Usage</h2>
+            <h2>Kullanım</h2>
             <div className="usage-grid">
-              <UsageBar label="Cloud phones" used={billing.usage.devices.used} limit={billing.usage.devices.limit} />
-              <UsageBar label="Team members" used={billing.usage.members.used} limit={billing.usage.members.limit} />
+              <UsageBar label="Bulut telefonlar" used={billing.usage.devices.used} limit={billing.usage.devices.limit} />
+              <UsageBar label="Ekip üyeleri" used={billing.usage.members.used} limit={billing.usage.members.limit} />
             </div>
           </div>
 
           {isPaid ? (
             <div className="panel panel-stack">
-              <h2>Subscription</h2>
+              <h2>Abonelik</h2>
               {billing.cancelAtPeriodEnd ? (
                 <div className="cancel-banner">
                   <p className="helper">
-                    Your subscription is scheduled to cancel
-                    {periodEndLabel ? ` at the end of the current period (${periodEndLabel})` : ' at the end of the current period'}.
-                    You keep access until then.
+                    Aboneliğiniz
+                    {periodEndLabel ? ` mevcut dönemin sonunda (${periodEndLabel})` : ' mevcut dönemin sonunda'} iptal edilmek üzere planlandı.
+                    O zamana kadar erişiminiz devam eder.
                   </p>
                   <button
                     type="button"
@@ -177,13 +177,13 @@ export default function AdminBillingPage() {
                     disabled={busy === 'resume'}
                     onClick={resumeSubscription}
                   >
-                    <RotateCcw size={15} /> {busy === 'resume' ? 'Resuming…' : 'Keep subscription'}
+                    <RotateCcw size={15} /> {busy === 'resume' ? 'Devam ettiriliyor…' : 'Aboneliği sürdür'}
                   </button>
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
                   <button type="button" className="btn-ghost" disabled={busy === 'portal'} onClick={openPortal}>
-                    <ExternalLink size={15} /> Manage subscription
+                    <ExternalLink size={15} /> Aboneliği yönet
                   </button>
                   <button
                     type="button"
@@ -191,7 +191,7 @@ export default function AdminBillingPage() {
                     disabled={busy === 'cancel'}
                     onClick={cancelSubscription}
                   >
-                    <XCircle size={15} /> {busy === 'cancel' ? 'Cancelling…' : 'Cancel subscription'}
+                    <XCircle size={15} /> {busy === 'cancel' ? 'İptal ediliyor…' : 'Aboneliği iptal et'}
                   </button>
                 </div>
               )}
@@ -203,7 +203,7 @@ export default function AdminBillingPage() {
               const current = p.key === billing.plan;
               return (
                 <div key={p.key} className={`plan-tier${current ? ' plan-tier-current' : ''}`}>
-                  {current ? <span className="plan-tier-badge">Current</span> : null}
+                  {current ? <span className="plan-tier-badge">Mevcut</span> : null}
                   <h3>{p.name}</h3>
                   <div className="plan-tier-price">{p.priceLabel}</div>
                   <ul className="plan-tier-features">
@@ -212,13 +212,13 @@ export default function AdminBillingPage() {
                     ))}
                   </ul>
                   {current ? (
-                    <button type="button" className="btn-ghost" disabled>Current plan</button>
+                    <button type="button" className="btn-ghost" disabled>Mevcut plan</button>
                   ) : p.purchasable ? (
                     <button type="button" className="btn-primary" disabled={busy === p.key} onClick={() => upgrade(p.key)}>
-                      <Zap size={15} /> {busy === p.key ? 'Redirecting…' : `Upgrade to ${p.name}`}
+                      <Zap size={15} /> {busy === p.key ? 'Yönlendiriliyor…' : `${p.name} planına yükselt`}
                     </button>
                   ) : (
-                    <button type="button" className="btn-ghost" disabled>Downgrade in portal</button>
+                    <button type="button" className="btn-ghost" disabled>Portalda düşür</button>
                   )}
                 </div>
               );
@@ -226,7 +226,7 @@ export default function AdminBillingPage() {
           </div>
         </>
       ) : (
-        <div className="panel"><p className="helper">Loading billing…</p></div>
+        <div className="panel"><p className="helper">Faturalama bilgileri yükleniyor…</p></div>
       )}
     </>
   );

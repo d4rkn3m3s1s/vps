@@ -58,31 +58,31 @@ export default function ApiKeysPage() {
         body: JSON.stringify({ name: name.trim(), scopes: scopes.length ? scopes : ['read'] })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not create key');
+      if (!res.ok) throw new Error(json.message ?? 'Anahtar oluşturulamadı');
       // API returns { key, plaintext }
       setRevealed(json.data?.plaintext ?? null);
       setName('');
       setScopes(['read']);
       await load();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not create key');
+      flash(e instanceof Error ? e.message : 'Anahtar oluşturulamadı');
     } finally {
       setBusy(false);
     }
   }
 
   async function revoke(key: ApiKey) {
-    if (!confirm(`Revoke "${key.name}"? Any caller using it will stop working immediately.`)) return;
+    if (!confirm(`"${key.name}" iptal edilsin mi? Bu anahtarı kullanan tüm çağrılar anında çalışmayı durduracaktır.`)) return;
     try {
       const res = await fetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not revoke');
+        throw new Error(j.message ?? 'İptal edilemedi');
       }
-      flash(`"${key.name}" revoked`);
+      flash(`"${key.name}" iptal edildi`);
       await load();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not revoke');
+      flash(e instanceof Error ? e.message : 'İptal edilemedi');
     }
   }
 
@@ -101,27 +101,27 @@ export default function ApiKeysPage() {
     <section className="section-grid">
       <div className="panel">
         <h2>
-          <KeyRound size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> API keys
+          <KeyRound size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> API anahtarları
         </h2>
         <p className="helper" style={{ marginTop: '-0.25rem' }}>
-          Issue keys for external integrations. Send as the <span className="mono">x-api-key</span> header. Keys are shown
-          once at creation — store them securely.
+          Harici entegrasyonlar için anahtar oluşturun. <span className="mono">x-api-key</span> başlığı olarak gönderin. Anahtarlar
+          yalnızca oluşturulduğunda bir kez gösterilir — güvenli bir yerde saklayın.
         </p>
 
         <div className="panel-stack" style={{ marginTop: '1rem' }}>
-          {keys.length === 0 ? <p className="helper">No API keys yet.</p> : null}
+          {keys.length === 0 ? <p className="helper">Henüz API anahtarı yok.</p> : null}
           {keys.map((k) => (
             <div className="row alert-rule-row" key={k.id}>
               <div>
                 <strong>{k.name}</strong>{' '}
-                {k.revoked ? <span className="policy-tag">Revoked</span> : null}
+                {k.revoked ? <span className="policy-tag">İptal edildi</span> : null}
                 <div className="helper mono">
                   {k.maskedKey} · {k.scopes.join(', ')} ·{' '}
-                  {k.lastUsedAt ? `last used ${new Date(k.lastUsedAt).toLocaleDateString('tr-TR')}` : 'never used'}
+                  {k.lastUsedAt ? `son kullanım ${new Date(k.lastUsedAt).toLocaleDateString('tr-TR')}` : 'hiç kullanılmadı'}
                 </div>
               </div>
               {!k.revoked ? (
-                <button type="button" className="icon-btn" onClick={() => revoke(k)} aria-label={`Revoke ${k.name}`} title="Revoke">
+                <button type="button" className="icon-btn" onClick={() => revoke(k)} aria-label={`${k.name} anahtarını iptal et`} title="İptal et">
                   <Trash2 size={15} />
                 </button>
               ) : null}
@@ -133,20 +133,20 @@ export default function ApiKeysPage() {
       </div>
 
       <div className="panel">
-        <h2>Create a key</h2>
+        <h2>Anahtar oluştur</h2>
         <div className="admin-form">
           <div className="admin-field">
-            <label htmlFor="key-name">Name</label>
+            <label htmlFor="key-name">Ad</label>
             <input
               id="key-name"
               className="field-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. CI pipeline, Zapier"
+              placeholder="örn. CI hattı, Zapier"
             />
           </div>
           <div className="admin-field">
-            <label>Scopes</label>
+            <label>Kapsamlar</label>
             <div className="scope-row">
               {ALL_SCOPES.map((s) => (
                 <label key={s} className={`scope-chip${scopes.includes(s) ? ' scope-chip-on' : ''}`}>
@@ -157,7 +157,7 @@ export default function ApiKeysPage() {
             </div>
           </div>
           <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={create}>
-            <Plus size={15} /> {busy ? 'Creating…' : 'Create key'}
+            <Plus size={15} /> {busy ? 'Oluşturuluyor…' : 'Anahtar oluştur'}
           </button>
         </div>
       </div>
@@ -166,23 +166,23 @@ export default function ApiKeysPage() {
         <div className="modal-overlay" onClick={() => setRevealed(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Your new API key</h2>
+              <h2>Yeni API anahtarınız</h2>
               <button type="button" className="modal-close" onClick={() => setRevealed(null)}>
                 ✕
               </button>
             </header>
             <p className="helper">
-              Copy this now — it will <strong>not</strong> be shown again. If you lose it, revoke and create a new one.
+              Bunu şimdi kopyalayın — tekrar <strong>gösterilmeyecek</strong>. Kaybederseniz, iptal edip yeni bir tane oluşturun.
             </p>
             <div className="key-reveal">
               <code className="mono">{revealed}</code>
               <button type="button" className="btn-ghost" onClick={copyKey}>
-                {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Copied' : 'Copy'}
+                {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? 'Kopyalandı' : 'Kopyala'}
               </button>
             </div>
             <footer className="modal-foot">
               <button type="button" className="btn-primary" onClick={() => setRevealed(null)}>
-                Done
+                Tamam
               </button>
             </footer>
           </div>

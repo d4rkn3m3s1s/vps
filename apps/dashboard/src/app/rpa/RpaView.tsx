@@ -46,19 +46,19 @@ type Toast = { kind: 'ok' | 'err'; text: string } | null;
 function describeStep(s: RpaStep): string {
   switch (s.type) {
     case 'tap':
-      return `Tap at (${s.x ?? 0}, ${s.y ?? 0})`;
+      return `(${s.x ?? 0}, ${s.y ?? 0}) konumuna dokun`;
     case 'type':
-      return `Type "${s.text ?? ''}"`;
+      return `"${s.text ?? ''}" yaz`;
     case 'wait':
-      return `Wait ${s.ms ?? 0} ms`;
+      return `${s.ms ?? 0} ms bekle`;
     case 'swipe':
-      return `Swipe (${s.x ?? 0},${s.y ?? 0}) → (${s.x2 ?? 0},${s.y2 ?? 0})`;
+      return `Kaydır (${s.x ?? 0},${s.y ?? 0}) → (${s.x2 ?? 0},${s.y2 ?? 0})`;
     case 'openApp':
-      return `Open app ${s.packageName ?? ''}`;
+      return `${s.packageName ?? ''} uygulamasını aç`;
     case 'shell':
       return `Shell: ${s.command ?? ''}`;
     case 'keyevent':
-      return `Key event ${s.keycode ?? 0}`;
+      return `Tuş olayı ${s.keycode ?? 0}`;
     default:
       return s.type;
   }
@@ -127,7 +127,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
   async function save() {
     if (!name.trim()) {
-      flash({ kind: 'err', text: 'Flow name is required.' });
+      flash({ kind: 'err', text: 'Akış adı gereklidir.' });
       return;
     }
     setBusy(true);
@@ -139,19 +139,19 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      if (!res.ok) throw new Error(`Kaydetme başarısız (${res.status})`);
       setEditing(null);
-      flash({ kind: 'ok', text: 'Flow saved.' });
+      flash({ kind: 'ok', text: 'Akış kaydedildi.' });
       router.refresh();
     } catch (err) {
-      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Save failed' });
+      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Kaydetme başarısız' });
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(flow: RpaFlow) {
-    if (!confirm(`Delete flow "${flow.name}"?`)) return;
+    if (!confirm(`"${flow.name}" akışı silinsin mi?`)) return;
     await fetch(`/api/rpa/${flow.id}`, { method: 'DELETE' });
     router.refresh();
   }
@@ -165,13 +165,13 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deviceIds: Array.from(runDevices) })
       });
-      if (!res.ok) throw new Error(`Run failed (${res.status})`);
+      if (!res.ok) throw new Error(`Çalıştırma başarısız (${res.status})`);
       setRunFlow(null);
       setRunDevices(new Set());
-      flash({ kind: 'ok', text: `Dispatched to ${runDevices.size} device(s).` });
+      flash({ kind: 'ok', text: `${runDevices.size} cihaza gönderildi.` });
       router.refresh();
     } catch (err) {
-      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Run failed' });
+      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Çalıştırma başarısız' });
     } finally {
       setBusy(false);
     }
@@ -181,10 +181,10 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     <PageMotion className="page">
       <PageHeader
         title="RPA Studio"
-        subtitle="Build visual automation flows and run them across your cloud phones."
+        subtitle="Görsel otomasyon akışları oluşturun ve bunları bulut telefonlarınızda çalıştırın."
         actions={
           <button type="button" className="btn-primary" onClick={openNew}>
-            + New flow
+            + Yeni akış
           </button>
         }
       />
@@ -194,10 +194,10 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
       {flows.length === 0 ? (
         <div className="empty-state">
           <div className="empty-art">⚙</div>
-          <h3>No automation flows yet</h3>
-          <p>Create a flow of tap / type / swipe / wait steps and dispatch it to your phones.</p>
+          <h3>Henüz otomasyon akışı yok</h3>
+          <p>Dokun / yaz / kaydır / bekle adımlarından oluşan bir akış oluşturun ve telefonlarınıza gönderin.</p>
           <button type="button" className="btn-primary" onClick={openNew}>
-            + New flow
+            + Yeni akış
           </button>
         </div>
       ) : (
@@ -208,19 +208,19 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                 <span className="app-icon">⚙</span>
                 <div>
                   <strong>{flow.name}</strong>
-                  <p className="helper">{flow.description || 'No description'}</p>
+                  <p className="helper">{flow.description || 'Açıklama yok'}</p>
                 </div>
               </div>
-              <span className="helper mono">{flow.steps.length} steps · ran {flow.runCount}×</span>
+              <span className="helper mono">{flow.steps.length} adım · {flow.runCount}× çalıştırıldı</span>
               <div className="row-actions flow-actions">
                 <button type="button" className="action-btn" onClick={() => openEdit(flow)}>
-                  Edit
+                  Düzenle
                 </button>
                 <button type="button" className="action-btn" onClick={() => setRunFlow(flow)}>
-                  Run
+                  Çalıştır
                 </button>
                 <button type="button" className="action-btn action-danger" onClick={() => remove(flow)}>
-                  Delete
+                  Sil
                 </button>
               </div>
             </article>
@@ -232,7 +232,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
         <div className="modal-overlay" onClick={() => !busy && setEditing(null)}>
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{editing.id ? 'Edit flow' : 'New flow'}</h2>
+              <h2>{editing.id ? 'Akışı düzenle' : 'Yeni akış'}</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setEditing(null)}>
                 ✕
               </button>
@@ -240,21 +240,21 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
             <div className="field-row">
               <label className="field">
-                <span>Flow name</span>
-                <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. IG warm-up" />
+                <span>Akış adı</span>
+                <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="örn. IG ısınma" />
               </label>
               <label className="field">
-                <span>Description</span>
-                <input className="field-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="optional" />
+                <span>Açıklama</span>
+                <input className="field-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="isteğe bağlı" />
               </label>
             </div>
 
             <div className="modal-section">
               <div className="row">
-                <h3>Steps ({steps.length})</h3>
+                <h3>Adımlar ({steps.length})</h3>
                 <div className="step-add">
                   {STEP_TYPES.map((t) => (
-                    <button key={t} type="button" className="step-add-btn" onClick={() => addStep(t)} title={`Add ${t}`}>
+                    <button key={t} type="button" className="step-add-btn" onClick={() => addStep(t)} title={`${t} ekle`}>
                       {STEP_ICON[t]} {t}
                     </button>
                   ))}
@@ -263,7 +263,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
               <ol className="step-list">
                 {steps.length === 0 ? (
-                  <li className="helper">No steps yet — add one above.</li>
+                  <li className="helper">Henüz adım yok — yukarıdan bir tane ekleyin.</li>
                 ) : (
                   steps.map((step, i) => (
                     <li className="step-item" key={i}>
@@ -278,7 +278,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                           </span>
                         )}
                         {step.type === 'type' && (
-                          <input className="mini-input wide" value={step.text ?? ''} onChange={(e) => updateStep(i, { text: e.target.value })} placeholder="text to type" />
+                          <input className="mini-input wide" value={step.text ?? ''} onChange={(e) => updateStep(i, { text: e.target.value })} placeholder="yazılacak metin" />
                         )}
                         {step.type === 'wait' && (
                           <input className="mini-input" type="number" value={step.ms ?? 0} onChange={(e) => updateStep(i, { ms: Number(e.target.value) })} placeholder="ms" />
@@ -314,10 +314,10 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setEditing(null)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={save}>
-                {busy ? 'Saving…' : 'Save flow'}
+                {busy ? 'Kaydediliyor…' : 'Akışı kaydet'}
               </button>
             </footer>
           </div>
@@ -328,17 +328,17 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
         <div className="modal-overlay" onClick={() => !busy && setRunFlow(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Run "{runFlow.name}"</h2>
+              <h2>"{runFlow.name}" çalıştır</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setRunFlow(null)}>
                 ✕
               </button>
             </header>
             <p className="helper">{runFlow.steps.map(describeStep).join(' → ')}</p>
             <div className="modal-section">
-              <h3>Select target phones</h3>
+              <h3>Hedef telefonları seçin</h3>
               <div className="run-devices">
                 {devices.length === 0 ? (
-                  <span className="helper">No devices available.</span>
+                  <span className="helper">Kullanılabilir cihaz yok.</span>
                 ) : (
                   devices.map((d) => (
                     <label className="field-check" key={d.id}>
@@ -362,10 +362,10 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
             </div>
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setRunFlow(null)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy || runDevices.size === 0} onClick={dispatch}>
-                {busy ? 'Dispatching…' : `Run on ${runDevices.size} phone(s)`}
+                {busy ? 'Gönderiliyor…' : `${runDevices.size} telefonda çalıştır`}
               </button>
             </footer>
           </div>

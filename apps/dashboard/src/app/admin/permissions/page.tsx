@@ -96,7 +96,7 @@ export default function PermissionsPage() {
   async function grant() {
     if (!selectedUserId) return;
     if (!targetId) {
-      flash('Pick a target first.');
+      flash('Önce bir hedef seçin.');
       return;
     }
     setBusy(true);
@@ -118,15 +118,15 @@ export default function PermissionsPage() {
         body: JSON.stringify(body)
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not grant access');
-      flash('Access granted');
+      if (!res.ok) throw new Error(json.message ?? 'Erişim verilemedi');
+      flash('Erişim verildi');
       setTargetId('');
       setCanView(true);
       setCanControl(false);
       setCanDelete(false);
       await loadGrants(selectedUserId);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not grant access');
+      flash(e instanceof Error ? e.message : 'Erişim verilemedi');
     } finally {
       setBusy(false);
     }
@@ -134,22 +134,22 @@ export default function PermissionsPage() {
 
   async function revoke(p: Permission) {
     const label = p.groupId
-      ? `Group: ${groupName(p.groupId)}`
+      ? `Grup: ${groupName(p.groupId)}`
       : p.deviceId
-        ? `Device: ${deviceName(p.deviceId)}`
-        : 'this grant';
-    if (!confirm(`Revoke access to ${label}?`)) return;
+        ? `Cihaz: ${deviceName(p.deviceId)}`
+        : 'bu yetki';
+    if (!confirm(`${label} için erişim geri alınsın mı?`)) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/permissions/${p.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.message ?? 'Could not revoke');
+        throw new Error(j.message ?? 'Geri alınamadı');
       }
-      flash('Grant revoked');
+      flash('Yetki geri alındı');
       await loadGrants(selectedUserId);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not revoke');
+      flash(e instanceof Error ? e.message : 'Geri alınamadı');
     } finally {
       setBusy(false);
     }
@@ -161,22 +161,22 @@ export default function PermissionsPage() {
     <section className="section-grid">
       <div className="panel">
         <h2>
-          <ShieldCheck size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Member permissions
+          <ShieldCheck size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Üye izinleri
         </h2>
         <p className="helper" style={{ marginTop: '-0.25rem' }}>
-          Grant a member view, control or delete access to a device group or a single device.
+          Bir üyeye, bir cihaz grubuna veya tek bir cihaza görüntüleme, kontrol etme veya silme erişimi verin.
         </p>
 
         <div className="admin-form" style={{ marginTop: '1rem' }}>
           <div className="admin-field">
-            <label htmlFor="perm-user">Member</label>
+            <label htmlFor="perm-user">Üye</label>
             <select
               id="perm-user"
               className="inline-select"
               value={selectedUserId}
               onChange={(e) => setSelectedUserId(e.target.value)}
             >
-              <option value="">— Select a member —</option>
+              <option value="">— Bir üye seçin —</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
                   {u.email} ({u.role})
@@ -188,15 +188,15 @@ export default function PermissionsPage() {
 
         {!selectedUserId ? (
           <p className="helper" style={{ marginTop: '1rem' }}>
-            Select a member to manage their device access.
+            Cihaz erişimini yönetmek için bir üye seçin.
           </p>
         ) : (
           <div className="panel-stack" style={{ marginTop: '1rem' }}>
             {grants.length === 0 ? (
               <p className="helper">
-                No restrictions — this member can see the whole workspace. Add a grant to restrict them to specific
-                groups/devices. Grants act as an allowlist: once a member has at least one grant, they can only access
-                what you have granted.
+                Kısıtlama yok — bu üye tüm çalışma alanını görebilir. Üyeyi belirli gruplara/cihazlara kısıtlamak için bir
+                yetki ekleyin. Yetkiler bir izin listesi gibi çalışır: bir üyenin en az bir yetkisi olduğunda, yalnızca
+                kendisine yetki verdiğiniz şeylere erişebilir.
               </p>
             ) : (
               grants.map((p) => (
@@ -204,15 +204,15 @@ export default function PermissionsPage() {
                   <div>
                     <strong>
                       {p.groupId
-                        ? `Group: ${groupName(p.groupId)}`
+                        ? `Grup: ${groupName(p.groupId)}`
                         : p.deviceId
-                          ? `Device: ${deviceName(p.deviceId)}`
-                          : 'Unknown target'}
+                          ? `Cihaz: ${deviceName(p.deviceId)}`
+                          : 'Bilinmeyen hedef'}
                     </strong>
                     <div className="scope-row" style={{ marginTop: '0.35rem' }}>
-                      {p.canView ? <span className="policy-tag policy-tag-on">View</span> : null}
-                      {p.canControl ? <span className="policy-tag policy-tag-on">Control</span> : null}
-                      {p.canDelete ? <span className="policy-tag policy-tag-on">Delete</span> : null}
+                      {p.canView ? <span className="policy-tag policy-tag-on">Görüntüleme</span> : null}
+                      {p.canControl ? <span className="policy-tag policy-tag-on">Kontrol</span> : null}
+                      {p.canDelete ? <span className="policy-tag policy-tag-on">Silme</span> : null}
                     </div>
                   </div>
                   <button
@@ -220,8 +220,8 @@ export default function PermissionsPage() {
                     className="icon-btn"
                     disabled={busy}
                     onClick={() => revoke(p)}
-                    aria-label="Revoke grant"
-                    title="Revoke"
+                    aria-label="Yetkiyi geri al"
+                    title="Geri al"
                   >
                     <Trash2 size={15} />
                   </button>
@@ -239,19 +239,19 @@ export default function PermissionsPage() {
       </div>
 
       <div className="panel">
-        <h2>Grant access</h2>
+        <h2>Erişim ver</h2>
         {!selectedUserId ? (
           <p className="helper" style={{ marginTop: '-0.25rem' }}>
-            Pick a member first.
+            Önce bir üye seçin.
           </p>
         ) : (
           <div className="admin-form">
             <p className="helper" style={{ marginTop: '-0.25rem' }}>
-              Granting access to <span className="mono">{selectedUser?.email}</span>.
+              <span className="mono">{selectedUser?.email}</span> kullanıcısına erişim veriliyor.
             </p>
 
             <div className="admin-field">
-              <label htmlFor="perm-target-type">Target type</label>
+              <label htmlFor="perm-target-type">Hedef türü</label>
               <select
                 id="perm-target-type"
                 className="inline-select"
@@ -261,20 +261,20 @@ export default function PermissionsPage() {
                   setTargetId('');
                 }}
               >
-                <option value="group">Group</option>
-                <option value="device">Device</option>
+                <option value="group">Grup</option>
+                <option value="device">Cihaz</option>
               </select>
             </div>
 
             <div className="admin-field">
-              <label htmlFor="perm-target">{targetType === 'group' ? 'Group' : 'Device'}</label>
+              <label htmlFor="perm-target">{targetType === 'group' ? 'Grup' : 'Cihaz'}</label>
               <select
                 id="perm-target"
                 className="inline-select"
                 value={targetId}
                 onChange={(e) => setTargetId(e.target.value)}
               >
-                <option value="">— Select a {targetType} —</option>
+                <option value="">— Bir {targetType === 'group' ? 'grup' : 'cihaz'} seçin —</option>
                 {(targetType === 'group' ? groups : devices).map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}
@@ -284,25 +284,25 @@ export default function PermissionsPage() {
             </div>
 
             <div className="admin-field">
-              <label>Permissions</label>
+              <label>İzinler</label>
               <div className="scope-row">
                 <label className={`scope-chip${canView ? ' scope-chip-on' : ''}`}>
                   <input type="checkbox" checked={canView} onChange={(e) => setCanView(e.target.checked)} />
-                  View
+                  Görüntüleme
                 </label>
                 <label className={`scope-chip${canControl ? ' scope-chip-on' : ''}`}>
                   <input type="checkbox" checked={canControl} onChange={(e) => setCanControl(e.target.checked)} />
-                  Control
+                  Kontrol
                 </label>
                 <label className={`scope-chip${canDelete ? ' scope-chip-on' : ''}`}>
                   <input type="checkbox" checked={canDelete} onChange={(e) => setCanDelete(e.target.checked)} />
-                  Delete
+                  Silme
                 </label>
               </div>
             </div>
 
             <button type="button" className="btn-primary" disabled={busy || !targetId} onClick={grant}>
-              <Plus size={15} /> {busy ? 'Granting…' : 'Grant'}
+              <Plus size={15} /> {busy ? 'Veriliyor…' : 'Yetki ver'}
             </button>
           </div>
         )}

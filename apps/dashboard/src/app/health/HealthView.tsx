@@ -38,14 +38,14 @@ function barTone(p: number): string {
 }
 
 function ago(iso?: string | null): string {
-  if (!iso) return 'never';
+  if (!iso) return 'hiç';
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
+  if (m < 1) return 'az önce';
+  if (m < 60) return `${m} dk önce`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
+  if (h < 24) return `${h} sa önce`;
+  return `${Math.floor(h / 24)} gün önce`;
 }
 
 export function HealthView() {
@@ -95,11 +95,11 @@ export function HealthView() {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Fleet health"
-        subtitle="Live resource usage and status across every cloud phone."
+        title="Filo sağlığı"
+        subtitle="Tüm bulut telefonlardaki canlı kaynak kullanımı ve durum."
         actions={
           <button type="button" className="btn-ghost" onClick={() => load(true)} disabled={refreshing} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <RefreshCw size={14} className={refreshing ? 'spin' : ''} /> Refresh
+            <RefreshCw size={14} className={refreshing ? 'spin' : ''} /> Yenile
           </button>
         }
       />
@@ -107,49 +107,49 @@ export function HealthView() {
       {/* Top summary */}
       <div className="stats">
         <div className="metric">
-          <p className="metric-label">Online</p>
+          <p className="metric-label">Çevrimiçi</p>
           <p className="metric-value">{stats.online}<span className="metric-sub"> / {stats.total}</span></p>
         </div>
         <div className="metric">
-          <p className="metric-label">Avg CPU</p>
+          <p className="metric-label">Ort. CPU</p>
           <p className="metric-value">{stats.cpu}%</p>
         </div>
         <div className="metric">
-          <p className="metric-label">Avg memory</p>
+          <p className="metric-label">Ort. bellek</p>
           <p className="metric-value">{stats.mem}%</p>
         </div>
         <div className="metric">
-          <p className="metric-label">Errors</p>
+          <p className="metric-label">Hatalar</p>
           <p className="metric-value">{stats.error}</p>
         </div>
       </div>
 
       {/* Fleet-wide averages */}
       <div className="panel">
-        <h2><Activity size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Fleet averages</h2>
+        <h2><Activity size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Filo ortalamaları</h2>
         <div className="health-avg-grid">
           <GaugeRow icon={<Cpu size={14} />} label="CPU" value={stats.cpu} />
-          <GaugeRow icon={<MemoryStick size={14} />} label="Memory" value={stats.mem} />
+          <GaugeRow icon={<MemoryStick size={14} />} label="Bellek" value={stats.mem} />
           <GaugeRow icon={<HardDrive size={14} />} label="Disk" value={stats.disk} />
         </div>
       </div>
 
       {/* Per-device */}
       <div className="panel">
-        <h2>Devices</h2>
+        <h2>Cihazlar</h2>
         {loading ? (
-          <p className="helper">Loading fleet health…</p>
+          <p className="helper">Filo sağlığı yükleniyor…</p>
         ) : sorted.length === 0 ? (
-          <p className="helper">No devices yet.</p>
+          <p className="helper">Henüz cihaz yok.</p>
         ) : (
           <div className="health-table">
             <div className="health-row health-head">
-              <span>Device</span>
-              <span>Status</span>
+              <span>Cihaz</span>
+              <span>Durum</span>
               <span>CPU</span>
-              <span>Memory</span>
+              <span>Bellek</span>
               <span>Disk</span>
-              <span>Last seen</span>
+              <span>Son görülme</span>
             </div>
             {sorted.map((d) => {
               const c = pct(d.cpuUsage);

@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { JobsView, type Job } from './JobsView';
 
-export const metadata = { title: 'Jobs · VPS Fleet' };
+export const metadata = { title: 'Görevler · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function JobsPage() {

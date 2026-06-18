@@ -1,7 +1,7 @@
 import { serverFetch } from '../../lib/serverFetch';
 import { RpaView, type RpaFlow, type RpaDevice } from './RpaView';
 
-export const metadata = { title: 'RPA Studio · VPS Fleet' };
+export const metadata = { title: 'RPA Stüdyo · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function RpaPage() {

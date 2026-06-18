@@ -9,16 +9,16 @@ const VIDEO_URL =
 
 // VPS Fleet-themed nav. "Inquire"/"Studio" etc. map to our actual surfaces.
 const NAV_LINKS = [
-  { label: 'Phones', href: '/profiles' },
+  { label: 'Telefonlar', href: '/profiles' },
   { label: 'Platform', href: '/welcome' },
-  { label: 'Pricing', href: '/billing' },
-  { label: 'Contact', href: '/login' }
+  { label: 'Fiyatlandırma', href: '/billing' },
+  { label: 'İletişim', href: '/login' }
 ];
 
 const STATS = [
-  { value: '10K+', label: 'Cloud Phones Run' },
-  { value: '99.9%', label: 'Fleet Uptime' },
-  { value: '24/7', label: 'Automation Engine' }
+  { value: '10B+', label: 'Çalıştırılan Bulut Telefon' },
+  { value: '%99,9', label: 'Filo Çalışma Süresi' },
+  { value: '7/24', label: 'Otomasyon Motoru' }
 ];
 
 export function HeroLanding() {
@@ -66,14 +66,14 @@ export function HeroLanding() {
           href="/login"
           className="hidden items-center gap-2 border border-white/30 px-6 py-3 text-xs uppercase tracking-widest text-white transition-all hover:border-white/60 hover:bg-white/10 md:flex"
         >
-          Get Started
+          Başla
           <ArrowUpRight className="h-4 w-4" />
         </Link>
 
         {/* Hamburger (below md) */}
         <button
           type="button"
-          aria-label="Open menu"
+          aria-label="Menüyü aç"
           onClick={() => setMenuOpen(true)}
           className="flex flex-col space-y-1.5 md:hidden"
         >
@@ -93,7 +93,7 @@ export function HeroLanding() {
           <span className="font-podium text-2xl font-bold uppercase tracking-wider text-white sm:text-3xl">
             VPS Fleet
           </span>
-          <button type="button" aria-label="Close menu" onClick={() => setMenuOpen(false)}>
+          <button type="button" aria-label="Menüyü kapat" onClick={() => setMenuOpen(false)}>
             <X className="h-7 w-7 text-white" />
           </button>
         </div>
@@ -124,7 +124,7 @@ export function HeroLanding() {
               transform: menuOpen ? 'translateY(0)' : 'translateY(20px)'
             }}
           >
-            Get Started
+            Başla
             <ArrowUpRight className="h-4 w-4" />
           </Link>
         </div>
@@ -137,23 +137,23 @@ export function HeroLanding() {
           <div className="mb-6 flex items-center gap-2 animate-fade-up lg:mb-8">
             <Crown className="h-4 w-4 text-white/70" />
             <span className="font-inter text-xs uppercase tracking-[0.3em] text-white/70 sm:text-sm">
-              World-Class Cloud Phone Platform
+              Dünya Standartlarında Bulut Telefon Platformu
             </span>
           </div>
 
           {/* Main heading */}
           <h1 className="font-podium uppercase leading-[0.92] tracking-tight text-white animate-fade-up-delay-1">
-            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Deploy.</span>
-            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Automate.</span>
-            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Scale.</span>
+            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Kur.</span>
+            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Otomatikleştir.</span>
+            <span className="block text-[clamp(2.8rem,8vw,7rem)]">Ölçeklendir.</span>
           </h1>
 
           {/* Subtext */}
           <p className="mt-6 max-w-md font-inter text-sm leading-relaxed text-white/70 animate-fade-up-delay-2 sm:text-base lg:mt-8">
-            Spin up real Android cloud phones in seconds,
+            Gerçek Android bulut telefonları saniyeler içinde başlatın,
             <br />
-            run RPA flows across your whole fleet —{' '}
-            <span className="font-bold text-white">at any scale.</span>
+            RPA akışlarını tüm filonuzda çalıştırın —{' '}
+            <span className="font-bold text-white">her ölçekte.</span>
           </p>
 
           {/* CTA row */}
@@ -162,15 +162,15 @@ export function HeroLanding() {
               href="/login"
               className="group flex items-center gap-2 bg-black px-5 py-3 text-[11px] uppercase tracking-widest text-white transition-colors hover:bg-neutral-900 sm:px-7 sm:py-4 sm:text-xs"
             >
-              Launch Console
+              Konsolu Başlat
               <ArrowUpRight className="h-4 w-4 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
             </Link>
 
             <div className="hidden items-center gap-3 sm:flex">
               <Award className="h-8 w-8 text-white/50" />
               <div className="text-xs uppercase tracking-wider text-white/60">
-                <div>Enterprise-Grade</div>
-                <div>Cloud Fleet</div>
+                <div>Kurumsal Düzeyde</div>
+                <div>Bulut Filosu</div>
               </div>
             </div>
           </div>

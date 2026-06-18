@@ -1,7 +1,7 @@
 import { apiCall } from '../../lib/apiClient';
 import { WebhooksView, type Webhook } from './WebhooksView';
 
-export const metadata = { title: 'Webhooks · VPS Fleet' };
+export const metadata = { title: 'Webhook’lar · VPS Fleet' };
 export const dynamic = 'force-dynamic';
 
 export default async function WebhooksPage() {

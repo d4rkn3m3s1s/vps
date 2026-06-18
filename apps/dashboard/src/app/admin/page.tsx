@@ -24,20 +24,20 @@ type PolicyKey = 'require2fa' | 'restrictInvites' | 'strongPasswords';
 const POLICY_META: { key: PolicyKey; title: string; description: string; enforced: boolean }[] = [
   {
     key: 'require2fa',
-    title: 'Require 2FA for all members',
-    description: 'Members without two-factor enabled are blocked from switching into this workspace.',
+    title: 'Tüm üyeler için 2FA zorunlu kıl',
+    description: 'İki adımlı doğrulaması etkin olmayan üyeler bu çalışma alanına geçiş yapamaz.',
     enforced: true
   },
   {
     key: 'restrictInvites',
-    title: 'Restrict invites to admins',
-    description: 'When off, operators can also invite members. Viewers never can.',
+    title: 'Davetleri yalnızca yöneticilerle sınırla',
+    description: 'Kapalıyken operatörler de üye davet edebilir. İzleyiciler hiçbir zaman davet edemez.',
     enforced: true
   },
   {
     key: 'strongPasswords',
-    title: 'Enforce strong passwords',
-    description: 'Reject weak passwords during sign-up and reset. (Advisory — applied on next reset.)',
+    title: 'Güçlü parola zorunlu kıl',
+    description: 'Kayıt ve sıfırlama sırasında zayıf parolaları reddet. (Tavsiye niteliğinde — bir sonraki sıfırlamada uygulanır.)',
     enforced: false
   }
 ];
@@ -92,13 +92,13 @@ export default function AdminGeneralPage() {
         body: JSON.stringify({ name: trimmed })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not save changes');
+      if (!res.ok) throw new Error(json.message ?? 'Değişiklikler kaydedilemedi');
       const updated = (json.data ?? {}) as Partial<Workspace>;
       setWorkspace({ ...workspace, ...updated, name: updated.name ?? trimmed });
       setName(updated.name ?? trimmed);
-      flash('Workspace settings saved');
+      flash('Çalışma alanı ayarları kaydedildi');
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not save changes');
+      flash(e instanceof Error ? e.message : 'Değişiklikler kaydedilemedi');
     } finally {
       setBusy(false);
     }
@@ -117,12 +117,12 @@ export default function AdminGeneralPage() {
         body: JSON.stringify({ [key]: value })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not update policy');
+      if (!res.ok) throw new Error(json.message ?? 'Politika güncellenemedi');
       if (json.data) setSettings(json.data as Settings);
-      flash('Policy updated');
+      flash('Politika güncellendi');
     } catch (e) {
       setSettings(prev); // revert
-      flash(e instanceof Error ? e.message : 'Could not update policy');
+      flash(e instanceof Error ? e.message : 'Politika güncellenemedi');
     } finally {
       setPolicyBusy(null);
     }
@@ -132,7 +132,7 @@ export default function AdminGeneralPage() {
   async function saveSessionExpiry(hours: number) {
     if (!workspace || !settings || !isAdmin) return;
     if (!Number.isFinite(hours) || hours < 1 || hours > 720) {
-      flash('Session expiry must be between 1 and 720 hours');
+      flash('Oturum süresi 1 ile 720 saat arasında olmalıdır');
       setSettings({ ...settings }); // force re-render to reset invalid input
       return;
     }
@@ -145,11 +145,11 @@ export default function AdminGeneralPage() {
         body: JSON.stringify({ sessionExpiryHrs: hours })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? 'Could not save');
+      if (!res.ok) throw new Error(json.message ?? 'Kaydedilemedi');
       if (json.data) setSettings(json.data as Settings);
-      flash('Policy updated');
+      flash('Politika güncellendi');
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Could not save');
+      flash(e instanceof Error ? e.message : 'Kaydedilemedi');
     } finally {
       setPolicyBusy(null);
     }
@@ -163,16 +163,16 @@ export default function AdminGeneralPage() {
   return (
     <section className="section-grid">
       <div className="panel">
-        <h2>Workspace</h2>
+        <h2>Çalışma Alanı</h2>
         <div className="admin-form">
           <div className="admin-field">
-            <label htmlFor="workspace-name">Workspace name</label>
+            <label htmlFor="workspace-name">Çalışma alanı adı</label>
             <input
               id="workspace-name"
               className="field-input"
               type="text"
               value={name}
-              placeholder="Workspace name"
+              placeholder="Çalışma alanı adı"
               disabled={!isAdmin || busy}
               onChange={(e) => setName(e.target.value)}
             />
@@ -185,36 +185,36 @@ export default function AdminGeneralPage() {
               disabled={!isAdmin || busy || !trimmedName || unchanged}
               onClick={save}
             >
-              <Save size={15} /> Save changes
+              <Save size={15} /> Değişiklikleri kaydet
             </button>
             {msg ? <span className="helper">{msg}</span> : null}
           </div>
 
-          {!isAdmin ? <p className="helper">Only workspace admins can edit settings.</p> : null}
+          {!isAdmin ? <p className="helper">Ayarları yalnızca çalışma alanı yöneticileri düzenleyebilir.</p> : null}
         </div>
 
         <div className="panel-stack" style={{ marginTop: '1.25rem' }}>
           <div className="row">
-            <span className="helper">Workspace slug</span>
+            <span className="helper">Çalışma alanı kısa adı</span>
             <span className="mono">{workspace?.slug ?? '—'}</span>
           </div>
           <div className="row">
-            <span className="helper">Members</span>
+            <span className="helper">Üyeler</span>
             <span className="mono">{workspace?.members ?? '—'}</span>
           </div>
           <div className="row">
-            <span className="helper">Devices</span>
+            <span className="helper">Cihazlar</span>
             <span className="mono">{workspace?.devices ?? '—'}</span>
           </div>
           <div className="row">
-            <span className="helper">Your role</span>
+            <span className="helper">Rolünüz</span>
             <span className={`role-badge role-${role}`}>{role}</span>
           </div>
         </div>
       </div>
 
       <div className="panel">
-        <h2>Security policy</h2>
+        <h2>Güvenlik politikası</h2>
         <div className="panel-stack">
           {POLICY_META.map((policy) => (
             <div className="admin-toggle-row" key={policy.key}>
@@ -222,9 +222,9 @@ export default function AdminGeneralPage() {
                 <strong>
                   {policy.title}{' '}
                   {policy.enforced ? (
-                    <span className="policy-tag policy-tag-on">Enforced</span>
+                    <span className="policy-tag policy-tag-on">Zorunlu</span>
                   ) : (
-                    <span className="policy-tag">Advisory</span>
+                    <span className="policy-tag">Tavsiye</span>
                   )}
                 </strong>
                 <span>{policy.description}</span>
@@ -242,8 +242,8 @@ export default function AdminGeneralPage() {
 
           <div className="admin-toggle-row">
             <span className="toggle-meta">
-              <strong>Session expiry (hours)</strong>
-              <span>How long an idle session stays valid. (Advisory — applied on next login.)</span>
+              <strong>Oturum süresi (saat)</strong>
+              <span>Boştaki bir oturumun ne kadar süre geçerli kalacağı. (Tavsiye niteliğinde — bir sonraki girişte uygulanır.)</span>
             </span>
             <input
               className="field-input"
@@ -258,18 +258,18 @@ export default function AdminGeneralPage() {
                 if (settings) setSettings({ ...settings, sessionExpiryHrs: v });
               }}
               onBlur={(e) => void saveSessionExpiry(Number(e.target.value))}
-              aria-label="Session expiry hours"
+              aria-label="Oturum süresi saat"
             />
           </div>
         </div>
         {!isAdmin ? (
           <p className="helper" style={{ marginTop: '0.75rem' }}>
-            Only workspace admins can change security policy.
+            Güvenlik politikasını yalnızca çalışma alanı yöneticileri değiştirebilir.
           </p>
         ) : (
           <p className="helper" style={{ marginTop: '0.75rem' }}>
-            <strong>Enforced</strong> policies take effect immediately. Advisory ones are applied at the next login or
-            password reset.
+            <strong>Zorunlu</strong> politikalar anında yürürlüğe girer. Tavsiye niteliğindekiler bir sonraki girişte veya
+            parola sıfırlamada uygulanır.
           </p>
         )}
       </div>

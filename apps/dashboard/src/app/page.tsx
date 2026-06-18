@@ -3,7 +3,8 @@ import { cookies } from 'next/headers';
 import { PageMotion, StaggerGrid, MotionItem, AnimatedNumber } from '../components/Motion';
 import { OnboardingChecklist, type OnboardingStep } from '../components/OnboardingChecklist';
 import { DashboardProvider, Widget } from '../components/Dashboard';
-import { DashboardHero } from '../components/DashboardHero';
+import { PageHeader } from '../components/PageHeader';
+import { ArrowUpRight } from 'lucide-react';
 import { LiveInfrastructure, type InfraMetric } from '../components/LiveInfrastructure';
 import { DeviceMap, type RegionStat } from '../components/DeviceMap';
 import { AutomationCenter, type AutomationWorkflow } from '../components/AutomationCenter';
@@ -224,7 +225,30 @@ export default async function HomePage() {
 
   return (
     <PageMotion className="page">
-      <DashboardHero total={d?.total ?? 0} online={d?.online ?? 0} jobs={sys?.database.jobs ?? 0} />
+      <PageHeader
+        title="Overview"
+        subtitle="Your cloud phone fleet at a glance."
+        actions={
+          <>
+            <Link
+              href="/profiles"
+              className="btn-primary"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
+            >
+              New phone
+              <ArrowUpRight size={16} />
+            </Link>
+            <Link
+              href="/welcome"
+              className="btn-ghost"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
+            >
+              View platform
+              <ArrowUpRight size={16} />
+            </Link>
+          </>
+        }
+      />
 
       {!onboardingDismissed ? <OnboardingChecklist steps={onboardingSteps} /> : null}
 

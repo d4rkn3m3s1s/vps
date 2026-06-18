@@ -23,6 +23,8 @@ const NAV: NavGroup[] = [
     tkey: 'group.primary',
     items: [
       { href: '/profiles', tkey: 'nav.profiles', icon: '▦' },
+      { href: '/fingerprints', tkey: 'nav.fingerprints', icon: '◉' },
+      { href: '/console', tkey: 'nav.console', icon: '▸' },
       { href: '/proxies', tkey: 'nav.proxies', icon: '⇄' },
       { href: '/library', tkey: 'nav.library', icon: '◳' },
       { href: '/applications', tkey: 'nav.applications', icon: '▤' },
@@ -64,6 +66,27 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
   const router = useRouter();
   const { t } = useI18n();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
+
+  // Look up the current user's role in the active workspace. The plan/quota card
+  // is customer-facing chrome and must NOT show for admins.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/workspaces')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled || !json) return;
+        const list: { id: string; role: string }[] = json.data ?? json ?? [];
+        const active = list.find((w) => w.id === activeWorkspaceId) ?? list[0];
+        setRole(active?.role ?? null);
+      })
+      .catch(() => {
+        /* ignore — leave role null, card stays hidden until known */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId]);
 
   // The topbar hamburger fires this event; the drawer also closes on navigation.
   useEffect(() => {
@@ -133,15 +156,17 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
         ))}
       </nav>
 
-      <div className="plan-card">
-        <div className="plan-head">
-          <span className="plan-badge">Free</span>
-          <span className="plan-quota">1 / 2 {t('common.profiles')}</span>
+      {role !== 'admin' ? (
+        <div className="plan-card">
+          <div className="plan-head">
+            <span className="plan-badge">Free</span>
+            <span className="plan-quota">1 / 2 {t('common.profiles')}</span>
+          </div>
+          <Link href="/billing" className="plan-upgrade">
+            {t('common.upgrade')}
+          </Link>
         </div>
-        <Link href="/billing" className="plan-upgrade">
-          {t('common.upgrade')}
-        </Link>
-      </div>
+      ) : null}
 
       <button type="button" className="logout-btn" onClick={handleLogout}>
         ⎋ {t('common.signout')}

@@ -4657,3 +4657,38 @@ textarea:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .preloader { display: none; }
 }
+
+/* ── Farm ban-risk gauge — circular SVG ring (component: FarmView/RiskGauge) ── */
+.risk-gauge {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.risk-gauge svg { display: block; transform: rotate(0deg); }
+.risk-gauge-track { stroke: rgba(148, 163, 184, 0.16); }
+.risk-gauge-arc {
+  /* Animate the arc filling in on mount / score change. */
+  transition: stroke-dashoffset 0.9s cubic-bezier(0.16, 1, 0.3, 1), stroke 0.3s ease;
+}
+.risk-gauge-num {
+  position: absolute;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+/* Band colours: arc + centred number share the hue, with a soft glow on high. */
+.risk-gauge-low    .risk-gauge-arc { stroke: var(--success, #22c55e); }
+.risk-gauge-low    .risk-gauge-num { color: #4ade80; }
+.risk-gauge-medium .risk-gauge-arc { stroke: var(--warn, #f59e0b); }
+.risk-gauge-medium .risk-gauge-num { color: #fbbf24; }
+.risk-gauge-high   .risk-gauge-arc { stroke: var(--danger, #ef4444); filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.55)); }
+.risk-gauge-high   .risk-gauge-num { color: #f87171; }
+/* High-risk ring breathes to draw the eye. */
+.risk-gauge-high { animation: riskPulse 2s ease-in-out infinite; }
+@keyframes riskPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+@media (prefers-reduced-motion: reduce) {
+  .risk-gauge-arc { transition: none; }
+  .risk-gauge-high { animation: none; }
+}

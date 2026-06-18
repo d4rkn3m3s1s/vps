@@ -106,6 +106,37 @@ const KIND_LABEL: Record<string, string> = {
   manual: 'Manuel değişiklik'
 };
 
+// Circular ban-risk gauge. Pure SVG (no deps): a track ring + a band-coloured
+// progress arc that fills proportional to the 0–100 score, with the number in
+// the centre. The arc animates in via stroke-dashoffset (CSS transition).
+function RiskGauge({ score, band, size = 46 }: { score: number; band: 'low' | 'medium' | 'high'; size?: number }) {
+  const clamped = Math.max(0, Math.min(100, score));
+  const stroke = size <= 48 ? 4 : 5;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - clamped / 100);
+  return (
+    <span className={`risk-gauge risk-gauge-${band}`} style={{ width: size, height: size }} title={`Risk skoru: ${clamped}/100`}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle className="risk-gauge-track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
+        <circle
+          className="risk-gauge-arc"
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <span className="risk-gauge-num">{clamped}</span>
+    </span>
+  );
+}
+
 export function FarmView() {
   const [tab, setTab] = useState<'overview' | 'campaigns' | 'accounts'>('overview');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -582,8 +613,8 @@ export function FarmView() {
                   {flaggedRisk.map((r) => (
                     <div key={r.deviceId} className={`farm-risk-row farm-risk-${r.band}`}>
                       <div className="farm-risk-head">
+                        <RiskGauge score={r.score} band={r.band} />
                         <span className="group-device-name mono">{r.deviceName ?? `${r.deviceId.slice(0, 10)}…`}</span>
-                        <span className={`farm-risk-score farm-risk-score-${r.band}`}>{r.score}</span>
                         {r.paused ? <span className="farm-status farm-status-paused">duraklatıldı</span> : null}
                       </div>
                       <div className="farm-risk-factors">

@@ -13,7 +13,9 @@ const campaignSchema = z.object({
   maxActionsPerDay: z.coerce.number().int().optional(),
   activeFromHour: z.coerce.number().int().optional(),
   activeToHour: z.coerce.number().int().optional(),
-  jitterPct: z.coerce.number().int().optional()
+  jitterPct: z.coerce.number().int().optional(),
+  rotateProxy: z.coerce.boolean().optional(),
+  autoPauseThreshold: z.coerce.number().int().min(0).max(100).optional()
 });
 
 const updateSchema = campaignSchema.partial().extend({
@@ -59,4 +61,39 @@ export async function listAccountsHandler(req: Request, res: Response): Promise<
 // Manual engine kick (admin "run now") — useful for testing without waiting.
 export async function tickHandler(_req: Request, res: Response): Promise<void> {
   res.json({ data: await farmService.tick() });
+}
+
+// Fleet farm analytics (health distribution, action trends, at-risk devices).
+export async function summaryHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await farmService.getSummary(getWorkspaceId(req)) });
+}
+
+// Clear an auto-paused device so it resumes farming.
+export async function resumeHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = String(req.params.deviceId);
+  res.json({ data: await farmService.resumeAccount(deviceId) });
+}
+
+const importSchema = z.object({
+  rows: z.array(z.object({
+    name: z.string().min(1),
+    countryCode: z.string().optional(),
+    groupName: z.string().optional()
+  })).min(1).max(2000)
+});
+
+// Bulk-create devices + warmup rows from parsed CSV rows.
+export async function importHandler(req: Request, res: Response): Promise<void> {
+  const { rows } = importSchema.parse(req.body);
+  const result = await farmService.importAccounts(rows, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'farm.import',
+    resourceType: 'farm_account',
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { ...result }
+  });
+  res.status(201).json({ data: result });
 }

@@ -5,6 +5,7 @@ import { AdbService } from '../adb/adb.service';
 import { DockerService } from '../emulators/docker.service';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
+import { farmService } from '../farm/farm.service';
 import type { JobPayload, JobType } from './job.types';
 
 const dockerService = new DockerService();
@@ -193,20 +194,29 @@ export async function processJob(job: BullJob<JobPayload, unknown, JobType>): Pr
         return result;
       }
       case 'RPA_RUN': {
-        const serial = await getDeviceSerial(String(job.data.deviceId));
+        const deviceId = String(job.data.deviceId);
+        const serial = await getDeviceSerial(deviceId);
         const steps = Array.isArray(job.data.steps) ? (job.data.steps as Array<Record<string, unknown>>) : [];
         const results: unknown[] = [];
-        // Execute each step in order; wait steps just sleep.
-        for (const step of steps) {
-          const type = String(step.type);
-          if (type === 'tap') results.push(await adbService.tap(serial, Number(step.x), Number(step.y)));
-          else if (type === 'swipe') results.push(await adbService.swipe(serial, Number(step.x), Number(step.y), Number(step.x2), Number(step.y2)));
-          else if (type === 'type') results.push(await adbService.inputText(serial, String(step.text ?? '')));
-          else if (type === 'keyevent') results.push(await adbService.keyevent(serial, Number(step.keycode)));
-          else if (type === 'openApp') results.push(await adbService.openApp(serial, String(step.packageName ?? '')));
-          else if (type === 'shell') results.push(await adbService.shell(serial, String(step.command ?? '')));
-          else if (type === 'wait') await new Promise((r) => setTimeout(r, Number(step.ms ?? 1000)));
+        try {
+          // Execute each step in order; wait steps just sleep.
+          for (const step of steps) {
+            const type = String(step.type);
+            if (type === 'tap') results.push(await adbService.tap(serial, Number(step.x), Number(step.y)));
+            else if (type === 'swipe') results.push(await adbService.swipe(serial, Number(step.x), Number(step.y), Number(step.x2), Number(step.y2)));
+            else if (type === 'type') results.push(await adbService.inputText(serial, String(step.text ?? '')));
+            else if (type === 'keyevent') results.push(await adbService.keyevent(serial, Number(step.keycode)));
+            else if (type === 'openApp') results.push(await adbService.openApp(serial, String(step.packageName ?? '')));
+            else if (type === 'shell') results.push(await adbService.shell(serial, String(step.command ?? '')));
+            else if (type === 'wait') await new Promise((r) => setTimeout(r, Number(step.ms ?? 1000)));
+          }
+        } catch (err) {
+          // Feed ban defense: a failed run drops health and may auto-pause.
+          await farmService.recordOutcome(deviceId, false).catch(() => undefined);
+          throw err;
         }
+        // Clean run: nudge health up, reset the error streak.
+        await farmService.recordOutcome(deviceId, true).catch(() => undefined);
         await updateJob(job.id as string, { status: 'COMPLETED', result: { steps: steps.length, results } });
         return { steps: steps.length };
       }

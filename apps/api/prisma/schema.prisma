@@ -649,6 +649,10 @@ model FarmCampaign {
   activeFromHour Int       @default(8)
   activeToHour   Int       @default(23)
   jitterPct      Int       @default(25)
+  // Safety: rotate a proxy from the pool onto the device before each run, and
+  // auto-pause a device whose health drops below this threshold (ban defense).
+  rotateProxy        Boolean @default(false)
+  autoPauseThreshold Int     @default(40)
   // Engine bookkeeping.
   nextRunAt     DateTime   @default(now())
   lastRunAt     DateTime?
@@ -673,6 +677,9 @@ model FarmAccount {
   actionsToday  Int      @default(0)
   totalActions  Int      @default(0)
   healthScore   Int      @default(100)   // 0-100; drops on errors
+  consecutiveErrors Int  @default(0)      // resets on a clean run
+  paused        Boolean  @default(false)  // auto-paused by ban defense
+  pausedReason  String?
   lastActionAt  DateTime?
   dayAnchor     DateTime @default(now()) // when actionsToday was last reset
   workspaceId   String?

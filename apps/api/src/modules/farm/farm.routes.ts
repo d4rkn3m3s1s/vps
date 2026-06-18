@@ -5,8 +5,11 @@ import { requireApiKey } from '../../middleware/requireApiKey';
 import {
   createCampaignHandler,
   deleteCampaignHandler,
+  importHandler,
   listAccountsHandler,
   listCampaignsHandler,
+  resumeHandler,
+  summaryHandler,
   tickHandler,
   updateCampaignHandler
 } from './farm.controller';
@@ -18,4 +21,7 @@ farmRouter.post('/campaigns', requireApiKey, authenticateJwt, asyncHandler(creat
 farmRouter.put('/campaigns/:id', requireApiKey, authenticateJwt, asyncHandler(updateCampaignHandler));
 farmRouter.delete('/campaigns/:id', requireApiKey, authenticateJwt, asyncHandler(deleteCampaignHandler));
 farmRouter.get('/accounts', requireApiKey, authenticateJwt, asyncHandler(listAccountsHandler));
+farmRouter.get('/summary', requireApiKey, authenticateJwt, asyncHandler(summaryHandler));
+farmRouter.post('/accounts/:deviceId/resume', requireApiKey, authenticateJwt, asyncHandler(resumeHandler));
+farmRouter.post('/import', requireApiKey, authenticateJwt, asyncHandler(importHandler));
 farmRouter.post('/tick', requireApiKey, authenticateJwt, asyncHandler(tickHandler));

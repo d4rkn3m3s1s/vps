@@ -4067,3 +4067,14 @@ main {
 .farm-stage-2, .farm-stage-3 { color: var(--warn); }
 .farm-stage-4, .farm-stage-5 { color: var(--success); }
 @media (max-width: 600px) { .farm-form-row { flex-direction: column; } }
+
+/* Farm analytics (overview) */
+.farm-dist { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem; }
+.farm-dist-row { display: grid; grid-template-columns: 90px 1fr 36px; align-items: center; gap: 0.6rem; font-size: 0.82rem; }
+.farm-dist-num { text-align: right; }
+.farm-stage-bar-1 { background: var(--muted); }
+.farm-stage-bar-2, .farm-stage-bar-3 { background: linear-gradient(90deg, #f59e0b, #d97706); }
+.farm-stage-bar-4, .farm-stage-bar-5 { background: linear-gradient(90deg, #22c55e, #16a34a); }
+.farm-health-pill { font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; }
+.farm-health-pill.tone-bad { background: rgba(239,68,68,0.18); color: #f87171; }
+.farm-health-pill.tone-warn { background: rgba(245,158,11,0.18); color: #fbbf24; }

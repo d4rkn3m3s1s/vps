@@ -13,6 +13,7 @@ import {
   listAccountsHandler,
   listCampaignsHandler,
   resumeHandler,
+  riskHandler,
   summaryHandler,
   tickHandler,
   totpHandler,
@@ -29,6 +30,7 @@ farmRouter.delete('/campaigns/:id', requireApiKey, authenticateJwt, asyncHandler
 farmRouter.get('/accounts', requireApiKey, authenticateJwt, asyncHandler(listAccountsHandler));
 farmRouter.get('/accounts/export', requireApiKey, authenticateJwt, asyncHandler(exportHandler));
 farmRouter.get('/summary', requireApiKey, authenticateJwt, asyncHandler(summaryHandler));
+farmRouter.get('/risk', requireApiKey, authenticateJwt, asyncHandler(riskHandler));
 farmRouter.post('/accounts/:deviceId/resume', requireApiKey, authenticateJwt, asyncHandler(resumeHandler));
 farmRouter.put('/accounts/:deviceId/credentials', requireApiKey, authenticateJwt, asyncHandler(updateCredentialsHandler));
 farmRouter.get('/accounts/:deviceId/log', requireApiKey, authenticateJwt, asyncHandler(actionLogHandler));

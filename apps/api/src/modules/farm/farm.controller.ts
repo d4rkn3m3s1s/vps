@@ -71,6 +71,12 @@ export async function summaryHandler(req: Request, res: Response): Promise<void>
   res.json({ data: await farmService.getSummary(getWorkspaceId(req)) });
 }
 
+// Proactive ban-risk scores per account (leading indicators + reasons), ranked
+// highest-first so the UI can flag devices drifting toward a ban.
+export async function riskHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await farmService.getRiskScores(getWorkspaceId(req)) });
+}
+
 // Clear an auto-paused device so it resumes farming.
 export async function resumeHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);

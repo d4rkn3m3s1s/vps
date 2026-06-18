@@ -4,6 +4,7 @@ import { AppError } from '../../lib/errors';
 import { encryptString, decryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
+import { alertsService } from '../alerts/alerts.service';
 
 export type CampaignInput = {
   name: string;
@@ -25,6 +26,75 @@ export type CampaignInput = {
 // Warmup ladder: how many actions/day are "safe" at each stage. New accounts
 // (stage 1) act rarely; mature accounts (stage 5) act freely.
 const STAGE_DAILY_CAP = [0, 5, 10, 20, 40, 80];
+
+// Ban-risk scoring. Health is a *lagging* signal (only drops after a flow fails);
+// the risk score is a *leading* one — it rises from behaviour that tends to
+// precede a ban (failure streaks, acting faster than a stage should, exiting
+// through a dead proxy) so an operator can intervene before health collapses.
+const RISK_ALERT_THRESHOLD = 60; // fire an alert at/above this
+// Don't re-alert the same rising device more than once per this window.
+const RISK_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
+
+export type RiskFactor = { code: string; label: string; weight: number };
+
+// A single risk verdict for one account: the 0-100 score, a coarse band, and
+// the human-readable factors that produced it (shown in the UI / alert detail).
+export type RiskVerdict = { score: number; band: 'low' | 'medium' | 'high'; factors: RiskFactor[] };
+
+// Pure scoring: combine leading indicators into a 0-100 risk score. Inputs are
+// the account's current state plus contextual signals (does it have a dead
+// proxy assigned? how does today's volume compare to its stage cap?). Kept
+// side-effect free so it can be unit-tested and reused by the API + engine.
+function scoreRisk(input: {
+  healthScore: number;
+  consecutiveErrors: number;
+  warmupStage: number;
+  actionsToday: number;
+  paused: boolean;
+  hasDeadProxy: boolean;
+}): RiskVerdict {
+  const factors: RiskFactor[] = [];
+
+  // 1) Consecutive failures — the strongest precursor to a ban. The engine
+  //    hard-pauses at 3; the score climbs steeply before that so the operator
+  //    sees it coming.
+  if (input.consecutiveErrors >= 1) {
+    const w = Math.min(45, input.consecutiveErrors * 18);
+    factors.push({ code: 'errors', label: `${input.consecutiveErrors} ardışık hata`, weight: w });
+  }
+
+  // 2) Low health. Below 50 is "at risk" in the dashboard; translate the gap
+  //    into risk weight (health 0 → +40, health 50 → 0).
+  if (input.healthScore < 50) {
+    const w = Math.min(40, Math.round((50 - input.healthScore) * 0.8));
+    factors.push({ code: 'health', label: `Düşük sağlık (${input.healthScore})`, weight: w });
+  }
+
+  // 3) Velocity vs. stage. Acting near/over the stage's safe daily cap is the
+  //    classic "too much, too soon" pattern for a young account.
+  const cap = STAGE_DAILY_CAP[Math.min(input.warmupStage, STAGE_DAILY_CAP.length - 1)] ?? 20;
+  if (cap > 0) {
+    const ratio = input.actionsToday / cap;
+    if (ratio >= 0.8) {
+      const w = ratio >= 1 ? 30 : 18;
+      const pct = Math.round(ratio * 100);
+      factors.push({ code: 'velocity', label: `Aşama limitine yakın (%${pct})`, weight: w });
+    }
+  } else if (input.actionsToday > 0) {
+    // Stage 0 has a zero cap — any action at all is off-script.
+    factors.push({ code: 'velocity', label: 'Isınmamış hesapta erken aktivite', weight: 25 });
+  }
+
+  // 4) Dead proxy. Running through a FAILED egress can leak the real IP or
+  //    route through a flagged exit — a meaningful, fixable risk.
+  if (input.hasDeadProxy) {
+    factors.push({ code: 'proxy', label: 'Atanmış proxy ÖLÜ (FAILED)', weight: 20 });
+  }
+
+  const score = Math.min(100, factors.reduce((s, f) => s + f.weight, 0));
+  const band: RiskVerdict['band'] = score >= RISK_ALERT_THRESHOLD ? 'high' : score >= 30 ? 'medium' : 'low';
+  return { score, band, factors };
+}
 
 function clampInt(n: number | undefined, min: number, max: number, dflt: number): number {
   if (typeof n !== 'number' || Number.isNaN(n)) return dflt;
@@ -295,6 +365,14 @@ export const farmService = {
         continue;
       }
 
+      // Proxy-risk context for this campaign: rotation requested but no healthy
+      // egress in the pool means every rotated session risks a bad/leaky exit.
+      let hasDeadProxy = false;
+      if (c.rotateProxy) {
+        const healthy = await prisma.proxy.count({ where: { ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}), status: { not: 'FAILED' } } });
+        hasDeadProxy = healthy === 0;
+      }
+
       // Pick an eligible device: under its daily cap (and warmup-stage cap), not
       // auto-paused by ban defense, and online (offline => can't farm safely).
       // We carry each candidate's warmup stage so stage-aware flow selection can
@@ -303,6 +381,10 @@ export const farmService = {
       for (const d of devices) {
         const acct = await this.ensureAccount(d.id, c.workspaceId ?? undefined);
         const fresh = this.rollDayIfNeeded(acct, now);
+        // Proactive ban-risk: recompute + persist each device's leading-indicator
+        // risk score every tick, and alert once per cooldown when it spikes. This
+        // catches a device drifting toward a ban *before* its health collapses.
+        await this.evaluateRisk(d.id, now, { hasDeadProxy }).catch(() => undefined);
         // Ban defense: skip a device the engine has already auto-paused, and
         // auto-pause one whose health just fell below the campaign threshold.
         if (fresh.paused) continue;
@@ -500,6 +582,9 @@ export const farmService = {
     if (shouldPause) {
       await this.logAction({ deviceId, kind: 'paused', detail: pausedReason, warmupStage: acct.warmupStage, healthAfter: healthScore, workspaceId: acct.workspaceId ?? undefined });
     }
+    // Re-score risk immediately after a failure so an operator is alerted the
+    // moment a streak spikes the score, not only on the next engine tick.
+    await this.evaluateRisk(deviceId, new Date(), { hasDeadProxy: false }).catch(() => undefined);
   },
 
   // ── Proxy rotation ─────────────────────────────────────────────────────
@@ -556,9 +641,118 @@ export const farmService = {
         unknown: proxies.filter((p) => p.status === 'UNKNOWN').length
       },
       stageDistribution: stages,
+      // Proactive ban-risk: how many accounts sit in the medium/high bands right
+      // now (uses the persisted score the engine maintains each tick).
+      risk: {
+        high: accounts.filter((a) => a.riskScore >= RISK_ALERT_THRESHOLD).length,
+        medium: accounts.filter((a) => a.riskScore >= 30 && a.riskScore < RISK_ALERT_THRESHOLD).length
+      },
       topActive: [...accounts].sort((a, b) => b.totalActions - a.totalActions).slice(0, 5).map((a) => ({ deviceId: a.deviceId, totalActions: a.totalActions, healthScore: a.healthScore })),
       atRiskList: accounts.filter((a) => a.healthScore < 50).sort((a, b) => a.healthScore - b.healthScore).slice(0, 10).map((a) => ({ deviceId: a.deviceId, healthScore: a.healthScore, paused: a.paused, pausedReason: a.pausedReason }))
     };
+  },
+
+  // ── Ban-risk scoring (proactive defense) ────────────────────────────────
+  // Compute the current ban-risk verdict for every account in a workspace,
+  // ranked highest-first. Pure read — does not persist or alert (the engine
+  // does that on tick). The dashboard calls this to render risk badges/reasons.
+  async getRiskScores(workspaceId?: string): Promise<
+    Array<{
+      deviceId: string;
+      deviceName: string | null;
+      score: number;
+      band: RiskVerdict['band'];
+      factors: RiskFactor[];
+      paused: boolean;
+      healthScore: number;
+      warmupStage: number;
+    }>
+  > {
+    const ws = workspaceId ? { workspaceId } : {};
+    const [accounts, hasHealthyProxy, anyRotates] = await Promise.all([
+      prisma.farmAccount.findMany({ where: ws, include: { device: { select: { name: true } } } }),
+      prisma.proxy.count({ where: { ...ws, status: { not: 'FAILED' } } }).then((n) => n > 0),
+      prisma.farmCampaign.count({ where: { ...ws, status: 'ACTIVE', rotateProxy: true } }).then((n) => n > 0)
+    ]);
+    // Proxy risk applies only when rotation is in play but the pool has no
+    // healthy egress to rotate to — then every rotated session risks a bad exit.
+    const hasDeadProxy = anyRotates && !hasHealthyProxy;
+    return accounts
+      .map((a) => {
+        const v = scoreRisk({
+          healthScore: a.healthScore,
+          consecutiveErrors: a.consecutiveErrors,
+          warmupStage: a.warmupStage,
+          actionsToday: a.actionsToday,
+          paused: a.paused,
+          hasDeadProxy
+        });
+        return {
+          deviceId: a.deviceId,
+          deviceName: a.device?.name ?? null,
+          score: v.score,
+          band: v.band,
+          factors: v.factors,
+          paused: a.paused,
+          healthScore: a.healthScore,
+          warmupStage: a.warmupStage
+        };
+      })
+      .sort((x, y) => y.score - x.score);
+  },
+
+  // Recompute a single account's risk, persist it, and fire a FARM_BAN_RISK
+  // alert when it crosses the threshold (rate-limited per account by a cooldown
+  // so a device that stays risky alerts once, not every tick). Best-effort.
+  async evaluateRisk(
+    deviceId: string,
+    now: Date,
+    ctx: { hasDeadProxy: boolean }
+  ): Promise<RiskVerdict | null> {
+    const acct = await prisma.farmAccount.findUnique({ where: { deviceId }, include: { device: { select: { name: true } } } });
+    if (!acct) return null;
+    const verdict = scoreRisk({
+      healthScore: acct.healthScore,
+      consecutiveErrors: acct.consecutiveErrors,
+      warmupStage: acct.warmupStage,
+      actionsToday: acct.actionsToday,
+      paused: acct.paused,
+      hasDeadProxy: ctx.hasDeadProxy
+    });
+
+    // Fire only when crossing into the high band, and only if we haven't already
+    // alerted within the cooldown window.
+    const crossed = verdict.score >= RISK_ALERT_THRESHOLD;
+    const cooled = !acct.riskAlertedAt || now.getTime() - acct.riskAlertedAt.getTime() >= RISK_ALERT_COOLDOWN_MS;
+    const shouldAlert = crossed && cooled;
+
+    await prisma.farmAccount
+      .update({
+        where: { deviceId },
+        data: { riskScore: verdict.score, ...(shouldAlert ? { riskAlertedAt: now } : {}) }
+      })
+      .catch(() => undefined);
+
+    if (shouldAlert) {
+      const name = acct.device?.name ?? deviceId.slice(0, 10);
+      const reasons = verdict.factors.map((f) => f.label).join('; ');
+      await alertsService
+        .evaluate(acct.workspaceId ?? undefined, 'FARM_BAN_RISK', {
+          title: `Ban riski yüksek: ${name} (${verdict.score})`,
+          detail: reasons || 'Yüksek ban-risk skoru',
+          value: verdict.score
+        })
+        .catch(() => undefined);
+      await this.logAction({
+        deviceId,
+        kind: 'risk_alert',
+        detail: `Ban-risk skoru ${verdict.score} — ${reasons}`,
+        warmupStage: acct.warmupStage,
+        healthAfter: acct.healthScore,
+        workspaceId: acct.workspaceId ?? undefined
+      });
+    }
+    return verdict;
   },
 
   // ── CSV import: create devices (and warmup rows) in bulk ───────────────

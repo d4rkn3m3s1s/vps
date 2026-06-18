@@ -7,7 +7,7 @@ import { alertsService } from './alerts.service';
 
 const createSchema = z.object({
   name: z.string().min(1),
-  trigger: z.enum(['JOB_FAILED', 'DEVICE_OFFLINE', 'QUOTA_HIGH', 'HOST_OFFLINE']),
+  trigger: z.enum(['JOB_FAILED', 'DEVICE_OFFLINE', 'QUOTA_HIGH', 'HOST_OFFLINE', 'FARM_BAN_RISK']),
   threshold: z.coerce.number().int().min(0).max(100).optional(),
   notify: z.boolean().optional(),
   webhook: z.boolean().optional(),
@@ -75,7 +75,8 @@ export function listTriggersHandler(_req: Request, res: Response): void {
       { key: 'JOB_FAILED', label: 'Job fails', hasThreshold: false },
       { key: 'DEVICE_OFFLINE', label: 'Device goes offline', hasThreshold: false },
       { key: 'QUOTA_HIGH', label: 'Device quota high', hasThreshold: true },
-      { key: 'HOST_OFFLINE', label: 'Host goes offline', hasThreshold: false }
+      { key: 'HOST_OFFLINE', label: 'Host goes offline', hasThreshold: false },
+      { key: 'FARM_BAN_RISK', label: 'Farm account ban risk', hasThreshold: true }
     ]
   });
 }

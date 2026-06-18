@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag } from 'lucide-react';
+import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 
@@ -70,8 +70,20 @@ type Summary = {
   actions: { today: number; total: number };
   proxies: { total: number; healthy: number; failed: number; unknown: number };
   stageDistribution: number[];
+  risk: { high: number; medium: number };
   topActive: { deviceId: string; totalActions: number; healthScore: number }[];
   atRiskList: { deviceId: string; healthScore: number; paused: boolean; pausedReason: string | null }[];
+};
+type RiskFactor = { code: string; label: string; weight: number };
+type Risk = {
+  deviceId: string;
+  deviceName: string | null;
+  score: number;
+  band: 'low' | 'medium' | 'high';
+  factors: RiskFactor[];
+  paused: boolean;
+  healthScore: number;
+  warmupStage: number;
 };
 type TrendPoint = { at: string; health: number; kind: string };
 
@@ -90,6 +102,7 @@ const KIND_LABEL: Record<string, string> = {
   paused: 'Otomatik duraklatıldı',
   resumed: 'Devam ettirildi',
   proxy_rotated: 'Proxy döndürüldü',
+  risk_alert: 'Ban riski uyarısı',
   manual: 'Manuel değişiklik'
 };
 
@@ -100,6 +113,7 @@ export function FarmView() {
   const [flows, setFlows] = useState<Flow[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [risk, setRisk] = useState<Risk[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -145,19 +159,21 @@ export function FarmView() {
 
   async function loadAll() {
     try {
-      const [cRes, fRes, gRes, aRes, sRes] = await Promise.all([
+      const [cRes, fRes, gRes, aRes, sRes, rRes] = await Promise.all([
         fetch('/api/farm/campaigns'),
         fetch('/api/rpa'),
         fetch('/api/groups'),
         fetch('/api/farm/accounts'),
-        fetch('/api/farm/summary')
+        fetch('/api/farm/summary'),
+        fetch('/api/farm/risk')
       ]);
-      const [cJson, fJson, gJson, aJson, sJson] = await Promise.all([cRes.json(), fRes.json(), gRes.json(), aRes.json(), sRes.json()]);
+      const [cJson, fJson, gJson, aJson, sJson, rJson] = await Promise.all([cRes.json(), fRes.json(), gRes.json(), aRes.json(), sRes.json(), rRes.json()]);
       if (Array.isArray(cJson.data)) setCampaigns(cJson.data);
       if (Array.isArray(fJson.data)) setFlows(fJson.data);
       if (Array.isArray(gJson.data)) setGroups(gJson.data);
       if (Array.isArray(aJson.data)) setAccounts(aJson.data);
       if (sJson.data) setSummary(sJson.data as Summary);
+      if (Array.isArray(rJson.data)) setRisk(rJson.data as Risk[]);
     } catch {
       flash('Çiftlik verileri yüklenemedi.');
     }
@@ -413,6 +429,10 @@ export function FarmView() {
 
   // Derived: filtered accounts + the platform options present in the data.
   const platformOptions = Array.from(new Set(accounts.map((a) => a.platform).filter(Boolean))) as string[];
+  // Risk lookup by device for the per-row badge, and the high/medium-band slice
+  // for the overview panel.
+  const riskByDevice = new Map(risk.map((r) => [r.deviceId, r]));
+  const flaggedRisk = risk.filter((r) => r.band !== 'low').slice(0, 12);
   const filteredAccounts = accounts.filter((a) => {
     if (filterPlatform && a.platform !== filterPlatform) return false;
     if (filterHealth === 'risk' && !(a.healthScore < 50 && !a.paused)) return false;
@@ -496,6 +516,13 @@ export function FarmView() {
                 {(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad"> · {summary?.proxies.failed} ölü</span> : null}
               </p>
             </div>
+            <div className="metric">
+              <p className="metric-label"><Siren size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Ban riski (yüksek / orta)</p>
+              <p className="metric-value">
+                <span className={(summary?.risk.high ?? 0) > 0 ? 'farm-proxy-bad' : ''}>{summary?.risk.high ?? 0}</span>
+                <span className="metric-sub"> / {summary?.risk.medium ?? 0}</span>
+              </p>
+            </div>
           </div>
 
           <div className="section-grid">
@@ -538,6 +565,32 @@ export function FarmView() {
                           <RotateCw size={12} /> Devam
                         </button>
                       ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Proactive ban-risk: devices drifting toward a ban, with the
+                leading-indicator reasons that raised each score. */}
+            <div className="panel">
+              <h2><Siren size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Ban riski (öngörücü)</h2>
+              {flaggedRisk.length === 0 ? (
+                <p className="helper">Yükselen ban riski yok — davranış sınırlar içinde. ✅</p>
+              ) : (
+                <div className="farm-risk-list">
+                  {flaggedRisk.map((r) => (
+                    <div key={r.deviceId} className={`farm-risk-row farm-risk-${r.band}`}>
+                      <div className="farm-risk-head">
+                        <span className="group-device-name mono">{r.deviceName ?? `${r.deviceId.slice(0, 10)}…`}</span>
+                        <span className={`farm-risk-score farm-risk-score-${r.band}`}>{r.score}</span>
+                        {r.paused ? <span className="farm-status farm-status-paused">duraklatıldı</span> : null}
+                      </div>
+                      <div className="farm-risk-factors">
+                        {r.factors.length === 0 ? <span className="helper">—</span> : r.factors.map((f) => (
+                          <span key={f.code} className="farm-risk-chip" title={`+${f.weight}`}>{f.label}</span>
+                        ))}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -640,6 +693,12 @@ export function FarmView() {
                   <span><input type="checkbox" checked={selected.has(a.deviceId)} onChange={() => toggleSelect(a.deviceId)} /></span>
                   <span className="health-name">
                     {a.device?.name ?? a.deviceId.slice(0, 8)}
+                    {(() => {
+                      const r = riskByDevice.get(a.deviceId);
+                      if (!r || r.band === 'low') return null;
+                      const reasons = r.factors.map((f) => f.label).join(' · ');
+                      return <span className={`farm-risk-badge farm-risk-${r.band}`} title={`Ban riski ${r.score}: ${reasons}`}><Siren size={10} /> {r.score}</span>;
+                    })()}
                     {(a.tags ?? []).length > 0 ? <span className="farm-row-tags">{a.tags.map((t) => <span key={t} className="farm-tag-chip">{t}</span>)}</span> : null}
                   </span>
                   <span className="farm-acct-id">

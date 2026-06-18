@@ -30,6 +30,7 @@ import { snapshotRouter } from '../modules/snapshots/snapshot.routes';
 import { socialRouter } from '../modules/social/social.routes';
 import { streamRouter } from '../modules/stream/stream.routes';
 import { systemRouter } from '../modules/system/system.routes';
+import { usageRouter } from '../modules/usage/usage.routes';
 import { usersRouter } from '../modules/users/users.routes';
 import { vastRouter } from '../modules/vast/vast.routes';
 import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
@@ -75,4 +76,5 @@ export function registerRoutes(app: Express): void {
   app.use('/grants', grantRouter);
   app.use('/ai', aiRouter);
   app.use('/calendar', calendarRouter);
+  app.use('/usage', usageRouter);
 }

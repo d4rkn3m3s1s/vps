@@ -41,8 +41,23 @@ function UsageBar({ label, used, limit }: { label: string; used: number; limit: 
   );
 }
 
+type Usage = {
+  days: number;
+  ratePerMinuteCents: number;
+  totalMinutes: number;
+  totalHours: number;
+  estimatedCostCents: number;
+  series: { date: string; minutes: number }[];
+  topDevices: { deviceId: string; name: string; minutes: number; costCents: number }[];
+};
+
+function fmtCost(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
 export function BillingView() {
   const [billing, setBilling] = useState<Billing | null>(null);
+  const [usage, setUsage] = useState<Usage | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,6 +66,10 @@ export function BillingView() {
       .then((r) => r.json())
       .then((j) => setBilling(j.data ?? null))
       .catch(() => setError('Faturalama bilgileri yüklenemedi'));
+    fetch('/api/usage/summary?days=30')
+      .then((r) => r.json())
+      .then((j) => setUsage(j.data ?? null))
+      .catch(() => undefined);
   }, []);
 
   async function upgrade(plan: string) {
@@ -122,6 +141,8 @@ export function BillingView() {
             </div>
           </div>
 
+          {usage ? <UsageMeterPanel usage={usage} /> : null}
+
           <div className="plans-grid">
             {billing.plans.map((p) => {
               const current = p.key === billing.plan;
@@ -153,5 +174,53 @@ export function BillingView() {
         <div className="panel"><p className="helper">Faturalama bilgileri yükleniyor…</p></div>
       )}
     </PageMotion>
+  );
+}
+
+// Pay-as-you-go usage: total online time, estimated cost, a daily bar chart, and
+// the top devices by minutes. Fed by the /usage/summary endpoint.
+function UsageMeterPanel({ usage }: { usage: Usage }) {
+  const max = Math.max(1, ...usage.series.map((s) => s.minutes));
+  return (
+    <div className="panel">
+      <h2>Kullanım sayacı (son {usage.days} gün)</h2>
+      <div className="meter-stats">
+        <div className="meter-stat">
+          <span className="meter-label">Toplam süre</span>
+          <span className="meter-value">{usage.totalHours} sa<span className="meter-sub"> ({usage.totalMinutes} dk)</span></span>
+        </div>
+        <div className="meter-stat">
+          <span className="meter-label">Tahmini maliyet</span>
+          <span className="meter-value">{fmtCost(usage.estimatedCostCents)}</span>
+        </div>
+        <div className="meter-stat">
+          <span className="meter-label">Dakika ücreti</span>
+          <span className="meter-value">{fmtCost(usage.ratePerMinuteCents)}<span className="meter-sub">/dk</span></span>
+        </div>
+      </div>
+
+      {usage.series.length > 0 ? (
+        <div className="meter-chart" role="img" aria-label="Günlük kullanım">
+          {usage.series.map((s) => (
+            <span key={s.date} className="meter-bar-wrap" title={`${s.date}: ${s.minutes} dk`}>
+              <span className="meter-bar" style={{ height: `${Math.round((s.minutes / max) * 100)}%` }} />
+            </span>
+          ))}
+        </div>
+      ) : <p className="helper">Henüz ölçülen kullanım yok — cihazlar çalıştıkça birikir.</p>}
+
+      {usage.topDevices.length > 0 ? (
+        <div className="meter-top">
+          <h3 className="meter-top-head">En çok kullanan cihazlar</h3>
+          {usage.topDevices.map((d) => (
+            <div key={d.deviceId} className="meter-top-row">
+              <span className="meter-top-name">{d.name}</span>
+              <span className="meter-top-min mono">{Math.round(d.minutes / 60 * 10) / 10} sa</span>
+              <span className="meter-top-cost">{fmtCost(d.costCents)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }

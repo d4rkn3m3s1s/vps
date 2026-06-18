@@ -372,8 +372,27 @@ model Device {
   farmAccount    FarmAccount?
   snapshots      DeviceSnapshot[] @relation("DeviceSnapshotSource")
   grants         DeviceGrant[]    @relation("DeviceGrants")
+  usage          DeviceUsage[]
 
   @@index([workspaceId])
+}
+
+// Per-device, per-day online-minute rollup for usage metering / pay-as-you-go
+// billing. Accrued from heartbeats: when a device reports ONLINE, the minutes
+// since its last heartbeat are added to today's bucket (capped so a long gap
+// from a crashed agent doesn't over-bill).
+model DeviceUsage {
+  id            String   @id @default(cuid())
+  deviceId      String
+  day           DateTime @db.Date         // calendar day (UTC midnight)
+  onlineMinutes Int      @default(0)
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, day])
+  @@index([workspaceId, day])
 }
 
 // A randomized hardware/identity fingerprint bound to a single cloud phone so

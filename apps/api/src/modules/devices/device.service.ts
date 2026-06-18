@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { generateFingerprintData } from '../fingerprint/fingerprint.service';
+import { usageService } from '../usage/usage.service';
 import type {
   DeviceCreateInput,
   DeviceGroupCreateInput,
@@ -117,18 +118,33 @@ export class DeviceService {
   }
 
   async heartbeat(id: string, input: DeviceHeartbeatInput) {
-    await this.assertDeviceExists(id);
-    return prisma.device.update({
+    // Read prior lastSeen/status/workspace so we can meter online minutes before
+    // overwriting lastSeen.
+    const prev = await prisma.device.findUnique({
+      where: { id },
+      select: { lastSeen: true, status: true, workspaceId: true }
+    });
+    if (!prev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    const now = toDate(input.lastSeen) ?? new Date();
+
+    const updated = await prisma.device.update({
       where: { id },
       data: {
         ...(input.status ? { status: input.status } : {}),
         ...(typeof input.cpuUsage === 'number' ? { cpuUsage: input.cpuUsage } : {}),
         ...(typeof input.memoryUsage === 'number' ? { memoryUsage: input.memoryUsage } : {}),
         ...(typeof input.diskUsage === 'number' ? { diskUsage: input.diskUsage } : {}),
-        lastSeen: toDate(input.lastSeen) ?? new Date()
+        lastSeen: now
       },
       include: { group: true }
     });
+
+    // Meter usage only while the device is (and was) effectively online.
+    const effectiveStatus = input.status ?? prev.status;
+    if (effectiveStatus === 'ONLINE') {
+      void usageService.accrue(id, prev.lastSeen, now, prev.workspaceId ?? undefined);
+    }
+    return updated;
   }
 
   async deleteDevice(id: string) {

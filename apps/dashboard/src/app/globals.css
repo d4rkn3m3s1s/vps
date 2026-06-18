@@ -4253,3 +4253,18 @@ main {
 .wall-cell-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; padding: 0.35rem 0.5rem; min-height: 34px; }
 .wall-cell-nav { display: inline-flex; align-items: center; gap: 0.2rem; margin-left: auto; }
 .wall-cell-nav .live-nav-btn { width: 26px; height: 26px; }
+
+/* ── Usage meter (pay-as-you-go) ── */
+.meter-stats { display: flex; flex-wrap: wrap; gap: 1.4rem; margin-bottom: 1rem; }
+.meter-stat { display: flex; flex-direction: column; gap: 0.2rem; }
+.meter-label { font-size: 0.72rem; opacity: 0.7; }
+.meter-value { font-size: 1.3rem; font-weight: 700; }
+.meter-sub { font-size: 0.78rem; font-weight: 400; opacity: 0.65; }
+.meter-chart { display: flex; align-items: flex-end; gap: 3px; height: 70px; padding: 0.4rem 0; }
+.meter-bar-wrap { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.meter-bar { width: 100%; min-height: 2px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, #4f7cff, #3358d4); }
+.meter-top { margin-top: 1rem; border-top: 1px solid var(--panel-border); padding-top: 0.7rem; }
+.meter-top-head { font-size: 0.8rem; opacity: 0.85; margin-bottom: 0.5rem; }
+.meter-top-row { display: grid; grid-template-columns: 1fr auto auto; gap: 1rem; align-items: center; padding: 0.25rem 0; font-size: 0.82rem; }
+.meter-top-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter-top-cost { font-weight: 700; color: #34d399; min-width: 56px; text-align: right; }

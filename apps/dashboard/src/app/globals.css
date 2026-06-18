@@ -4793,3 +4793,137 @@ textarea:focus-visible {
   .farm-grid .farm-card { animation: none; }
   .health-bar-fill.bar-ok::after { animation: none; }
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   EMPTY STATES — upgrade the shared .empty-state / .empty-art / .table-empty so
+   every "no data yet" surface across the app reads as a polished, animated
+   illustration instead of a flat glyph. No per-page edits needed.
+   ════════════════════════════════════════════════════════════════════════════ */
+.empty-state {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(420px circle at 50% 18%, rgba(79, 124, 255, 0.10), transparent 60%),
+    var(--panel);
+}
+.empty-state::before {
+  /* Animated dashed-ring accent at the top sheen. */
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(79,124,255,0.5), transparent);
+  opacity: 0.7;
+}
+
+/* The glyph becomes a floating orb: gradient halo behind it + slow bob. */
+.empty-art, .table-empty .empty-art {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  margin: 0 auto;
+  font-size: 2.4rem;
+  opacity: 1;
+  color: var(--accent-3, #9db4ff);
+  border-radius: 24px;
+  background: linear-gradient(135deg, rgba(79,124,255,0.16), rgba(139,123,255,0.10));
+  border: 1px solid rgba(79,124,255,0.22);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), 0 18px 40px -16px rgba(79,124,255,0.5);
+  animation: emptyFloat 4.5s ease-in-out infinite;
+}
+.empty-art::after {
+  /* Soft pulsing glow ring around the orb. */
+  content: '';
+  position: absolute;
+  inset: -10px;
+  border-radius: 30px;
+  background: radial-gradient(circle, rgba(79,124,255,0.22), transparent 70%);
+  z-index: -1;
+  animation: emptyGlow 3.2s ease-in-out infinite alternate;
+}
+@keyframes emptyFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+@keyframes emptyGlow { from { opacity: 0.5; transform: scale(0.92); } to { opacity: 1; transform: scale(1.08); } }
+
+.empty-state h3 { margin: 0.4rem 0 0; font-size: 1.15rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-art { animation: none; }
+  .empty-art::after { animation: none; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   LIVE SCREEN — phone-bezel polish + live scanline + idle shimmer.
+   ════════════════════════════════════════════════════════════════════════════ */
+.live-screen-frame {
+  border-radius: 28px;
+  border-width: 6px;
+  border-color: #14182b;
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.06),
+    0 24px 60px -18px rgba(0,0,0,0.7),
+    inset 0 0 0 1px rgba(255,255,255,0.04);
+  transition: border-color 0.25s ease, box-shadow 0.3s ease, transform 0.25s ease;
+}
+/* Top speaker/camera notch. */
+.live-screen-frame::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 64px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.18);
+  z-index: 4;
+  pointer-events: none;
+}
+.live-screen-frame.is-live {
+  border-color: #1b2440;
+  box-shadow:
+    0 0 0 1px rgba(79,124,255,0.5),
+    0 0 50px rgba(79,124,255,0.28),
+    0 24px 60px -18px rgba(0,0,0,0.7);
+  animation: liveBreathe 3.2s ease-in-out infinite;
+}
+@keyframes liveBreathe {
+  0%,100% { box-shadow: 0 0 0 1px rgba(79,124,255,0.5), 0 0 45px rgba(79,124,255,0.22), 0 24px 60px -18px rgba(0,0,0,0.7); }
+  50% { box-shadow: 0 0 0 1px rgba(79,124,255,0.75), 0 0 64px rgba(79,124,255,0.38), 0 24px 60px -18px rgba(0,0,0,0.7); }
+}
+/* Subtle scanline sweep over the live feed (sits above the img, below nav). */
+.live-screen-frame.is-live::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(79,124,255,0.10) 50%, transparent);
+  height: 38%;
+  transform: translateY(-120%);
+  animation: liveScan 3.6s ease-in-out infinite;
+}
+@keyframes liveScan { 0% { transform: translateY(-120%); } 70%,100% { transform: translateY(300%); } }
+
+/* Idle placeholder: animated grid + drifting glow so it never looks dead. */
+.live-screen-placeholder {
+  background:
+    radial-gradient(300px circle at 50% 35%, rgba(79,124,255,0.10), transparent 60%),
+    linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px) 0 0 / 28px 100%;
+}
+.live-screen-placeholder svg { color: var(--accent-3, #9db4ff); animation: emptyFloat 4s ease-in-out infinite; }
+
+/* CANLI badge gets a soft red glow. */
+.live-badge { text-shadow: 0 0 12px rgba(244,63,94,0.5); }
+
+/* Nav buttons lift + glow on hover. */
+.live-nav-btn:hover:not(:disabled) { background: rgba(79,124,255,0.18); transform: translateY(-1px); }
+.live-nav-btn { transition: background 0.15s ease, transform 0.15s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-screen-frame.is-live { animation: none; }
+  .live-screen-frame.is-live::after { animation: none; display: none; }
+  .live-screen-placeholder svg { animation: none; }
+}

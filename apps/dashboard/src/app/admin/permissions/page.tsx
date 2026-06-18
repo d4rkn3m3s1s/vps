@@ -41,13 +41,24 @@ export default function PermissionsPage() {
   useEffect(() => {
     void (async () => {
       try {
-        const [uRes, gRes, dRes] = await Promise.all([
-          fetch('/api/users'),
+        // Scope the member list to the ACTIVE workspace (not every global user).
+        const [wsRes, activeRes, gRes, dRes] = await Promise.all([
+          fetch('/api/workspaces'),
+          fetch('/api/workspaces/active'),
           fetch('/api/groups'),
           fetch('/api/devices')
         ]);
-        const [uJson, gJson, dJson] = await Promise.all([uRes.json(), gRes.json(), dRes.json()]);
-        if (Array.isArray(uJson.data)) setUsers(uJson.data);
+        const [wsJson, activeJson, gJson, dJson] = await Promise.all([
+          wsRes.json(), activeRes.json(), gRes.json(), dRes.json()
+        ]);
+        const list = (Array.isArray(wsJson.data) ? wsJson.data : []) as { id: string }[];
+        const activeId: string | null = activeJson?.data?.activeId ?? null;
+        const ws = list.find((w) => w.id === activeId) ?? list[0];
+        if (ws) {
+          const mJson = await fetch(`/api/workspaces/${ws.id}/members`).then((r) => r.json()).catch(() => ({}));
+          const members = (Array.isArray(mJson.data) ? mJson.data : []) as { userId: string; email: string; role: string }[];
+          setUsers(members.map((m) => ({ id: m.userId, email: m.email, role: m.role })));
+        }
         if (Array.isArray(gJson.data)) setGroups(gJson.data);
         if (Array.isArray(dJson.data)) setDevices(dJson.data);
       } catch {

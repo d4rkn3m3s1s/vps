@@ -51,22 +51,28 @@ export default function AdminGeneralPage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/workspaces')
-      .then((r) => r.json())
-      .then((j) => {
-        const list = (Array.isArray(j.data) ? j.data : []) as Workspace[];
-        if (list[0]) {
-          setWorkspace(list[0]);
-          setName(list[0].name);
-          fetch(`/api/workspaces/${list[0].id}/settings`)
-            .then((r) => r.json())
-            .then((sj) => {
-              if (sj.data) setSettings(sj.data as Settings);
-            })
-            .catch(() => {});
+    (async () => {
+      try {
+        // Resolve the ACTIVE workspace (from the fleet_workspace cookie), not the
+        // first one — otherwise admin edits the wrong workspace after switching.
+        const [wsRes, activeRes] = await Promise.all([
+          fetch('/api/workspaces'),
+          fetch('/api/workspaces/active')
+        ]);
+        const [wsJson, activeJson] = await Promise.all([wsRes.json(), activeRes.json()]);
+        const list = (Array.isArray(wsJson.data) ? wsJson.data : []) as Workspace[];
+        const activeId: string | null = activeJson?.data?.activeId ?? null;
+        const ws = list.find((w) => w.id === activeId) ?? list[0];
+        if (ws) {
+          setWorkspace(ws);
+          setName(ws.name);
+          const sj = await fetch(`/api/workspaces/${ws.id}/settings`).then((r) => r.json()).catch(() => ({}));
+          if (sj.data) setSettings(sj.data as Settings);
         }
-      })
-      .catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    })();
   }, []);
 
   function flash(t: string) {

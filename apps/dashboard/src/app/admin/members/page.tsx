@@ -30,16 +30,25 @@ export default function MembersPage() {
   }, []);
 
   useEffect(() => {
-    fetch('/api/workspaces')
-      .then((r) => r.json())
-      .then((j) => {
-        const list = (Array.isArray(j.data) ? j.data : []) as Workspace[];
-        if (list[0]) {
-          setWorkspace(list[0]);
-          void loadMembers(list[0].id);
+    (async () => {
+      try {
+        // Target the ACTIVE workspace (fleet_workspace cookie), not the first one.
+        const [wsRes, activeRes] = await Promise.all([
+          fetch('/api/workspaces'),
+          fetch('/api/workspaces/active')
+        ]);
+        const [wsJson, activeJson] = await Promise.all([wsRes.json(), activeRes.json()]);
+        const list = (Array.isArray(wsJson.data) ? wsJson.data : []) as Workspace[];
+        const activeId: string | null = activeJson?.data?.activeId ?? null;
+        const ws = list.find((w) => w.id === activeId) ?? list[0];
+        if (ws) {
+          setWorkspace(ws);
+          void loadMembers(ws.id);
         }
-      })
-      .catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    })();
   }, [loadMembers]);
 
   function flash(text: string) {

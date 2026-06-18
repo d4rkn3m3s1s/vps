@@ -34,6 +34,9 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   const router = useRouter();
   const [tab, setTab] = useState<'list' | 'config'>('list');
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importType, setImportType] = useState('HTTP');
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +96,29 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
     }
   }
 
+  // Bulk-import a pasted provider proxy list.
+  async function importProxies() {
+    if (!importText.trim()) { setError('Proxy listesi boş.'); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/proxies/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: importText, type: importType })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.data?.message ?? 'İçe aktarma başarısız');
+      setImportOpen(false);
+      setImportText('');
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'İçe aktarma başarısız');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function checkProxy(id: string) {
     setBusyId(id);
     try {
@@ -119,8 +145,44 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
       <PageHeader
         title="Proxy'ler"
         subtitle="Bulut telefonlarınıza konut veya mobil proxy atayın."
-        actions={<button type="button" className="btn-primary" onClick={() => setAddOpen(true)}>+ Proxy ekle</button>}
+        actions={
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setImportOpen(true)}>⇪ Liste içe aktar</button>
+            <button type="button" className="btn-primary" onClick={() => setAddOpen(true)}>+ Proxy ekle</button>
+          </>
+        }
       />
+
+      {importOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setImportOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2>Proxy listesi içe aktar</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setImportOpen(false)}>✕</button>
+            </header>
+            <div className="modal-body">
+              <p className="helper">Herhangi bir sağlayıcıdan listeyi yapıştırın. Her satır bir proxy:<br /><code>host:port</code>, <code>host:port:kullanıcı:şifre</code>, <code>kullanıcı:şifre@host:port</code> veya <code>socks5://...</code>. İsteğe bağlı ülke etiketi: <code>host:port,US</code></p>
+              <label className="field">
+                <span>Tür</span>
+                <select className="field-input" value={importType} onChange={(e) => setImportType(e.target.value)}>
+                  <option value="HTTP">HTTP</option>
+                  <option value="HTTPS">HTTPS</option>
+                  <option value="SOCKS5">SOCKS5</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Proxy listesi</span>
+                <textarea className="field-input" rows={8} placeholder={'1.2.3.4:8080:user:pass,US\n5.6.7.8:1080'} value={importText} onChange={(e) => setImportText(e.target.value)} />
+              </label>
+              {error ? <p className="field-error">{error}</p> : null}
+            </div>
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => setImportOpen(false)} disabled={busy}>İptal</button>
+              <button type="button" className="btn-primary" onClick={importProxies} disabled={busy}>{busy ? 'İçe aktarılıyor…' : 'İçe aktar'}</button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
 
       <div className="tabs">
         <button type="button" className={tab === 'list' ? 'tab tab-active' : 'tab'} onClick={() => setTab('list')}>

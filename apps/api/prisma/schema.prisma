@@ -527,6 +527,9 @@ model Proxy {
   isp         String?
   remarks     String?
   exportIp    String?
+  // ISO country code for geo-matching a proxy to a device's locale (e.g. assign
+  // a US exit to a US-fingerprinted phone). Set on import or detected on check.
+  countryCode String?
   status      ProxyStatus  @default(UNKNOWN)
   lastCheckedAt DateTime?
   workspaceId String?

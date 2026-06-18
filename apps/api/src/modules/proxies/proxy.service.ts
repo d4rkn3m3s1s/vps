@@ -1,7 +1,9 @@
-import type { Proxy } from '@prisma/client';
+import type { Proxy, ProxyType } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { decryptString, encryptString } from '../../lib/crypto';
 import { AppError } from '../../lib/errors';
+import { createJobRecord } from '../jobs/jobs.service';
+import type { JobPayload } from '../jobs/job.types';
 import type { ProxyCreateInput, ProxyUpdateInput } from './proxy.types';
 
 // Public-safe proxy shape: the encrypted password is never returned; clients
@@ -9,6 +11,77 @@ import type { ProxyCreateInput, ProxyUpdateInput } from './proxy.types';
 function toPublic(proxy: Proxy) {
   const { password, ...rest } = proxy;
   return { ...rest, hasPassword: Boolean(password) };
+}
+
+type ParsedProxy = {
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+  type?: ProxyType;
+  countryCode?: string;
+  label: string;
+};
+
+// Parse one proxy line from a provider list. Supports the common formats and an
+// optional ",CC" country suffix. Returns null for an unparseable line.
+function parseProxyLine(raw: string): ParsedProxy | null {
+  let line = raw.trim();
+  if (!line) return null;
+
+  // Optional trailing country tag: "host:port,US"
+  let countryCode: string | undefined;
+  const commaIdx = line.lastIndexOf(',');
+  if (commaIdx !== -1) {
+    const tail = line.slice(commaIdx + 1).trim();
+    if (/^[A-Za-z]{2}$/.test(tail)) {
+      countryCode = tail.toUpperCase();
+      line = line.slice(0, commaIdx).trim();
+    }
+  }
+
+  // Optional scheme.
+  let type: ProxyType | undefined;
+  const schemeMatch = line.match(/^(https?|socks5):\/\//i);
+  if (schemeMatch) {
+    const s = schemeMatch[1]!.toUpperCase();
+    type = s === 'SOCKS5' ? 'SOCKS5' : s === 'HTTPS' ? 'HTTPS' : 'HTTP';
+    line = line.slice(schemeMatch[0].length);
+  }
+
+  let username: string | undefined;
+  let password: string | undefined;
+  let hostPort = line;
+
+  // user:pass@host:port form.
+  if (line.includes('@')) {
+    const [creds, hp] = line.split('@');
+    const [u, p] = (creds ?? '').split(':');
+    username = u || undefined;
+    password = p || undefined;
+    hostPort = hp ?? '';
+  }
+
+  const parts = hostPort.split(':');
+  // host:port  OR  host:port:user:pass
+  if (parts.length < 2) return null;
+  const host = parts[0]!.trim();
+  const port = Number(parts[1]);
+  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return null;
+  if (parts.length >= 4 && !username) {
+    username = parts[2] || undefined;
+    password = parts[3] || undefined;
+  }
+
+  return {
+    host,
+    port,
+    ...(username ? { username } : {}),
+    ...(password ? { password } : {}),
+    ...(type ? { type } : {}),
+    ...(countryCode ? { countryCode } : {}),
+    label: `${host}:${port}`
+  };
 }
 
 export class ProxyService {
@@ -33,6 +106,7 @@ export class ProxyService {
         ...(input.group ? { group: input.group } : {}),
         ...(input.isp ? { isp: input.isp } : {}),
         ...(input.remarks ? { remarks: input.remarks } : {}),
+        ...(input.countryCode ? { countryCode: input.countryCode } : {}),
         ...(workspaceId ? { workspaceId } : {})
       }
     });
@@ -56,7 +130,8 @@ export class ProxyService {
         ...(input.isp !== undefined ? { isp: input.isp } : {}),
         ...(input.remarks !== undefined ? { remarks: input.remarks } : {}),
         ...(input.status ? { status: input.status } : {}),
-        ...(input.exportIp !== undefined ? { exportIp: input.exportIp } : {})
+        ...(input.exportIp !== undefined ? { exportIp: input.exportIp } : {}),
+        ...(input.countryCode !== undefined ? { countryCode: input.countryCode } : {})
       }
     });
     return toPublic(proxy);
@@ -71,6 +146,68 @@ export class ProxyService {
   async remove(id: string) {
     await this.assertExists(id);
     return prisma.proxy.delete({ where: { id } });
+  }
+
+  // ── Bulk import from a provider list ───────────────────────────────────────
+  // Operators paste a proxy list from any provider (Bright Data, IPRoyal,
+  // OwlProxy, …). We accept the ubiquitous line formats:
+  //   host:port
+  //   host:port:user:pass
+  //   user:pass@host:port
+  //   scheme://user:pass@host:port
+  // plus an optional trailing ",CC" country tag. Returns created/skipped counts.
+  async bulkImport(
+    text: string,
+    opts: { type?: ProxyType | undefined; group?: string | undefined } = {},
+    workspaceId?: string
+  ): Promise<{ created: number; skipped: number }> {
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let created = 0;
+    let skipped = 0;
+    for (const line of lines) {
+      const parsed = parseProxyLine(line);
+      if (!parsed) { skipped += 1; continue; }
+      await prisma.proxy.create({
+        data: {
+          label: parsed.label,
+          host: parsed.host,
+          port: parsed.port,
+          ...(opts.type ? { type: opts.type } : parsed.type ? { type: parsed.type } : {}),
+          ...(parsed.username ? { username: parsed.username } : {}),
+          ...(parsed.password ? { password: encryptString(parsed.password) } : {}),
+          ...(opts.group ? { group: opts.group } : {}),
+          ...(parsed.countryCode ? { countryCode: parsed.countryCode } : {}),
+          ...(workspaceId ? { workspaceId } : {})
+        }
+      }).then(() => { created += 1; }).catch(() => { skipped += 1; });
+    }
+    return { created, skipped };
+  }
+
+  // ── Geo-matched auto-assignment ────────────────────────────────────────────
+  // Pick a healthy proxy whose countryCode matches the device's fingerprint
+  // country (falling back to any healthy proxy), then dispatch a SET_PROXY job.
+  async autoAssignGeoMatched(deviceId: string, workspaceId?: string): Promise<{ assigned: boolean; proxyId?: string; matchedCountry?: boolean }> {
+    const device = await prisma.device.findUnique({ where: { id: deviceId }, include: { fingerprint: { select: { countryCode: true } } } });
+    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    const country = device.fingerprint?.countryCode ?? null;
+
+    const pool = await prisma.proxy.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}), status: { not: 'FAILED' } },
+      orderBy: { lastCheckedAt: 'asc' }
+    });
+    if (pool.length === 0) return { assigned: false };
+
+    const matched = country ? pool.filter((p) => p.countryCode === country) : [];
+    const pick = (matched.length > 0 ? matched : pool)[0]!;
+
+    await createJobRecord(
+      'EMULATOR_SET_PROXY',
+      { deviceId, proxyId: pick.id, host: pick.host, port: pick.port, type: pick.type } as unknown as JobPayload,
+      undefined,
+      workspaceId
+    );
+    return { assigned: true, proxyId: pick.id, matchedCountry: matched.length > 0 };
   }
 
   // Lightweight "check": attempts to fetch the public IP through the proxy's

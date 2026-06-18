@@ -15,7 +15,10 @@ const campaignSchema = z.object({
   activeToHour: z.coerce.number().int().optional(),
   jitterPct: z.coerce.number().int().optional(),
   rotateProxy: z.coerce.boolean().optional(),
-  autoPauseThreshold: z.coerce.number().int().min(0).max(100).optional()
+  autoPauseThreshold: z.coerce.number().int().min(0).max(100).optional(),
+  earlyFlowId: z.string().optional(),
+  midFlowId: z.string().optional(),
+  matureFlowId: z.string().optional()
 });
 
 const updateSchema = campaignSchema.partial().extend({
@@ -96,4 +99,49 @@ export async function importHandler(req: Request, res: Response): Promise<void> 
     metadata: { ...result }
   });
   res.status(201).json({ data: result });
+}
+
+// ── Account credentials (encrypted vault) ────────────────────────────────
+const credentialSchema = z.object({
+  platform: z.string().max(40).optional(),
+  username: z.string().max(120).optional(),
+  emailAddress: z.string().max(160).optional(),
+  password: z.string().max(200).optional(),
+  emailPassword: z.string().max(200).optional(),
+  totpSecret: z.string().max(120).optional(),
+  notes: z.string().max(2000).optional(),
+  tags: z.array(z.string().max(40)).max(20).optional()
+});
+
+export async function updateCredentialsHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = String(req.params.deviceId);
+  const input = credentialSchema.parse(req.body);
+  const data = await farmService.updateCredentials(deviceId, input, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'farm.credentials.update',
+    resourceType: 'farm_account',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    // Never log the secrets themselves — only which fields were touched.
+    metadata: { fields: Object.keys(input) }
+  });
+  res.json({ data });
+}
+
+// Per-account action timeline.
+export async function actionLogHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = String(req.params.deviceId);
+  const limit = req.query.limit ? Number(req.query.limit) : 100;
+  res.json({ data: await farmService.listActionLog(deviceId, limit) });
+}
+
+// Download the account roster + warmup state as CSV.
+export async function exportHandler(req: Request, res: Response): Promise<void> {
+  const csv = await farmService.exportAccountsCsv(getWorkspaceId(req));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="farm-accounts.csv"');
+  res.send(csv);
 }

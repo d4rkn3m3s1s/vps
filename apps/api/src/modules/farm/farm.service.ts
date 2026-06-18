@@ -1,5 +1,6 @@
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { encryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 
@@ -15,6 +16,9 @@ export type CampaignInput = {
   jitterPct?: number | undefined;
   rotateProxy?: boolean | undefined;
   autoPauseThreshold?: number | undefined;
+  earlyFlowId?: string | undefined;
+  midFlowId?: string | undefined;
+  matureFlowId?: string | undefined;
 };
 
 // Warmup ladder: how many actions/day are "safe" at each stage. New accounts
@@ -37,7 +41,13 @@ export const farmService = {
     const rows = await prisma.farmCampaign.findMany({
       where: { ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'desc' },
-      include: { rpaFlow: { select: { id: true, name: true } }, group: { select: { id: true, name: true } } }
+      include: {
+        rpaFlow: { select: { id: true, name: true } },
+        earlyFlow: { select: { id: true, name: true } },
+        midFlow: { select: { id: true, name: true } },
+        matureFlow: { select: { id: true, name: true } },
+        group: { select: { id: true, name: true } }
+      }
     });
     // Attach device count per campaign group for the UI.
     return Promise.all(
@@ -65,6 +75,9 @@ export const farmService = {
         jitterPct: clampInt(input.jitterPct, 0, 90, 25),
         rotateProxy: Boolean(input.rotateProxy),
         autoPauseThreshold: clampInt(input.autoPauseThreshold, 0, 100, 40),
+        ...(input.earlyFlowId ? { earlyFlowId: input.earlyFlowId } : {}),
+        ...(input.midFlowId ? { midFlowId: input.midFlowId } : {}),
+        ...(input.matureFlowId ? { matureFlowId: input.matureFlowId } : {}),
         nextRunAt: new Date(),
         ...(workspaceId ? { workspaceId } : {})
       }
@@ -85,6 +98,9 @@ export const farmService = {
       jitterPct?: number | undefined;
       rotateProxy?: boolean | undefined;
       autoPauseThreshold?: number | undefined;
+      earlyFlowId?: string | undefined;
+      midFlowId?: string | undefined;
+      matureFlowId?: string | undefined;
       status?: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | undefined;
     }
   ) {
@@ -100,6 +116,9 @@ export const farmService = {
     if (input.jitterPct !== undefined) data.jitterPct = clampInt(input.jitterPct, 0, 90, 25);
     if (input.rotateProxy !== undefined) data.rotateProxy = Boolean(input.rotateProxy);
     if (input.autoPauseThreshold !== undefined) data.autoPauseThreshold = clampInt(input.autoPauseThreshold, 0, 100, 40);
+    if (input.earlyFlowId !== undefined) data.earlyFlowId = input.earlyFlowId || null;
+    if (input.midFlowId !== undefined) data.midFlowId = input.midFlowId || null;
+    if (input.matureFlowId !== undefined) data.matureFlowId = input.matureFlowId || null;
     if (input.status !== undefined) data.status = input.status;
     return prisma.farmCampaign.update({ where: { id }, data });
   },
@@ -116,7 +135,50 @@ export const farmService = {
       orderBy: { healthScore: 'asc' },
       include: { device: { select: { id: true, name: true, status: true } } }
     });
-    return rows;
+    // Never leak encrypted secrets to the client. Expose only whether a secret
+    // is set (so the UI can show a "credentials saved" badge) plus public fields.
+    return rows.map((r) => {
+      const { passwordEnc, emailPasswordEnc, totpSecretEnc, ...rest } = r;
+      return {
+        ...rest,
+        hasPassword: Boolean(passwordEnc),
+        hasEmailPassword: Boolean(emailPasswordEnc),
+        hasTotp: Boolean(totpSecretEnc)
+      };
+    });
+  },
+
+  // ── Account credentials (encrypted vault) ───────────────────────────────
+  // Update the identity/credentials of a farm account. Secrets are encrypted at
+  // rest; an empty string clears a field, undefined leaves it unchanged.
+  async updateCredentials(
+    deviceId: string,
+    input: {
+      platform?: string | undefined;
+      username?: string | undefined;
+      emailAddress?: string | undefined;
+      password?: string | undefined;
+      emailPassword?: string | undefined;
+      totpSecret?: string | undefined;
+      notes?: string | undefined;
+      tags?: string[] | undefined;
+    },
+    workspaceId?: string
+  ) {
+    await this.ensureAccount(deviceId, workspaceId);
+    const data: Record<string, unknown> = {};
+    if (input.platform !== undefined) data.platform = input.platform.trim() || null;
+    if (input.username !== undefined) data.username = input.username.trim() || null;
+    if (input.emailAddress !== undefined) data.emailAddress = input.emailAddress.trim() || null;
+    if (input.notes !== undefined) data.notes = input.notes.trim() || null;
+    if (input.tags !== undefined) data.tags = input.tags.map((t) => t.trim()).filter(Boolean);
+    if (input.password !== undefined) data.passwordEnc = input.password ? encryptString(input.password) : null;
+    if (input.emailPassword !== undefined) data.emailPasswordEnc = input.emailPassword ? encryptString(input.emailPassword) : null;
+    if (input.totpSecret !== undefined) data.totpSecretEnc = input.totpSecret ? encryptString(input.totpSecret.replace(/\s+/g, '')) : null;
+    const updated = await prisma.farmAccount.update({ where: { deviceId }, data });
+    await this.logAction({ deviceId, kind: 'manual', detail: 'Hesap kimlik bilgileri güncellendi', warmupStage: updated.warmupStage, workspaceId: updated.workspaceId ?? undefined });
+    const { passwordEnc, emailPasswordEnc, totpSecretEnc, ...rest } = updated;
+    return { ...rest, hasPassword: Boolean(passwordEnc), hasEmailPassword: Boolean(emailPasswordEnc), hasTotp: Boolean(totpSecretEnc) };
   },
 
   // Ensure a FarmAccount row exists for a device (created lazily as devices farm).
@@ -146,21 +208,25 @@ export const farmService = {
         c.activeFromHour <= c.activeToHour
           ? hour >= c.activeFromHour && hour < c.activeToHour
           : hour >= c.activeFromHour || hour < c.activeToHour;
-      if (!within || !c.rpaFlowId || !c.groupId) {
+      // A campaign is runnable if it targets a group and has at least one flow
+      // configured (default OR any stage-specific flow).
+      const hasAnyFlow = Boolean(c.rpaFlowId || c.earlyFlowId || c.midFlowId || c.matureFlowId);
+      if (!within || !hasAnyFlow || !c.groupId) {
         await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
         continue;
       }
 
-      const flow = await prisma.rpaFlow.findUnique({ where: { id: c.rpaFlowId } });
       const devices = await prisma.device.findMany({ where: { groupId: c.groupId }, select: { id: true, status: true } });
-      if (!flow || devices.length === 0) {
+      if (devices.length === 0) {
         await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
         continue;
       }
 
       // Pick an eligible device: under its daily cap (and warmup-stage cap), not
       // auto-paused by ban defense, and online (offline => can't farm safely).
-      const candidates: string[] = [];
+      // We carry each candidate's warmup stage so stage-aware flow selection can
+      // pick the right behavior (gentle for new accounts, richer for mature).
+      const candidates: { deviceId: string; stage: number }[] = [];
       for (const d of devices) {
         const acct = await this.ensureAccount(d.id, c.workspaceId ?? undefined);
         const fresh = this.rollDayIfNeeded(acct, now);
@@ -174,7 +240,7 @@ export const farmService = {
         if (d.status === 'OFFLINE' || d.status === 'ERROR') continue;
         const stageCap = STAGE_DAILY_CAP[Math.min(fresh.warmupStage, STAGE_DAILY_CAP.length - 1)] ?? 20;
         const cap = Math.min(c.maxActionsPerDay, stageCap);
-        if (fresh.actionsToday < cap) candidates.push(d.id);
+        if (fresh.actionsToday < cap) candidates.push({ deviceId: d.id, stage: fresh.warmupStage });
       }
       if (candidates.length === 0) {
         await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
@@ -182,16 +248,37 @@ export const farmService = {
       }
 
       // Humanized device selection: random eligible device.
-      const deviceId = candidates[randInt(0, candidates.length - 1)]!;
+      const pick = candidates[randInt(0, candidates.length - 1)]!;
+      const deviceId = pick.deviceId;
+
+      // Stage-aware warmup: pick the flow that matches this device's maturity.
+      const flowId = this.flowForStage(c, pick.stage);
+      const flow = flowId ? await prisma.rpaFlow.findUnique({ where: { id: flowId } }) : null;
+      if (!flow) {
+        // No usable flow for this stage — skip this device, reschedule campaign.
+        await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
+        continue;
+      }
 
       // Proxy rotation: assign a rotating proxy from the workspace pool before
       // running, so each session exits from a different IP (lower detection).
       if (c.rotateProxy) {
         await this.rotateProxyFor(deviceId, c.workspaceId ?? undefined, c.runCount);
+        await this.logAction({ deviceId, campaignId: c.id, kind: 'proxy_rotated', warmupStage: pick.stage, workspaceId: c.workspaceId ?? undefined });
       }
 
       await createJobRecord('RPA_RUN', { deviceId, flowId: flow.id, steps: flow.steps } as unknown as JobPayload, undefined, c.workspaceId ?? undefined);
       await this.recordAction(deviceId, now);
+      await this.logAction({
+        deviceId,
+        campaignId: c.id,
+        flowId: flow.id,
+        flowName: flow.name,
+        kind: 'dispatch',
+        detail: `"${flow.name}" akışı çalıştırıldı`,
+        warmupStage: pick.stage,
+        workspaceId: c.workspaceId ?? undefined
+      });
       dispatched += 1;
 
       await prisma.farmCampaign.update({
@@ -202,6 +289,59 @@ export const farmService = {
     }
 
     return { dispatched, campaigns: due.length };
+  },
+
+  // Stage-aware flow selection. A campaign may define gentle (early), mid and
+  // mature flows; each device runs the one matching its warmup stage. Falls back
+  // to the default rpaFlow when a stage-specific flow isn't configured.
+  flowForStage(
+    c: { rpaFlowId: string | null; earlyFlowId: string | null; midFlowId: string | null; matureFlowId: string | null },
+    stage: number
+  ): string | null {
+    let picked: string | null = null;
+    if (stage <= 2) picked = c.earlyFlowId ?? null;
+    else if (stage === 3) picked = c.midFlowId ?? null;
+    else picked = c.matureFlowId ?? null;
+    return picked ?? c.rpaFlowId ?? null;
+  },
+
+  // Append an entry to a farm account's timeline. Best-effort (never throws into
+  // the engine loop).
+  async logAction(entry: {
+    deviceId: string;
+    campaignId?: string | undefined;
+    flowId?: string | undefined;
+    flowName?: string | undefined;
+    kind: string;
+    detail?: string | undefined;
+    warmupStage?: number | undefined;
+    healthAfter?: number | undefined;
+    workspaceId?: string | undefined;
+  }) {
+    await prisma.farmActionLog
+      .create({
+        data: {
+          deviceId: entry.deviceId,
+          ...(entry.campaignId ? { campaignId: entry.campaignId } : {}),
+          ...(entry.flowId ? { flowId: entry.flowId } : {}),
+          ...(entry.flowName ? { flowName: entry.flowName } : {}),
+          kind: entry.kind,
+          ...(entry.detail ? { detail: entry.detail } : {}),
+          warmupStage: entry.warmupStage ?? 0,
+          ...(typeof entry.healthAfter === 'number' ? { healthAfter: entry.healthAfter } : {}),
+          ...(entry.workspaceId ? { workspaceId: entry.workspaceId } : {})
+        }
+      })
+      .catch(() => undefined);
+  },
+
+  // Per-account timeline (most recent first).
+  async listActionLog(deviceId: string, limit = 100) {
+    return prisma.farmActionLog.findMany({
+      where: { deviceId },
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(500, Math.max(1, limit))
+    });
   },
 
   // Schedule the next run with humanized jitter so cadence is never robotic.
@@ -239,19 +379,22 @@ export const farmService = {
   // ── Ban defense ────────────────────────────────────────────────────────
   // Auto-pause a device's farming and record why (shown in the UI).
   async autoPause(deviceId: string, reason: string) {
-    await prisma.farmAccount.update({
+    const acct = await prisma.farmAccount.update({
       where: { deviceId },
       data: { paused: true, pausedReason: reason }
     }).catch(() => undefined);
+    await this.logAction({ deviceId, kind: 'paused', detail: reason, warmupStage: acct?.warmupStage ?? 0, healthAfter: acct?.healthScore ?? undefined, workspaceId: acct?.workspaceId ?? undefined });
   },
 
   // Admin "resume" — clears the auto-pause and gives a small health rebound so
   // the device isn't immediately re-paused.
   async resumeAccount(deviceId: string) {
-    return prisma.farmAccount.update({
+    const acct = await prisma.farmAccount.update({
       where: { deviceId },
-      data: { paused: false, pausedReason: null, consecutiveErrors: 0, healthScore: Math.max(50, 0) }
+      data: { paused: false, pausedReason: null, consecutiveErrors: 0, healthScore: 50 }
     });
+    await this.logAction({ deviceId, kind: 'resumed', detail: 'Operatör tarafından devam ettirildi (sağlık 50\'ye sıfırlandı)', warmupStage: acct.warmupStage, healthAfter: acct.healthScore, workspaceId: acct.workspaceId ?? undefined });
+    return acct;
   },
 
   // Called by the job pipeline when a farm RPA run finishes. A failure drops
@@ -260,23 +403,30 @@ export const farmService = {
     const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
     if (!acct) return;
     if (success) {
+      const healthAfter = Math.min(100, acct.healthScore + 2);
       await prisma.farmAccount.update({
         where: { deviceId },
-        data: { consecutiveErrors: 0, healthScore: Math.min(100, acct.healthScore + 2) }
+        data: { consecutiveErrors: 0, healthScore: healthAfter }
       });
+      await this.logAction({ deviceId, kind: 'success', detail: 'Akış başarıyla tamamlandı', warmupStage: acct.warmupStage, healthAfter, workspaceId: acct.workspaceId ?? undefined });
       return;
     }
     const consecutiveErrors = acct.consecutiveErrors + 1;
     const healthScore = Math.max(0, acct.healthScore - 15);
     const shouldPause = consecutiveErrors >= 3 || healthScore <= 20;
+    const pausedReason = `${consecutiveErrors} ardışık hata — olası ban`;
     await prisma.farmAccount.update({
       where: { deviceId },
       data: {
         consecutiveErrors,
         healthScore,
-        ...(shouldPause ? { paused: true, pausedReason: `${consecutiveErrors} ardışık hata — olası ban` } : {})
+        ...(shouldPause ? { paused: true, pausedReason } : {})
       }
     });
+    await this.logAction({ deviceId, kind: 'failure', detail: `Akış başarısız (${consecutiveErrors}. ardışık hata)`, warmupStage: acct.warmupStage, healthAfter: healthScore, workspaceId: acct.workspaceId ?? undefined });
+    if (shouldPause) {
+      await this.logAction({ deviceId, kind: 'paused', detail: pausedReason, warmupStage: acct.warmupStage, healthAfter: healthScore, workspaceId: acct.workspaceId ?? undefined });
+    }
   },
 
   // ── Proxy rotation ─────────────────────────────────────────────────────
@@ -358,6 +508,46 @@ export const farmService = {
       created += 1;
     }
     return { created, skipped };
+  },
+
+  // ── CSV export: account roster + warmup state as a downloadable report ──
+  // Public fields only (no secrets — just whether each secret is set).
+  async exportAccountsCsv(workspaceId?: string): Promise<string> {
+    const rows = await prisma.farmAccount.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'asc' },
+      include: { device: { select: { name: true, status: true } } }
+    });
+    const header = [
+      'device', 'status', 'platform', 'username', 'email', 'warmupStage',
+      'healthScore', 'daysActive', 'actionsToday', 'totalActions',
+      'paused', 'pausedReason', 'hasPassword', 'hasTotp', 'tags', 'lastActionAt'
+    ];
+    const esc = (v: unknown): string => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = rows.map((r) =>
+      [
+        r.device?.name ?? r.deviceId,
+        r.device?.status ?? '',
+        r.platform ?? '',
+        r.username ?? '',
+        r.emailAddress ?? '',
+        r.warmupStage,
+        r.healthScore,
+        r.daysActive,
+        r.actionsToday,
+        r.totalActions,
+        r.paused ? 'yes' : 'no',
+        r.pausedReason ?? '',
+        r.passwordEnc ? 'yes' : 'no',
+        r.totpSecretEnc ? 'yes' : 'no',
+        (r.tags ?? []).join('|'),
+        r.lastActionAt ? r.lastActionAt.toISOString() : ''
+      ].map(esc).join(',')
+    );
+    return [header.join(','), ...lines].join('\n');
   },
 
   // Workspace-agnostic tick used by the in-process scheduler.

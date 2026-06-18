@@ -38,7 +38,7 @@ async function serviceLogin(): Promise<string> {
   return json.data.accessToken;
 }
 
-async function getAccessToken(): Promise<string> {
+export async function getAccessToken(): Promise<string> {
   const now = Date.now();
   const workspaceId = await getActiveWorkspaceId();
   const cached = cacheByWorkspace.get(workspaceId);

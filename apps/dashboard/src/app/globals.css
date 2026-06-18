@@ -4078,3 +4078,25 @@ main {
 .farm-health-pill { font-size: 0.75rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; }
 .farm-health-pill.tone-bad { background: rgba(239,68,68,0.18); color: #f87171; }
 .farm-health-pill.tone-warn { background: rgba(245,158,11,0.18); color: #fbbf24; }
+
+/* ── Account credentials + timeline drawer ── */
+.farm-acct-id { font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.farm-plat { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.65; margin-right: 2px; }
+.farm-cred-ok { color: #34d399; margin: 0 2px; vertical-align: middle; }
+.farm-acct-body { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 1.4rem; align-items: start; }
+.farm-acct-col { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+.farm-acct-h { font-size: 0.92rem; font-weight: 600; margin: 0 0 0.1rem; }
+.farm-timeline { display: flex; flex-direction: column; gap: 0; max-height: 420px; overflow-y: auto; padding-right: 0.3rem; }
+.farm-tl-row { display: grid; grid-template-columns: 14px 1fr; gap: 0.6rem; padding: 0.5rem 0; border-left: 0; position: relative; }
+.farm-tl-dot { width: 9px; height: 9px; border-radius: 999px; margin-top: 4px; background: #64748b; box-shadow: 0 0 0 3px rgba(100,116,139,0.15); }
+.farm-tl-dot-success { background: #34d399; box-shadow: 0 0 0 3px rgba(52,211,153,0.15); }
+.farm-tl-dot-failure { background: #f87171; box-shadow: 0 0 0 3px rgba(248,113,113,0.15); }
+.farm-tl-dot-paused { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,0.15); }
+.farm-tl-dot-resumed { background: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,0.15); }
+.farm-tl-dot-proxy_rotated { background: #a78bfa; box-shadow: 0 0 0 3px rgba(167,139,250,0.15); }
+.farm-tl-dot-dispatch { background: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,0.15); }
+.farm-tl-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.farm-tl-kind { font-size: 0.8rem; font-weight: 600; }
+.farm-tl-detail { font-size: 0.78rem; opacity: 0.85; }
+.farm-tl-meta { font-size: 0.7rem; opacity: 0.55; }
+@media (max-width: 760px) { .farm-acct-body { grid-template-columns: 1fr; } }

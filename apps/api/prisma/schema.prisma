@@ -622,6 +622,9 @@ model RpaFlow {
   updatedAt   DateTime @updatedAt
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   campaigns   FarmCampaign[]
+  earlyCampaigns  FarmCampaign[] @relation("FarmEarlyFlow")
+  midCampaigns    FarmCampaign[] @relation("FarmMidFlow")
+  matureCampaigns FarmCampaign[] @relation("FarmMatureFlow")
 
   @@index([workspaceId])
 }
@@ -653,6 +656,12 @@ model FarmCampaign {
   // auto-pause a device whose health drops below this threshold (ban defense).
   rotateProxy        Boolean @default(false)
   autoPauseThreshold Int     @default(40)
+  // Stage-aware warmup: optional override flows for early/mid/mature accounts.
+  // When set, the engine picks the flow that matches a device's warmup stage
+  // instead of the default rpaFlow (gentle behavior early, richer behavior late).
+  earlyFlowId   String?    // stages 1-2 (new / warming)
+  midFlowId     String?    // stage 3 (developing)
+  matureFlowId  String?    // stages 4-5 (active / mature)
   // Engine bookkeeping.
   nextRunAt     DateTime   @default(now())
   lastRunAt     DateTime?
@@ -661,8 +670,12 @@ model FarmCampaign {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   rpaFlow       RpaFlow?   @relation(fields: [rpaFlowId], references: [id], onDelete: SetNull)
+  earlyFlow     RpaFlow?   @relation("FarmEarlyFlow", fields: [earlyFlowId], references: [id], onDelete: SetNull)
+  midFlow       RpaFlow?   @relation("FarmMidFlow", fields: [midFlowId], references: [id], onDelete: SetNull)
+  matureFlow    RpaFlow?   @relation("FarmMatureFlow", fields: [matureFlowId], references: [id], onDelete: SetNull)
   group         DeviceGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
   workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs          FarmActionLog[]
 
   @@index([workspaceId])
 }
@@ -682,12 +695,49 @@ model FarmAccount {
   pausedReason  String?
   lastActionAt  DateTime?
   dayAnchor     DateTime @default(now()) // when actionsToday was last reset
+  // ── Account identity (the credentials being warmed up) ──
+  // Which platform this account lives on, the public handle, and the secrets.
+  // Secrets are AES-256-GCM encrypted at rest and NEVER returned to clients raw.
+  platform      String?  // x | instagram | meta | tiktok | other
+  username      String?
+  emailAddress  String?
+  passwordEnc   String?  // encrypted
+  emailPasswordEnc String? // encrypted (recovery mailbox)
+  totpSecretEnc String?  // encrypted 2FA seed
+  // Operator notes + free-form tags for filtering ("aged", "buyer", "us-geo").
+  notes         String?
+  tags          String[] @default([])
   workspaceId   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs          FarmActionLog[]
 
+  @@index([workspaceId])
+}
+
+// Append-only timeline of what each farm account actually did. Written by the
+// engine (dispatch) and the job pipeline (outcome), and rendered as a per-account
+// audit trail so a ban can be traced back to "what were the last N actions".
+model FarmActionLog {
+  id          String   @id @default(cuid())
+  deviceId    String
+  campaignId  String?
+  flowId      String?
+  flowName    String?
+  // dispatch | success | failure | paused | resumed | proxy_rotated | manual
+  kind        String
+  detail      String?
+  warmupStage Int      @default(0)
+  healthAfter Int?
+  workspaceId String?
+  createdAt   DateTime @default(now())
+  account     FarmAccount?  @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+  campaign    FarmCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([deviceId])
+  @@index([campaignId])
   @@index([workspaceId])
 }
 

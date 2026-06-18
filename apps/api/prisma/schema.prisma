@@ -112,11 +112,36 @@ model User {
   twoFactorBackupCodes String[]  @default([])
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+  // Stable, human-friendly referral code (generated on first visit to /referral).
+  referralCode   String?         @unique
   refreshTokens  RefreshToken[]
   apiKeys        ApiKey[]
   auditLogs      AuditLog[]
   socialAccounts SocialAccount[]
   memberships    WorkspaceMember[]
+  referrals      Referral[]      @relation("Referrer")
+}
+
+// One row per person invited via a referral link. Created when a referred user
+// signs up; status advances to CONVERTED (and a reward is credited) when they
+// start a paid plan.
+enum ReferralStatus {
+  INVITED
+  SIGNED_UP
+  CONVERTED
+}
+
+model Referral {
+  id            String         @id @default(cuid())
+  referrerId    String
+  referredEmail String
+  status        ReferralStatus @default(SIGNED_UP)
+  rewardCents   Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  referrer      User           @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
 }
 
 // A tenant boundary. Every fleet resource (devices, proxies, jobs, …) belongs to

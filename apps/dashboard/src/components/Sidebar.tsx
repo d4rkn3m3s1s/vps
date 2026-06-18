@@ -25,6 +25,7 @@ const NAV: NavGroup[] = [
       { href: '/profiles', tkey: 'nav.profiles', icon: '▦' },
       { href: '/fingerprints', tkey: 'nav.fingerprints', icon: '◉' },
       { href: '/console', tkey: 'nav.console', icon: '▸' },
+      { href: '/groups', tkey: 'nav.groups', icon: '▣' },
       { href: '/proxies', tkey: 'nav.proxies', icon: '⇄' },
       { href: '/library', tkey: 'nav.library', icon: '◳' },
       { href: '/applications', tkey: 'nav.applications', icon: '▤' },

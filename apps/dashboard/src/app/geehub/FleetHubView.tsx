@@ -46,7 +46,6 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
       <PageHeader
         title="FleetHub"
         subtitle="Marketplace for templates, automations and integrations."
-        actions={<button type="button" className="btn-primary">+ Submit listing</button>}
       />
 
       <div className="tab-row">

@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
 
@@ -92,7 +93,11 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
       <PageHeader
         title="Automation"
         subtitle="Run no-code RPA templates across your cloud phones."
-        actions={<button type="button" className="btn-primary">+ New task</button>}
+        actions={
+          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
+            + New task
+          </Link>
+        }
       />
 
       <div className="tabs">
@@ -130,11 +135,23 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
             ))}
           </StaggerGrid>
         </>
-      ) : (
+      ) : tab === 'Custom tasks' ? (
         <div className="empty-state">
           <div className="empty-art">⚙</div>
-          <h3>{tab}</h3>
-          <p>Nothing here yet.</p>
+          <h3>Custom tasks</h3>
+          <p>Build and manage your own no-code automations in RPA Studio.</p>
+          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
+            Open RPA Studio →
+          </Link>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <div className="empty-art">▤</div>
+          <h3>Logs</h3>
+          <p>Every automation run is recorded as a job. View live status and history on the Jobs page.</p>
+          <Link href="/jobs" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
+            View jobs →
+          </Link>
         </div>
       )}
 

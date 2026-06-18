@@ -15,6 +15,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.profiles': { en: 'Profiles', tr: 'Profiller' },
   'nav.fingerprints': { en: 'Identities', tr: 'Kimlikler' },
   'nav.console': { en: 'Console', tr: 'Konsol' },
+  'nav.groups': { en: 'Groups', tr: 'Gruplar' },
   'nav.proxies': { en: 'Proxies', tr: 'Proxyler' },
   'nav.library': { en: 'Library', tr: 'Kütüphane' },
   'nav.applications': { en: 'Applications', tr: 'Uygulamalar' },

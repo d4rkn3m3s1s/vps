@@ -522,9 +522,9 @@ export function ProfilesView({
                   <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
                     {device.name}
                   </Link>
-                  <button type="button" className="card-menu" aria-label="More">
+                  <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Open device" title="Open device">
                     ⋮
-                  </button>
+                  </Link>
                 </div>
                 <ul className="card-meta">
                   <li>

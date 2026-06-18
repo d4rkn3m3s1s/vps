@@ -3,18 +3,18 @@
 import { useState } from 'react';
 
 const AIGC = [
-  { title: 'Image to Video', desc: 'Generate short videos from a single image.' },
-  { title: 'Text to Video', desc: 'Turn a prompt into a ready-to-post video.' },
-  { title: 'Generate Image', desc: 'Create on-brand images for your posts.' }
+  { title: 'Image to Video', desc: 'Generate short videos from a single image.', prompt: 'Help me plan an image-to-video generation: what tools and steps should I use to turn a product image into a short promotional video for my cloud phones?' },
+  { title: 'Text to Video', desc: 'Turn a prompt into a ready-to-post video.', prompt: 'Write me a short, punchy script and shot list for a text-to-video ad. Topic: ' },
+  { title: 'Generate Image', desc: 'Create on-brand images for your posts.', prompt: 'Suggest on-brand image prompts (with style, colors, composition) I can use to generate social media graphics for: ' }
 ];
 
 const AUTOMATION = [
-  { title: 'TikTok video posting', icon: 'TT', color: '#111' },
-  { title: 'TikTok carousel posting', icon: 'TT', color: '#111' },
-  { title: 'Post content on Facebook', icon: 'FB', color: '#1877f2' },
-  { title: 'Publish YouTube Shorts', icon: 'YT', color: '#ff0000' },
-  { title: 'Post Reels on Instagram', icon: 'IG', color: '#d6249f' },
-  { title: 'Publish video on Reddit', icon: 'R', color: '#ff4500' }
+  { title: 'TikTok video posting', icon: 'TT', color: '#111', prompt: 'Outline an RPA automation flow to post a video to TikTok from a cloud phone — step by step (open app, upload, caption, hashtags, publish).' },
+  { title: 'TikTok carousel posting', icon: 'TT', color: '#111', prompt: 'Outline an RPA automation flow to post a photo carousel to TikTok from a cloud phone, step by step.' },
+  { title: 'Post content on Facebook', icon: 'FB', color: '#1877f2', prompt: 'Outline an RPA automation flow to publish a post to Facebook from a cloud phone, step by step.' },
+  { title: 'Publish YouTube Shorts', icon: 'YT', color: '#ff0000', prompt: 'Outline an RPA automation flow to upload a YouTube Short from a cloud phone, step by step.' },
+  { title: 'Post Reels on Instagram', icon: 'IG', color: '#d6249f', prompt: 'Outline an RPA automation flow to post an Instagram Reel from a cloud phone, step by step.' },
+  { title: 'Publish video on Reddit', icon: 'R', color: '#ff4500', prompt: 'Outline an RPA automation flow to publish a video to a subreddit from a cloud phone, step by step.' }
 ];
 
 const ASK = ['How does billing work?', 'How to use RPA?', 'How to configure a proxy?', 'How to choose a plan?'];
@@ -110,7 +110,7 @@ export function AiView() {
           <h3 className="section-label">✶ AIGC</h3>
           <div className="ai-stack">
             {AIGC.map((item) => (
-              <button type="button" className="ai-card" key={item.title}>
+              <button type="button" className="ai-card" key={item.title} disabled={busy} onClick={() => setPrompt(item.prompt)}>
                 <strong>{item.title}</strong>
                 <span className="helper">{item.desc}</span>
               </button>
@@ -122,7 +122,7 @@ export function AiView() {
           <h3 className="section-label">⚡ AI automation</h3>
           <div className="ai-stack">
             {AUTOMATION.map((item) => (
-              <button type="button" className="ai-row" key={item.title}>
+              <button type="button" className="ai-row" key={item.title} disabled={busy} onClick={() => setPrompt(item.prompt)}>
                 <span className="tpl-badge" style={{ background: item.color }}>
                   {item.icon}
                 </span>

@@ -53,7 +53,6 @@ export default async function AnalyticsPage() {
       <PageHeader
         title="Analytics"
         subtitle="Content performance and connected social accounts."
-        actions={<button type="button" className="btn-primary">+ Connect account</button>}
       />
 
       {s && (

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Play, Pause, Square, Pencil, Workflow } from 'lucide-react';
+import { Play, Pencil, Workflow } from 'lucide-react';
 
 export type AutomationWorkflow = {
   id: string;
@@ -88,17 +88,11 @@ export function AutomationCenter({ workflows }: { workflows: AutomationWorkflow[
             </div>
 
             <div className="wf-actions">
-              <button type="button" className="wf-btn" disabled={busy === wf.id} onClick={() => run(wf)} title="Start">
-                <Play size={15} /> Start
-              </button>
-              <button type="button" className="wf-btn" onClick={() => router.push('/scheduler')} title="Pause">
-                <Pause size={15} />
-              </button>
-              <button type="button" className="wf-btn" onClick={() => router.push('/scheduler')} title="Stop">
-                <Square size={15} />
+              <button type="button" className="wf-btn" disabled={busy === wf.id} onClick={() => run(wf)} title="Run now">
+                <Play size={15} /> Run now
               </button>
               <a className="wf-btn" href={wf.editHref} title="Edit">
-                <Pencil size={15} />
+                <Pencil size={15} /> Edit
               </a>
             </div>
           </article>

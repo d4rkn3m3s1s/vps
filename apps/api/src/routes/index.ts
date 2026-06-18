@@ -18,6 +18,7 @@ import { libraryRouter } from '../modules/library/library.routes';
 import { permissionsRouter } from '../modules/permissions/permissions.routes';
 import { pluginsRouter } from '../modules/plugins/plugins.routes';
 import { proxyRouter } from '../modules/proxies/proxy.routes';
+import { referralRouter } from '../modules/referral/referral.routes';
 import { reportsRouter } from '../modules/reports/reports.routes';
 import { rpaRouter } from '../modules/rpa/rpa.routes';
 import { schedulerRouter } from '../modules/scheduler/scheduler.routes';
@@ -59,6 +60,7 @@ export function registerRoutes(app: Express): void {
   app.use('/billing', billingRouter);
   app.use('/alerts', alertsRouter);
   app.use('/reports', reportsRouter);
+  app.use('/referral', referralRouter);
   app.use('/api-keys', apiKeysRouter);
   app.use('/vast', vastRouter);
 }

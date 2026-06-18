@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
@@ -38,6 +38,28 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ label: '', type: 'HTTP', host: '', port: '8080', username: '', password: '', group: '' });
+
+  // Default proxy mode for newly-created phones. Persisted as a real workspace
+  // preference in localStorage and read back when the proxy form opens.
+  const [proxyMode, setProxyMode] = useState('direct');
+  const [savedMode, setSavedMode] = useState(false);
+  useEffect(() => {
+    try {
+      const m = localStorage.getItem('fleet.defaultProxyMode');
+      if (m) setProxyMode(m);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  function saveProxyMode() {
+    try {
+      localStorage.setItem('fleet.defaultProxyMode', proxyMode);
+      setSavedMode(true);
+      setTimeout(() => setSavedMode(false), 2500);
+    } catch {
+      /* ignore */
+    }
+  }
 
   async function addProxy() {
     if (!form.label.trim() || !form.host.trim() || !form.port) {
@@ -180,17 +202,17 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
           <p className="helper">Choose how new cloud phones connect to the internet.</p>
           <div className="radio-stack">
             <label className="radio-row">
-              <input type="radio" name="proxymode" defaultChecked /> Direct (host network)
+              <input type="radio" name="proxymode" checked={proxyMode === 'direct'} onChange={() => setProxyMode('direct')} /> Direct (host network)
             </label>
             <label className="radio-row">
-              <input type="radio" name="proxymode" /> Residential proxy pool
+              <input type="radio" name="proxymode" checked={proxyMode === 'residential'} onChange={() => setProxyMode('residential')} /> Residential proxy pool
             </label>
             <label className="radio-row">
-              <input type="radio" name="proxymode" /> Mobile (4G/5G) proxy
+              <input type="radio" name="proxymode" checked={proxyMode === 'mobile'} onChange={() => setProxyMode('mobile')} /> Mobile (4G/5G) proxy
             </label>
           </div>
-          <button type="button" className="btn-primary" onClick={() => alert('Configuration saved (local).')}>
-            Save configuration
+          <button type="button" className="btn-primary" onClick={saveProxyMode}>
+            {savedMode ? 'Saved ✓' : 'Save configuration'}
           </button>
         </div>
       )}

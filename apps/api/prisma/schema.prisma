@@ -160,6 +160,8 @@ model Workspace {
   jobs          Job[]
   rpaFlows      RpaFlow[]
   schedules     ScheduledTask[]
+  farmCampaigns FarmCampaign[]
+  farmAccounts  FarmAccount[]
   webhooks      Webhook[]
   hosts         Host[]
   libraryAssets LibraryAsset[]
@@ -321,6 +323,7 @@ model DeviceGroup {
   updatedAt   DateTime  @updatedAt
   devices     Device[]
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaigns   FarmCampaign[]
 
   @@unique([workspaceId, name])
   @@index([workspaceId])
@@ -357,6 +360,7 @@ model Device {
   // Anti-detection device fingerprint (one per cloud phone).
   fingerprint    DeviceFingerprint?
   schedules      ScheduledTask[]
+  farmAccount    FarmAccount?
 
   @@index([workspaceId])
 }
@@ -617,6 +621,65 @@ model RpaFlow {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaigns   FarmCampaign[]
+
+  @@index([workspaceId])
+}
+
+// ── Farm system ─────────────────────────────────────────────────────────────
+// A farm campaign runs an RPA flow across a target device group on a humanized
+// schedule to age/warm up the accounts on those cloud phones.
+enum FarmStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+model FarmCampaign {
+  id            String     @id @default(cuid())
+  name          String
+  status        FarmStatus @default(ACTIVE)
+  rpaFlowId     String?
+  groupId       String?
+  // Humanization: each device runs the flow at a random interval between these
+  // bounds, capped at maxActionsPerDay, only within [activeFromHour, activeToHour).
+  minIntervalMin Int       @default(45)
+  maxIntervalMin Int       @default(180)
+  maxActionsPerDay Int     @default(20)
+  activeFromHour Int       @default(8)
+  activeToHour   Int       @default(23)
+  jitterPct      Int       @default(25)
+  // Engine bookkeeping.
+  nextRunAt     DateTime   @default(now())
+  lastRunAt     DateTime?
+  runCount      Int        @default(0)
+  workspaceId   String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  rpaFlow       RpaFlow?   @relation(fields: [rpaFlowId], references: [id], onDelete: SetNull)
+  group         DeviceGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// Per-device warmup / account-maturity tracking. One row per cloud phone that
+// participates in farming.
+model FarmAccount {
+  id            String   @id @default(cuid())
+  deviceId      String   @unique
+  warmupStage   Int      @default(1)     // 1=new … 5=mature
+  daysActive    Int      @default(0)
+  actionsToday  Int      @default(0)
+  totalActions  Int      @default(0)
+  healthScore   Int      @default(100)   // 0-100; drops on errors
+  lastActionAt  DateTime?
+  dayAnchor     DateTime @default(now()) // when actionsToday was last reset
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
 }

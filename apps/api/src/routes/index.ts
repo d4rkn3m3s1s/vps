@@ -11,6 +11,7 @@ import { catalogRouter } from '../modules/catalog/catalog.routes';
 import { hostsRouter } from '../modules/hosts/hosts.routes';
 import { emulatorRouter } from '../modules/emulators/emulator.routes';
 import { deviceRouter } from '../modules/devices/device.routes';
+import { farmRouter } from '../modules/farm/farm.routes';
 import { filesRouter } from '../modules/files/files.routes';
 import { fingerprintRouter } from '../modules/fingerprint/fingerprint.routes';
 import { jobsRouter } from '../modules/jobs/jobs.routes';
@@ -61,6 +62,7 @@ export function registerRoutes(app: Express): void {
   app.use('/alerts', alertsRouter);
   app.use('/reports', reportsRouter);
   app.use('/referral', referralRouter);
+  app.use('/farm', farmRouter);
   app.use('/api-keys', apiKeysRouter);
   app.use('/vast', vastRouter);
 }

@@ -40,6 +40,7 @@ const NAV: NavGroup[] = [
       { href: '/analytics', tkey: 'nav.analytics', icon: '∿' },
       { href: '/health', tkey: 'nav.health', icon: '♥' },
       { href: '/reports', tkey: 'nav.reports', icon: '▦' },
+      { href: '/farm', tkey: 'nav.farm', icon: '🌱' },
       { href: '/automation', tkey: 'nav.automation', icon: '⚡' },
       { href: '/rpa', tkey: 'nav.rpa', icon: '⚙' },
       { href: '/scheduler', tkey: 'nav.scheduler', icon: '⏱' },

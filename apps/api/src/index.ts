@@ -9,6 +9,7 @@ import { deviceHub } from './modules/devices/device.hub';
 import { schedulerService } from './modules/scheduler/scheduler.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
+import { farmService } from './modules/farm/farm.service';
 
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
@@ -48,6 +49,19 @@ async function main(): Promise<void> {
         logger.error('Vast sync tick failed', { error: error instanceof Error ? error.message : String(error) });
       });
   }, 90_000).unref();
+
+  // Farm engine tick: dispatch humanized RPA runs for active campaigns, honoring
+  // per-device daily caps, warmup stages, and active hours.
+  setInterval(() => {
+    farmService
+      .tick()
+      .then((r) => {
+        if (r.dispatched > 0) logger.info(`Farm engine dispatched ${r.dispatched} action(s)`);
+      })
+      .catch((error) => {
+        logger.error('Farm tick failed', { error: error instanceof Error ? error.message : String(error) });
+      });
+  }, 60_000).unref();
 
   server.listen(env.port, () => {
     logger.info(`API server listening on port ${env.port}`);

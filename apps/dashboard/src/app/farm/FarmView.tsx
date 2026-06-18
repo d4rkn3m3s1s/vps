@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren } from 'lucide-react';
+import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren, HeartPulse, Megaphone } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
-import { PageMotion } from '../../components/Motion';
+import { PageMotion, StaggerGrid, MotionItem, AnimatedNumber } from '../../components/Motion';
 
 type Flow = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -133,6 +133,40 @@ function RiskGauge({ score, band, size = 46 }: { score: number; band: 'low' | 'm
         />
       </svg>
       <span className="risk-gauge-num">{clamped}</span>
+    </span>
+  );
+}
+
+// Larger health gauge for the overview hero metric. Higher = healthier, so the
+// band flips vs. risk: green high, amber mid, red low.
+function HealthGauge({ value, size = 92 }: { value: number; size?: number }) {
+  const clamped = Math.max(0, Math.min(100, value));
+  const band = clamped >= 70 ? 'low' : clamped >= 40 ? 'medium' : 'high'; // reuse risk colour classes (low=green)
+  const stroke = 7;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - clamped / 100);
+  return (
+    <span className={`risk-gauge risk-gauge-${band} health-gauge`} style={{ width: size, height: size }} title={`Ortalama sağlık: ${clamped}%`}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle className="risk-gauge-track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} />
+        <circle
+          className="risk-gauge-arc"
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <span className="health-gauge-center">
+        <strong><AnimatedNumber value={clamped} format={false} />%</strong>
+        <span className="health-gauge-cap">sağlık</span>
+      </span>
     </span>
   );
 }
@@ -523,37 +557,46 @@ export function FarmView() {
 
       {tab === 'overview' ? (
         <>
-          <div className="stats">
-            <div className="metric">
-              <p className="metric-label">Aktif kampanya</p>
-              <p className="metric-value">{summary?.campaigns.active ?? 0}<span className="metric-sub"> / {summary?.campaigns.total ?? 0}</span></p>
-            </div>
-            <div className="metric">
-              <p className="metric-label">Bugünkü aksiyon</p>
-              <p className="metric-value">{summary?.actions.today ?? 0}</p>
-            </div>
-            <div className="metric">
-              <p className="metric-label">Ortalama sağlık</p>
-              <p className="metric-value">{summary?.accounts.avgHealth ?? 0}%</p>
-            </div>
-            <div className="metric">
-              <p className="metric-label">Risk / Duraklatılan</p>
-              <p className="metric-value">{summary?.accounts.atRisk ?? 0} / {summary?.accounts.paused ?? 0}</p>
-            </div>
-            <div className="metric">
-              <p className="metric-label"><Globe size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Proxy (sağlıklı / toplam)</p>
-              <p className="metric-value">
-                {summary?.proxies.healthy ?? 0}<span className="metric-sub"> / {summary?.proxies.total ?? 0}</span>
-                {(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad"> · {summary?.proxies.failed} ölü</span> : null}
-              </p>
-            </div>
-            <div className="metric">
-              <p className="metric-label"><Siren size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Ban riski (yüksek / orta)</p>
-              <p className="metric-value">
-                <span className={(summary?.risk.high ?? 0) > 0 ? 'farm-proxy-bad' : ''}>{summary?.risk.high ?? 0}</span>
-                <span className="metric-sub"> / {summary?.risk.medium ?? 0}</span>
-              </p>
-            </div>
+          {/* Hero health gauge + animated KPI cards. */}
+          <div className="farm-hero">
+            <MotionItem className="metric farm-hero-gauge" lift={false}>
+              <HealthGauge value={summary?.accounts.avgHealth ?? 0} />
+              <div className="farm-hero-meta">
+                <p className="metric-label"><HeartPulse size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Filo sağlığı</p>
+                <p className="helper" style={{ margin: 0 }}>
+                  {summary?.accounts.total ?? 0} hesap · {summary?.accounts.atRisk ?? 0} risk · {summary?.accounts.paused ?? 0} duraklatıldı
+                </p>
+              </div>
+            </MotionItem>
+
+            <StaggerGrid className="farm-kpis">
+              <MotionItem className="metric ov-metric">
+                <span className="metric-ico metric-ico-blue"><Megaphone size={18} /></span>
+                <p className="metric-label">Aktif kampanya</p>
+                <p className="metric-value"><AnimatedNumber value={summary?.campaigns.active ?? 0} format={false} /><span className="metric-sub"> / {summary?.campaigns.total ?? 0}</span></p>
+              </MotionItem>
+              <MotionItem className="metric ov-metric">
+                <span className="metric-ico metric-ico-cyan"><Activity size={18} /></span>
+                <p className="metric-label">Bugünkü aksiyon</p>
+                <p className="metric-value"><AnimatedNumber value={summary?.actions.today ?? 0} format={false} /></p>
+              </MotionItem>
+              <MotionItem className="metric ov-metric">
+                <span className="metric-ico metric-ico-green"><Globe size={18} /></span>
+                <p className="metric-label">Proxy (sağlıklı / toplam)</p>
+                <p className="metric-value">
+                  <AnimatedNumber value={summary?.proxies.healthy ?? 0} format={false} /><span className="metric-sub"> / {summary?.proxies.total ?? 0}</span>
+                  {(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad"> · {summary?.proxies.failed} ölü</span> : null}
+                </p>
+              </MotionItem>
+              <MotionItem className="metric ov-metric">
+                <span className={`metric-ico ${(summary?.risk.high ?? 0) > 0 ? 'metric-ico-red' : 'metric-ico-violet'}`}><Siren size={18} /></span>
+                <p className="metric-label">Ban riski (yüksek / orta)</p>
+                <p className="metric-value">
+                  <span className={(summary?.risk.high ?? 0) > 0 ? 'farm-proxy-bad' : ''}><AnimatedNumber value={summary?.risk.high ?? 0} format={false} /></span>
+                  <span className="metric-sub"> / {summary?.risk.medium ?? 0}</span>
+                </p>
+              </MotionItem>
+            </StaggerGrid>
           </div>
 
           <div className="section-grid">

@@ -4692,3 +4692,66 @@ textarea:focus-visible {
   .risk-gauge-arc { transition: none; }
   .risk-gauge-high { animation: none; }
 }
+
+/* ── Farm overview hero: big health gauge + animated KPI grid ─────────────── */
+.farm-hero {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 2.2fr);
+  gap: 1rem;
+  margin: 1rem 0 2rem;
+}
+.farm-hero-gauge {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 1.3rem;
+}
+.farm-hero-meta { display: flex; flex-direction: column; gap: 0.3rem; }
+.farm-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+@media (max-width: 900px) {
+  .farm-hero { grid-template-columns: 1fr; }
+  .farm-kpis { grid-template-columns: 1fr; }
+}
+
+/* Red icon badge variant (high ban-risk). */
+.metric-ico-red { background: linear-gradient(135deg, #dc2626, #ef4444); box-shadow: 0 8px 20px -6px rgba(239, 68, 68, 0.55), inset 0 1px 0 rgba(255,255,255,0.25); }
+
+/* Health gauge centre label (gauge reuses .risk-gauge colour classes). */
+.health-gauge .health-gauge-center {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+}
+.health-gauge .health-gauge-center strong { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.03em; }
+.health-gauge .health-gauge-cap { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.18em; opacity: 0.6; margin-top: 0.25rem; }
+.health-gauge.risk-gauge-low .health-gauge-center strong { color: #4ade80; }
+.health-gauge.risk-gauge-medium .health-gauge-center strong { color: #fbbf24; }
+.health-gauge.risk-gauge-high .health-gauge-center strong { color: #f87171; }
+
+/* ── Farm risk rows: staggered slide-in + hover lift ──────────────────────── */
+.farm-risk-row {
+  animation: fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+.farm-risk-list .farm-risk-row:nth-child(1) { animation-delay: 0.02s; }
+.farm-risk-list .farm-risk-row:nth-child(2) { animation-delay: 0.06s; }
+.farm-risk-list .farm-risk-row:nth-child(3) { animation-delay: 0.10s; }
+.farm-risk-list .farm-risk-row:nth-child(4) { animation-delay: 0.14s; }
+.farm-risk-list .farm-risk-row:nth-child(5) { animation-delay: 0.18s; }
+.farm-risk-list .farm-risk-row:nth-child(n+6) { animation-delay: 0.22s; }
+.farm-risk-row:hover { transform: translateX(3px); }
+.farm-risk-row.farm-risk-high:hover { border-color: rgba(239,68,68,0.6); }
+
+/* Campaign cards: hover lift, consistent with the rest of the premium pass. */
+.farm-card { transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease; }
+.farm-card:hover { transform: translateY(-3px); border-color: var(--panel-border-hover); box-shadow: var(--shadow-glow); }
+
+@media (prefers-reduced-motion: reduce) {
+  .farm-risk-row { animation: none; }
+}

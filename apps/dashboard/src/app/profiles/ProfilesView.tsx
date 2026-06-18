@@ -1,8 +1,11 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+
+export type ProvisioningModel = { model: string; manufacturer: string; brand: string; resolution: string; dpi: number; osVersions: string[] };
+export type ProvisioningCatalog = { models: ProvisioningModel[]; ramTiers: number[]; cpuTiers: number[] };
 
 export type DeviceGroup = {
   id: string;
@@ -109,7 +112,9 @@ export function ProfilesView({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US' });
+  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
+  // Provisioning catalog (device models + hardware tiers), lazy-loaded.
+  const [catalog, setCatalog] = useState<ProvisioningCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveGroup, setMoveGroup] = useState('');
@@ -155,6 +160,24 @@ export function ProfilesView({
 
   const selectionCount = selected.size;
 
+  // Lazy-load the provisioning catalog the first time the create modal opens.
+  useEffect(() => {
+    if (!createOpen || catalog) return;
+    void (async () => {
+      try {
+        const res = await fetch('/api/devices/provisioning-catalog');
+        const json = await res.json();
+        if (json?.data?.models) setCatalog(json.data as ProvisioningCatalog);
+      } catch { /* ignore — model picker just stays empty */ }
+    })();
+  }, [createOpen, catalog]);
+
+  // Android versions available for the chosen model (or a sensible default set).
+  const modelOsVersions = useMemo(() => {
+    const m = catalog?.models.find((x) => x.model === form.deviceModel);
+    return m?.osVersions ?? ['11', '12', '13', '14', '15'];
+  }, [catalog, form.deviceModel]);
+
   async function createProfile() {
     if (!form.name.trim()) {
       setError('Profil adı gereklidir.');
@@ -169,12 +192,15 @@ export function ProfilesView({
         body: JSON.stringify({
           name: form.name.trim(),
           androidVersion: form.androidVersion,
-          countryCode: form.countryCode
+          countryCode: form.countryCode,
+          ...(form.deviceModel ? { deviceModel: form.deviceModel } : {}),
+          ramGb: Number(form.ramGb),
+          cpuCores: Number(form.cpuCores)
         })
       });
       if (!res.ok) throw new Error(`Oluşturma başarısız (${res.status})`);
       setCreateOpen(false);
-      setForm({ name: '', androidVersion: '12', countryCode: 'US' });
+      setForm({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Oluşturma başarısız');
@@ -678,6 +704,22 @@ export function ProfilesView({
               />
             </label>
 
+            <label className="field">
+              <span>Cihaz modeli</span>
+              <select
+                className="field-input"
+                value={form.deviceModel}
+                onChange={(e) => setForm((f) => ({ ...f, deviceModel: e.target.value }))}
+              >
+                <option value="">Rastgele (otomatik)</option>
+                {(catalog?.models ?? []).map((m) => (
+                  <option key={m.model} value={m.model}>
+                    {m.manufacturer} {m.model} · {m.resolution}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <div className="field-row">
               <label className="field">
                 <span>Android sürümü</span>
@@ -686,10 +728,9 @@ export function ProfilesView({
                   value={form.androidVersion}
                   onChange={(e) => setForm((f) => ({ ...f, androidVersion: e.target.value }))}
                 >
-                  <option value="11">Android 11</option>
-                  <option value="12">Android 12</option>
-                  <option value="13">Android 13</option>
-                  <option value="14">Android 14</option>
+                  {modelOsVersions.map((v) => (
+                    <option key={v} value={v}>Android {v}</option>
+                  ))}
                 </select>
               </label>
               <label className="field">
@@ -712,8 +753,23 @@ export function ProfilesView({
               </label>
             </div>
 
+            <div className="field-row">
+              <label className="field">
+                <span>RAM</span>
+                <select className="field-input" value={form.ramGb} onChange={(e) => setForm((f) => ({ ...f, ramGb: e.target.value }))}>
+                  {(catalog?.ramTiers ?? [4, 6, 8, 12]).map((r) => <option key={r} value={String(r)}>{r} GB</option>)}
+                </select>
+              </label>
+              <label className="field">
+                <span>CPU çekirdek</span>
+                <select className="field-input" value={form.cpuCores} onChange={(e) => setForm((f) => ({ ...f, cpuCores: e.target.value }))}>
+                  {(catalog?.cpuTiers ?? [4, 6, 8]).map((c) => <option key={c} value={String(c)}>{c} çekirdek</option>)}
+                </select>
+              </label>
+            </div>
+
             <p className="helper">
-              Bu ülke için benzersiz bir cihaz parmak izi (IMEI, model, operatör, MAC) otomatik olarak oluşturulur.
+              Seçilen modele uygun benzersiz bir cihaz parmak izi (IMEI, operatör, MAC, çözünürlük) otomatik oluşturulur. Model boş bırakılırsa rastgele seçilir.
             </p>
 
             {error ? <p className="field-error">{error}</p> : null}

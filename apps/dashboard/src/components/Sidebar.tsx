@@ -30,6 +30,7 @@ const NAV: NavGroup[] = [
       { href: '/proxies', tkey: 'nav.proxies', icon: '⇄' },
       { href: '/library', tkey: 'nav.library', icon: '◳' },
       { href: '/applications', tkey: 'nav.applications', icon: '▤' },
+      { href: '/images', tkey: 'nav.images', icon: '⬢' },
       { href: '/ai', tkey: 'nav.ai', icon: '✦' }
     ]
   },
@@ -44,7 +45,9 @@ const NAV: NavGroup[] = [
       { href: '/automation', tkey: 'nav.automation', icon: '⚡' },
       { href: '/rpa', tkey: 'nav.rpa', icon: '⚙' },
       { href: '/scheduler', tkey: 'nav.scheduler', icon: '⏱' },
+      { href: '/calendar', tkey: 'nav.calendar', icon: '🗓' },
       { href: '/synchronizer', tkey: 'nav.synchronizer', icon: '⧉' },
+      { href: '/wall', tkey: 'nav.wall', icon: '▦' },
       { href: '/geehub', tkey: 'nav.geehub', icon: '◈' },
       { href: '/resources', tkey: 'nav.resources', icon: '❏' },
       { href: '/referral', tkey: 'nav.referral', icon: '$' }

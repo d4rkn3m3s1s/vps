@@ -74,6 +74,10 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
   const [toast, setToast] = useState<Toast>(null);
   const [runFlow, setRunFlow] = useState<RpaFlow | null>(null);
   const [runDevices, setRunDevices] = useState<Set<string>>(new Set());
+  // AI flow builder (natural language → steps).
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
 
   function flash(t: Toast) {
     setToast(t);
@@ -177,17 +181,78 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     }
   }
 
+  // Generate a flow draft from a natural-language prompt, then open it in the
+  // editor pre-filled so the operator can review/tweak before saving.
+  async function generateWithAi() {
+    if (aiPrompt.trim().length < 3) {
+      flash({ kind: 'err', text: 'Lütfen ne yapılacağını yazın.' });
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const res = await fetch('/api/ai/generate-flow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: aiPrompt.trim() })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.data?.message ?? json?.message ?? `Üretim başarısız (${res.status})`);
+      const draft = json.data as { name: string; description: string; steps: RpaStep[] };
+      setEditing({ id: '', name: '', description: null, steps: [], runCount: 0, lastRunAt: null });
+      setName(draft.name);
+      setDescription(draft.description ?? '');
+      setSteps(draft.steps);
+      setAiOpen(false);
+      setAiPrompt('');
+      flash({ kind: 'ok', text: `AI ${draft.steps.length} adımlık akış oluşturdu — gözden geçirip kaydedin.` });
+    } catch (err) {
+      flash({ kind: 'err', text: err instanceof Error ? err.message : 'Üretim başarısız' });
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   return (
     <PageMotion className="page">
       <PageHeader
         title="RPA Studio"
         subtitle="Görsel otomasyon akışları oluşturun ve bunları bulut telefonlarınızda çalıştırın."
         actions={
-          <button type="button" className="btn-primary" onClick={openNew}>
-            + Yeni akış
-          </button>
+          <>
+            <button type="button" className="btn-ghost" onClick={() => setAiOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              ✦ AI ile oluştur
+            </button>
+            <button type="button" className="btn-primary" onClick={openNew}>
+              + Yeni akış
+            </button>
+          </>
         }
       />
+
+      {aiOpen ? (
+        <div className="modal-overlay" onClick={() => !aiBusy && setAiOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head"><h2>✦ AI ile akış oluştur</h2></header>
+            <div className="modal-body">
+              <p className="helper">Telefonda ne yapılmasını istediğinizi doğal dille yazın; AI bunu çalıştırılabilir adımlara çevirir.</p>
+              <textarea
+                className="field-input"
+                rows={4}
+                placeholder="örn. Instagram'ı aç, ana akışı 5 kez kaydır ve ilk 3 gönderiyi beğen"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+              />
+              <p className="helper" style={{ marginTop: 8 }}>Üretilen akış otomatik kaydedilmez — editörde açılır, düzenleyip kaydedebilirsiniz.</p>
+            </div>
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => setAiOpen(false)} disabled={aiBusy}>İptal</button>
+              <button type="button" className="btn-primary" onClick={generateWithAi} disabled={aiBusy || aiPrompt.trim().length < 3}>
+                {aiBusy ? 'Oluşturuluyor…' : 'Oluştur'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
 
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
 

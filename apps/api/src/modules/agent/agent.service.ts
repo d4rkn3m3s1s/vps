@@ -5,6 +5,7 @@ import { decryptString } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
+import { snapshotService } from '../snapshots/snapshot.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -106,6 +107,16 @@ export class AgentService {
       timestamp: new Date().toISOString(),
       workspaceId: updated.workspaceId ?? undefined
     });
+
+    // Snapshot capture jobs carry a snapshotId; reflect the outcome onto the
+    // snapshot row (READY + artifactRef/size, or FAILED).
+    if (updated.type === 'EMULATOR_SNAPSHOT_CREATE') {
+      const snapshotId = (updated.payload as { snapshotId?: string } | null)?.snapshotId;
+      if (snapshotId) {
+        const r = (outcome.result as { artifactRef?: string; sizeBytes?: number } | undefined) ?? null;
+        void snapshotService.onCaptureResult(snapshotId, r, outcome.status === 'COMPLETED').catch(() => undefined);
+      }
+    }
 
     // Evaluate alert rules on job failure.
     if (outcome.status === 'FAILED') {

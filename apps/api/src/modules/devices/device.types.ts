@@ -8,6 +8,10 @@ export type DeviceCreateInput = {
   groupId?: string | undefined;
   countryCode?: string | undefined;
   metadata?: unknown;
+  // Provisioning: pin a catalog device model and hardware tier at create time.
+  deviceModel?: string | undefined;
+  ramGb?: number | undefined;
+  cpuCores?: number | undefined;
 };
 
 export type DeviceUpdateInput = {

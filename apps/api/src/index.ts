@@ -6,10 +6,12 @@ import { prisma } from './db/prisma';
 import { ensureBootstrapIdentity } from './modules/auth/auth.service';
 import { ensureDefaultWorkspace } from './modules/workspace/workspace.bootstrap';
 import { deviceHub } from './modules/devices/device.hub';
+import { streamHub } from './modules/stream/stream.hub';
 import { schedulerService } from './modules/scheduler/scheduler.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
+import { calendarService } from './modules/calendar/calendar.service';
 
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
@@ -19,6 +21,7 @@ async function main(): Promise<void> {
   const app = createApp();
   const server = createServer(app);
   deviceHub.attach(server);
+  streamHub.attach(server);
 
   // In-process webhook delivery worker (retry/backoff via BullMQ).
   const webhookWorker = startWebhookWorker();
@@ -33,6 +36,15 @@ async function main(): Promise<void> {
       })
       .catch((error) => {
         logger.error('Scheduler tick failed', { error: error instanceof Error ? error.message : String(error) });
+      });
+    // Content calendar: dispatch any scheduled posts whose time has passed.
+    calendarService
+      .dispatchDue()
+      .then((r) => {
+        if (r.dispatched > 0) logger.info(`Calendar dispatched ${r.dispatched} post(s)`);
+      })
+      .catch((error) => {
+        logger.error('Calendar tick failed', { error: error instanceof Error ? error.message : String(error) });
       });
   }, 60_000).unref();
 

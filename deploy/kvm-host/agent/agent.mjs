@@ -30,6 +30,10 @@ const HOST_KEY = process.env.FLEET_HOST_KEY || '';
 const POLL_MS = Number(process.env.FLEET_POLL_MS || 3000);
 const HEARTBEAT_MS = Number(process.env.FLEET_HEARTBEAT_MS || 30000);
 const ADB = process.env.FLEET_ADB || 'adb';
+// Live streaming: convert the API URL to its ws(s) origin. Streaming needs the
+// global WebSocket client (Node 21+); on older Node it is silently skipped.
+const STREAM_URL = API_URL.replace(/^http/, 'ws') + `/ws/agent-stream?key=${encodeURIComponent(HOST_KEY)}`;
+const STREAM_DEFAULT_FPS = Number(process.env.FLEET_STREAM_FPS || 12);
 
 if (!API_URL || !API_KEY || !HOST_KEY) {
   console.error('[agent] FLEET_API_URL, FLEET_API_KEY and FLEET_HOST_KEY are all required.');
@@ -130,6 +134,78 @@ async function runJob(job) {
       if (!host || typeof port !== 'number') throw new Error('host and port are required');
       // Per-user setting visible to most apps; cleared with ":0".
       return { stdout: await adb(serial, ['shell', 'settings', 'put', 'global', 'http_proxy', `${host}:${port}`]) };
+    }
+
+    case 'EMULATOR_SNAPSHOT_CREATE': {
+      // Capture the device's user storage into a tarball on the host. redroid
+      // phones are rootable, so we tar /data/media/0 (the real /sdcard) plus the
+      // installed-package list. The artifactRef + size are reported back so the
+      // control plane can mark the snapshot READY.
+      const snapshotId = String(p(payload, 'snapshotId', ''));
+      if (!snapshotId) throw new Error('snapshotId is required');
+      const dir = await mkdtemp(join(tmpdir(), 'fleet-snap-'));
+      const tarPath = join(dir, `${snapshotId}.tar.gz`);
+      // Stream a gzipped tar of /sdcard straight off the device to the host file.
+      const tarStream = await execFileAsync(
+        ADB,
+        ['-s', serial, 'exec-out', 'sh', '-c', 'tar czf - -C /sdcard . 2>/dev/null'],
+        { encoding: 'buffer', maxBuffer: 1024 * 1024 * 1024 }
+      );
+      await writeFile(tarPath, tarStream.stdout);
+      const sizeBytes = tarStream.stdout.length;
+      return { artifactRef: tarPath, sizeBytes };
+    }
+
+    case 'EMULATOR_SNAPSHOT_RESTORE': {
+      const artifactRef = String(p(payload, 'artifactRef', ''));
+      if (!artifactRef) throw new Error('artifactRef is required');
+      const local = artifactRef.startsWith('http') ? await download(artifactRef, 'snap.tar.gz') : artifactRef;
+      try {
+        // Push the tarball and extract it back into /sdcard on the device.
+        const remote = '/data/local/tmp/fleet-restore.tar.gz';
+        await adb(serial, ['push', local, remote]);
+        await adb(serial, ['shell', 'sh', '-c', `cd /sdcard && tar xzf ${remote} && rm -f ${remote}`]);
+        return { restored: true };
+      } finally {
+        if (artifactRef.startsWith('http')) await safeRm(local);
+      }
+    }
+
+    case 'EMULATOR_RESET': {
+      // "One-click new device": clear launcher/app data so the phone looks fresh.
+      // wipeData=false would skip the heavy clears (only reset settings).
+      const wipeData = p(payload, 'wipeData', true) !== false;
+      if (wipeData) {
+        // Best-effort wipe of user media; package data clears would need per-pkg
+        // `pm clear`, left to RPA flows for targeted apps.
+        await adb(serial, ['shell', 'sh', '-c', 'rm -rf /sdcard/DCIM/* /sdcard/Download/* /sdcard/Pictures/* 2>/dev/null || true']);
+      }
+      return { reset: true, wiped: wipeData };
+    }
+
+    case 'EMULATOR_PULL_FILE': {
+      // Pull a file off the device to the host and return where it landed (the
+      // control plane can then offer it as a download / store as a library asset).
+      const remote = String(p(payload, 'remotePath', ''));
+      if (!remote) throw new Error('remotePath is required');
+      const dir = await mkdtemp(join(tmpdir(), 'fleet-pull-'));
+      const name = remote.split('/').pop() || 'file';
+      const local = join(dir, name);
+      await adb(serial, ['pull', remote, local]);
+      return { localPath: local, fileName: name };
+    }
+
+    case 'EMULATOR_CLIPBOARD_SET': {
+      // Requires the clipper/automation helper or API 29+. We use the broadcast
+      // approach supported by redroid's clipboard service.
+      const text = String(p(payload, 'text', ''));
+      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'clipper.set', '-e', 'text', text.replace(/ /g, '%s')]);
+      return { set: true };
+    }
+
+    case 'EMULATOR_CLIPBOARD_GET': {
+      const out = await adb(serial, ['shell', 'am', 'broadcast', '-a', 'clipper.get']);
+      return { stdout: out };
     }
 
     case 'RPA_RUN': {
@@ -242,6 +318,123 @@ async function heartbeat() {
   }
 }
 
+// --- live streaming + remote control ----------------------------------------
+//
+// The control plane opens a persistent WS we connect to. It sends JSON control
+// messages (start/stop capture, inject tap/swipe/key/text). For each watched
+// device we run a capture loop (adb exec-out screencap) and push binary frames
+// back, framed as "FRM:" + deviceId(36 chars) + image bytes. Viewer fan-out and
+// authorization happen on the control plane, so the agent stays dumb + fast.
+
+const FRAME_PREFIX = Buffer.from('FRM:');
+const captures = new Map(); // deviceId -> { serial, timer, busy, fps }
+
+function frameDeviceId(id) {
+  // Device ids are cuids (~25 chars); pad/truncate to a fixed 36 so the control
+  // plane can slice deterministically.
+  return id.padEnd(36, ' ').slice(0, 36);
+}
+
+async function captureFrame(serial) {
+  const { stdout } = await execFileAsync(ADB, ['-s', serial, 'exec-out', 'screencap', '-p'], {
+    encoding: 'buffer',
+    maxBuffer: 32 * 1024 * 1024
+  });
+  return stdout;
+}
+
+function startCapture(ws, deviceId, serial, fps) {
+  stopCapture(deviceId);
+  if (!serial) return;
+  const interval = Math.max(40, Math.round(1000 / Math.min(20, Math.max(1, fps || STREAM_DEFAULT_FPS))));
+  const state = { serial, busy: false, timer: null, fps };
+  state.timer = setInterval(async () => {
+    if (state.busy || ws.readyState !== 1) return;
+    state.busy = true;
+    try {
+      await ensureConnected(serial);
+      const img = await captureFrame(serial);
+      const framed = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId)), img]);
+      if (ws.readyState === 1) ws.send(framed);
+    } catch {
+      /* a dropped frame is fine; next tick retries */
+    } finally {
+      state.busy = false;
+    }
+  }, interval);
+  captures.set(deviceId, state);
+  log(`stream start ${deviceId} @ ${Math.round(1000 / interval)}fps`);
+}
+
+function stopCapture(deviceId) {
+  const s = captures.get(deviceId);
+  if (s) {
+    clearInterval(s.timer);
+    captures.delete(deviceId);
+    log(`stream stop ${deviceId}`);
+  }
+}
+
+async function handleControl(msg) {
+  const serial = msg.serial;
+  switch (msg.type) {
+    case 'stream.start':
+      return; // handled by caller (needs ws ref)
+    case 'stream.stop':
+      stopCapture(msg.deviceId);
+      return;
+    case 'input.tap':
+      if (serial) await adb(serial, ['shell', 'input', 'tap', String(msg.x), String(msg.y)]);
+      return;
+    case 'input.swipe':
+      if (serial) await adb(serial, ['shell', 'input', 'swipe', String(msg.x), String(msg.y), String(msg.x2), String(msg.y2), String(msg.ms || 120)]);
+      return;
+    case 'input.key':
+      if (serial) await adb(serial, ['shell', 'input', 'keyevent', String(msg.keycode)]);
+      return;
+    case 'input.text':
+      if (serial) await adb(serial, ['shell', 'input', 'text', String(msg.text || '').replace(/ /g, '%s')]);
+      return;
+    default:
+      return;
+  }
+}
+
+function startStreamClient() {
+  if (typeof WebSocket === 'undefined') {
+    log('streaming disabled: global WebSocket unavailable (needs Node 21+)');
+    return;
+  }
+  let stream;
+  const connect = () => {
+    if (stopping) return;
+    try {
+      stream = new WebSocket(STREAM_URL);
+    } catch {
+      setTimeout(connect, 5000);
+      return;
+    }
+    stream.binaryType = 'arraybuffer';
+    stream.onopen = () => log('stream channel connected');
+    stream.onmessage = async (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8'));
+      } catch {
+        return;
+      }
+      if (msg.type === 'stream.start') startCapture(stream, msg.deviceId, msg.serial, msg.fps);
+      else await handleControl(msg).catch(() => undefined);
+    };
+    stream.onclose = () => {
+      for (const id of [...captures.keys()]) stopCapture(id);
+      if (!stopping) setTimeout(connect, 5000);
+    };
+    stream.onerror = () => { try { stream.close(); } catch { /* ignore */ } };
+  };
+  connect();
+}
+
 // --- main loop --------------------------------------------------------------
 
 let stopping = false;
@@ -252,6 +445,7 @@ async function loop() {
   log(`starting — polling ${API_URL} every ${POLL_MS}ms`);
   await heartbeat();
   const hb = setInterval(heartbeat, HEARTBEAT_MS);
+  startStreamClient();
 
   while (!stopping) {
     let job = null;

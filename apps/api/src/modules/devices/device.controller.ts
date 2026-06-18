@@ -9,6 +9,7 @@ import { deviceHub } from './device.hub';
 import { DeviceService } from './device.service';
 import { createJobRecord } from '../jobs/jobs.service';
 import { permissionsService } from '../permissions/permissions.service';
+import { DEVICE_MODELS } from '../fingerprint/fingerprint.data';
 
 const deviceService = new DeviceService();
 
@@ -21,7 +22,11 @@ const deviceCreateSchema = z.object({
   androidVersion: z.string().optional(),
   groupId: z.string().optional(),
   countryCode: z.string().length(2).optional(),
-  metadata: z.unknown().optional()
+  metadata: z.unknown().optional(),
+  // Provisioning catalog selections.
+  deviceModel: z.string().max(80).optional(),
+  ramGb: z.coerce.number().int().min(2).max(24).optional(),
+  cpuCores: z.coerce.number().int().min(2).max(16).optional()
 });
 
 const deviceUpdateSchema = deviceCreateSchema.partial().extend({
@@ -85,6 +90,65 @@ export async function listDevicesHandler(req: Request, res: Response): Promise<v
     return;
   }
   res.json({ data });
+}
+
+// ── File transfer + clipboard ────────────────────────────────────────────
+const clipboardSetSchema = z.object({ text: z.string().max(10000) });
+
+// Set the device clipboard to the given text (dispatched to the host agent).
+export async function clipboardSetHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const { text } = clipboardSetSchema.parse(req.body);
+  const job = await createJobRecord('EMULATOR_CLIPBOARD_SET', { deviceId, text } as never, undefined, getWorkspaceId(req));
+  res.status(201).json({ data: { jobId: job.id } });
+}
+
+// Read the device clipboard (queues a job; result lands on the job record).
+export async function clipboardGetHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const job = await createJobRecord('EMULATOR_CLIPBOARD_GET', { deviceId } as never, undefined, getWorkspaceId(req));
+  res.status(201).json({ data: { jobId: job.id } });
+}
+
+const pullSchema = z.object({ remotePath: z.string().min(1).max(500) });
+
+// Pull a file off the device to the host (queues a job; the agent returns the
+// host-side path on completion).
+export async function pullFileHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const { remotePath } = pullSchema.parse(req.body);
+  const job = await createJobRecord('EMULATOR_PULL_FILE', { deviceId, remotePath } as never, undefined, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'device.file.pull',
+    resourceType: 'device',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { remotePath }
+  });
+  res.status(201).json({ data: { jobId: job.id } });
+}
+
+// Provisioning catalog: the device models + hardware tiers an operator can pick
+// from when creating a cloud phone. Sourced from the fingerprint device table
+// so the chosen model maps to a real, plausible fingerprint.
+export async function provisioningCatalogHandler(_req: Request, res: Response): Promise<void> {
+  res.json({
+    data: {
+      models: DEVICE_MODELS.map((d) => ({
+        model: d.model,
+        manufacturer: d.manufacturer,
+        brand: d.brand,
+        resolution: d.resolution,
+        dpi: d.dpi,
+        osVersions: d.osVersions
+      })),
+      // Common cloud-phone hardware tiers (RAM/CPU), purely advisory metadata.
+      ramTiers: [4, 6, 8, 12],
+      cpuTiers: [4, 6, 8]
+    }
+  });
 }
 
 export async function createDeviceHandler(req: Request, res: Response): Promise<void> {

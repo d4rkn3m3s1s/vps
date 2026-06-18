@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import { PageHeader } from '../../../components/PageHeader';
 import { PageMotion } from '../../../components/Motion';
 import { AdbAccessPanel } from './AdbAccessPanel';
+import { LiveScreen } from './LiveScreen';
+import { SnapshotPanel } from './SnapshotPanel';
+import { DeviceAccessPanel } from './DeviceAccessPanel';
+import { FileClipboardPanel } from './FileClipboardPanel';
 
 export type DetailFingerprint = {
   imei: string;
@@ -167,7 +171,9 @@ export function ProfileDetailView({
 
       {toast ? <div className="toast toast-ok">{toast}</div> : null}
 
-      <section className="section-grid">
+      <LiveScreen deviceId={device.id} online={device.status === 'ONLINE'} />
+
+      <section className="section-grid" style={{ marginTop: '1rem' }}>
         <div className="panel">
           <h2>Canlı durum</h2>
           <div className="panel-stack">
@@ -259,6 +265,12 @@ export function ProfileDetailView({
           </table>
         </div>
       </div>
+
+      <SnapshotPanel deviceId={device.id} />
+
+      <FileClipboardPanel deviceId={device.id} />
+
+      <DeviceAccessPanel deviceId={device.id} />
 
       <AdbAccessPanel deviceId={device.id} />
     </PageMotion>

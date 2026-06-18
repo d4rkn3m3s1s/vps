@@ -49,11 +49,16 @@ export type FingerprintFields = Omit<
 export type GenerateOptions = {
   countryCode?: string | undefined;
   gpsEnabled?: boolean | undefined;
+  // Provisioning: pin a specific catalog model (by `model` string) and/or
+  // Android version instead of randomizing, so the operator gets the device
+  // they chose at create time.
+  model?: string | undefined;
+  osVersion?: string | undefined;
 };
 
 export function generateFingerprintData(opts: GenerateOptions = {}): FingerprintFields {
-  const dev = pick(DEVICE_MODELS);
-  const os = pick(dev.osVersions);
+  const dev = (opts.model ? DEVICE_MODELS.find((d) => d.model === opts.model) : undefined) ?? pick(DEVICE_MODELS);
+  const os = opts.osVersion && dev.osVersions.includes(opts.osVersion) ? opts.osVersion : pick(dev.osVersions);
   const locale: Locale = opts.countryCode
     ? LOCALES.find((l) => l.countryCode === opts.countryCode) ?? pick(LOCALES)
     : pick(LOCALES);

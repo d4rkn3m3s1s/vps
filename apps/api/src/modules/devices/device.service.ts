@@ -49,13 +49,27 @@ export class DeviceService {
     if (input.androidVersion) data.androidVersion = input.androidVersion;
     if (input.groupId) data.group = { connect: { id: input.groupId } };
     if (workspaceId) data.workspace = { connect: { id: workspaceId } };
-    const metadata = buildJsonMetadata(input.metadata);
-    if (metadata !== undefined) data.metadata = metadata;
+    // Fold any chosen hardware tier into metadata so it's visible on the device.
+    const baseMeta = buildJsonMetadata(input.metadata);
+    const hw: Record<string, unknown> = {};
+    if (typeof input.ramGb === 'number') hw.ramGb = input.ramGb;
+    if (typeof input.cpuCores === 'number') hw.cpuCores = input.cpuCores;
+    if (input.deviceModel) hw.provisionedModel = input.deviceModel;
+    const mergedMeta =
+      Object.keys(hw).length > 0
+        ? ({ ...(baseMeta && typeof baseMeta === 'object' ? (baseMeta as object) : {}), ...hw } as Prisma.InputJsonValue)
+        : baseMeta;
+    if (mergedMeta !== undefined) data.metadata = mergedMeta;
 
     // Every cloud phone is born with a unique randomized fingerprint so it looks
-    // like a distinct physical device. Country can be pinned at creation.
+    // like a distinct physical device. Country, model, and Android version can
+    // be pinned at creation (provisioning catalog); otherwise randomized.
     data.fingerprint = {
-      create: generateFingerprintData({ countryCode: input.countryCode })
+      create: generateFingerprintData({
+        countryCode: input.countryCode,
+        ...(input.deviceModel ? { model: input.deviceModel } : {}),
+        ...(input.androidVersion ? { osVersion: input.androidVersion } : {})
+      })
     };
 
     return prisma.device.create({

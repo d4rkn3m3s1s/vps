@@ -35,6 +35,12 @@ enum JobType {
   EMULATOR_PUSH_FILE
   EMULATOR_SET_PROXY
   RPA_RUN
+  EMULATOR_SNAPSHOT_CREATE
+  EMULATOR_SNAPSHOT_RESTORE
+  EMULATOR_RESET
+  EMULATOR_PULL_FILE
+  EMULATOR_CLIPBOARD_SET
+  EMULATOR_CLIPBOARD_GET
 }
 
 enum HostStatus {
@@ -168,6 +174,8 @@ model Workspace {
   socialAccounts SocialAccount[]
   alertRules    AlertRule[]
   alertEvents   AlertEvent[]
+  snapshots     DeviceSnapshot[]
+  scheduledPosts ScheduledPost[]
   settings      WorkspaceSettings?
 }
 
@@ -214,6 +222,7 @@ enum AlertTrigger {
   DEVICE_OFFLINE
   QUOTA_HIGH
   HOST_OFFLINE
+  FARM_BAN_RISK
 }
 
 // A user-defined alerting rule, scoped to a workspace. When its trigger
@@ -361,6 +370,8 @@ model Device {
   fingerprint    DeviceFingerprint?
   schedules      ScheduledTask[]
   farmAccount    FarmAccount?
+  snapshots      DeviceSnapshot[] @relation("DeviceSnapshotSource")
+  grants         DeviceGrant[]    @relation("DeviceGrants")
 
   @@index([workspaceId])
 }
@@ -695,6 +706,12 @@ model FarmAccount {
   pausedReason  String?
   lastActionAt  DateTime?
   dayAnchor     DateTime @default(now()) // when actionsToday was last reset
+  // ── Proactive ban-risk scoring ──
+  // 0-100 leading indicator (errors, velocity, proxy/stage mismatch). Persisted
+  // so the engine can detect a *rising* trend and alert once per cooldown rather
+  // than re-firing every tick while the device stays risky.
+  riskScore     Int      @default(0)
+  riskAlertedAt DateTime?
   // ── Account identity (the credentials being warmed up) ──
   // Which platform this account lives on, the public handle, and the secrets.
   // Secrets are AES-256-GCM encrypted at rest and NEVER returned to clients raw.
@@ -808,4 +825,108 @@ model ProfilePermission {
   createdAt   DateTime @default(now())
 
   @@unique([userId, groupId, deviceId])
+}
+
+// ── Device snapshots / image market ─────────────────────────────────────────
+// A captured backup of a cloud phone's state (its /data, or a docker image ref)
+// that can be restored onto the same device, cloned onto a new one, or published
+// to the image market for the whole workspace (or publicly) to provision from.
+enum SnapshotVisibility {
+  PRIVATE    // only the creator
+  WORKSPACE  // anyone in the workspace
+  PUBLIC     // listed in the public image market
+}
+
+enum SnapshotStatus {
+  PENDING    // capture job dispatched, not yet ready
+  READY      // captured and restorable
+  FAILED     // capture failed
+}
+
+model DeviceSnapshot {
+  id            String             @id @default(cuid())
+  name          String
+  description   String?
+  // Where the captured artifact lives on the host (tarball path or docker image
+  // tag). The agent writes this back when the capture job completes.
+  artifactRef   String?
+  sizeBytes     BigInt             @default(0)
+  androidVersion String?
+  // Snapshot of the source device's fingerprint/app set for the market card.
+  metadata      Json?
+  tags          String[]           @default([])
+  visibility    SnapshotVisibility @default(PRIVATE)
+  status        SnapshotStatus     @default(PENDING)
+  installs      Int                @default(0)  // how many devices provisioned from it
+  sourceDeviceId String?
+  workspaceId   String?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  sourceDevice  Device?            @relation("DeviceSnapshotSource", fields: [sourceDeviceId], references: [id], onDelete: SetNull)
+  workspace     Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([visibility])
+}
+
+// ── Device authorization / transfer ─────────────────────────────────────────
+// A time-boxed grant of access to a device for another user (think "lend this
+// phone to a teammate for 24h"). Distinct from ProfilePermission (which is a
+// standing workspace ACL); a grant is temporary, revocable, and audited.
+enum GrantAccess {
+  VIEW     // live screen only
+  CONTROL  // screen + remote input + jobs
+}
+
+model DeviceGrant {
+  id          String      @id @default(cuid())
+  deviceId    String
+  grantedToId String      // user receiving access
+  grantedById String      // user who issued it
+  access      GrantAccess @default(VIEW)
+  expiresAt   DateTime?   // null = no expiry (until revoked)
+  revokedAt   DateTime?
+  workspaceId String?
+  createdAt   DateTime    @default(now())
+  device      Device      @relation("DeviceGrants", fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([grantedToId])
+}
+
+// ── Content calendar / scheduled posting ────────────────────────────────────
+// A piece of content scheduled to be posted from one or more cloud phones at a
+// future time. The scheduler tick dispatches the matching RPA flow with the
+// content (caption + media) injected when scheduledFor passes.
+enum ScheduledPostStatus {
+  SCHEDULED
+  POSTING
+  POSTED
+  FAILED
+  CANCELED
+}
+
+model ScheduledPost {
+  id           String              @id @default(cuid())
+  caption      String
+  platform     String              // tiktok | instagram | x | meta | youtube | other
+  mediaUrl     String?             // image/video asset to push then post
+  // Target: a device group (fan out to all) and/or explicit device ids, plus the
+  // RPA flow that performs the actual posting steps on each device.
+  groupId      String?
+  deviceIds    String[]            @default([])
+  rpaFlowId    String?
+  scheduledFor DateTime
+  status       ScheduledPostStatus @default(SCHEDULED)
+  postedAt     DateTime?
+  error        String?
+  workspaceId  String?
+  createdById  String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  workspace    Workspace?          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([status, scheduledFor])
 }

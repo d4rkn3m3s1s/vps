@@ -47,7 +47,11 @@ const envSchema = z.object({
   SMTP_SECURE: z
     .enum(['true', 'false'])
     .optional()
-    .transform((v) => v === 'true')
+    .transform((v) => v === 'true'),
+  // Anthropic Claude API — powers natural-language → RPA flow generation. When
+  // unset, the AI builder returns a friendly "not configured" error.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-opus-4-8')
 });
 
 const parsed = envSchema.parse(process.env);
@@ -92,5 +96,7 @@ export const env = {
   smtpPort: parsed.SMTP_PORT,
   smtpUser: parsed.SMTP_USER,
   smtpPass: parsed.SMTP_PASS,
-  smtpSecure: parsed.SMTP_SECURE
+  smtpSecure: parsed.SMTP_SECURE,
+  anthropicApiKey: parsed.ANTHROPIC_API_KEY,
+  anthropicModel: parsed.ANTHROPIC_MODEL
 } as const;

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { KeyRound, Plus, Trash2, Copy, Check } from 'lucide-react';
+import { KeyRound, Plus, Trash2, Copy, Check, Loader2 } from 'lucide-react';
 
 type ApiKey = {
   id: string;
@@ -20,6 +20,8 @@ export default function ApiKeysPage() {
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<string[]>(['read']);
   const [busy, setBusy] = useState(false);
+  // id of the key currently being revoked, so its row button disables + spins.
+  const [revokingId, setRevokingId] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   // The freshly created plaintext key — shown exactly once.
   const [revealed, setRevealed] = useState<string | null>(null);
@@ -72,7 +74,9 @@ export default function ApiKeysPage() {
   }
 
   async function revoke(key: ApiKey) {
+    if (revokingId) return; // guard against concurrent revokes
     if (!confirm(`"${key.name}" iptal edilsin mi? Bu anahtarı kullanan tüm çağrılar anında çalışmayı durduracaktır.`)) return;
+    setRevokingId(key.id);
     try {
       const res = await fetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -83,6 +87,8 @@ export default function ApiKeysPage() {
       await load();
     } catch (e) {
       flash(e instanceof Error ? e.message : 'İptal edilemedi');
+    } finally {
+      setRevokingId(null);
     }
   }
 
@@ -121,8 +127,8 @@ export default function ApiKeysPage() {
                 </div>
               </div>
               {!k.revoked ? (
-                <button type="button" className="icon-btn" onClick={() => revoke(k)} aria-label={`${k.name} anahtarını iptal et`} title="İptal et">
-                  <Trash2 size={15} />
+                <button type="button" className="icon-btn" disabled={revokingId === k.id} onClick={() => revoke(k)} aria-label={`${k.name} anahtarını iptal et`} title="İptal et">
+                  {revokingId === k.id ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
                 </button>
               ) : null}
             </div>

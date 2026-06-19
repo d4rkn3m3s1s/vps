@@ -148,8 +148,8 @@ export default function AdminBillingPage() {
         </div>
       ) : null}
 
-      {error ? <div className="toast toast-error">{error}</div> : null}
-      {flash ? <div className="toast">{flash}</div> : null}
+      {error ? <div className="toast toast-err">{error}</div> : null}
+      {flash ? <div className="toast toast-ok">{flash}</div> : null}
 
       {billing ? (
         <>

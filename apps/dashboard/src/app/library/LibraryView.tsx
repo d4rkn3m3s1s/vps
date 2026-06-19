@@ -39,7 +39,7 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
 
   async function add() {
     if (!form.name.trim()) {
-      setError('Name is required.');
+      setError('Ad zorunludur.');
       return;
     }
     setBusy(true);
@@ -55,19 +55,19 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
           tags: form.tags ? form.tags.split(',').map((t) => t.trim()).filter(Boolean) : undefined
         })
       });
-      if (!res.ok) throw new Error(`Failed (${res.status})`);
+      if (!res.ok) throw new Error(`Başarısız (${res.status})`);
       setOpen(false);
       setForm({ name: '', type: 'IMAGE', url: '', tags: '' });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add asset');
+      setError(err instanceof Error ? err.message : 'Varlık eklenemedi');
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(id: string) {
-    if (!confirm('Delete this asset?')) return;
+    if (!confirm('Bu varlık silinsin mi?')) return;
     setBusyId(id);
     try {
       await fetch(`/api/library/${id}`, { method: 'DELETE' });
@@ -80,17 +80,17 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Library"
-        subtitle="Shared media, APKs, cookies and account assets."
-        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add asset</button>}
+        title="Kütüphane"
+        subtitle="Paylaşılan medya, APK'ler, çerezler ve hesap varlıkları."
+        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Varlık ekle</button>}
       />
 
       {assets.length === 0 ? (
         <div className="empty-state">
           <div className="empty-art">◳</div>
-          <h3>No assets yet</h3>
-          <p>Add images, videos, APKs or cookie files to reuse across your cloud phones.</p>
-          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add asset</button>
+          <h3>Henüz varlık yok</h3>
+          <p>Bulut telefonlarınız arasında yeniden kullanmak için görseller, videolar, APK'ler veya çerez dosyaları ekleyin.</p>
+          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Varlık ekle</button>
         </div>
       ) : (
         <div className="app-grid">
@@ -116,7 +116,7 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
                 disabled={busyId === a.id}
                 onClick={() => remove(a.id)}
               >
-                Delete
+                Sil
               </button>
             </article>
           ))}
@@ -127,42 +127,42 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
         <div className="modal-overlay" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Add asset</h2>
+              <h2>Varlık ekle</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
                 ✕
               </button>
             </header>
             <label className="field">
-              <span>Name</span>
-              <input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="e.g. profile-avatar.png" />
+              <span>Ad</span>
+              <input className="field-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="örn. profile-avatar.png" />
             </label>
             <div className="field-row">
               <label className="field">
-                <span>Type</span>
+                <span>Tür</span>
                 <select className="field-input" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
-                  <option value="IMAGE">Image</option>
+                  <option value="IMAGE">Görsel</option>
                   <option value="VIDEO">Video</option>
                   <option value="APK">APK</option>
-                  <option value="COOKIE">Cookie</option>
-                  <option value="OTHER">Other</option>
+                  <option value="COOKIE">Çerez</option>
+                  <option value="OTHER">Diğer</option>
                 </select>
               </label>
               <label className="field">
-                <span>Tags (comma separated)</span>
+                <span>Etiketler (virgülle ayrılmış)</span>
                 <input className="field-input" value={form.tags} onChange={(e) => setForm((f) => ({ ...f, tags: e.target.value }))} placeholder="us, instagram" />
               </label>
             </div>
             <label className="field">
-              <span>URL (optional)</span>
+              <span>URL (isteğe bağlı)</span>
               <input className="field-input" value={form.url} onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))} placeholder="https://…" />
             </label>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={add}>
-                {busy ? 'Adding…' : 'Add asset'}
+                {busy ? 'Ekleniyor…' : 'Varlık ekle'}
               </button>
             </footer>
           </div>

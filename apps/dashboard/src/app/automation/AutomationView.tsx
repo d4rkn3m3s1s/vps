@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
 
@@ -16,7 +17,7 @@ export type Template = {
 
 export type AutoDevice = { id: string; name: string };
 
-const TABS = ['Marketplace', 'Custom tasks', 'Logs'] as const;
+const TABS = ['Pazar Yeri', 'Özel görevler', 'Kayıtlar'] as const;
 
 function PlatformBadge({ platform, color }: { platform: string; color: string }) {
   return (
@@ -27,7 +28,7 @@ function PlatformBadge({ platform, color }: { platform: string; color: string })
 }
 
 export function AutomationView({ templates, devices }: { templates: Template[]; devices: AutoDevice[] }) {
-  const [tab, setTab] = useState<(typeof TABS)[number]>('Marketplace');
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Pazar Yeri');
   const [query, setQuery] = useState('');
   const [runTpl, setRunTpl] = useState<Template | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -54,10 +55,10 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         body: JSON.stringify({ deviceIds: Array.from(picked) })
       });
       if (!res.ok) throw new Error();
-      flash(`Started "${runTpl.title}" on ${picked.size} phone(s)`);
+      flash(`"${runTpl.title}" ${picked.size} telefonda başlatıldı`);
       setRunTpl(null);
     } catch {
-      flash(`Failed to start ${runTpl.title}`);
+      flash(`${runTpl.title} başlatılamadı`);
     } finally {
       setBusy(false);
     }
@@ -78,9 +79,9 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         </div>
         <p className="helper">{t.description}</p>
         <div className="row" style={{ marginTop: 'auto' }}>
-          {t.uses > 0 ? <span className="helper mono">{t.uses} runs</span> : <span />}
+          {t.uses > 0 ? <span className="helper mono">{t.uses} çalıştırma</span> : <span />}
           <button type="button" className="btn-ghost tpl-run" onClick={() => openRun(t)}>
-            Use template
+            Şablonu kullan
           </button>
         </div>
       </MotionItem>
@@ -90,9 +91,13 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Automation"
-        subtitle="Run no-code RPA templates across your cloud phones."
-        actions={<button type="button" className="btn-primary">+ New task</button>}
+        title="Otomasyon"
+        subtitle="Bulut telefonlarınızda kodsuz RPA şablonlarını çalıştırın."
+        actions={
+          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
+            + Yeni görev
+          </Link>
+        }
       />
 
       <div className="tabs">
@@ -103,18 +108,18 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         ))}
       </div>
 
-      {tab === 'Marketplace' ? (
+      {tab === 'Pazar Yeri' ? (
         <>
           <div className="toolbar-row">
             <div className="search-box">
               <span className="search-icon">⌕</span>
-              <input type="text" placeholder="Template name" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <input type="text" placeholder="Şablon adı" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
           </div>
 
           {recommended.length > 0 ? (
             <>
-              <h3 className="section-label">★ Recommended</h3>
+              <h3 className="section-label">★ Önerilen</h3>
               <StaggerGrid className="tpl-grid">
                 {recommended.map((t) => (
                   <TemplateCard t={t} key={t.id} />
@@ -123,18 +128,30 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
             </>
           ) : null}
 
-          <h3 className="section-label">▤ All templates</h3>
+          <h3 className="section-label">▤ Tüm şablonlar</h3>
           <StaggerGrid className="tpl-grid">
             {filtered.map((t) => (
               <TemplateCard t={t} key={`all-${t.id}`} />
             ))}
           </StaggerGrid>
         </>
-      ) : (
+      ) : tab === 'Özel görevler' ? (
         <div className="empty-state">
           <div className="empty-art">⚙</div>
-          <h3>{tab}</h3>
-          <p>Nothing here yet.</p>
+          <h3>Özel görevler</h3>
+          <p>RPA Studio'da kendi kodsuz otomasyonlarınızı oluşturun ve yönetin.</p>
+          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
+            RPA Studio'yu aç →
+          </Link>
+        </div>
+      ) : (
+        <div className="empty-state">
+          <div className="empty-art">▤</div>
+          <h3>Kayıtlar</h3>
+          <p>Her otomasyon çalıştırması bir iş olarak kaydedilir. Canlı durumu ve geçmişi İşler sayfasında görüntüleyin.</p>
+          <Link href="/jobs" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
+            İşleri görüntüle →
+          </Link>
         </div>
       )}
 
@@ -142,17 +159,17 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         <div className="modal-overlay" onClick={() => !busy && setRunTpl(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Run "{runTpl.title}"</h2>
+              <h2>"{runTpl.title}" çalıştır</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setRunTpl(null)}>
                 ✕
               </button>
             </header>
             <p className="helper">{runTpl.description}</p>
             <div className="modal-section">
-              <h3>Select target phones</h3>
+              <h3>Hedef telefonları seçin</h3>
               <div className="run-devices">
                 {devices.length === 0 ? (
-                  <span className="helper">No cloud phones available — create one first.</span>
+                  <span className="helper">Kullanılabilir bulut telefon yok — önce bir tane oluşturun.</span>
                 ) : (
                   devices.map((d) => (
                     <label className="field-check" key={d.id}>
@@ -175,9 +192,9 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
               </div>
             </div>
             <footer className="modal-foot">
-              <span className="helper">{picked.size} selected</span>
+              <span className="helper">{picked.size} seçili</span>
               <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmRun}>
-                {busy ? 'Starting…' : `Run on ${picked.size} phone(s)`}
+                {busy ? 'Başlatılıyor…' : `${picked.size} telefonda çalıştır`}
               </button>
             </footer>
           </div>

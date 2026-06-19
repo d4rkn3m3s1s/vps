@@ -1,8 +1,15 @@
-import { createHmac } from 'node:crypto';
-import type { WebhookEvent } from '@prisma/client';
+import type { Prisma, WebhookEvent } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { logger } from '../../lib/logger';
+import { enqueueDelivery } from './webhook.queue';
+
+// Concrete (non-ALL) events that can actually fire. ALL is a subscription filter
+// on the Webhook row, never an emitted event.
+export type DispatchableEvent = Exclude<WebhookEvent, 'ALL'>;
+
+// Auto-disable a webhook after this many consecutive terminal failures so a dead
+// endpoint stops generating delivery churn.
+const MAX_CONSECUTIVE_FAILURES = 15;
 
 export type WebhookInput = {
   label: string;
@@ -13,20 +20,24 @@ export type WebhookInput = {
 };
 
 export class WebhooksService {
-  async list() {
-    const hooks = await prisma.webhook.findMany({ orderBy: { createdAt: 'desc' } });
+  async list(workspaceId?: string) {
+    const hooks = await prisma.webhook.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'desc' }
+    });
     // Never return the signing secret to clients.
     return hooks.map(({ secret, ...rest }) => ({ ...rest, hasSecret: Boolean(secret) }));
   }
 
-  async create(input: WebhookInput) {
+  async create(input: WebhookInput, workspaceId?: string) {
     const hook = await prisma.webhook.create({
       data: {
         label: input.label,
         url: input.url,
         ...(input.event ? { event: input.event } : {}),
         ...(input.secret ? { secret: input.secret } : {}),
-        ...(input.active !== undefined ? { active: input.active } : {})
+        ...(input.active !== undefined ? { active: input.active } : {}),
+        ...(workspaceId ? { workspaceId } : {})
       }
     });
     const { secret, ...rest } = hook;
@@ -63,38 +74,94 @@ export class WebhooksService {
     return prisma.webhook.delete({ where: { id } });
   }
 
-  // Fires all active webhooks matching `event`. Best-effort: failures are logged
-  // and counted, never thrown to the caller.
-  async dispatch(event: 'JOB_COMPLETED' | 'JOB_FAILED', payload: Record<string, unknown>): Promise<void> {
+  // Fires all active webhooks matching `event`, scoped to a workspace when given.
+  // Creates a delivery row per matching hook and enqueues it for the worker to
+  // deliver with retry/backoff. Never throws to the caller (fire-and-forget).
+  async dispatch(
+    event: DispatchableEvent,
+    payload: Record<string, unknown>,
+    workspaceId?: string
+  ): Promise<void> {
     const hooks = await prisma.webhook.findMany({
-      where: { active: true, event: { in: [event, 'ALL'] } }
+      where: {
+        active: true,
+        event: { in: [event, 'ALL'] },
+        // Workspace-scoped events only reach that workspace's hooks. Events with
+        // no workspace context (rare) reach all hooks.
+        ...(workspaceId ? { workspaceId } : {})
+      }
     });
+    if (hooks.length === 0) return;
+
+    const envelope = { event, firedAt: new Date().toISOString(), data: payload };
 
     await Promise.all(
       hooks.map(async (hook) => {
-        try {
-          const body = JSON.stringify({ event, ...payload, firedAt: new Date().toISOString() });
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (hook.secret) {
-            headers['X-Fleet-Signature'] = createHmac('sha256', hook.secret).update(body).digest('hex');
+        const delivery = await prisma.webhookDelivery.create({
+          data: {
+            webhookId: hook.id,
+            event,
+            payload: envelope as unknown as Prisma.InputJsonValue
           }
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 5000);
-          const res = await fetch(hook.url, { method: 'POST', headers, body, signal: controller.signal });
-          clearTimeout(timer);
-          await prisma.webhook.update({
-            where: { id: hook.id },
-            data: res.ok ? { lastFiredAt: new Date(), failCount: 0 } : { failCount: { increment: 1 } }
-          });
-        } catch (error) {
-          logger.error('Webhook dispatch failed', {
-            hookId: hook.id,
-            error: error instanceof Error ? error.message : String(error)
-          });
-          await prisma.webhook.update({ where: { id: hook.id }, data: { failCount: { increment: 1 } } });
+        });
+        await enqueueDelivery(delivery.id);
+        // If this hook has been failing persistently, auto-disable it so it stops
+        // accumulating dead deliveries until an admin re-enables it.
+        if (hook.failCount >= MAX_CONSECUTIVE_FAILURES) {
+          await prisma.webhook.update({ where: { id: hook.id }, data: { active: false } });
         }
       })
     );
+  }
+
+  // Sends a synthetic test event to a single webhook (admin "Send test" button).
+  async sendTest(id: string): Promise<{ deliveryId: string }> {
+    const hook = await prisma.webhook.findUnique({ where: { id } });
+    if (!hook) throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
+    const delivery = await prisma.webhookDelivery.create({
+      data: {
+        webhookId: hook.id,
+        event: 'ALL',
+        payload: {
+          event: 'webhook.test',
+          firedAt: new Date().toISOString(),
+          data: { message: 'This is a test delivery from VPS Fleet.', webhookId: hook.id }
+        } as unknown as Prisma.InputJsonValue
+      }
+    });
+    await enqueueDelivery(delivery.id);
+    return { deliveryId: delivery.id };
+  }
+
+  // Re-queues a past delivery (admin "Redeliver" button). Resets it to pending.
+  async redeliver(deliveryId: string): Promise<void> {
+    const delivery = await prisma.webhookDelivery.findUnique({ where: { id: deliveryId } });
+    if (!delivery) throw new AppError('Delivery not found', 404, 'DELIVERY_NOT_FOUND');
+    await prisma.webhookDelivery.update({
+      where: { id: deliveryId },
+      data: { status: 'PENDING', error: null, responseCode: null }
+    });
+    await enqueueDelivery(deliveryId);
+  }
+
+  // Recent delivery attempts for a webhook (history UI).
+  async listDeliveries(webhookId: string, limit = 25) {
+    await this.assertExists(webhookId);
+    return prisma.webhookDelivery.findMany({
+      where: { webhookId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        event: true,
+        status: true,
+        attempts: true,
+        responseCode: true,
+        error: true,
+        createdAt: true,
+        deliveredAt: true
+      }
+    });
   }
 
   private async assertExists(id: string): Promise<void> {

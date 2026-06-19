@@ -7,31 +7,31 @@ import { AnimatePresence, motion } from 'framer-motion';
 type Command = { label: string; href: string; icon: string; group: string; keywords?: string };
 
 const COMMANDS: Command[] = [
-  { label: 'Overview', href: '/', icon: '◴', group: 'Navigate' },
-  { label: 'Profiles', href: '/profiles', icon: '▦', group: 'Navigate', keywords: 'cloud phones devices' },
-  { label: 'Proxies', href: '/proxies', icon: '⇄', group: 'Navigate' },
-  { label: 'Library', href: '/library', icon: '◳', group: 'Navigate', keywords: 'assets files' },
-  { label: 'Applications', href: '/applications', icon: '▤', group: 'Navigate', keywords: 'apps apk install' },
-  { label: 'Fleet AI', href: '/ai', icon: '✦', group: 'Navigate', keywords: 'assistant chat claude' },
-  { label: 'Analytics', href: '/analytics', icon: '∿', group: 'Navigate', keywords: 'metrics performance' },
-  { label: 'Automation', href: '/automation', icon: '⚡', group: 'Navigate', keywords: 'templates tasks' },
-  { label: 'RPA Studio', href: '/rpa', icon: '⚙', group: 'Navigate', keywords: 'flows steps builder' },
-  { label: 'Scheduler', href: '/scheduler', icon: '⏱', group: 'Navigate', keywords: 'cron recurring' },
-  { label: 'Synchronizer', href: '/synchronizer', icon: '⧉', group: 'Navigate', keywords: 'mirror sync' },
-  { label: 'FleetHub', href: '/geehub', icon: '◈', group: 'Navigate', keywords: 'marketplace' },
-  { label: 'Webhooks', href: '/webhooks', icon: '⇲', group: 'Navigate', keywords: 'callbacks notify' },
-  { label: 'Jobs', href: '/jobs', icon: '☰', group: 'Navigate', keywords: 'tasks queue' },
-  { label: 'Members', href: '/members', icon: '☻', group: 'Navigate', keywords: 'team users' },
-  { label: 'Billing', href: '/billing', icon: '▭', group: 'Navigate', keywords: 'plan upgrade' },
-  { label: 'Audit log', href: '/audit', icon: '☰', group: 'Navigate' },
-  { label: 'Logs', href: '/logs', icon: '☰', group: 'Navigate' },
-  { label: 'Settings', href: '/settings', icon: '⚙', group: 'Navigate' },
+  { label: 'Genel Bakış', href: '/', icon: '◴', group: 'Git' },
+  { label: 'Profiller', href: '/profiles', icon: '▦', group: 'Git', keywords: 'cloud phones devices' },
+  { label: 'Proxyler', href: '/proxies', icon: '⇄', group: 'Git' },
+  { label: 'Kitaplık', href: '/library', icon: '◳', group: 'Git', keywords: 'assets files' },
+  { label: 'Uygulamalar', href: '/applications', icon: '▤', group: 'Git', keywords: 'apps apk install' },
+  { label: 'Fleet AI', href: '/ai', icon: '✦', group: 'Git', keywords: 'assistant chat claude' },
+  { label: 'Analitik', href: '/analytics', icon: '∿', group: 'Git', keywords: 'metrics performance' },
+  { label: 'Otomasyon', href: '/automation', icon: '⚡', group: 'Git', keywords: 'templates tasks' },
+  { label: 'RPA Stüdyo', href: '/rpa', icon: '⚙', group: 'Git', keywords: 'flows steps builder' },
+  { label: 'Zamanlayıcı', href: '/scheduler', icon: '⏱', group: 'Git', keywords: 'cron recurring' },
+  { label: 'Senkronizatör', href: '/synchronizer', icon: '⧉', group: 'Git', keywords: 'mirror sync' },
+  { label: 'FleetHub', href: '/geehub', icon: '◈', group: 'Git', keywords: 'marketplace' },
+  { label: 'Webhook\'lar', href: '/webhooks', icon: '⇲', group: 'Git', keywords: 'callbacks notify' },
+  { label: 'İşler', href: '/jobs', icon: '☰', group: 'Git', keywords: 'tasks queue' },
+  { label: 'Üyeler', href: '/members', icon: '☻', group: 'Git', keywords: 'team users' },
+  { label: 'Faturalandırma', href: '/billing', icon: '▭', group: 'Git', keywords: 'plan upgrade' },
+  { label: 'Denetim günlüğü', href: '/audit', icon: '☰', group: 'Git' },
+  { label: 'Günlükler', href: '/logs', icon: '☰', group: 'Git' },
+  { label: 'Ayarlar', href: '/settings', icon: '⚙', group: 'Git' },
   // Quick actions
-  { label: 'New cloud phone', href: '/profiles', icon: '＋', group: 'Actions', keywords: 'create profile' },
-  { label: 'Add proxy', href: '/proxies', icon: '＋', group: 'Actions' },
-  { label: 'Install an app', href: '/applications', icon: '＋', group: 'Actions' },
-  { label: 'New RPA flow', href: '/rpa', icon: '＋', group: 'Actions', keywords: 'automation' },
-  { label: 'Schedule a task', href: '/scheduler', icon: '＋', group: 'Actions' }
+  { label: 'Yeni bulut telefon', href: '/profiles', icon: '＋', group: 'İşlemler', keywords: 'create profile' },
+  { label: 'Proxy ekle', href: '/proxies', icon: '＋', group: 'İşlemler' },
+  { label: 'Uygulama yükle', href: '/applications', icon: '＋', group: 'İşlemler' },
+  { label: 'Yeni RPA akışı', href: '/rpa', icon: '＋', group: 'İşlemler', keywords: 'automation' },
+  { label: 'Görev zamanla', href: '/scheduler', icon: '＋', group: 'İşlemler' }
 ];
 
 export function CommandPalette() {
@@ -104,7 +104,7 @@ export function CommandPalette() {
               <input
                 autoFocus
                 className="cmdk-input"
-                placeholder="Search pages and actions…"
+                placeholder="Sayfalarda ve işlemlerde ara…"
                 value={query}
                 onChange={(e) => {
                   setQuery(e.target.value);
@@ -116,7 +116,7 @@ export function CommandPalette() {
             </div>
             <div className="cmdk-list">
               {results.length === 0 ? (
-                <div className="cmdk-empty">No matches</div>
+                <div className="cmdk-empty">Eşleşme yok</div>
               ) : (
                 results.map((c, i) => (
                   <button

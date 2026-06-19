@@ -15,7 +15,9 @@ export function authenticateJwt(req: Request, _res: Response, next: NextFunction
     req.auth = {
       userId: payload.sub,
       email: payload.email,
-      role: payload.role
+      role: payload.role,
+      ...(payload.workspaceId ? { workspaceId: payload.workspaceId } : {}),
+      ...(payload.workspaceRole ? { workspaceRole: payload.workspaceRole } : {})
     };
     next();
   } catch {

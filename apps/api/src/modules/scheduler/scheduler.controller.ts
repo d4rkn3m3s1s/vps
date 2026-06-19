@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { JobTypes } from '../jobs/job.types';
 import { schedulerService } from './scheduler.service';
@@ -27,13 +28,13 @@ function requireId(req: Request): string {
   return id;
 }
 
-export async function listSchedulesHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await schedulerService.list() });
+export async function listSchedulesHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await schedulerService.list(getWorkspaceId(req)) });
 }
 
 export async function createScheduleHandler(req: Request, res: Response): Promise<void> {
   const input = createSchema.parse(req.body);
-  const task = await schedulerService.create(input);
+  const task = await schedulerService.create(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'schedule.create',

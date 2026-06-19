@@ -25,8 +25,11 @@ export type RpaFlowInput = {
 };
 
 export class RpaService {
-  async list() {
-    return prisma.rpaFlow.findMany({ orderBy: { updatedAt: 'desc' } });
+  async list(workspaceId?: string) {
+    return prisma.rpaFlow.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { updatedAt: 'desc' }
+    });
   }
 
   async get(id: string) {
@@ -35,12 +38,13 @@ export class RpaService {
     return flow;
   }
 
-  async create(input: RpaFlowInput) {
+  async create(input: RpaFlowInput, workspaceId?: string) {
     return prisma.rpaFlow.create({
       data: {
         name: input.name,
         ...(input.description ? { description: input.description } : {}),
-        steps: input.steps as unknown as Prisma.InputJsonValue
+        steps: input.steps as unknown as Prisma.InputJsonValue,
+        ...(workspaceId ? { workspaceId } : {})
       }
     });
   }

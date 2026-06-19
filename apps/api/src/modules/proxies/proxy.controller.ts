@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { ProxyService } from './proxy.service';
 
@@ -15,7 +16,8 @@ const createSchema = z.object({
   password: z.string().optional(),
   group: z.string().optional(),
   isp: z.string().optional(),
-  remarks: z.string().optional()
+  remarks: z.string().optional(),
+  countryCode: z.string().length(2).optional()
 });
 
 const updateSchema = createSchema.partial().extend({
@@ -29,13 +31,13 @@ function requireId(req: Request): string {
   return id;
 }
 
-export async function listProxiesHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await proxyService.list() });
+export async function listProxiesHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await proxyService.list(getWorkspaceId(req)) });
 }
 
 export async function createProxyHandler(req: Request, res: Response): Promise<void> {
   const input = createSchema.parse(req.body);
-  const proxy = await proxyService.create(input);
+  const proxy = await proxyService.create(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'proxy.create',
@@ -75,6 +77,36 @@ export async function checkProxyHandler(req: Request, res: Response): Promise<vo
   const id = requireId(req);
   const proxy = await proxyService.check(id);
   res.json({ data: proxy });
+}
+
+const importSchema = z.object({
+  text: z.string().min(1).max(500_000),
+  type: z.enum(['HTTP', 'HTTPS', 'SOCKS5']).optional(),
+  group: z.string().optional()
+});
+
+// Bulk-import a provider's proxy list into the pool.
+export async function importProxiesHandler(req: Request, res: Response): Promise<void> {
+  const { text, type, group } = importSchema.parse(req.body);
+  const result = await proxyService.bulkImport(text, { type, group }, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'proxy.import',
+    resourceType: 'proxy',
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { ...result }
+  });
+  res.status(201).json({ data: result });
+}
+
+const assignSchema = z.object({ deviceId: z.string().min(1) });
+
+// Auto-assign a geo-matched healthy proxy to a device.
+export async function autoAssignProxyHandler(req: Request, res: Response): Promise<void> {
+  const { deviceId } = assignSchema.parse(req.body);
+  const result = await proxyService.autoAssignGeoMatched(deviceId, getWorkspaceId(req));
+  res.json({ data: result });
 }
 
 // IP-change endpoint: rotates the proxy's exit IP. For rotating/residential

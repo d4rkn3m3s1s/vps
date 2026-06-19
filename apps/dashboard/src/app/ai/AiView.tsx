@@ -3,21 +3,21 @@
 import { useState } from 'react';
 
 const AIGC = [
-  { title: 'Image to Video', desc: 'Generate short videos from a single image.' },
-  { title: 'Text to Video', desc: 'Turn a prompt into a ready-to-post video.' },
-  { title: 'Generate Image', desc: 'Create on-brand images for your posts.' }
+  { title: 'Görüntüden Videoya', desc: 'Tek bir görselden kısa videolar oluşturun.', prompt: 'Görüntüden videoya bir üretim planlamama yardım et: bir ürün görselini bulut telefonlarım için kısa bir tanıtım videosuna dönüştürmek için hangi araçları ve adımları kullanmalıyım?' },
+  { title: 'Metinden Videoya', desc: 'Bir komutu yayına hazır videoya dönüştürün.', prompt: 'Metinden videoya bir reklam için kısa, etkili bir senaryo ve çekim listesi yaz. Konu: ' },
+  { title: 'Görsel Oluştur', desc: 'Gönderileriniz için markaya uygun görseller oluşturun.', prompt: 'Şunun için sosyal medya grafikleri üretmek üzere kullanabileceğim markaya uygun görsel komutları (stil, renkler, kompozisyon ile) öner: ' }
 ];
 
 const AUTOMATION = [
-  { title: 'TikTok video posting', icon: 'TT', color: '#111' },
-  { title: 'TikTok carousel posting', icon: 'TT', color: '#111' },
-  { title: 'Post content on Facebook', icon: 'FB', color: '#1877f2' },
-  { title: 'Publish YouTube Shorts', icon: 'YT', color: '#ff0000' },
-  { title: 'Post Reels on Instagram', icon: 'IG', color: '#d6249f' },
-  { title: 'Publish video on Reddit', icon: 'R', color: '#ff4500' }
+  { title: 'TikTok video paylaşımı', icon: 'TT', color: '#111', prompt: 'Bir bulut telefondan TikTok\'a video paylaşmak için adım adım bir RPA otomasyon akışı taslağı çıkar (uygulamayı aç, yükle, açıklama, etiketler, yayınla).' },
+  { title: 'TikTok carousel paylaşımı', icon: 'TT', color: '#111', prompt: 'Bir bulut telefondan TikTok\'a fotoğraf carousel\'i paylaşmak için adım adım bir RPA otomasyon akışı taslağı çıkar.' },
+  { title: 'Facebook\'ta içerik paylaş', icon: 'FB', color: '#1877f2', prompt: 'Bir bulut telefondan Facebook\'ta bir gönderi yayınlamak için adım adım bir RPA otomasyon akışı taslağı çıkar.' },
+  { title: 'YouTube Shorts yayınla', icon: 'YT', color: '#ff0000', prompt: 'Bir bulut telefondan YouTube Short yüklemek için adım adım bir RPA otomasyon akışı taslağı çıkar.' },
+  { title: 'Instagram\'da Reels paylaş', icon: 'IG', color: '#d6249f', prompt: 'Bir bulut telefondan Instagram Reel paylaşmak için adım adım bir RPA otomasyon akışı taslağı çıkar.' },
+  { title: 'Reddit\'te video yayınla', icon: 'R', color: '#ff4500', prompt: 'Bir bulut telefondan bir subreddit\'e video yayınlamak için adım adım bir RPA otomasyon akışı taslağı çıkar.' }
 ];
 
-const ASK = ['How does billing work?', 'How to use RPA?', 'How to configure a proxy?', 'How to choose a plan?'];
+const ASK = ['Faturalandırma nasıl çalışır?', 'RPA nasıl kullanılır?', 'Proxy nasıl yapılandırılır?', 'Nasıl plan seçilir?'];
 
 const MODELS = ['Claude Opus 4.8', 'Claude Sonnet 4.6', 'Claude Haiku 4.5'];
 
@@ -44,10 +44,10 @@ export function AiView() {
         body: JSON.stringify({ prompt: text, model })
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? 'AI request failed.');
+      if (!res.ok) throw new Error(json.error ?? 'AI isteği başarısız oldu.');
       setMessages((m) => [...m, { role: 'assistant', text: json.data.text }]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI request failed.');
+      setError(err instanceof Error ? err.message : 'AI isteği başarısız oldu.');
     } finally {
       setBusy(false);
     }
@@ -67,7 +67,7 @@ export function AiView() {
       {!hasChat ? (
         <div className="ai-hero">
           <div className="ai-logo">✦</div>
-          <h1>What can I do for you today?</h1>
+          <h1>Bugün senin için ne yapabilirim?</h1>
         </div>
       ) : (
         <div className="ai-thread">
@@ -76,14 +76,14 @@ export function AiView() {
               {m.text}
             </div>
           ))}
-          {busy ? <div className="ai-msg ai-msg-assistant helper">Fleet AI is thinking…</div> : null}
+          {busy ? <div className="ai-msg ai-msg-assistant helper">Fleet AI düşünüyor…</div> : null}
         </div>
       )}
 
       <div className="ai-input-card">
         <textarea
           className="ai-input"
-          placeholder="Ask Fleet AI…"
+          placeholder="Fleet AI'ya sorun…"
           maxLength={2000}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
@@ -110,7 +110,7 @@ export function AiView() {
           <h3 className="section-label">✶ AIGC</h3>
           <div className="ai-stack">
             {AIGC.map((item) => (
-              <button type="button" className="ai-card" key={item.title}>
+              <button type="button" className="ai-card" key={item.title} disabled={busy} onClick={() => setPrompt(item.prompt)}>
                 <strong>{item.title}</strong>
                 <span className="helper">{item.desc}</span>
               </button>
@@ -119,10 +119,10 @@ export function AiView() {
         </section>
 
         <section>
-          <h3 className="section-label">⚡ AI automation</h3>
+          <h3 className="section-label">⚡ AI otomasyonu</h3>
           <div className="ai-stack">
             {AUTOMATION.map((item) => (
-              <button type="button" className="ai-row" key={item.title}>
+              <button type="button" className="ai-row" key={item.title} disabled={busy} onClick={() => setPrompt(item.prompt)}>
                 <span className="tpl-badge" style={{ background: item.color }}>
                   {item.icon}
                 </span>
@@ -133,7 +133,7 @@ export function AiView() {
         </section>
 
         <section>
-          <h3 className="section-label">✦ Ask AI</h3>
+          <h3 className="section-label">✦ AI'ya Sor</h3>
           <div className="ai-stack">
             {ASK.map((q) => (
               <button type="button" className="ai-row" key={q} disabled={busy} onClick={() => { setPrompt(q); }}>

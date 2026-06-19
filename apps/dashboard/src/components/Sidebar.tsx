@@ -1,15 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { ComponentType } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
+import {
+  LayoutGrid, Fingerprint, TerminalSquare, FolderTree, Upload, ArrowLeftRight,
+  Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
+  Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
+  BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
+  Settings
+} from 'lucide-react';
 import { useI18n } from '../lib/i18n';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 type NavItem = {
   href: string;
   tkey: string;
-  icon: string;
+  icon: ComponentType<{ size?: number | string }>;
 };
 
 type NavGroup = {
@@ -21,45 +30,78 @@ const NAV: NavGroup[] = [
   {
     tkey: 'group.primary',
     items: [
-      { href: '/profiles', tkey: 'nav.profiles', icon: '▦' },
-      { href: '/proxies', tkey: 'nav.proxies', icon: '⇄' },
-      { href: '/library', tkey: 'nav.library', icon: '◳' },
-      { href: '/applications', tkey: 'nav.applications', icon: '▤' },
-      { href: '/ai', tkey: 'nav.ai', icon: '✦' }
+      { href: '/profiles', tkey: 'nav.profiles', icon: LayoutGrid },
+      { href: '/fingerprints', tkey: 'nav.fingerprints', icon: Fingerprint },
+      { href: '/console', tkey: 'nav.console', icon: TerminalSquare },
+      { href: '/groups', tkey: 'nav.groups', icon: FolderTree },
+      { href: '/distribute', tkey: 'nav.distribute', icon: Upload },
+      { href: '/proxies', tkey: 'nav.proxies', icon: ArrowLeftRight },
+      { href: '/library', tkey: 'nav.library', icon: Library },
+      { href: '/applications', tkey: 'nav.applications', icon: AppWindow },
+      { href: '/images', tkey: 'nav.images', icon: Layers },
+      { href: '/ai', tkey: 'nav.ai', icon: Sparkles }
     ]
   },
   {
     tkey: 'group.discover',
     items: [
-      { href: '/', tkey: 'nav.overview', icon: '◴' },
-      { href: '/analytics', tkey: 'nav.analytics', icon: '∿' },
-      { href: '/automation', tkey: 'nav.automation', icon: '⚡' },
-      { href: '/rpa', tkey: 'nav.rpa', icon: '⚙' },
-      { href: '/scheduler', tkey: 'nav.scheduler', icon: '⏱' },
-      { href: '/synchronizer', tkey: 'nav.synchronizer', icon: '⧉' },
-      { href: '/geehub', tkey: 'nav.geehub', icon: '◈' },
-      { href: '/resources', tkey: 'nav.resources', icon: '❏' },
-      { href: '/referral', tkey: 'nav.referral', icon: '$' }
+      { href: '/', tkey: 'nav.overview', icon: Gauge },
+      { href: '/analytics', tkey: 'nav.analytics', icon: LineChart },
+      { href: '/health', tkey: 'nav.health', icon: HeartPulse },
+      { href: '/reports', tkey: 'nav.reports', icon: FileText },
+      { href: '/farm', tkey: 'nav.farm', icon: Sprout },
+      { href: '/automation', tkey: 'nav.automation', icon: Zap },
+      { href: '/rpa', tkey: 'nav.rpa', icon: Settings2 },
+      { href: '/scheduler', tkey: 'nav.scheduler', icon: Clock },
+      { href: '/calendar', tkey: 'nav.calendar', icon: CalendarDays },
+      { href: '/synchronizer', tkey: 'nav.synchronizer', icon: Combine },
+      { href: '/wall', tkey: 'nav.wall', icon: MonitorSmartphone },
+      { href: '/geehub', tkey: 'nav.geehub', icon: Boxes },
+      { href: '/resources', tkey: 'nav.resources', icon: BookOpen },
+      { href: '/referral', tkey: 'nav.referral', icon: Gift }
     ]
   },
   {
     tkey: 'group.team',
     items: [
-      { href: '/hosts', tkey: 'nav.hosts', icon: '🖥' },
-      { href: '/billing', tkey: 'nav.billing', icon: '▭' },
-      { href: '/members', tkey: 'nav.members', icon: '☻' },
-      { href: '/webhooks', tkey: 'nav.webhooks', icon: '⇲' },
-      { href: '/logs', tkey: 'nav.logs', icon: '☰' },
-      { href: '/settings', tkey: 'nav.settings', icon: '⚙' }
+      { href: '/hosts', tkey: 'nav.hosts', icon: Server },
+      { href: '/alerts', tkey: 'nav.alerts', icon: Bell },
+      { href: '/billing', tkey: 'nav.billing', icon: CreditCard },
+      { href: '/members', tkey: 'nav.members', icon: Users },
+      { href: '/webhooks', tkey: 'nav.webhooks', icon: Webhook },
+      { href: '/logs', tkey: 'nav.logs', icon: ScrollText },
+      { href: '/admin', tkey: 'nav.admin', icon: ShieldCheck },
+      { href: '/settings', tkey: 'nav.settings', icon: Settings }
     ]
   }
 ];
 
-export function Sidebar() {
+export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | undefined }) {
   const pathname = usePathname();
   const router = useRouter();
   const { t } = useI18n();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [role, setRole] = useState<string | null>(null);
+
+  // Look up the current user's role in the active workspace. The plan/quota card
+  // is customer-facing chrome and must NOT show for admins.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/workspaces')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json) => {
+        if (cancelled || !json) return;
+        const list: { id: string; role: string }[] = json.data ?? json ?? [];
+        const active = list.find((w) => w.id === activeWorkspaceId) ?? list[0];
+        setRole(active?.role ?? null);
+      })
+      .catch(() => {
+        /* ignore — leave role null, card stays hidden until known */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId]);
 
   // The topbar hamburger fires this event; the drawer also closes on navigation.
   useEffect(() => {
@@ -92,6 +134,8 @@ export function Sidebar() {
         </div>
       </div>
 
+      <WorkspaceSwitcher activeId={activeWorkspaceId} />
+
       <button
         type="button"
         className="cmdk-hint"
@@ -107,6 +151,7 @@ export function Sidebar() {
             <span className="nav-group-title">{t(group.tkey)}</span>
             {group.items.map((item) => {
               const active = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
+              const Icon = item.icon;
               return (
                 <Link key={item.href} href={item.href} className={`nav-item${active ? ' nav-item-active' : ''}`}>
                   {active && (
@@ -117,7 +162,7 @@ export function Sidebar() {
                     />
                   )}
                   <span className="nav-icon" aria-hidden>
-                    {item.icon}
+                    <Icon size={17} />
                   </span>
                   <span>{t(item.tkey)}</span>
                 </Link>
@@ -127,15 +172,17 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="plan-card">
-        <div className="plan-head">
-          <span className="plan-badge">Free</span>
-          <span className="plan-quota">1 / 2 {t('common.profiles')}</span>
+      {role !== 'admin' ? (
+        <div className="plan-card">
+          <div className="plan-head">
+            <span className="plan-badge">Free</span>
+            <span className="plan-quota">1 / 2 {t('common.profiles')}</span>
+          </div>
+          <Link href="/billing" className="plan-upgrade">
+            {t('common.upgrade')}
+          </Link>
         </div>
-        <Link href="/billing" className="plan-upgrade">
-          {t('common.upgrade')}
-        </Link>
-      </div>
+      ) : null}
 
       <button type="button" className="logout-btn" onClick={handleLogout}>
         ⎋ {t('common.signout')}

@@ -5,6 +5,9 @@ export type AccessTokenPayload = {
   sub: string;
   email: string;
   role: string;
+  // Active workspace this token operates in, plus the member's role there.
+  workspaceId?: string;
+  workspaceRole?: string;
   typ: 'access';
 };
 

@@ -13,26 +13,38 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'group.team': { en: 'Team', tr: 'Takım' },
   // Nav items
   'nav.profiles': { en: 'Profiles', tr: 'Profiller' },
+  'nav.fingerprints': { en: 'Identities', tr: 'Kimlikler' },
+  'nav.console': { en: 'Console', tr: 'Konsol' },
+  'nav.groups': { en: 'Groups', tr: 'Gruplar' },
+  'nav.distribute': { en: 'Distribute', tr: 'Dağıt' },
   'nav.proxies': { en: 'Proxies', tr: 'Proxyler' },
   'nav.library': { en: 'Library', tr: 'Kütüphane' },
   'nav.applications': { en: 'Applications', tr: 'Uygulamalar' },
+  'nav.images': { en: 'Image market', tr: 'İmaj Pazarı' },
+  'nav.calendar': { en: 'Content calendar', tr: 'İçerik Takvimi' },
   'nav.ai': { en: 'Fleet AI', tr: 'Fleet AI' },
   'nav.overview': { en: 'Overview', tr: 'Genel Bakış' },
   'nav.analytics': { en: 'Analytics', tr: 'Analitik' },
+  'nav.health': { en: 'Fleet health', tr: 'Filo Sağlığı' },
+  'nav.reports': { en: 'Reports', tr: 'Raporlar' },
+  'nav.farm': { en: 'Farm', tr: 'Çiftlik' },
   'nav.automation': { en: 'Automation', tr: 'Otomasyon' },
   'nav.rpa': { en: 'RPA Studio', tr: 'RPA Stüdyo' },
   'nav.scheduler': { en: 'Scheduler', tr: 'Zamanlayıcı' },
   'nav.synchronizer': { en: 'Synchronizer', tr: 'Senkronizatör' },
+  'nav.wall': { en: 'Live wall', tr: 'Canlı Duvar' },
   'nav.geehub': { en: 'FleetHub', tr: 'FleetHub' },
   'nav.resources': { en: 'Resources', tr: 'Kaynaklar' },
   'nav.referral': { en: 'Referral', tr: 'Davet' },
   'nav.hosts': { en: 'Hosts', tr: 'Sunucular' },
+  'nav.alerts': { en: 'Alerts', tr: 'Uyarılar' },
   'nav.billing': { en: 'Billing', tr: 'Faturalama' },
   'nav.members': { en: 'Members', tr: 'Üyeler' },
   'nav.webhooks': { en: 'Webhooks', tr: 'Webhook’lar' },
   'nav.jobs': { en: 'Jobs', tr: 'Görevler' },
   'nav.audit': { en: 'Audit', tr: 'Denetim' },
   'nav.logs': { en: 'Logs', tr: 'Kayıtlar' },
+  'nav.admin': { en: 'Admin', tr: 'Yönetim' },
   'nav.settings': { en: 'Settings', tr: 'Ayarlar' },
   // Common
   'common.search': { en: 'Quick search', tr: 'Hızlı arama' },
@@ -46,13 +58,13 @@ type Ctx = { lang: Lang; setLang: (l: Lang) => void; t: (key: string) => string 
 const I18nCtx = createContext<Ctx>({ lang: 'en', setLang: () => {}, t: (k) => k });
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>('en');
+  // The product ships Turkish-first; English is a fallback only.
+  const [lang, setLangState] = useState<Lang>('tr');
 
   useEffect(() => {
     try {
       const saved = localStorage.getItem('fleet.lang') as Lang | null;
       if (saved === 'en' || saved === 'tr') setLangState(saved);
-      else if (navigator.language.startsWith('tr')) setLangState('tr');
     } catch {
       /* ignore */
     }

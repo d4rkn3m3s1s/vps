@@ -3,6 +3,9 @@ import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { decryptString } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { deviceHub } from '../devices/device.hub';
+import { alertsService } from '../alerts/alerts.service';
+import { snapshotService } from '../snapshots/snapshot.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -86,11 +89,42 @@ export class AgentService {
       }
     });
 
-    void webhooksService.dispatch(outcome.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED', {
-      jobId: updated.id,
-      jobType: updated.type,
-      ...(updated.error ? { error: updated.error } : {})
+    void webhooksService.dispatch(
+      outcome.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED',
+      {
+        jobId: updated.id,
+        jobType: updated.type,
+        ...(updated.error ? { error: updated.error } : {})
+      },
+      updated.workspaceId ?? undefined
+    );
+
+    // Real-time push to dashboards.
+    deviceHub.broadcast({
+      type: 'job.updated',
+      deviceId: (updated.payload as { deviceId?: string } | null)?.deviceId ?? '',
+      payload: { id: updated.id, type: updated.type, status: updated.status },
+      timestamp: new Date().toISOString(),
+      workspaceId: updated.workspaceId ?? undefined
     });
+
+    // Snapshot capture jobs carry a snapshotId; reflect the outcome onto the
+    // snapshot row (READY + artifactRef/size, or FAILED).
+    if (updated.type === 'EMULATOR_SNAPSHOT_CREATE') {
+      const snapshotId = (updated.payload as { snapshotId?: string } | null)?.snapshotId;
+      if (snapshotId) {
+        const r = (outcome.result as { artifactRef?: string; sizeBytes?: number } | undefined) ?? null;
+        void snapshotService.onCaptureResult(snapshotId, r, outcome.status === 'COMPLETED').catch(() => undefined);
+      }
+    }
+
+    // Evaluate alert rules on job failure.
+    if (outcome.status === 'FAILED') {
+      void alertsService.evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', {
+        title: 'Job failed',
+        detail: `${updated.type} — ${updated.error ?? 'unknown error'}`
+      });
+    }
 
     return { id: updated.id, status: updated.status };
   }

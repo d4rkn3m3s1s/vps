@@ -8,6 +8,8 @@ declare global {
         userId: string;
         email: string;
         role: string;
+        workspaceId?: string;
+        workspaceRole?: string;
       };
       apiKey?: ApiKey;
       user?: User;

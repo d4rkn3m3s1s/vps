@@ -6,7 +6,7 @@ import { createHostHandler, deleteHostHandler, heartbeatHostHandler, listHostsHa
 
 export const hostsRouter = Router();
 
-hostsRouter.get('/', requireApiKey, asyncHandler(listHostsHandler));
+hostsRouter.get('/', requireApiKey, authenticateJwt, asyncHandler(listHostsHandler)); // JWT needed for workspace scoping
 hostsRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createHostHandler));
 hostsRouter.post('/:id/heartbeat', requireApiKey, asyncHandler(heartbeatHostHandler));
 hostsRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteHostHandler));

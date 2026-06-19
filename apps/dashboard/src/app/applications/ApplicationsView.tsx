@@ -19,6 +19,15 @@ export type AppDevice = { id: string; name: string };
 
 const CATEGORIES = ['All', 'Social', 'Messaging', 'Shopping', 'Finance', 'Lifestyle'];
 
+const CATEGORY_LABELS: Record<string, string> = {
+  All: 'Tümü',
+  Social: 'Sosyal',
+  Messaging: 'Mesajlaşma',
+  Shopping: 'Alışveriş',
+  Finance: 'Finans',
+  Lifestyle: 'Yaşam Tarzı'
+};
+
 function AppIcon({ short, color }: { short: string; color: string }) {
   return (
     <span className="app-icon" style={{ background: color }}>
@@ -56,10 +65,10 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         body: JSON.stringify({ packageName: installApp.packageName, deviceIds: Array.from(picked) })
       });
       if (!res.ok) throw new Error();
-      flash(`Queued ${installApp.name} on ${picked.size} phone(s)`);
+      flash(`${installApp.name} ${picked.size} telefonda kuyruğa alındı`);
       setInstallApp(null);
     } catch {
-      flash(`Failed to queue ${installApp.name}`);
+      flash(`${installApp.name} kuyruğa alınamadı`);
     } finally {
       setBusy(false);
     }
@@ -78,17 +87,17 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Applications"
-        subtitle="Real APK catalog — install on selected cloud phones with one click."
-        actions={<button type="button" className="btn-primary">⬆ Upload APK</button>}
+        title="Uygulamalar"
+        subtitle="Gerçek APK kataloğu — seçili bulut telefonlara tek tıkla kurun."
+        actions={<button type="button" className="btn-primary">⬆ APK Yükle</button>}
       />
 
       <div className="tabs">
         <button type="button" className={tab === 'store' ? 'tab tab-active' : 'tab'} onClick={() => setTab('store')}>
-          App Store ({apps.length})
+          Uygulama Mağazası ({apps.length})
         </button>
         <button type="button" className={tab === 'team' ? 'tab tab-active' : 'tab'} onClick={() => setTab('team')}>
-          Team&apos;s applications
+          Ekip uygulamaları
         </button>
       </div>
 
@@ -96,22 +105,22 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         <select className="group-select" value={category} onChange={(e) => setCategory(e.target.value)}>
           {CATEGORIES.map((cat) => (
             <option key={cat} value={cat}>
-              {cat}
+              {CATEGORY_LABELS[cat] ?? cat}
             </option>
           ))}
         </select>
         <div className="search-box">
           <span className="search-icon">⌕</span>
-          <input type="text" placeholder="Search for keyword" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input type="text" placeholder="Anahtar kelime ara" value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
       </div>
 
       {tab === 'team' ? (
         <div className="empty-state">
           <div className="empty-art">▤</div>
-          <h3>No team applications yet</h3>
-          <p>Upload an APK to share it across your team&apos;s cloud phones.</p>
-          <button type="button" className="btn-primary">⬆ Upload APK</button>
+          <h3>Henüz ekip uygulaması yok</h3>
+          <p>Ekibinizin bulut telefonlarında paylaşmak için bir APK yükleyin.</p>
+          <button type="button" className="btn-primary">⬆ APK Yükle</button>
         </div>
       ) : (
         <StaggerGrid className="app-grid">
@@ -123,12 +132,12 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
                   <strong>{app.name}</strong>
                   <span className="helper mono">
                     {app.version}
-                    {app.installs > 0 ? ` · ${app.installs} installs` : ''}
+                    {app.installs > 0 ? ` · ${app.installs} kurulum` : ''}
                   </span>
                 </div>
               </div>
               <button type="button" className="install-btn" onClick={() => openInstall(app)}>
-                Install
+                Kur
               </button>
             </MotionItem>
           ))}
@@ -139,17 +148,17 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         <div className="modal-overlay" onClick={() => !busy && setInstallApp(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Install {installApp.name}</h2>
+              <h2>{installApp.name} Kur</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setInstallApp(null)}>
                 ✕
               </button>
             </header>
             <p className="helper mono">{installApp.packageName} · v{installApp.version}</p>
             <div className="modal-section">
-              <h3>Select target phones</h3>
+              <h3>Hedef telefonları seçin</h3>
               <div className="run-devices">
                 {devices.length === 0 ? (
-                  <span className="helper">No cloud phones available — create one first.</span>
+                  <span className="helper">Kullanılabilir bulut telefon yok — önce bir tane oluşturun.</span>
                 ) : (
                   devices.map((d) => (
                     <label className="field-check" key={d.id}>
@@ -172,9 +181,9 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
               </div>
             </div>
             <footer className="modal-foot">
-              <span className="helper">{picked.size} selected</span>
+              <span className="helper">{picked.size} seçili</span>
               <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmInstall}>
-                {busy ? 'Installing…' : `Install on ${picked.size} phone(s)`}
+                {busy ? 'Kuruluyor…' : `${picked.size} telefona kur`}
               </button>
             </footer>
           </div>

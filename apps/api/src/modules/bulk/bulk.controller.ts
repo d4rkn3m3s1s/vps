@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { JobTypes } from '../jobs/job.types';
 import { bulkService } from './bulk.service';
@@ -17,7 +18,7 @@ const bulkProxySchema = z.object({
 
 export async function bulkJobHandler(req: Request, res: Response): Promise<void> {
   const input = bulkJobSchema.parse(req.body);
-  const result = await bulkService.runJob(input);
+  const result = await bulkService.runJob(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'bulk.job',
@@ -32,7 +33,7 @@ export async function bulkJobHandler(req: Request, res: Response): Promise<void>
 
 export async function bulkProxyHandler(req: Request, res: Response): Promise<void> {
   const input = bulkProxySchema.parse(req.body);
-  const result = await bulkService.setProxy(input);
+  const result = await bulkService.setProxy(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'bulk.proxy',

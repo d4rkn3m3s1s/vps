@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { generateFingerprintData } from '../fingerprint/fingerprint.service';
+import { usageService } from '../usage/usage.service';
 import type {
   DeviceCreateInput,
   DeviceGroupCreateInput,
@@ -20,21 +21,25 @@ function toDate(value?: string | Date): Date | undefined {
 }
 
 export class DeviceService {
-  async listDevices() {
+  // All reads/writes accept an optional workspaceId. When provided (every
+  // interactive call), results are strictly scoped to that workspace so one
+  // tenant can never see or touch another's devices.
+  async listDevices(workspaceId?: string) {
     return prisma.device.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'desc' },
       include: { group: true, fingerprint: true, host: true }
     });
   }
 
-  async getDevice(id: string) {
-    return prisma.device.findUnique({
-      where: { id },
+  async getDevice(id: string, workspaceId?: string) {
+    return prisma.device.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
       include: { group: true, fingerprint: true, host: true }
     });
   }
 
-  async createDevice(input: DeviceCreateInput) {
+  async createDevice(input: DeviceCreateInput, workspaceId?: string) {
     if (input.groupId) {
       await this.assertGroupExists(input.groupId);
     }
@@ -44,13 +49,28 @@ export class DeviceService {
     if (typeof input.adbPort === 'number') data.adbPort = input.adbPort;
     if (input.androidVersion) data.androidVersion = input.androidVersion;
     if (input.groupId) data.group = { connect: { id: input.groupId } };
-    const metadata = buildJsonMetadata(input.metadata);
-    if (metadata !== undefined) data.metadata = metadata;
+    if (workspaceId) data.workspace = { connect: { id: workspaceId } };
+    // Fold any chosen hardware tier into metadata so it's visible on the device.
+    const baseMeta = buildJsonMetadata(input.metadata);
+    const hw: Record<string, unknown> = {};
+    if (typeof input.ramGb === 'number') hw.ramGb = input.ramGb;
+    if (typeof input.cpuCores === 'number') hw.cpuCores = input.cpuCores;
+    if (input.deviceModel) hw.provisionedModel = input.deviceModel;
+    const mergedMeta =
+      Object.keys(hw).length > 0
+        ? ({ ...(baseMeta && typeof baseMeta === 'object' ? (baseMeta as object) : {}), ...hw } as Prisma.InputJsonValue)
+        : baseMeta;
+    if (mergedMeta !== undefined) data.metadata = mergedMeta;
 
     // Every cloud phone is born with a unique randomized fingerprint so it looks
-    // like a distinct physical device. Country can be pinned at creation.
+    // like a distinct physical device. Country, model, and Android version can
+    // be pinned at creation (provisioning catalog); otherwise randomized.
     data.fingerprint = {
-      create: generateFingerprintData({ countryCode: input.countryCode })
+      create: generateFingerprintData({
+        countryCode: input.countryCode,
+        ...(input.deviceModel ? { model: input.deviceModel } : {}),
+        ...(input.androidVersion ? { osVersion: input.androidVersion } : {})
+      })
     };
 
     return prisma.device.create({
@@ -98,18 +118,33 @@ export class DeviceService {
   }
 
   async heartbeat(id: string, input: DeviceHeartbeatInput) {
-    await this.assertDeviceExists(id);
-    return prisma.device.update({
+    // Read prior lastSeen/status/workspace so we can meter online minutes before
+    // overwriting lastSeen.
+    const prev = await prisma.device.findUnique({
+      where: { id },
+      select: { lastSeen: true, status: true, workspaceId: true }
+    });
+    if (!prev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    const now = toDate(input.lastSeen) ?? new Date();
+
+    const updated = await prisma.device.update({
       where: { id },
       data: {
         ...(input.status ? { status: input.status } : {}),
         ...(typeof input.cpuUsage === 'number' ? { cpuUsage: input.cpuUsage } : {}),
         ...(typeof input.memoryUsage === 'number' ? { memoryUsage: input.memoryUsage } : {}),
         ...(typeof input.diskUsage === 'number' ? { diskUsage: input.diskUsage } : {}),
-        lastSeen: toDate(input.lastSeen) ?? new Date()
+        lastSeen: now
       },
       include: { group: true }
     });
+
+    // Meter usage only while the device is (and was) effectively online.
+    const effectiveStatus = input.status ?? prev.status;
+    if (effectiveStatus === 'ONLINE') {
+      void usageService.accrue(id, prev.lastSeen, now, prev.workspaceId ?? undefined);
+    }
+    return updated;
   }
 
   async deleteDevice(id: string) {
@@ -117,15 +152,12 @@ export class DeviceService {
     return prisma.device.delete({ where: { id } });
   }
 
-  async listGroups() {
-    return prisma.deviceGroup.findMany({ orderBy: { createdAt: 'desc' }, include: { devices: true } });
-  }
-
-  async createGroup(input: DeviceGroupCreateInput) {
+  async createGroup(input: DeviceGroupCreateInput, workspaceId?: string) {
     return prisma.deviceGroup.create({
       data: {
         name: input.name,
-        ...(input.description ? { description: input.description } : {})
+        ...(input.description ? { description: input.description } : {}),
+        ...(workspaceId ? { workspaceId } : {})
       },
       include: { devices: true }
     });
@@ -148,19 +180,28 @@ export class DeviceService {
     return prisma.deviceGroup.delete({ where: { id } });
   }
 
-  async countByStatus() {
+  async countByStatus(workspaceId?: string) {
+    const ws = workspaceId ? { workspaceId } : {};
     const [online, offline, starting, stopping, error, updating, rebooting, total] = await Promise.all([
-      prisma.device.count({ where: { status: 'ONLINE' } }),
-      prisma.device.count({ where: { status: 'OFFLINE' } }),
-      prisma.device.count({ where: { status: 'STARTING' } }),
-      prisma.device.count({ where: { status: 'STOPPING' } }),
-      prisma.device.count({ where: { status: 'ERROR' } }),
-      prisma.device.count({ where: { status: 'UPDATING' } }),
-      prisma.device.count({ where: { status: 'REBOOTING' } }),
-      prisma.device.count()
+      prisma.device.count({ where: { ...ws, status: 'ONLINE' } }),
+      prisma.device.count({ where: { ...ws, status: 'OFFLINE' } }),
+      prisma.device.count({ where: { ...ws, status: 'STARTING' } }),
+      prisma.device.count({ where: { ...ws, status: 'STOPPING' } }),
+      prisma.device.count({ where: { ...ws, status: 'ERROR' } }),
+      prisma.device.count({ where: { ...ws, status: 'UPDATING' } }),
+      prisma.device.count({ where: { ...ws, status: 'REBOOTING' } }),
+      prisma.device.count({ where: { ...ws } })
     ]);
 
     return { online, offline, starting, stopping, error, updating, rebooting, total };
+  }
+
+  async listGroups(workspaceId?: string) {
+    return prisma.deviceGroup.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      orderBy: { createdAt: 'desc' },
+      include: { devices: true }
+    });
   }
 
   private async assertDeviceExists(id: string): Promise<void> {

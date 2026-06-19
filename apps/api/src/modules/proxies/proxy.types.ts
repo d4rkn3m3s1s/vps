@@ -10,6 +10,7 @@ export type ProxyCreateInput = {
   group?: string | undefined;
   isp?: string | undefined;
   remarks?: string | undefined;
+  countryCode?: string | undefined;
 };
 
 export type ProxyUpdateInput = {
@@ -24,4 +25,5 @@ export type ProxyUpdateInput = {
   remarks?: string | null | undefined;
   status?: ProxyStatus | undefined;
   exportIp?: string | null | undefined;
+  countryCode?: string | null | undefined;
 };

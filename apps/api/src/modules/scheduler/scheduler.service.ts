@@ -32,14 +32,15 @@ function toDate(value: string | Date): Date {
 }
 
 export class SchedulerService {
-  async list() {
+  async list(workspaceId?: string) {
     return prisma.scheduledTask.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { nextRunAt: 'asc' },
       include: { device: { select: { id: true, name: true } } }
     });
   }
 
-  async create(input: ScheduleCreateInput) {
+  async create(input: ScheduleCreateInput, workspaceId?: string) {
     if (input.deviceId) {
       const device = await prisma.device.findUnique({ where: { id: input.deviceId } });
       if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
@@ -53,6 +54,7 @@ export class SchedulerService {
       nextRunAt: toDate(input.nextRunAt)
     };
     if (input.deviceId) data.device = { connect: { id: input.deviceId } };
+    if (workspaceId) data.workspace = { connect: { id: workspaceId } };
 
     return prisma.scheduledTask.create({ data, include: { device: { select: { id: true, name: true } } } });
   }

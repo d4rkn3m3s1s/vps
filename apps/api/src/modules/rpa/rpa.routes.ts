@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
+import { optionalJwt } from '../../middleware/optionalJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import {
   createFlowHandler,
@@ -13,7 +14,7 @@ import {
 
 export const rpaRouter = Router();
 
-rpaRouter.get('/', requireApiKey, asyncHandler(listFlowsHandler));
+rpaRouter.get('/', requireApiKey, optionalJwt, asyncHandler(listFlowsHandler));
 rpaRouter.get('/:id', requireApiKey, asyncHandler(getFlowHandler));
 rpaRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createFlowHandler));
 rpaRouter.post('/:id/run', requireApiKey, authenticateJwt, asyncHandler(runFlowHandler));

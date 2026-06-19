@@ -11,7 +11,13 @@ export const JobTypes = [
   'EMULATOR_CLOSE_APP',
   'EMULATOR_PUSH_FILE',
   'EMULATOR_SET_PROXY',
-  'RPA_RUN'
+  'RPA_RUN',
+  'EMULATOR_SNAPSHOT_CREATE',
+  'EMULATOR_SNAPSHOT_RESTORE',
+  'EMULATOR_RESET',
+  'EMULATOR_PULL_FILE',
+  'EMULATOR_CLIPBOARD_SET',
+  'EMULATOR_CLIPBOARD_GET'
 ] as const;
 
 export type JobStatus = (typeof JobStatuses)[number];

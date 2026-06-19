@@ -35,6 +35,12 @@ enum JobType {
   EMULATOR_PUSH_FILE
   EMULATOR_SET_PROXY
   RPA_RUN
+  EMULATOR_SNAPSHOT_CREATE
+  EMULATOR_SNAPSHOT_RESTORE
+  EMULATOR_RESET
+  EMULATOR_PULL_FILE
+  EMULATOR_CLIPBOARD_SET
+  EMULATOR_CLIPBOARD_GET
 }
 
 enum HostStatus {
@@ -58,10 +64,18 @@ model Host {
   kvm         Boolean    @default(true)
   agentKeyHash String?
   lastSeenAt  DateTime?
+  // Cloud provider this host was provisioned from (e.g. "vast"), and the
+  // provider-side instance/contract id so we can manage (destroy) it later.
+  provider       String?
+  vastInstanceId String?
+  workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   devices     Device[]
   claimedJobs Job[]
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum DeviceStatus {
@@ -97,12 +111,174 @@ model User {
   email          String          @unique
   passwordHash   String
   role           String          @default("admin")
+  // Two-factor auth (TOTP). Secret is stored AES-256-GCM encrypted; backup
+  // codes are stored as sha256 hashes (one-time use).
+  twoFactorEnabled     Boolean   @default(false)
+  twoFactorSecret      String?
+  twoFactorBackupCodes String[]  @default([])
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+  // Stable, human-friendly referral code (generated on first visit to /referral).
+  referralCode   String?         @unique
   refreshTokens  RefreshToken[]
   apiKeys        ApiKey[]
   auditLogs      AuditLog[]
   socialAccounts SocialAccount[]
+  memberships    WorkspaceMember[]
+  referrals      Referral[]      @relation("Referrer")
+}
+
+// One row per person invited via a referral link. Created when a referred user
+// signs up; status advances to CONVERTED (and a reward is credited) when they
+// start a paid plan.
+enum ReferralStatus {
+  INVITED
+  SIGNED_UP
+  CONVERTED
+}
+
+model Referral {
+  id            String         @id @default(cuid())
+  referrerId    String
+  referredEmail String
+  status        ReferralStatus @default(SIGNED_UP)
+  rewardCents   Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  referrer      User           @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
+}
+
+// A tenant boundary. Every fleet resource (devices, proxies, jobs, …) belongs to
+// exactly one workspace; members access only their workspaces.
+model Workspace {
+  id          String            @id @default(cuid())
+  name        String
+  slug        String            @unique
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  members     WorkspaceMember[]
+  subscription Subscription?
+  devices       Device[]
+  deviceGroups  DeviceGroup[]
+  proxies       Proxy[]
+  jobs          Job[]
+  rpaFlows      RpaFlow[]
+  schedules     ScheduledTask[]
+  farmCampaigns FarmCampaign[]
+  farmAccounts  FarmAccount[]
+  webhooks      Webhook[]
+  hosts         Host[]
+  libraryAssets LibraryAsset[]
+  socialAccounts SocialAccount[]
+  alertRules    AlertRule[]
+  alertEvents   AlertEvent[]
+  snapshots     DeviceSnapshot[]
+  scheduledPosts ScheduledPost[]
+  settings      WorkspaceSettings?
+}
+
+// One-to-one policy/configuration row for a workspace. Persisted security
+// policies that the API enforces (require2fa, restrictInvites) plus advisory
+// preferences surfaced in the admin UI.
+model WorkspaceSettings {
+  id               String    @id @default(cuid())
+  workspaceId      String    @unique
+  require2fa       Boolean   @default(false)
+  restrictInvites  Boolean   @default(true)
+  strongPasswords  Boolean   @default(true)
+  sessionExpiryHrs Int       @default(12)
+  // Vast.ai GPU-host provider API key (AES-GCM encrypted; never returned raw).
+  vastApiKey       String?
+  updatedAt        DateTime  @updatedAt
+  workspace        Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// Join table: which user belongs to which workspace, with what role.
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        String    @default("operator") // admin | operator | viewer
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+enum AlertTrigger {
+  JOB_FAILED
+  DEVICE_OFFLINE
+  QUOTA_HIGH
+  HOST_OFFLINE
+  FARM_BAN_RISK
+}
+
+// A user-defined alerting rule, scoped to a workspace. When its trigger
+// condition occurs the engine creates an AlertEvent and optionally notifies.
+model AlertRule {
+  id          String       @id @default(cuid())
+  workspaceId String
+  name        String
+  trigger     AlertTrigger
+  // Optional threshold (e.g. quota percent for QUOTA_HIGH). 0 = not used.
+  threshold   Int          @default(0)
+  notify      Boolean      @default(true)  // push to the notification center
+  webhook     Boolean      @default(false) // also fire outbound webhooks
+  email       Boolean      @default(false) // also email workspace admins
+  active      Boolean      @default(true)
+  lastFiredAt DateTime?
+  fireCount   Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  events      AlertEvent[]
+
+  @@index([workspaceId])
+}
+
+// A recorded firing of an alert rule.
+model AlertEvent {
+  id          String     @id @default(cuid())
+  ruleId      String
+  workspaceId String
+  title       String
+  detail      String
+  acknowledged Boolean   @default(false)
+  createdAt   DateTime   @default(now())
+  rule        AlertRule  @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([ruleId])
+}
+
+// Billing state for a workspace. `plan` is one of the keys in billing.plans.ts
+// (free | pro | scale). Stripe identifiers link to the test-mode customer +
+// subscription; null while on the free plan.
+model Subscription {
+  id                   String             @id @default(cuid())
+  workspaceId          String             @unique
+  plan                 String             @default("free")
+  status               SubscriptionStatus @default(ACTIVE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?            @unique
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  workspace            Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 }
 
 model RefreshToken {
@@ -118,6 +294,7 @@ model RefreshToken {
 model ApiKey {
   id          String   @id @default(cuid())
   userId      String?
+  workspaceId String?
   keyPrefix   String   @unique
   keyHash     String   @unique
   name        String
@@ -127,6 +304,8 @@ model ApiKey {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
 }
 
 model Emulator {
@@ -146,11 +325,17 @@ model Emulator {
 
 model DeviceGroup {
   id          String    @id @default(cuid())
-  name        String    @unique
+  name        String
   description String?
+  workspaceId String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   devices     Device[]
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaigns   FarmCampaign[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
 }
 
 model Device {
@@ -168,14 +353,46 @@ model Device {
   metadata       Json?
   groupId        String?
   hostId         String?
+  workspaceId    String?
+  // External ADB access (TCP bridge). When exposed, the host agent forwards the
+  // device's ADB to a public host:port, optionally restricted to an IP allowlist.
+  adbExposed     Boolean       @default(false)
+  adbPublicHost  String?
+  adbPublicPort  Int?
+  adbAllowlist   String[]      @default([])
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
   host           Host?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   // Anti-detection device fingerprint (one per cloud phone).
   fingerprint    DeviceFingerprint?
   schedules      ScheduledTask[]
+  farmAccount    FarmAccount?
+  snapshots      DeviceSnapshot[] @relation("DeviceSnapshotSource")
+  grants         DeviceGrant[]    @relation("DeviceGrants")
+  usage          DeviceUsage[]
+
+  @@index([workspaceId])
+}
+
+// Per-device, per-day online-minute rollup for usage metering / pay-as-you-go
+// billing. Accrued from heartbeats: when a device reports ONLINE, the minutes
+// since its last heartbeat are added to today's bucket (capped so a long gap
+// from a crashed agent doesn't over-bill).
+model DeviceUsage {
+  id            String   @id @default(cuid())
+  deviceId      String
+  day           DateTime @db.Date         // calendar day (UTC midnight)
+  onlineMinutes Int      @default(0)
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, day])
+  @@index([workspaceId, day])
 }
 
 // A randomized hardware/identity fingerprint bound to a single cloud phone so
@@ -223,10 +440,14 @@ model Job {
   finishedAt  DateTime?
   claimedByHostId String?
   claimedAt   DateTime?
+  workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
   emulator    Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
   claimedBy   Host?      @relation(fields: [claimedByHostId], references: [id], onDelete: SetNull)
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 model AuditLog {
@@ -239,8 +460,11 @@ model AuditLog {
   ip          String?
   userAgent   String?
   metadata    Json?
+  workspaceId String?
   createdAt   DateTime  @default(now())
   user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
 }
 
 model SocialAccount {
@@ -255,12 +479,15 @@ model SocialAccount {
   tokenExpiresAt     DateTime?
   scopes             String[]       @default([])
   metadata           Json?
+  workspaceId        String?
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
   user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace          Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
+  @@index([workspaceId])
 }
 
 enum LibraryAssetType {
@@ -279,8 +506,12 @@ model LibraryAsset {
   url         String?
   tags        String[]         @default([])
   metadata    Json?
+  workspaceId String?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 model Proxy {
@@ -296,10 +527,17 @@ model Proxy {
   isp         String?
   remarks     String?
   exportIp    String?
+  // ISO country code for geo-matching a proxy to a device's locale (e.g. assign
+  // a US exit to a US-fingerprinted phone). Set on import or detected on check.
+  countryCode String?
   status      ProxyStatus  @default(UNKNOWN)
   lastCheckedAt DateTime?
+  workspaceId String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum ScheduleStatus {
@@ -327,9 +565,13 @@ model ScheduledTask {
   nextRunAt   DateTime
   lastRunAt   DateTime?
   runCount    Int            @default(0)
+  workspaceId String?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
   device      Device?        @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 // Per-account engagement metrics powering the AI Analytics dashboard.
@@ -408,14 +650,150 @@ model RpaFlow {
   steps       Json     @default("[]")
   runCount    Int      @default(0)
   lastRunAt   DateTime?
+  workspaceId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaigns   FarmCampaign[]
+  earlyCampaigns  FarmCampaign[] @relation("FarmEarlyFlow")
+  midCampaigns    FarmCampaign[] @relation("FarmMidFlow")
+  matureCampaigns FarmCampaign[] @relation("FarmMatureFlow")
+
+  @@index([workspaceId])
+}
+
+// ── Farm system ─────────────────────────────────────────────────────────────
+// A farm campaign runs an RPA flow across a target device group on a humanized
+// schedule to age/warm up the accounts on those cloud phones.
+enum FarmStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+model FarmCampaign {
+  id            String     @id @default(cuid())
+  name          String
+  status        FarmStatus @default(ACTIVE)
+  rpaFlowId     String?
+  groupId       String?
+  // Humanization: each device runs the flow at a random interval between these
+  // bounds, capped at maxActionsPerDay, only within [activeFromHour, activeToHour).
+  minIntervalMin Int       @default(45)
+  maxIntervalMin Int       @default(180)
+  maxActionsPerDay Int     @default(20)
+  activeFromHour Int       @default(8)
+  activeToHour   Int       @default(23)
+  jitterPct      Int       @default(25)
+  // Safety: rotate a proxy from the pool onto the device before each run, and
+  // auto-pause a device whose health drops below this threshold (ban defense).
+  rotateProxy        Boolean @default(false)
+  autoPauseThreshold Int     @default(40)
+  // Stage-aware warmup: optional override flows for early/mid/mature accounts.
+  // When set, the engine picks the flow that matches a device's warmup stage
+  // instead of the default rpaFlow (gentle behavior early, richer behavior late).
+  earlyFlowId   String?    // stages 1-2 (new / warming)
+  midFlowId     String?    // stage 3 (developing)
+  matureFlowId  String?    // stages 4-5 (active / mature)
+  // Engine bookkeeping.
+  nextRunAt     DateTime   @default(now())
+  lastRunAt     DateTime?
+  runCount      Int        @default(0)
+  workspaceId   String?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  rpaFlow       RpaFlow?   @relation(fields: [rpaFlowId], references: [id], onDelete: SetNull)
+  earlyFlow     RpaFlow?   @relation("FarmEarlyFlow", fields: [earlyFlowId], references: [id], onDelete: SetNull)
+  midFlow       RpaFlow?   @relation("FarmMidFlow", fields: [midFlowId], references: [id], onDelete: SetNull)
+  matureFlow    RpaFlow?   @relation("FarmMatureFlow", fields: [matureFlowId], references: [id], onDelete: SetNull)
+  group         DeviceGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs          FarmActionLog[]
+
+  @@index([workspaceId])
+}
+
+// Per-device warmup / account-maturity tracking. One row per cloud phone that
+// participates in farming.
+model FarmAccount {
+  id            String   @id @default(cuid())
+  deviceId      String   @unique
+  warmupStage   Int      @default(1)     // 1=new … 5=mature
+  daysActive    Int      @default(0)
+  actionsToday  Int      @default(0)
+  totalActions  Int      @default(0)
+  healthScore   Int      @default(100)   // 0-100; drops on errors
+  consecutiveErrors Int  @default(0)      // resets on a clean run
+  paused        Boolean  @default(false)  // auto-paused by ban defense
+  pausedReason  String?
+  lastActionAt  DateTime?
+  dayAnchor     DateTime @default(now()) // when actionsToday was last reset
+  // ── Proactive ban-risk scoring ──
+  // 0-100 leading indicator (errors, velocity, proxy/stage mismatch). Persisted
+  // so the engine can detect a *rising* trend and alert once per cooldown rather
+  // than re-firing every tick while the device stays risky.
+  riskScore     Int      @default(0)
+  riskAlertedAt DateTime?
+  // ── Account identity (the credentials being warmed up) ──
+  // Which platform this account lives on, the public handle, and the secrets.
+  // Secrets are AES-256-GCM encrypted at rest and NEVER returned to clients raw.
+  platform      String?  // x | instagram | meta | tiktok | other
+  username      String?
+  emailAddress  String?
+  passwordEnc   String?  // encrypted
+  emailPasswordEnc String? // encrypted (recovery mailbox)
+  totpSecretEnc String?  // encrypted 2FA seed
+  // Operator notes + free-form tags for filtering ("aged", "buyer", "us-geo").
+  notes         String?
+  tags          String[] @default([])
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs          FarmActionLog[]
+
+  @@index([workspaceId])
+}
+
+// Append-only timeline of what each farm account actually did. Written by the
+// engine (dispatch) and the job pipeline (outcome), and rendered as a per-account
+// audit trail so a ban can be traced back to "what were the last N actions".
+model FarmActionLog {
+  id          String   @id @default(cuid())
+  deviceId    String
+  campaignId  String?
+  flowId      String?
+  flowName    String?
+  // dispatch | success | failure | paused | resumed | proxy_rotated | manual
+  kind        String
+  detail      String?
+  warmupStage Int      @default(0)
+  healthAfter Int?
+  workspaceId String?
+  createdAt   DateTime @default(now())
+  account     FarmAccount?  @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
+  campaign    FarmCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([deviceId])
+  @@index([campaignId])
+  @@index([workspaceId])
 }
 
 enum WebhookEvent {
   JOB_COMPLETED
   JOB_FAILED
+  DEVICE_ONLINE
+  DEVICE_OFFLINE
+  QUOTA_HIGH
+  ALERT_FIRED
   ALL
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
 }
 
 // Outbound webhook: POSTs a JSON payload to `url` when a matching event fires.
@@ -428,8 +806,33 @@ model Webhook {
   active      Boolean      @default(true)
   lastFiredAt DateTime?
   failCount   Int          @default(0)
+  workspaceId String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+
+  @@index([workspaceId])
+}
+
+// One delivery attempt-set for a single event to a single webhook. The queue
+// retries on failure (backoff); each terminal outcome is recorded here for the
+// delivery-history UI and manual redelivery.
+model WebhookDelivery {
+  id           String                @id @default(cuid())
+  webhookId    String
+  event        WebhookEvent
+  payload      Json
+  status       WebhookDeliveryStatus @default(PENDING)
+  attempts     Int                   @default(0)
+  responseCode Int?
+  error        String?
+  createdAt    DateTime              @default(now())
+  deliveredAt  DateTime?
+  webhook      Webhook               @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId])
+  @@index([status])
 }
 
 // Restricts a member's access to specific device groups (profile-level perms).
@@ -444,4 +847,108 @@ model ProfilePermission {
   createdAt   DateTime @default(now())
 
   @@unique([userId, groupId, deviceId])
+}
+
+// ── Device snapshots / image market ─────────────────────────────────────────
+// A captured backup of a cloud phone's state (its /data, or a docker image ref)
+// that can be restored onto the same device, cloned onto a new one, or published
+// to the image market for the whole workspace (or publicly) to provision from.
+enum SnapshotVisibility {
+  PRIVATE    // only the creator
+  WORKSPACE  // anyone in the workspace
+  PUBLIC     // listed in the public image market
+}
+
+enum SnapshotStatus {
+  PENDING    // capture job dispatched, not yet ready
+  READY      // captured and restorable
+  FAILED     // capture failed
+}
+
+model DeviceSnapshot {
+  id            String             @id @default(cuid())
+  name          String
+  description   String?
+  // Where the captured artifact lives on the host (tarball path or docker image
+  // tag). The agent writes this back when the capture job completes.
+  artifactRef   String?
+  sizeBytes     BigInt             @default(0)
+  androidVersion String?
+  // Snapshot of the source device's fingerprint/app set for the market card.
+  metadata      Json?
+  tags          String[]           @default([])
+  visibility    SnapshotVisibility @default(PRIVATE)
+  status        SnapshotStatus     @default(PENDING)
+  installs      Int                @default(0)  // how many devices provisioned from it
+  sourceDeviceId String?
+  workspaceId   String?
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  sourceDevice  Device?            @relation("DeviceSnapshotSource", fields: [sourceDeviceId], references: [id], onDelete: SetNull)
+  workspace     Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([visibility])
+}
+
+// ── Device authorization / transfer ─────────────────────────────────────────
+// A time-boxed grant of access to a device for another user (think "lend this
+// phone to a teammate for 24h"). Distinct from ProfilePermission (which is a
+// standing workspace ACL); a grant is temporary, revocable, and audited.
+enum GrantAccess {
+  VIEW     // live screen only
+  CONTROL  // screen + remote input + jobs
+}
+
+model DeviceGrant {
+  id          String      @id @default(cuid())
+  deviceId    String
+  grantedToId String      // user receiving access
+  grantedById String      // user who issued it
+  access      GrantAccess @default(VIEW)
+  expiresAt   DateTime?   // null = no expiry (until revoked)
+  revokedAt   DateTime?
+  workspaceId String?
+  createdAt   DateTime    @default(now())
+  device      Device      @relation("DeviceGrants", fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+  @@index([grantedToId])
+}
+
+// ── Content calendar / scheduled posting ────────────────────────────────────
+// A piece of content scheduled to be posted from one or more cloud phones at a
+// future time. The scheduler tick dispatches the matching RPA flow with the
+// content (caption + media) injected when scheduledFor passes.
+enum ScheduledPostStatus {
+  SCHEDULED
+  POSTING
+  POSTED
+  FAILED
+  CANCELED
+}
+
+model ScheduledPost {
+  id           String              @id @default(cuid())
+  caption      String
+  platform     String              // tiktok | instagram | x | meta | youtube | other
+  mediaUrl     String?             // image/video asset to push then post
+  // Target: a device group (fan out to all) and/or explicit device ids, plus the
+  // RPA flow that performs the actual posting steps on each device.
+  groupId      String?
+  deviceIds    String[]            @default([])
+  rpaFlowId    String?
+  scheduledFor DateTime
+  status       ScheduledPostStatus @default(SCHEDULED)
+  postedAt     DateTime?
+  error        String?
+  workspaceId  String?
+  createdById  String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+  workspace    Workspace?          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([status, scheduledFor])
 }

@@ -14,9 +14,15 @@ export type Member = {
   activityCount: number;
 };
 
+const ROLE_LABEL: Record<string, string> = {
+  admin: 'Yönetici',
+  viewer: 'İzleyici',
+  member: 'Üye'
+};
+
 function roleBadge(role: string) {
   const cls = role === 'admin' ? 'role-admin' : role === 'viewer' ? 'role-viewer' : 'role-member';
-  return <span className={`role-badge ${cls}`}>{role}</span>;
+  return <span className={`role-badge ${cls}`}>{ROLE_LABEL[role] ?? role}</span>;
 }
 
 export function MembersView({ members }: { members: Member[] }) {
@@ -30,7 +36,7 @@ export function MembersView({ members }: { members: Member[] }) {
 
   async function invite() {
     if (!form.email.trim() || form.password.length < 8) {
-      setError('Valid email and password (min 8 chars) required.');
+      setError('Geçerli bir e-posta ve parola (en az 8 karakter) gereklidir.');
       return;
     }
     setBusy(true);
@@ -42,24 +48,24 @@ export function MembersView({ members }: { members: Member[] }) {
         body: JSON.stringify(form)
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(json.error ?? `Failed (${res.status})`);
+      if (!res.ok) throw new Error(json.error ?? `Başarısız (${res.status})`);
       setOpen(false);
       setForm({ email: '', password: '', role: 'member' });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add member');
+      setError(err instanceof Error ? err.message : 'Üye eklenemedi');
     } finally {
       setBusy(false);
     }
   }
 
   async function remove(id: string, email: string) {
-    if (!confirm(`Remove ${email}?`)) return;
+    if (!confirm(`${email} kaldırılsın mı?`)) return;
     setBusyId(id);
     try {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
       if (!res.ok) {
-        setToast('Could not remove member');
+        setToast('Üye kaldırılamadı');
       } else {
         router.refresh();
       }
@@ -72,21 +78,21 @@ export function MembersView({ members }: { members: Member[] }) {
   return (
     <PageMotion className="page">
       <PageHeader
-        title="Members"
-        subtitle="Team members, roles and permissions."
-        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Add member</button>}
+        title="Üyeler"
+        subtitle="Ekip üyeleri, roller ve izinler."
+        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Üye ekle</button>}
       />
 
       <div className="profile-table-wrap">
         <table className="profile-table">
           <thead>
             <tr>
-              <th>Email</th>
-              <th>Role</th>
-              <th>API keys</th>
-              <th>Activity</th>
-              <th>Joined</th>
-              <th>Operation</th>
+              <th>E-posta</th>
+              <th>Rol</th>
+              <th>API anahtarları</th>
+              <th>Etkinlik</th>
+              <th>Katıldığı tarih</th>
+              <th>İşlem</th>
             </tr>
           </thead>
           <tbody>
@@ -95,7 +101,7 @@ export function MembersView({ members }: { members: Member[] }) {
                 <td colSpan={6}>
                   <div className="table-empty">
                     <div className="empty-art">☻</div>
-                    <span>No members yet</span>
+                    <span>Henüz üye yok</span>
                   </div>
                 </td>
               </tr>
@@ -116,7 +122,7 @@ export function MembersView({ members }: { members: Member[] }) {
                       disabled={busyId === m.id}
                       onClick={() => remove(m.id, m.email)}
                     >
-                      Remove
+                      Kaldır
                     </button>
                   </td>
                 </tr>
@@ -130,36 +136,36 @@ export function MembersView({ members }: { members: Member[] }) {
         <div className="modal-overlay" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Add member</h2>
+              <h2>Üye ekle</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
                 ✕
               </button>
             </header>
             <label className="field">
-              <span>Email</span>
-              <input className="field-input" type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="member@company.com" />
+              <span>E-posta</span>
+              <input className="field-input" type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="uye@sirket.com" />
             </label>
             <div className="field-row">
               <label className="field">
-                <span>Temporary password</span>
-                <input className="field-input" type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="min 8 chars" />
+                <span>Geçici parola</span>
+                <input className="field-input" type="text" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="en az 8 karakter" />
               </label>
               <label className="field">
-                <span>Role</span>
+                <span>Rol</span>
                 <select className="field-input" value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value }))}>
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
-                  <option value="viewer">Viewer</option>
+                  <option value="member">Üye</option>
+                  <option value="admin">Yönetici</option>
+                  <option value="viewer">İzleyici</option>
                 </select>
               </label>
             </div>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => !busy && setOpen(false)}>
-                Cancel
+                İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={invite}>
-                {busy ? 'Adding…' : 'Add member'}
+                {busy ? 'Ekleniyor…' : 'Üye ekle'}
               </button>
             </footer>
           </div>

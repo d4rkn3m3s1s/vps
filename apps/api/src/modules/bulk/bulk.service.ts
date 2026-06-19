@@ -25,11 +25,11 @@ async function assertDevices(deviceIds: string[]): Promise<void> {
 
 export class BulkService {
   // Fans out one job per device for a single action (start/stop/install/etc.).
-  async runJob(input: BulkJobInput) {
+  async runJob(input: BulkJobInput, workspaceId?: string) {
     await assertDevices(input.deviceIds);
     const jobs = await Promise.all(
       input.deviceIds.map((deviceId) =>
-        createJobRecord(input.jobType, { ...(input.payload ?? {}), deviceId } as JobPayload)
+        createJobRecord(input.jobType, { ...(input.payload ?? {}), deviceId } as JobPayload, undefined, workspaceId)
       )
     );
     return { created: jobs.length, jobIds: jobs.map((j) => j.id) };
@@ -37,16 +37,14 @@ export class BulkService {
 
   // Assigns the same proxy to many devices: updates each device's connection
   // info and records a SET_PROXY job so the change is applied on the phone.
-  async setProxy(input: BulkProxyInput) {
+  async setProxy(input: BulkProxyInput, workspaceId?: string) {
     await assertDevices(input.deviceIds);
     const proxy = await prisma.proxy.findUnique({ where: { id: input.proxyId } });
     if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
 
-    await prisma.device.updateMany({
-      where: { id: { in: input.deviceIds } },
-      data: { ipAddress: proxy.host, adbPort: proxy.port }
-    });
-
+    // NOTE: do not overwrite the device's ipAddress/adbPort here — those are the
+    // phone's own ADB endpoint, not the proxy. The proxy is applied inside the
+    // phone via the SET_PROXY job payload below.
     const jobs = await Promise.all(
       input.deviceIds.map((deviceId) =>
         createJobRecord('EMULATOR_SET_PROXY', {
@@ -55,7 +53,7 @@ export class BulkService {
           host: proxy.host,
           port: proxy.port,
           type: proxy.type
-        } as JobPayload)
+        } as JobPayload, undefined, workspaceId)
       )
     );
 

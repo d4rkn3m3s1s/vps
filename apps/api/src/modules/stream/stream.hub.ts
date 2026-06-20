@@ -127,7 +127,12 @@ export class StreamHub {
     const set = this.viewers.get(deviceId);
     if (!set || set.size === 0) return;
     for (const v of set) {
-      if (v.readyState === WebSocket.OPEN) v.send(frame, { binary: true });
+      // Per-viewer backpressure: skip a slow viewer instead of letting its send
+      // queue grow unbounded (which head-of-lines fast viewers on the wall and
+      // grows API memory). A dropped frame just means the next one is fresher.
+      if (v.readyState === WebSocket.OPEN && v.bufferedAmount < 4_000_000) {
+        v.send(frame, { binary: true });
+      }
     }
   }
 
@@ -173,7 +178,9 @@ export class StreamHub {
       const serial = device.ipAddress && device.adbPort ? `${device.ipAddress}:${device.adbPort}` : null;
       // First viewer for this device → tell the host to start capturing.
       if ((this.viewers.get(deviceId)?.size ?? 0) === 1) {
-        this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 12, quality: 60 });
+        // Ask for 20fps; the agent caps at 30 and drops frames under backpressure,
+        // so requesting more here lifts the whole pipeline off the old 12fps pin.
+        this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
       }
 
       v.on('message', (raw) => this.onViewerMessage(v, raw as Buffer, device.hostId, serial));

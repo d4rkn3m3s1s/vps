@@ -353,13 +353,15 @@ function startCapture(ws, deviceId, serial, fps) {
   // so a slow/clogged link never builds an ever-growing backlog (which is what
   // pinned the stream at a few fps). bufferedAmount stays bounded → low latency.
   const MAX_BUFFERED = 1_500_000;
+  // Connect once up front, not per frame — ensureConnected spawns an `adb connect`
+  // child process, which we don't want on every tick at 20fps.
+  void ensureConnected(serial);
   const state = { serial, busy: false, timer: null, fps };
   state.timer = setInterval(async () => {
     if (state.busy || ws.readyState !== 1) return;
     if (ws.bufferedAmount > MAX_BUFFERED) return; // backpressure: skip this tick
     state.busy = true;
     try {
-      await ensureConnected(serial);
       const img = await captureFrame(serial);
       const framed = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId)), img]);
       if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) ws.send(framed);

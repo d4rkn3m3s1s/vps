@@ -16,7 +16,14 @@ export const dynamic = 'force-dynamic';
 type DeviceSummary = { total: number; online: number; offline: number; error: number };
 type Job = { id: string; type: string; status: string; createdAt: string };
 type AuditLog = { id: string; action: string; resourceType: string; createdAt: string; user?: { email: string } | null };
-type Device = { id: string; status: string; fingerprint?: { country?: string | null; countryCode?: string | null } | null };
+type Device = {
+  id: string;
+  status: string;
+  cpuUsage?: number;
+  memoryUsage?: number;
+  diskUsage?: number;
+  fingerprint?: { country?: string | null; countryCode?: string | null } | null;
+};
 type RpaFlow = { id: string; name: string; runCount: number; lastRunAt: string | null; steps?: unknown };
 type Schedule = {
   id: string;
@@ -157,17 +164,23 @@ export default async function HomePage() {
   const queueLoad = sys
     ? Math.min(100, Math.round(((sys.queue.active + sys.queue.waiting) / Math.max(totalJobsAll, 1)) * 100))
     : 0;
-  // CPU isn't directly exposed; approximate from active queue + running containers.
-  const cpuPct = sys
-    ? Math.min(100, Math.round((sys.queue.active * 18 + sys.docker.runningContainers * 9 + queueLoad) / 2))
-    : 0;
-  const storagePct = sys ? Math.min(100, 30 + Math.round((sys.database.jobs + sys.database.auditLogs) / 8)) : 0;
+  // Real device CPU/disk: average the per-device metrics the agent reports
+  // (Device.cpuUsage/diskUsage), so these reflect actual phones, not a formula.
+  const meteredDevices = deviceList.filter((d) => d.status === 'ONLINE');
+  const avg = (pick: (d: (typeof deviceList)[number]) => number | undefined): number => {
+    const vals = meteredDevices.map((d) => pick(d) ?? 0);
+    if (vals.length === 0) return 0;
+    return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+  };
+  const cpuPct = avg((d) => d.cpuUsage);
+  const deviceMemPct = avg((d) => d.memoryUsage);
+  const storagePct = avg((d) => d.diskUsage);
   const tone = (p: number): InfraMetric['tone'] => (p >= 85 ? 'error' : p >= 65 ? 'warning' : p >= 40 ? 'accent' : 'success');
   const infraMetrics: InfraMetric[] = [
-    { key: 'cpu', label: 'CPU Kullanımı', percent: cpuPct, detail: `${sys?.queue.active ?? 0} aktif iş · ${sys?.docker.runningContainers ?? 0} konteyner`, tone: tone(cpuPct) },
-    { key: 'memory', label: 'Bellek Kullanımı', percent: memPct, detail: `${sys?.memory.usedMb ?? 0} / ${sys?.memory.totalMb ?? 0} MB`, tone: tone(memPct) },
+    { key: 'cpu', label: 'Cihaz CPU (ort.)', percent: cpuPct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(cpuPct) },
+    { key: 'memory', label: 'Cihaz Bellek (ort.)', percent: deviceMemPct, detail: meteredDevices.length > 0 ? `${meteredDevices.length} cihaz ortalaması` : 'çevrimiçi cihaz yok', tone: tone(deviceMemPct) },
     { key: 'network', label: 'Kuyruk Verimi', percent: queueLoad, detail: `${sys?.queue.waiting ?? 0} bekliyor · ${sys?.queue.active ?? 0} aktif`, tone: tone(queueLoad) },
-    { key: 'storage', label: 'Depolama Kullanımı', percent: storagePct, detail: `${sys?.database.jobs ?? 0} iş · ${sys?.database.auditLogs ?? 0} günlük`, tone: tone(storagePct) }
+    { key: 'storage', label: 'Cihaz Disk (ort.)', percent: storagePct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(storagePct) }
   ];
 
   // ── Device map (real device countries → regions) ───────────────────────────

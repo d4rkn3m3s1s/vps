@@ -14,11 +14,23 @@ type SocialAccount = {
   tokenExpiresAt: string | null;
 };
 
+// Real fleet analytics — devices, jobs, farm accounts, usage.
 type AnalyticsSummary = {
-  totals: { posts: number; likes: number; comments: number; shares: number; reach: number; followers: number };
-  byProvider: Array<{ provider: string; posts: number; likes: number; comments: number; followers: number; engagementRate: number }>;
-  timeline: Array<{ date: string; posts: number; likes: number; reach: number }>;
-  topAccounts: Array<{ accountId: string | null; provider: string; followers: number; engagementRate: number }>;
+  totals: {
+    devices: number;
+    onlineDevices: number;
+    jobs: number;
+    jobsCompleted: number;
+    jobsFailed: number;
+    successRate: number;
+    farmAccounts: number;
+    avgHealthScore: number;
+    onlineMinutes: number;
+  };
+  byJobType: Array<{ type: string; total: number; completed: number; failed: number; successRate: number }>;
+  timeline: Array<{ date: string; jobs: number; completed: number; failed: number }>;
+  farmByProvider: Array<{ provider: string; accounts: number; avgHealth: number; avgWarmupStage: number }>;
+  topDevices: Array<{ deviceId: string; name: string; onlineMinutes: number; jobs: number }>;
 };
 
 const COLUMNS = ['Hesap', 'Platform', 'Kullanıcı adı', 'İzinler', 'Token durumu'];
@@ -38,75 +50,103 @@ function fmt(n: number): string {
   return String(n);
 }
 
+function jobTypeLabel(t: string): string {
+  return t.replace(/^EMULATOR_/, '').replace(/_/g, ' ').toLowerCase();
+}
+
 export default async function AnalyticsPage() {
   const [accountsRes, summaryRes] = await Promise.all([
     apiCall<SocialAccount[]>('/social', { auth: true }),
-    apiCall<AnalyticsSummary>('/analytics/summary', { auth: false })
+    apiCall<AnalyticsSummary>('/analytics/summary', { auth: true })
   ]);
 
   const accounts = accountsRes.ok && Array.isArray(accountsRes.data) ? accountsRes.data : [];
   const s = summaryRes.data;
-  const maxReach = s ? Math.max(...s.timeline.map((t) => t.reach), 1) : 1;
+  const maxJobs = s ? Math.max(...s.timeline.map((t) => t.jobs), 1) : 1;
 
   return (
     <PageMotion className="page">
       <PageHeader
         title="Analitik"
-        subtitle="İçerik performansı ve bağlı sosyal medya hesapları."
+        subtitle="Gerçek filo performansı — cihazlar, işler, farm hesapları ve kullanım."
       />
 
       {s && (
         <>
           <div className="stats">
             <div className="metric">
-              <p className="metric-label">Toplam erişim (14g)</p>
-              <p className="metric-value">{fmt(s.totals.reach)}</p>
-              <p className="metric-sub">{fmt(s.totals.followers)} takipçi</p>
+              <p className="metric-label">Cihazlar</p>
+              <p className="metric-value">{fmt(s.totals.devices)}</p>
+              <p className="metric-sub">{fmt(s.totals.onlineDevices)} çevrimiçi</p>
             </div>
             <div className="metric">
-              <p className="metric-label">Gönderiler</p>
-              <p className="metric-value">{fmt(s.totals.posts)}</p>
-              <p className="metric-sub">tüm platformlarda</p>
+              <p className="metric-label">İşler (14g)</p>
+              <p className="metric-value">{fmt(s.totals.jobs)}</p>
+              <p className="metric-sub">%{s.totals.successRate} başarı</p>
             </div>
             <div className="metric">
-              <p className="metric-label">Beğeniler</p>
-              <p className="metric-value">{fmt(s.totals.likes)}</p>
-              <p className="metric-sub">{fmt(s.totals.comments)} yorum</p>
+              <p className="metric-label">Farm hesapları</p>
+              <p className="metric-value">{fmt(s.totals.farmAccounts)}</p>
+              <p className="metric-sub">ort. sağlık {s.totals.avgHealthScore}/100</p>
             </div>
             <div className="metric">
-              <p className="metric-label">Paylaşımlar</p>
-              <p className="metric-value">{fmt(s.totals.shares)}</p>
-              <p className="metric-sub">yeniden paylaşımlar</p>
+              <p className="metric-label">Çevrimiçi süre (14g)</p>
+              <p className="metric-value">{fmt(s.totals.onlineMinutes)}</p>
+              <p className="metric-sub">dakika</p>
             </div>
           </div>
 
           <section className="section-grid">
             <div className="panel">
-              <h2>Zaman içinde erişim</h2>
-              <div className="bar-chart">
-                {s.timeline.map((t) => (
-                  <div className="bar-col" key={t.date} title={`${t.date}: ${fmt(t.reach)} erişim`}>
-                    <div className="bar-fill" style={{ height: `${Math.max(4, (t.reach / maxReach) * 100)}%` }} />
-                    <span className="bar-label">{t.date.slice(5)}</span>
-                  </div>
-                ))}
-              </div>
+              <h2>Günlük iş hacmi</h2>
+              {s.timeline.length === 0 ? (
+                <p className="helper">Henüz iş yok.</p>
+              ) : (
+                <div className="bar-chart">
+                  {s.timeline.map((t) => (
+                    <div className="bar-col" key={t.date} title={`${t.date}: ${t.jobs} iş (${t.completed} tamam, ${t.failed} hata)`}>
+                      <div className="bar-fill" style={{ height: `${Math.max(4, (t.jobs / maxJobs) * 100)}%` }} />
+                      <span className="bar-label">{t.date.slice(5)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="panel">
-              <h2>Platforma göre</h2>
+              <h2>İş tipine göre</h2>
               <div className="panel-stack">
-                {s.byProvider.map((p) => (
+                {s.byJobType.length === 0 ? (
+                  <p className="helper">Henüz iş yok.</p>
+                ) : (
+                  s.byJobType.map((j) => (
+                    <div className="row" key={j.type}>
+                      <span>{jobTypeLabel(j.type)}</span>
+                      <span className="mono helper">
+                        {j.total} iş · %{j.successRate} başarı
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </section>
+
+          {s.farmByProvider.length > 0 && (
+            <section className="panel" style={{ marginTop: '16px' }}>
+              <h2>Farm hesapları (platforma göre)</h2>
+              <div className="panel-stack">
+                {s.farmByProvider.map((p) => (
                   <div className="row" key={p.provider}>
                     <span>{providerLabel(p.provider)}</span>
                     <span className="mono helper">
-                      {fmt(p.followers)} takipçi · %{p.engagementRate} etkileşim
+                      {p.accounts} hesap · sağlık {p.avgHealth}/100 · warmup {p.avgWarmupStage}/5
                     </span>
                   </div>
                 ))}
               </div>
-            </div>
-          </section>
+            </section>
+          )}
         </>
       )}
 

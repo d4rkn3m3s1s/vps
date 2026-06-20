@@ -171,6 +171,7 @@ model Workspace {
   webhooks      Webhook[]
   hosts         Host[]
   libraryAssets LibraryAsset[]
+  resourceGuides ResourceGuide[]
   socialAccounts SocialAccount[]
   alertRules    AlertRule[]
   alertEvents   AlertEvent[]
@@ -514,6 +515,21 @@ model LibraryAsset {
   @@index([workspaceId])
 }
 
+// FAQ / how-to entries shown on the Resources page. DB-backed so operators can
+// curate their own help content per workspace instead of it being hardcoded.
+model ResourceGuide {
+  id          String   @id @default(cuid())
+  question    String
+  answer      String
+  sortOrder   Int      @default(0)
+  workspaceId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
 model Proxy {
   id          String       @id @default(cuid())
   label       String
@@ -636,6 +652,11 @@ model MarketplaceListing {
   category    ListingCategory @default(TEMPLATE)
   icon        String          @default("◈")
   price       String          @default("Free")
+  // When set, installing the listing dispatches an EMULATOR_INSTALL_APK job per
+  // selected device (same path as the app catalog). Listings without an apkUrl
+  // are non-installable templates/integrations and only bump the counter.
+  apkUrl      String?
+  packageName String?
   installs    Int             @default(0)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt

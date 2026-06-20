@@ -103,8 +103,7 @@ async function runJob(job) {
       const pkg = String(p(payload, 'packageName', ''));
       if (!pkg) throw new Error('packageName is required');
       const activity = p(payload, 'activity', null);
-      if (activity) return { stdout: await adb(serial, ['shell', 'am', 'start', '-n', `${pkg}/${activity}`]) };
-      return { stdout: await adb(serial, ['shell', 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']) };
+      return { stdout: await launchApp(serial, pkg, activity) };
     }
 
     case 'EMULATOR_CLOSE_APP':
@@ -230,6 +229,28 @@ async function runJob(job) {
   }
 }
 
+// Launch an app reliably. `monkey -c LAUNCHER` is unreliable on redroid (and
+// some emulators) — the intent is accepted but the app never comes to the
+// foreground. `am start` is reliable; when no explicit activity is given we ask
+// the package manager to resolve the launchable activity, then start it.
+async function launchApp(serial, pkg, activity) {
+  if (!pkg) throw new Error('packageName is required');
+  let comp = activity ? `${pkg}/${activity}` : null;
+  if (!comp) {
+    try {
+      const out = await adb(serial, ['shell', 'cmd', 'package', 'resolve-activity', '--brief', pkg]);
+      // Last non-empty line is "pkg/activity"; fall back to monkey only if absent.
+      const line = out.split('\n').map((s) => s.trim()).filter(Boolean).pop() || '';
+      if (line.includes('/')) comp = line.startsWith(`${pkg}/`) ? line : `${pkg}/${line.split('/').pop()}`;
+    } catch {
+      /* resolver unavailable — handled below */
+    }
+  }
+  if (comp) return adb(serial, ['shell', 'am', 'start', '-n', comp]);
+  // Last resort: ask am to start the package's default launcher intent.
+  return adb(serial, ['shell', 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']);
+}
+
 async function runRpaStep(serial, step) {
   const type = String(step.type);
   switch (type) {
@@ -242,7 +263,7 @@ async function runRpaStep(serial, step) {
     case 'keyevent':
       return adb(serial, ['shell', 'input', 'keyevent', String(step.keycode)]);
     case 'openApp':
-      return adb(serial, ['shell', 'monkey', '-p', String(step.packageName ?? ''), '-c', 'android.intent.category.LAUNCHER', '1']);
+      return { stdout: await launchApp(serial, String(step.packageName ?? ''), step.activity ?? null) };
     case 'shell':
       return adb(serial, ['shell', String(step.command ?? '')]);
     case 'wait':
@@ -309,10 +330,95 @@ async function runningPhoneCount() {
   }
 }
 
+// Collect per-device CPU / memory / disk usage over ADB. Uses /proc + df (works
+// on any Android, redroid included) wrapped in `sh -c` so the parsing happens on
+// the host, not in a fragile adb pipe. Each metric is best-effort: a failure on
+// one device just omits it. Returns [{ serial, cpuUsage, memoryUsage, diskUsage }].
+async function collectDeviceMetrics() {
+  const metrics = [];
+  let list;
+  try {
+    list = await adb(null, ['devices']);
+  } catch {
+    return metrics;
+  }
+  const serials = list
+    .split('\n')
+    .slice(1)
+    .map((l) => l.trim())
+    .filter((l) => /\sdevice$/.test(l))
+    .map((l) => l.split(/\s+/)[0]);
+
+  for (const serial of serials) {
+    try {
+      // memory: MemTotal/MemAvailable from /proc/meminfo
+      const mem = await adb(serial, ['shell', 'cat', '/proc/meminfo']);
+      const total = Number((mem.match(/MemTotal:\s+(\d+)/) || [])[1] || 0);
+      const avail = Number((mem.match(/MemAvailable:\s+(\d+)/) || [])[1] || 0);
+      const memoryUsage = total > 0 ? clampPct(((total - avail) / total) * 100) : 0;
+
+      // disk: /data used% via df. `df /data` returns a single filesystem row;
+      // its mount label varies on redroid (it may show /storage/.../obb), so we
+      // just take the "Use%" column from the first data row rather than matching
+      // the mount path.
+      let diskUsage = 0;
+      try {
+        const df = await adb(serial, ['shell', 'df', '/data']);
+        const rows = df.split('\n').map((l) => l.trim()).filter(Boolean);
+        const dataRow = rows.find((l) => /\d+%/.test(l) && !/^Filesystem/i.test(l)) || '';
+        const pct = (dataRow.match(/(\d+)%/) || [])[1];
+        if (pct) diskUsage = clampPct(Number(pct));
+      } catch { /* df missing — leave 0 */ }
+
+      // cpu: 1 - idle fraction from two /proc/stat samples (~250ms apart)
+      let cpuUsage = 0;
+      try {
+        cpuUsage = await sampleCpu(serial);
+      } catch { /* leave 0 */ }
+
+      metrics.push({ serial, cpuUsage, memoryUsage, diskUsage });
+    } catch (err) {
+      log(`metrics ${serial} failed:`, err.message);
+    }
+  }
+  return metrics;
+}
+
+function clampPct(n) {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(100, Math.max(0, Math.round(n * 10) / 10));
+}
+
+// CPU% from two /proc/stat aggregate samples: busy = total - idle.
+async function sampleCpu(serial) {
+  const read = async () => {
+    const stat = await adb(serial, ['shell', 'cat', '/proc/stat']);
+    const cpu = (stat.split('\n')[0] || '').trim().split(/\s+/).slice(1).map(Number);
+    if (cpu.length < 5) return null;
+    const idle = (cpu[3] || 0) + (cpu[4] || 0); // idle + iowait
+    const total = cpu.reduce((a, b) => a + (b || 0), 0);
+    return { idle, total };
+  };
+  const a = await read();
+  await new Promise((r) => setTimeout(r, 250));
+  const b = await read();
+  if (!a || !b) return 0;
+  const dt = b.total - a.total;
+  const di = b.idle - a.idle;
+  if (dt <= 0) return 0;
+  return clampPct((1 - di / dt) * 100);
+}
+
 async function heartbeat() {
   try {
     const runningPhones = await runningPhoneCount();
     await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones }) });
+    // Per-device metrics are best-effort and reported separately so a slow
+    // collection never delays/blocks the host heartbeat itself.
+    const devices = await collectDeviceMetrics();
+    if (devices.length > 0) {
+      await api('/agent/device-metrics', { method: 'POST', body: JSON.stringify({ devices }) }).catch(() => undefined);
+    }
   } catch (err) {
     log('heartbeat failed:', err.message);
   }

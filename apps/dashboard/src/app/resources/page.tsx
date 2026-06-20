@@ -1,8 +1,11 @@
 import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
+import { serverFetch } from '../../lib/serverFetch';
 
 export const metadata = { title: 'Kaynaklar · VPS Fleet' };
 export const dynamic = 'force-dynamic';
+
+type Guide = { id: string; question: string; answer: string };
 
 // The API docs are served by the backend itself. We expose a browser-reachable
 // URL (defaults to localhost in dev) so the links work from the dashboard.
@@ -64,14 +67,11 @@ const RESOURCES: Resource[] = [
   }
 ];
 
-const GUIDES = [
-  { q: '“Başlat” neden bir telefonu PENDING durumunda tutuyor?', a: 'Bulut telefonlar KVM destekli bir sunucuda çalışır. Bir Android sunucu bağlayana kadar işler kaydedilir ancak çalıştırılmaz. Sunucu kurulum rehberine bakın.' },
-  { q: 'Nasıl proxy eklerim?', a: 'Proxyler → Proxy ekle bölümüne gidin. Sunucu/port/kimlik bilgilerini girin, ardından çıkış IP\'sini doğrulamak için Kontrol et\'e basın.' },
-  { q: 'API anahtarlarım nerede?', a: 'API anahtarları kullanıcı başına verilir. Arka uç yazma işlemleri, API anahtarınızdan otomatik olarak alınan bir JWT gerektirir.' },
-  { q: 'Senkronizatör nasıl çalışır?', a: 'İki veya daha fazla telefon seçin, birini lider olarak işaretleyin; sunucu bağlandıktan sonra liderin girişleri gerçek zamanlı olarak takipçilere yansıtılır.' }
-];
-
-export default function ResourcesPage() {
+export default async function ResourcesPage() {
+  // FAQ guides are DB-backed (workspace-scoped, seeded on first read). The
+  // quick-start cards below stay static — they're in-app navigation, not data.
+  const res = await serverFetch<Guide[]>('/resources/guides');
+  const guides = res?.data ?? [];
   return (
     <PageMotion className="page">
       <PageHeader title="Kaynaklar" subtitle="Rehberler, API belgeleri ve eğitimler." />
@@ -101,12 +101,16 @@ export default function ResourcesPage() {
       <section style={{ marginTop: '32px' }}>
         <h2 className="section-title">Sıkça Sorulan Sorular</h2>
         <div className="list-grid">
-          {GUIDES.map((g) => (
-            <article className="log-card" key={g.q}>
-              <strong>{g.q}</strong>
-              <p className="helper" style={{ marginTop: '6px' }}>{g.a}</p>
-            </article>
-          ))}
+          {guides.length === 0 ? (
+            <p className="helper">Henüz rehber yok.</p>
+          ) : (
+            guides.map((g) => (
+              <article className="log-card" key={g.id}>
+                <strong>{g.question}</strong>
+                <p className="helper" style={{ marginTop: '6px' }}>{g.answer}</p>
+              </article>
+            ))
+          )}
         </div>
       </section>
     </PageMotion>

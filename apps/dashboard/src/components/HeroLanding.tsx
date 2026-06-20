@@ -15,10 +15,12 @@ const NAV_LINKS = [
   { label: 'Contact', href: '/login' }
 ];
 
+// Capability highlights for the marketing hero — feature statements, not
+// fabricated usage numbers (we don't claim install/uptime stats we can't back).
 const STATS = [
-  { value: '10K+', label: 'Cloud Phones Run' },
-  { value: '99.9%', label: 'Fleet Uptime' },
-  { value: '24/7', label: 'Automation Engine' }
+  { value: 'KVM', label: 'Gerçek Android Cihazlar' },
+  { value: 'RPA', label: 'Görsel Otomasyon Akışları' },
+  { value: '7/24', label: 'Otomasyon Motoru' }
 ];
 
 export function HeroLanding() {

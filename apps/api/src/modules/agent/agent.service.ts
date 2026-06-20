@@ -144,12 +144,62 @@ export class AgentService {
     // ADB, so reflect them as ONLINE on the dashboard. We don't override devices
     // mid-transition (STARTING/STOPPING/REBOOTING/UPDATING) or in an ERROR state.
     const now = new Date();
+    // Capture which devices were OFFLINE before this heartbeat so we can fire a
+    // DEVICE_ONLINE webhook only on the actual OFFLINE -> ONLINE transition (not
+    // on every heartbeat of an already-online device).
+    const justCameOnline = await prisma.device.findMany({
+      where: { hostId: host.id, status: 'OFFLINE' },
+      select: { id: true, name: true, workspaceId: true }
+    });
     await prisma.device.updateMany({
       where: { hostId: host.id, status: { in: ['OFFLINE', 'ONLINE'] } },
       data: { status: 'ONLINE', lastSeen: now }
     });
+    for (const d of justCameOnline) {
+      void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
+    }
 
     return updated;
+  }
+
+  // Persist per-device CPU/mem/disk reported by the agent. The agent knows each
+  // device only by its ADB serial (ipAddress:adbPort); we map that back to the
+  // device id within this host and update the metrics + lastSeen.
+  async updateDeviceMetrics(
+    host: Host,
+    input: { devices: Array<{ serial: string; cpuUsage?: number | undefined; memoryUsage?: number | undefined; diskUsage?: number | undefined }> }
+  ): Promise<{ updated: number }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true }
+    });
+    const serialToId = new Map(
+      devices
+        .filter((d) => d.ipAddress && d.adbPort)
+        .map((d) => [`${d.ipAddress}:${d.adbPort}`, d.id])
+    );
+
+    const now = new Date();
+    let updated = 0;
+    for (const m of input.devices) {
+      const deviceId = serialToId.get(m.serial);
+      if (!deviceId) continue;
+      try {
+        await prisma.device.update({
+          where: { id: deviceId },
+          data: {
+            lastSeen: now,
+            ...(typeof m.cpuUsage === 'number' ? { cpuUsage: m.cpuUsage } : {}),
+            ...(typeof m.memoryUsage === 'number' ? { memoryUsage: m.memoryUsage } : {}),
+            ...(typeof m.diskUsage === 'number' ? { diskUsage: m.diskUsage } : {})
+          }
+        });
+        updated += 1;
+      } catch {
+        /* device may have been deleted between heartbeats — skip */
+      }
+    }
+    return { updated };
   }
 
   // Decrypt any secret fields so the agent receives ready-to-use values. The

@@ -13,6 +13,12 @@ const useTemplateSchema = z.object({
   deviceIds: z.array(z.string()).min(1)
 });
 
+// deviceIds optional: installable APK listings carry devices; template/integration
+// listings (no apkUrl) can be "installed" with an empty array (counter only).
+const installListingSchema = z.object({
+  deviceIds: z.array(z.string()).default([])
+});
+
 export async function listAppsHandler(_req: Request, res: Response): Promise<void> {
   res.json({ data: await catalogService.listApps() });
 }
@@ -51,7 +57,18 @@ export async function listListingsHandler(_req: Request, res: Response): Promise
 export async function installListingHandler(req: Request, res: Response): Promise<void> {
   const id = req.params.id;
   if (typeof id !== 'string') throw new AppError('Listing id is required', 400, 'INVALID_LISTING_ID');
-  const listing = await catalogService.installListing(id);
-  if (!listing) throw new AppError('Listing not found', 404, 'LISTING_NOT_FOUND');
-  res.json({ data: listing });
+  const { deviceIds } = installListingSchema.parse(req.body);
+  const result = await catalogService.installListing(id, deviceIds);
+  if (!result) throw new AppError('Listing not found', 404, 'LISTING_NOT_FOUND');
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'listing.install',
+    resourceType: 'listing',
+    resourceId: id,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { listingId: id, count: result.installed ?? 0 }
+  });
+  res.status(201).json({ data: result });
 }

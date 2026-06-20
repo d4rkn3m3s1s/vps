@@ -1,121 +1,134 @@
 import { prisma } from '../../db/prisma';
 
+// Analytics is now backed by REAL fleet operational data — devices, jobs, farm
+// accounts and usage — not fabricated social metrics. (The old ContentMetric
+// demo seed has been removed; there is no live social-network integration, so we
+// surface the operational data we actually have instead of inventing numbers.)
 export type AnalyticsSummary = {
-  totals: { posts: number; likes: number; comments: number; shares: number; reach: number; followers: number };
-  byProvider: Array<{ provider: string; posts: number; likes: number; comments: number; followers: number; engagementRate: number }>;
-  timeline: Array<{ date: string; posts: number; likes: number; reach: number }>;
-  topAccounts: Array<{ accountId: string | null; provider: string; followers: number; engagementRate: number }>;
+  totals: {
+    devices: number;
+    onlineDevices: number;
+    jobs: number;
+    jobsCompleted: number;
+    jobsFailed: number;
+    successRate: number; // %
+    farmAccounts: number;
+    avgHealthScore: number; // 0-100
+    onlineMinutes: number;
+  };
+  byJobType: Array<{ type: string; total: number; completed: number; failed: number; successRate: number }>;
+  timeline: Array<{ date: string; jobs: number; completed: number; failed: number }>;
+  farmByProvider: Array<{ provider: string; accounts: number; avgHealth: number; avgWarmupStage: number }>;
+  topDevices: Array<{ deviceId: string; name: string; onlineMinutes: number; jobs: number }>;
 };
 
-function engagement(likes: number, comments: number, shares: number, reach: number): number {
-  if (reach <= 0) return 0;
-  return Number((((likes + comments + shares) / reach) * 100).toFixed(2));
+function pct(part: number, total: number): number {
+  if (total <= 0) return 0;
+  return Number(((part / total) * 100).toFixed(1));
 }
 
 export class AnalyticsService {
-  async summary(days = 14): Promise<AnalyticsSummary> {
+  async summary(workspaceId: string | undefined, days = 14): Promise<AnalyticsSummary> {
     const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const metrics = await prisma.contentMetric.findMany({
-      where: { date: { gte: since } },
-      orderBy: { date: 'asc' }
-    });
+    const wsJob = workspaceId ? { workspaceId } : {};
+    const wsFarm = workspaceId ? { workspaceId } : {};
 
-    const totals = metrics.reduce(
-      (acc, m) => ({
-        posts: acc.posts + m.posts,
-        likes: acc.likes + m.likes,
-        comments: acc.comments + m.comments,
-        shares: acc.shares + m.shares,
-        reach: acc.reach + m.reach,
-        followers: Math.max(acc.followers, m.followers)
+    const [devices, onlineDevices, jobs, farmAccounts, usage] = await Promise.all([
+      prisma.device.count(workspaceId ? { where: { workspaceId } } : undefined),
+      prisma.device.count({ where: { status: 'ONLINE', ...(workspaceId ? { workspaceId } : {}) } }),
+      prisma.job.findMany({
+        where: { createdAt: { gte: since }, ...wsJob },
+        select: { type: true, status: true, createdAt: true }
       }),
-      { posts: 0, likes: 0, comments: 0, shares: 0, reach: 0, followers: 0 }
-    );
+      prisma.farmAccount.findMany({
+        where: wsFarm,
+        select: { platform: true, healthScore: true, warmupStage: true, deviceId: true }
+      }),
+      prisma.deviceUsage.findMany({
+        where: { day: { gte: since }, ...(workspaceId ? { device: { workspaceId } } : {}) },
+        select: { deviceId: true, onlineMinutes: true, device: { select: { name: true } } }
+      })
+    ]);
 
-    // Aggregate per provider.
-    const providerMap = new Map<string, { posts: number; likes: number; comments: number; shares: number; reach: number; followers: number }>();
-    for (const m of metrics) {
-      const cur = providerMap.get(m.provider) ?? { posts: 0, likes: 0, comments: 0, shares: 0, reach: 0, followers: 0 };
-      cur.posts += m.posts;
-      cur.likes += m.likes;
-      cur.comments += m.comments;
-      cur.shares += m.shares;
-      cur.reach += m.reach;
-      cur.followers = Math.max(cur.followers, m.followers);
-      providerMap.set(m.provider, cur);
+    const jobsCompleted = jobs.filter((j) => j.status === 'COMPLETED').length;
+    const jobsFailed = jobs.filter((j) => j.status === 'FAILED').length;
+    const onlineMinutes = usage.reduce((s, u) => s + u.onlineMinutes, 0);
+    const avgHealthScore =
+      farmAccounts.length > 0
+        ? Math.round(farmAccounts.reduce((s, a) => s + a.healthScore, 0) / farmAccounts.length)
+        : 0;
+
+    const totals = {
+      devices,
+      onlineDevices,
+      jobs: jobs.length,
+      jobsCompleted,
+      jobsFailed,
+      successRate: pct(jobsCompleted, jobsCompleted + jobsFailed),
+      farmAccounts: farmAccounts.length,
+      avgHealthScore,
+      onlineMinutes
+    };
+
+    // Per job type.
+    const typeMap = new Map<string, { total: number; completed: number; failed: number }>();
+    for (const j of jobs) {
+      const cur = typeMap.get(j.type) ?? { total: 0, completed: 0, failed: 0 };
+      cur.total += 1;
+      if (j.status === 'COMPLETED') cur.completed += 1;
+      if (j.status === 'FAILED') cur.failed += 1;
+      typeMap.set(j.type, cur);
     }
-    const byProvider = Array.from(providerMap.entries()).map(([provider, v]) => ({
-      provider,
-      posts: v.posts,
-      likes: v.likes,
-      comments: v.comments,
-      followers: v.followers,
-      engagementRate: engagement(v.likes, v.comments, v.shares, v.reach)
-    }));
+    const byJobType = Array.from(typeMap.entries())
+      .map(([type, v]) => ({ type, ...v, successRate: pct(v.completed, v.completed + v.failed) }))
+      .sort((a, b) => b.total - a.total);
 
     // Daily timeline.
-    const dayMap = new Map<string, { posts: number; likes: number; reach: number }>();
-    for (const m of metrics) {
-      const key = m.date.toISOString().slice(0, 10);
-      const cur = dayMap.get(key) ?? { posts: 0, likes: 0, reach: 0 };
-      cur.posts += m.posts;
-      cur.likes += m.likes;
-      cur.reach += m.reach;
+    const dayMap = new Map<string, { jobs: number; completed: number; failed: number }>();
+    for (const j of jobs) {
+      const key = j.createdAt.toISOString().slice(0, 10);
+      const cur = dayMap.get(key) ?? { jobs: 0, completed: 0, failed: 0 };
+      cur.jobs += 1;
+      if (j.status === 'COMPLETED') cur.completed += 1;
+      if (j.status === 'FAILED') cur.failed += 1;
       dayMap.set(key, cur);
     }
-    const timeline = Array.from(dayMap.entries()).map(([date, v]) => ({ date, ...v }));
+    const timeline = Array.from(dayMap.entries())
+      .map(([date, v]) => ({ date, ...v }))
+      .sort((a, b) => a.date.localeCompare(b.date));
 
-    const topAccounts = [...metrics]
-      .sort((a, b) => b.followers - a.followers)
-      .slice(0, 5)
-      .map((m) => ({
-        accountId: m.accountId,
-        provider: m.provider,
-        followers: m.followers,
-        engagementRate: engagement(m.likes, m.comments, m.shares, m.reach)
-      }));
-
-    return { totals, byProvider, timeline, topAccounts };
-  }
-
-  // Seeds a fresh install with believable demo metrics so the dashboard isn't
-  // empty before real data flows in. Idempotent: only runs when empty.
-  async seedIfEmpty(): Promise<number> {
-    const count = await prisma.contentMetric.count();
-    if (count > 0) return 0;
-
-    const providers = ['INSTAGRAM', 'TIKTOK', 'X', 'FACEBOOK'];
-    const rows: Array<{
-      provider: string;
-      date: Date;
-      posts: number;
-      likes: number;
-      comments: number;
-      shares: number;
-      followers: number;
-      reach: number;
-    }> = [];
-
-    for (let d = 13; d >= 0; d -= 1) {
-      const date = new Date(Date.now() - d * 24 * 60 * 60 * 1000);
-      for (const provider of providers) {
-        const base = provider === 'TIKTOK' ? 4000 : provider === 'INSTAGRAM' ? 2600 : 1400;
-        const reach = base + Math.round(Math.sin(d) * 400) + d * 30;
-        rows.push({
-          provider,
-          date,
-          posts: 1 + (d % 3),
-          likes: Math.round(reach * 0.08),
-          comments: Math.round(reach * 0.012),
-          shares: Math.round(reach * 0.006),
-          followers: base * 3 + (13 - d) * 25,
-          reach
-        });
-      }
+    // Farm accounts grouped by platform (x / instagram / tiktok / ...).
+    const provMap = new Map<string, { accounts: number; health: number; warmup: number }>();
+    for (const a of farmAccounts) {
+      const platform = a.platform ?? 'other';
+      const cur = provMap.get(platform) ?? { accounts: 0, health: 0, warmup: 0 };
+      cur.accounts += 1;
+      cur.health += a.healthScore;
+      cur.warmup += a.warmupStage;
+      provMap.set(platform, cur);
     }
+    const farmByProvider = Array.from(provMap.entries()).map(([provider, v]) => ({
+      provider,
+      accounts: v.accounts,
+      avgHealth: v.accounts > 0 ? Math.round(v.health / v.accounts) : 0,
+      avgWarmupStage: v.accounts > 0 ? Number((v.warmup / v.accounts).toFixed(1)) : 0
+    }));
 
-    await prisma.contentMetric.createMany({ data: rows });
-    return rows.length;
+    // Top devices by online minutes + job count.
+    const jobsByDevice = new Map<string, number>();
+    // jobs don't carry deviceId in this lightweight select; derive activity from usage.
+    const deviceAgg = new Map<string, { name: string; onlineMinutes: number }>();
+    for (const u of usage) {
+      const cur = deviceAgg.get(u.deviceId) ?? { name: u.device?.name ?? u.deviceId, onlineMinutes: 0 };
+      cur.onlineMinutes += u.onlineMinutes;
+      deviceAgg.set(u.deviceId, cur);
+    }
+    const topDevices = Array.from(deviceAgg.entries())
+      .map(([deviceId, v]) => ({ deviceId, name: v.name, onlineMinutes: v.onlineMinutes, jobs: jobsByDevice.get(deviceId) ?? 0 }))
+      .sort((a, b) => b.onlineMinutes - a.onlineMinutes)
+      .slice(0, 5);
+
+    return { totals, byJobType, timeline, farmByProvider, topDevices };
   }
 }
 

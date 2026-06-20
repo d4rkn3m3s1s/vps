@@ -12,6 +12,8 @@ import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
 import { calendarService } from './modules/calendar/calendar.service';
+import { alertsService } from './modules/alerts/alerts.service';
+import { webhooksService } from './modules/webhooks/webhooks.service';
 
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
@@ -72,6 +74,51 @@ async function main(): Promise<void> {
       })
       .catch((error) => {
         logger.error('Farm tick failed', { error: error instanceof Error ? error.message : String(error) });
+      });
+  }, 60_000).unref();
+
+  // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
+  // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without
+  // this, those two alert triggers would never fire (nothing else marks offline).
+  setInterval(() => {
+    const staleTime = new Date(Date.now() - 5 * 60 * 1000);
+    Promise.all([
+      (async () => {
+        const stale = await prisma.device.findMany({
+          where: { status: 'ONLINE', lastSeen: { lt: staleTime } },
+          select: { id: true, name: true, workspaceId: true }
+        });
+        for (const d of stale) {
+          await prisma.device.update({ where: { id: d.id }, data: { status: 'OFFLINE' } });
+          void alertsService.evaluate(d.workspaceId ?? undefined, 'DEVICE_OFFLINE', {
+            title: `Cihaz çevrimdışı: ${d.name}`,
+            detail: 'Cihaz heartbeat zaman aşımına uğradı (>5 dk).'
+          });
+          // Also fire the DEVICE_OFFLINE webhook event (was defined but never dispatched).
+          void webhooksService.dispatch('DEVICE_OFFLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
+        }
+        return stale.length;
+      })(),
+      (async () => {
+        const stale = await prisma.host.findMany({
+          where: { status: 'ONLINE', lastSeenAt: { lt: staleTime } },
+          select: { id: true, name: true, workspaceId: true }
+        });
+        for (const h of stale) {
+          await prisma.host.update({ where: { id: h.id }, data: { status: 'OFFLINE' } });
+          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_OFFLINE', {
+            title: `Sunucu çevrimdışı: ${h.name}`,
+            detail: 'Sunucu heartbeat zaman aşımına uğradı (>5 dk).'
+          });
+        }
+        return stale.length;
+      })()
+    ])
+      .then(([devices, hosts]) => {
+        if (devices > 0 || hosts > 0) logger.info('Offline detection', { devices, hosts });
+      })
+      .catch((error) => {
+        logger.error('Offline detection tick failed', { error: error instanceof Error ? error.message : String(error) });
       });
   }, 60_000).unref();
 

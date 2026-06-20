@@ -73,11 +73,13 @@ export class BillingService {
   }
 
   // Enforced before creating a device. Throws 402 if the plan limit is reached.
-  async assertCanAddDevice(workspaceId: string): Promise<void> {
+  // `unlimited` skips the quota check entirely — used for admins / workspace
+  // owners on a self-hosted install, who shouldn't be capped by billing plans.
+  async assertCanAddDevice(workspaceId: string, opts: { unlimited?: boolean } = {}): Promise<void> {
     const sub = await this.ensureSubscription(workspaceId);
     const plan = planFromKey(sub.plan);
     const count = await prisma.device.count({ where: { workspaceId } });
-    if (count >= plan.deviceLimit) {
+    if (!opts.unlimited && count >= plan.deviceLimit) {
       throw new AppError(
         `Device limit reached for the ${plan.name} plan (${plan.deviceLimit}). Upgrade to add more.`,
         402,
@@ -85,8 +87,9 @@ export class BillingService {
       );
     }
     // After this device, what % of the quota is used? Fire QUOTA_HIGH alerts.
+    // Unlimited (admin/owner) accounts have no quota to warn about.
     const pctAfter = Math.round(((count + 1) / plan.deviceLimit) * 100);
-    if (pctAfter >= 80) {
+    if (!opts.unlimited && pctAfter >= 80) {
       void alertsService.evaluate(workspaceId, 'QUOTA_HIGH', {
         title: 'Device quota almost full',
         detail: `${count + 1}/${plan.deviceLimit} cloud phones used (${pctAfter}%)`,

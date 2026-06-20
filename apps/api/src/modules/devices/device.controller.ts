@@ -155,7 +155,10 @@ export async function createDeviceHandler(req: Request, res: Response): Promise<
   const input = deviceCreateSchema.parse(req.body);
   const workspaceId = getWorkspaceId(req);
   // Enforce the plan's device quota before creating (workspace-scoped calls only).
-  if (workspaceId) await billingService.assertCanAddDevice(workspaceId);
+  // Admins / workspace owners are uncapped — on a self-hosted install the operator
+  // who runs the platform shouldn't be limited by billing plans.
+  const unlimited = req.auth?.role === 'admin' || req.auth?.workspaceRole === 'admin';
+  if (workspaceId) await billingService.assertCanAddDevice(workspaceId, { unlimited });
   const data = await deviceService.createDevice(input, workspaceId);
   deviceHub.broadcast({ type: 'device.created', deviceId: data.id, payload: data, timestamp: new Date().toISOString() });
   await writeAuditLog({

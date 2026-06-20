@@ -1,0 +1,52 @@
+# VPS Fleet — LOCAL TEST Android stack (redroid on WSL2)
+#
+# Real Android 13 containers for end-to-end testing on a Windows dev box via
+# WSL2 + Docker. Each service is one cloud phone exposed over ADB on 5555+.
+# This mirrors the production deploy/kvm-host stack but is sized for a laptop and
+# documented for WSL2 (see ./README.md).
+#
+# Bring up 2 phones (default):   docker compose up -d
+# Bring up just one:             docker compose up -d phone-01
+# Scale later: copy a phone-NN block with a new container_name + host port.
+#
+# Requires (inside WSL2): /dev/kvm and the binder_linux kernel module.
+# ./setup-wsl2.sh checks and prepares both.
+
+services:
+  phone-01:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-01
+    privileged: true
+    ports:
+      - "5555:5555" # ADB → reachable from WSL2 as 127.0.0.1:5555
+    volumes:
+      - phone01-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      # 'guest' software GPU is the most portable on a laptop; switch to 'host'
+      # only if you have GPU passthrough working in WSL2.
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+  phone-02:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-02
+    privileged: true
+    ports:
+      - "5556:5555"
+    volumes:
+      - phone02-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+volumes:
+  phone01-data:
+  phone02-data:

@@ -1,0 +1,4 @@
+# These run inside WSL2 / Node — force LF so they execute regardless of the
+# Windows checkout's autocrlf setting.
+*.sh text eol=lf
+*.mjs text eol=lf

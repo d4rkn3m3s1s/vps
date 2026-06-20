@@ -130,7 +130,7 @@ export class AgentService {
   }
 
   async heartbeat(host: Host, input: { runningPhones?: number | undefined; capacity?: number | undefined }) {
-    return prisma.host.update({
+    const updated = await prisma.host.update({
       where: { id: host.id },
       data: {
         status: 'ONLINE',
@@ -139,6 +139,17 @@ export class AgentService {
         ...(typeof input.capacity === 'number' ? { capacity: input.capacity } : {})
       }
     });
+
+    // A live agent heartbeat means this host's bound phones are reachable over
+    // ADB, so reflect them as ONLINE on the dashboard. We don't override devices
+    // mid-transition (STARTING/STOPPING/REBOOTING/UPDATING) or in an ERROR state.
+    const now = new Date();
+    await prisma.device.updateMany({
+      where: { hostId: host.id, status: { in: ['OFFLINE', 'ONLINE'] } },
+      data: { status: 'ONLINE', lastSeen: now }
+    });
+
+    return updated;
   }
 
   // Decrypt any secret fields so the agent receives ready-to-use values. The

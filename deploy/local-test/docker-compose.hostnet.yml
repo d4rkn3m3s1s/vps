@@ -1,0 +1,48 @@
+# VPS Fleet — LOCAL TEST Android stack (HOST NETWORK variant)
+#
+# Use this when the Docker daemon runs with the default bridge disabled
+# (e.g. a custom WSL2 kernel without bridge/veth/nat modules). Each redroid
+# phone joins the host network directly, so its ADB is reachable on the host's
+# own 5555 / 5556 ports — no docker bridge or port publishing needed.
+#
+#   sudo docker compose -f docker-compose.hostnet.yml up -d
+#
+# redroid's ADB port is fixed at 5555 inside the container; we move phone-02 to
+# 5556 via androidboot.redroid_adbd_port so the two don't collide on the host.
+
+services:
+  phone-01:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-01
+    privileged: true
+    network_mode: host
+    volumes:
+      - phone01-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+      - androidboot.redroid_adbd_port=5555
+    restart: unless-stopped
+
+  phone-02:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-02
+    privileged: true
+    network_mode: host
+    volumes:
+      - phone02-data:/data
+    command:
+      - androidboot.redroid_width=1080
+      - androidboot.redroid_height=2400
+      - androidboot.redroid_dpi=420
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+      - androidboot.redroid_adbd_port=5556
+    restart: unless-stopped
+
+volumes:
+  phone01-data:
+  phone02-data:

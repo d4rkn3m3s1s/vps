@@ -172,7 +172,11 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
         ))}
       </nav>
 
-      {role !== 'admin' ? (
+      {/* Plan/quota card is customer-facing chrome: show it ONLY for known
+          non-admin roles. Admins (and self-hosted operators) are uncapped, and
+          while the role is still loading (null) we hide it to avoid flashing a
+          "Free / 2 phones" badge at an admin. */}
+      {role && role !== 'admin' ? (
         <div className="plan-card">
           <div className="plan-head">
             <span className="plan-badge">Free</span>

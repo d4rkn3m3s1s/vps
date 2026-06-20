@@ -1,4 +1,5 @@
-import type { Server as HttpServer } from 'node:http';
+import type { Server as HttpServer, IncomingMessage } from 'node:http';
+import type { Socket } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { logger } from '../../lib/logger';
 
@@ -22,17 +23,32 @@ export class DeviceHub {
   private readonly clients = new Set<WebSocket>();
   private wss?: WebSocketServer;
 
-  attach(server: HttpServer): void {
+  attach(_server: HttpServer): void {
     if (this.wss) {
       return;
     }
-
-    this.wss = new WebSocketServer({ server, path: '/ws/devices' });
+    // noServer mode: a SINGLE upgrade router (in StreamHub) owns the HTTP
+    // 'upgrade' event and dispatches by path. If we used { server, path } here,
+    // ws would install its own upgrade listener that destroys sockets for paths
+    // it doesn't own (e.g. /ws/agent-stream, /ws/stream) — which broke streaming.
+    // StreamHub calls handleDeviceUpgrade() for '/ws/devices'.
+    this.wss = new WebSocketServer({ noServer: true });
     this.wss.on('connection', (socket) => {
       this.clients.add(socket);
       socket.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() }));
       socket.on('close', () => this.clients.delete(socket));
       socket.on('error', (error) => logger.error('Device websocket error', { error: error.message }));
+    });
+  }
+
+  // Called by StreamHub's upgrade router for the '/ws/devices' path.
+  handleUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): void {
+    if (!this.wss) {
+      socket.destroy();
+      return;
+    }
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.wss!.emit('connection', ws, req);
     });
   }
 

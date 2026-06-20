@@ -346,16 +346,23 @@ async function captureFrame(serial) {
 function startCapture(ws, deviceId, serial, fps) {
   stopCapture(deviceId);
   if (!serial) return;
-  const interval = Math.max(40, Math.round(1000 / Math.min(20, Math.max(1, fps || STREAM_DEFAULT_FPS))));
+  // Cap at 30fps; capture frames are raw PNG (large), so the real limiter is how
+  // fast a frame serializes over the socket, not the timer.
+  const interval = Math.max(33, Math.round(1000 / Math.min(30, Math.max(1, fps || STREAM_DEFAULT_FPS))));
+  // Drop a frame whenever the socket already has more than ~1.5 frames queued,
+  // so a slow/clogged link never builds an ever-growing backlog (which is what
+  // pinned the stream at a few fps). bufferedAmount stays bounded → low latency.
+  const MAX_BUFFERED = 1_500_000;
   const state = { serial, busy: false, timer: null, fps };
   state.timer = setInterval(async () => {
     if (state.busy || ws.readyState !== 1) return;
+    if (ws.bufferedAmount > MAX_BUFFERED) return; // backpressure: skip this tick
     state.busy = true;
     try {
       await ensureConnected(serial);
       const img = await captureFrame(serial);
       const framed = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId)), img]);
-      if (ws.readyState === 1) ws.send(framed);
+      if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) ws.send(framed);
     } catch {
       /* a dropped frame is fine; next tick retries */
     } finally {
@@ -363,7 +370,7 @@ function startCapture(ws, deviceId, serial, fps) {
     }
   }, interval);
   captures.set(deviceId, state);
-  log(`stream start ${deviceId} @ ${Math.round(1000 / interval)}fps`);
+  log(`stream start ${deviceId} @ ${Math.round(1000 / interval)}fps cap`);
 }
 
 function stopCapture(deviceId) {

@@ -19,9 +19,12 @@ services:
     volumes:
       - phone01-data:/data
     command:
-      - androidboot.redroid_width=1080
-      - androidboot.redroid_height=2400
-      - androidboot.redroid_dpi=420
+      # Lower res/dpi keeps each raw-PNG screencap small (~4x smaller than 1080p)
+      # so the codec-free WS stream sustains a higher fps. Persisted via boot args
+      # so it survives reboots (unlike a runtime 'wm size' override).
+      - androidboot.redroid_width=600
+      - androidboot.redroid_height=1280
+      - androidboot.redroid_dpi=240
       - androidboot.redroid_fps=30
       - androidboot.redroid_gpu_mode=guest
       - androidboot.redroid_adbd_port=5555
@@ -35,9 +38,12 @@ services:
     volumes:
       - phone02-data:/data
     command:
-      - androidboot.redroid_width=1080
-      - androidboot.redroid_height=2400
-      - androidboot.redroid_dpi=420
+      # Lower res/dpi keeps each raw-PNG screencap small (~4x smaller than 1080p)
+      # so the codec-free WS stream sustains a higher fps. Persisted via boot args
+      # so it survives reboots (unlike a runtime 'wm size' override).
+      - androidboot.redroid_width=600
+      - androidboot.redroid_height=1280
+      - androidboot.redroid_dpi=240
       - androidboot.redroid_fps=30
       - androidboot.redroid_gpu_mode=guest
       - androidboot.redroid_adbd_port=5556

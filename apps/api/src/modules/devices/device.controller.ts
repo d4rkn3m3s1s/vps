@@ -174,6 +174,35 @@ export async function createDeviceHandler(req: Request, res: Response): Promise<
   res.status(201).json({ data });
 }
 
+// Quick profile — Multilogin-style one-call disposable cloud phone.
+const quickProfileSchema = z.object({
+  countryCode: z.string().length(2).optional(),
+  deviceModel: z.string().optional(),
+  androidVersion: z.string().optional(),
+  ramGb: z.coerce.number().int().positive().optional(),
+  cpuCores: z.coerce.number().int().positive().optional(),
+  autoStart: z.boolean().optional()
+});
+export async function quickProfileHandler(req: Request, res: Response): Promise<void> {
+  const input = quickProfileSchema.parse(req.body ?? {});
+  const workspaceId = getWorkspaceId(req);
+  const unlimited = req.auth?.role === 'admin' || req.auth?.workspaceRole === 'admin';
+  if (workspaceId) await billingService.assertCanAddDevice(workspaceId, { unlimited });
+  const result = await deviceService.quickProfile(input, workspaceId);
+  deviceHub.broadcast({ type: 'device.created', deviceId: result.device.id, payload: result.device, timestamp: new Date().toISOString() });
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'device.quick',
+    resourceType: 'device',
+    resourceId: result.device.id,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: toAuditMetadata({ ...input })
+  });
+  res.status(201).json({ data: result });
+}
+
 export async function getDeviceHandler(req: Request, res: Response): Promise<void> {
   const id = requireDeviceId(req);
   const data = await deviceService.getDevice(id, getWorkspaceId(req));

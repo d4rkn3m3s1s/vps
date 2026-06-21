@@ -41,6 +41,7 @@ enum JobType {
   EMULATOR_PULL_FILE
   EMULATOR_CLIPBOARD_SET
   EMULATOR_CLIPBOARD_GET
+  REGISTER_INSTAGRAM
 }
 
 enum HostStatus {
@@ -177,6 +178,7 @@ model Workspace {
   alertEvents   AlertEvent[]
   snapshots     DeviceSnapshot[]
   scheduledPosts ScheduledPost[]
+  generatedAccounts GeneratedAccount[]
   settings      WorkspaceSettings?
 }
 
@@ -972,4 +974,54 @@ model ScheduledPost {
 
   @@index([workspaceId])
   @@index([status, scheduledFor])
+}
+
+// Account farm — accounts being auto-created in batches. Tracks the full
+// provisioning lifecycle: a fake identity + a disposable inbox + a rented phone
+// number + the OTP, then the on-device registration via RPA. Secrets are
+// AES-256-GCM encrypted at rest and never returned raw to clients.
+enum GeneratedAccountStatus {
+  PENDING        // queued, nothing done yet
+  IDENTITY_READY // fake identity generated
+  CONTACT_READY  // email + phone number provisioned
+  AWAITING_OTP   // number rented, waiting for the SMS code
+  REGISTERING    // on-device RPA registration in progress
+  ACTIVE         // account created successfully
+  FAILED         // gave up (no OTP, RPA error, etc.)
+}
+
+model GeneratedAccount {
+  id            String   @id @default(cuid())
+  batchId       String?  // groups accounts created in one batch run
+  platform      String   // whatsapp | instagram | facebook
+  status        GeneratedAccountStatus @default(PENDING)
+
+  // Identity (from the identity provider).
+  firstName     String?
+  lastName      String?
+  gender        String?
+  birthDate     String?  // ISO date
+  countryCode   String?  // 2-letter
+
+  // Contact + secrets (encrypted where sensitive).
+  emailAddress  String?
+  username      String?
+  passwordEnc   String?  // encrypted
+  phoneNumber   String?
+  smsRequestId  String?  // provider's rental id (poll/cancel)
+  otpCodeEnc    String?  // encrypted once received
+
+  // Where it ran + free-form notes.
+  deviceId      String?
+  error         String?
+  notes         String?
+
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([batchId])
+  @@index([status])
 }

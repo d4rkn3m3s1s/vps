@@ -1,7 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { generateFingerprintData } from '../fingerprint/fingerprint.service';
+import { createJobRecord } from '../jobs/jobs.service';
+import type { JobPayload } from '../jobs/job.types';
 import { usageService } from '../usage/usage.service';
 import type {
   DeviceCreateInput,
@@ -77,6 +80,40 @@ export class DeviceService {
       data,
       include: { group: true, fingerprint: true }
     });
+  }
+
+  // Quick profile — Multilogin-style one-call provisioning: spin up a disposable
+  // cloud phone with a fresh randomized fingerprint in a single request (name is
+  // auto-generated), tag it `quick` in metadata so it can be reaped later, and
+  // optionally dispatch a start job. Built on top of createDevice so it inherits
+  // the same fingerprint generation.
+  async quickProfile(
+    input: {
+      countryCode?: string | undefined; deviceModel?: string | undefined; androidVersion?: string | undefined;
+      ramGb?: number | undefined; cpuCores?: number | undefined; autoStart?: boolean | undefined;
+    },
+    workspaceId?: string
+  ) {
+    const stamp = randomBytes(3).toString('hex');
+    const created = await this.createDevice(
+      {
+        name: `quick-${stamp}`,
+        ...(input.countryCode ? { countryCode: input.countryCode } : {}),
+        ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),
+        ...(input.androidVersion ? { androidVersion: input.androidVersion } : {}),
+        ...(typeof input.ramGb === 'number' ? { ramGb: input.ramGb } : {}),
+        ...(typeof input.cpuCores === 'number' ? { cpuCores: input.cpuCores } : {}),
+        metadata: { quick: true }
+      } as DeviceCreateInput,
+      workspaceId
+    );
+
+    let job = null;
+    if (input.autoStart) {
+      job = await createJobRecord('EMULATOR_START', {} as unknown as JobPayload, created.id, workspaceId);
+      await prisma.device.update({ where: { id: created.id }, data: { status: 'STARTING' } });
+    }
+    return { device: created, ...(job ? { job } : {}) };
   }
 
   async updateDevice(id: string, input: DeviceUpdateInput) {

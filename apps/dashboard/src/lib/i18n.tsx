@@ -23,6 +23,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.images': { en: 'Image market', tr: 'İmaj Pazarı' },
   'nav.calendar': { en: 'Content calendar', tr: 'İçerik Takvimi' },
   'nav.ai': { en: 'Fleet AI', tr: 'Fleet AI' },
+  'nav.accounts': { en: 'Account creator', tr: 'Hesap Üretici' },
   'nav.overview': { en: 'Overview', tr: 'Genel Bakış' },
   'nav.analytics': { en: 'Analytics', tr: 'Analitik' },
   'nav.health': { en: 'Fleet health', tr: 'Filo Sağlığı' },

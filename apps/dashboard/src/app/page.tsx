@@ -33,6 +33,7 @@ type Schedule = {
   repeat: string;
   runCount: number;
   lastRunAt: string | null;
+  deviceId?: string | null;
 };
 type SystemOverview = {
   service: { uptimeSeconds: number; nodeEnv: string };
@@ -205,13 +206,16 @@ export default async function HomePage() {
   });
 
   // ── Automation center (real RPA flows + schedules) ─────────────────────────
+  // RpaFlow has no persisted device target (devices are passed at run time), so
+  // we show no device count for it — only the real run count. Schedules bind at
+  // most one device, so their real target count is 0 or 1.
   const rpaWorkflows: AutomationWorkflow[] = rpaFlows.map((f) => ({
     id: f.id,
     name: f.name,
     kind: 'rpa',
     status: f.runCount > 0 ? 'ACTIVE' : 'IDLE',
-    devices: totalDevices,
-    successRate: f.runCount > 0 ? 100 : 0,
+    devices: null,
+    runs: f.runCount,
     lastRun: f.lastRunAt,
     editHref: `/rpa`
   }));
@@ -220,8 +224,8 @@ export default async function HomePage() {
     name: s.name,
     kind: 'schedule',
     status: s.status === 'ACTIVE' ? 'ACTIVE' : s.status === 'PAUSED' ? 'PAUSED' : 'IDLE',
-    devices: totalDevices,
-    successRate: s.runCount > 0 ? 100 : 0,
+    devices: s.deviceId ? 1 : 0,
+    runs: s.runCount,
     lastRun: s.lastRunAt,
     editHref: `/scheduler`
   }));

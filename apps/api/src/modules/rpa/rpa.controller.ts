@@ -6,7 +6,11 @@ import { writeAuditLog } from '../audit/audit.service';
 import { rpaService } from './rpa.service';
 
 const stepSchema = z.object({
-  type: z.enum(['tap', 'type', 'wait', 'swipe', 'openApp', 'shell', 'keyevent']),
+  type: z.enum([
+    'tap', 'type', 'wait', 'swipe', 'openApp', 'shell', 'keyevent',
+    // UIAutomator element-based steps (read screen + act by text, not coords).
+    'uiDump', 'tapText', 'tapDesc', 'tapId', 'waitText', 'readMessages'
+  ]),
   x: z.number().optional(),
   y: z.number().optional(),
   x2: z.number().optional(),
@@ -15,7 +19,10 @@ const stepSchema = z.object({
   ms: z.number().optional(),
   packageName: z.string().optional(),
   command: z.string().optional(),
-  keycode: z.number().optional()
+  keycode: z.number().optional(),
+  // UIAutomator step params.
+  query: z.string().optional(),
+  timeoutMs: z.number().optional()
 });
 
 const createSchema = z.object({

@@ -10,9 +10,9 @@ import {
   Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
   BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings
+  Settings, UserPlus
 } from 'lucide-react';
-import { useI18n } from '../lib/i18n';
+import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 type NavItem = {
@@ -39,7 +39,8 @@ const NAV: NavGroup[] = [
       { href: '/library', tkey: 'nav.library', icon: Library },
       { href: '/applications', tkey: 'nav.applications', icon: AppWindow },
       { href: '/images', tkey: 'nav.images', icon: Layers },
-      { href: '/ai', tkey: 'nav.ai', icon: Sparkles }
+      { href: '/ai', tkey: 'nav.ai', icon: Sparkles },
+      { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus }
     ]
   },
   {
@@ -188,9 +189,12 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
         </div>
       ) : null}
 
-      <button type="button" className="logout-btn" onClick={handleLogout}>
-        ⎋ {t('common.signout')}
-      </button>
+      <div className="sidebar-foot">
+        <LanguageSwitcher />
+        <button type="button" className="logout-btn" onClick={handleLogout}>
+          ⎋ {t('common.signout')}
+        </button>
+      </div>
       </aside>
     </>
   );

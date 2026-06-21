@@ -224,9 +224,138 @@ async function runJob(job) {
     case 'EMULATOR_DELETE':
       return { acknowledged: true, note: 'lifecycle managed by docker compose on host' };
 
+    case 'REGISTER_INSTAGRAM':
+      return registerInstagram(serial, payload);
+
     default:
       throw new Error(`Unsupported job type: ${type}`);
   }
+}
+
+// ── Instagram account registration (UIAutomator, element-based) ─────────────
+//
+// Drives the IG "Sign up with email" flow that was mapped live on a real device.
+// Each screen is identified by a stable anchor text/desc; fields are filled by
+// their content-desc, buttons tapped by text. The email confirmation code is
+// read from the disposable inbox (catchmail) directly — the agent is zero-dep so
+// it just uses fetch.
+//
+// payload: { email, password, fullName, birthYear?, username?, emailDomainBase? }
+// Steps that need money / a human (SMS verify, image captcha) are NOT automated
+// here — the flow stops and reports which wall it hit so the operator can act.
+async function registerInstagram(serial, payload) {
+  const IG = 'com.instagram.android';
+  const email = String(p(payload, 'email', ''));
+  const password = String(p(payload, 'password', ''));
+  const fullName = String(p(payload, 'fullName', ''));
+  const birthYear = Number(p(payload, 'birthYear', 1995));
+  if (!email || !password || !fullName) throw new Error('email, password, fullName gerekli');
+
+  const dump = async () => parseUiNodes(await uiDumpXml(serial));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const tapNode = async (n) => { if (n) await adb(serial, ['shell', 'input', 'tap', String(n.cx), String(n.cy)]); };
+  const tapBy = async (q, field = 'any') => { const n = findNode(await dump(), q, field); if (!n) throw new Error(`buton yok: ${q}`); await tapNode(n); };
+  const typeInto = async (descQ, text) => {
+    const n = findNode(await dump(), descQ, 'desc');
+    if (!n) throw new Error(`alan yok: ${descQ}`);
+    await tapNode(n); await sleep(800);
+    await adb(serial, ['shell', 'input', 'text', String(text).replace(/ /g, '%s')]);
+  };
+  // Wait until a node matching q appears (timeout → throw).
+  const waitFor = async (q, ms = 12000) => {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      if (findNode(await dump(), q, 'any')) return true;
+      await sleep(1000);
+    }
+    throw new Error(`ekran gelmedi: ${q}`);
+  };
+
+  // 0) Launch IG fresh.
+  await launchApp(serial, IG, null);
+  await sleep(8000);
+
+  // 1) Get started → 2) Sign up with email
+  const nodes = await dump();
+  if (findNode(nodes, 'Get started', 'any')) { await tapBy('Get started'); await sleep(4000); }
+  await waitFor('Sign up with email', 12000);
+  await tapBy('Sign up with email'); await sleep(3000);
+
+  // 3) Email
+  await waitFor("What's your email", 10000);
+  await typeInto('Email,', email); await sleep(800);
+  await tapBy('Next'); await sleep(4000);
+
+  // 4) Confirmation code — read from catchmail, enter it.
+  await waitFor('confirmation code', 15000);
+  const code = await fetchEmailCode(email, 90000);
+  if (!code) throw new Error('e-posta kodu gelmedi (catchmail)');
+  await typeInto('Code input entry field', code); await sleep(1000);
+  await tapBy('Next'); await sleep(5000);
+
+  // 5) Password
+  await waitFor('Create a password', 12000);
+  await typeInto('Password,', password); await sleep(800);
+  await tapBy('Next'); await sleep(4000);
+
+  // 6) Birthday — open the date picker, roll the year back to birthYear, SET.
+  await waitFor('birthday', 12000);
+  // The picker may need to be opened; if a year column is visible, scroll it.
+  const yearNode = (await dump()).find((n) => /^(19|20)\d\d$/.test(n.text));
+  if (yearNode) {
+    const targetBack = Math.max(0, (2025 - birthYear));
+    const rolls = Math.ceil(targetBack / 3);
+    for (let i = 0; i < rolls + 2; i++) {
+      await adb(serial, ['shell', 'input', 'swipe', String(yearNode.cx), String(yearNode.cy - 120), String(yearNode.cx), String(yearNode.cy + 180), '250']);
+      await sleep(350);
+    }
+    await tapBy('SET'); await sleep(1500);
+  }
+  await tapBy('Next'); await sleep(4000);
+
+  // 7) Full name
+  await waitFor("What's your name", 12000);
+  await typeInto('Full name,', fullName); await sleep(800);
+  await tapBy('Next'); await sleep(4000);
+
+  // 8) Username (IG pre-fills a valid suggestion) → Next
+  await waitFor('Create a username', 12000);
+  await tapBy('Next'); await sleep(5000);
+
+  // 9) Terms → I agree (this actually creates the account)
+  if (findNode(await dump(), 'I agree', 'any')) { await tapBy('I agree'); await sleep(10000); }
+
+  // 10) Post-create walls we DON'T automate (cost / human): SMS verify + captcha.
+  const after = await dump();
+  const texts = after.map((n) => n.text).filter(Boolean).join(' | ');
+  if (/human/i.test(texts)) return { status: 'CAPTCHA_WALL', note: 'IG insan/captcha doğrulaması istedi (manuel/proxy gerekli)', screenTexts: texts.slice(0, 400) };
+  if (/mobile number|confirm.*number/i.test(texts)) return { status: 'SMS_WALL', note: 'IG SMS doğrulaması istedi (numara ücreti gerekli)', screenTexts: texts.slice(0, 400) };
+
+  return { status: 'CREATED', note: 'Hesap oluşturuldu', screenTexts: texts.slice(0, 400) };
+}
+
+// Poll a catchmail inbox for the latest 4-8 digit verification code.
+async function fetchEmailCode(email, timeoutMs) {
+  const base = process.env.FLEET_CATCHMAIL_BASE || 'https://api.catchmail.io';
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const list = await (await fetch(`${base}/api/v1/mailbox?address=${encodeURIComponent(email)}`)).json();
+      const msgs = Array.isArray(list.messages) ? list.messages : [];
+      if (msgs.length > 0) {
+        // Subject often contains the code ("637598 is your Instagram code").
+        const subj = String(msgs[0].subject || '');
+        const fromSubj = subj.match(/\b(\d{4,8})\b/);
+        if (fromSubj) return fromSubj[1];
+        const full = await (await fetch(`${base}/api/v1/message/${encodeURIComponent(msgs[0].id)}?mailbox=${encodeURIComponent(email)}`)).json();
+        const body = (full.body && (full.body.text || full.body.html)) || '';
+        const m = String(body).match(/\b(\d{4,8})\b/);
+        if (m) return m[1];
+      }
+    } catch { /* retry */ }
+    await new Promise((r) => setTimeout(r, 4000));
+  }
+  return null;
 }
 
 // Launch an app reliably. `monkey -c LAUNCHER` is unreliable on redroid (and
@@ -251,6 +380,64 @@ async function launchApp(serial, pkg, activity) {
   return adb(serial, ['shell', 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']);
 }
 
+// ── UIAutomator: read the on-screen element tree ────────────────────────────
+//
+// `uiautomator dump` writes an XML of every visible node (text, content-desc,
+// resource-id, clickable, bounds). We parse it with a small regex pass (zero-dep)
+// so RPA flows can READ the screen (e.g. pull WhatsApp messages) and act on
+// elements BY TEXT instead of fragile fixed coordinates — robust across screen
+// sizes and app updates.
+
+// Returns the raw XML of the current screen.
+async function uiDumpXml(serial) {
+  // Dump to a file then cat it — `dump /dev/tty` is unreliable on some builds.
+  await adb(serial, ['shell', 'uiautomator', 'dump', '/sdcard/uidump.xml']).catch(() => undefined);
+  return adb(serial, ['shell', 'cat', '/sdcard/uidump.xml']);
+}
+
+// Parse the UIAutomator XML into a flat list of nodes we care about.
+// Each: { text, desc, resId, clickable, bounds:[x1,y1,x2,y2], cx, cy }.
+function parseUiNodes(xml) {
+  const nodes = [];
+  const attr = (s, name) => {
+    const m = s.match(new RegExp(`${name}="([^"]*)"`));
+    return m ? m[1] : '';
+  };
+  // Each <node .../> (self-closing) or <node ...> tag carries the attributes.
+  const re = /<node\b([^>]*?)\/?>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const a = m[1];
+    const bounds = attr(a, 'bounds'); // "[x1,y1][x2,y2]"
+    const bm = bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+    if (!bm) continue;
+    const x1 = +bm[1], y1 = +bm[2], x2 = +bm[3], y2 = +bm[4];
+    nodes.push({
+      text: attr(a, 'text'),
+      desc: attr(a, 'content-desc'),
+      resId: attr(a, 'resource-id'),
+      clickable: attr(a, 'clickable') === 'true',
+      bounds: [x1, y1, x2, y2],
+      cx: Math.round((x1 + x2) / 2),
+      cy: Math.round((y1 + y2) / 2)
+    });
+  }
+  return nodes;
+}
+
+// Find a node whose text/desc/resId matches (substring, case-insensitive).
+// `field` picks which attribute(s) to match: 'text' | 'desc' | 'id' | 'any'.
+function findNode(nodes, query, field = 'any') {
+  const q = String(query).toLowerCase();
+  const hit = (v) => v && v.toLowerCase().includes(q);
+  return nodes.find((n) => {
+    if (field === 'text') return hit(n.text);
+    if (field === 'desc') return hit(n.desc);
+    if (field === 'id') return hit(n.resId);
+    return hit(n.text) || hit(n.desc) || hit(n.resId);
+  }) || null;
+}
+
 async function runRpaStep(serial, step) {
   const type = String(step.type);
   switch (type) {
@@ -269,6 +456,56 @@ async function runRpaStep(serial, step) {
     case 'wait':
       await new Promise((r) => setTimeout(r, Number(step.ms ?? 1000)));
       return { waited: Number(step.ms ?? 1000) };
+
+    // ── UIAutomator element-based steps ──
+    case 'uiDump': {
+      // READ the screen → return every visible text + content-desc. Used to pull
+      // messages / verify state. `texts` is the human-readable content list.
+      const xml = await uiDumpXml(serial);
+      const nodes = parseUiNodes(xml);
+      const texts = nodes.map((n) => n.text).filter(Boolean);
+      const descs = nodes.map((n) => n.desc).filter(Boolean);
+      return { texts, descs, nodeCount: nodes.length };
+    }
+    case 'tapText':
+    case 'tapDesc':
+    case 'tapId': {
+      // Tap an element BY content (text / content-desc / resource-id) — finds its
+      // centre from the UIAutomator bounds and taps there.
+      const field = type === 'tapText' ? 'text' : type === 'tapDesc' ? 'desc' : 'id';
+      const query = String(step.query ?? step.text ?? '');
+      const xml = await uiDumpXml(serial);
+      const node = findNode(parseUiNodes(xml), query, field);
+      if (!node) throw new Error(`tap target not found by ${field}: "${query}"`);
+      await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]);
+      return { tapped: { query, field, at: [node.cx, node.cy] } };
+    }
+    case 'waitText': {
+      // Poll the screen until an element with the given text/desc appears (or
+      // timeout). Lets a flow wait for "the chat opened" before typing.
+      const query = String(step.query ?? step.text ?? '');
+      const timeoutMs = Number(step.timeoutMs ?? 15000);
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        const node = findNode(parseUiNodes(await uiDumpXml(serial)), query, 'any');
+        if (node) return { found: query, waitedMs: Date.now() - start };
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      throw new Error(`waitText timed out for "${query}"`);
+    }
+    case 'readMessages': {
+      // WhatsApp-aware READ: pull message bubbles from the open chat. WhatsApp
+      // tags each bubble's text with resource-id .../message_text; fall back to
+      // any node under the conversation list when ids differ across versions.
+      const xml = await uiDumpXml(serial);
+      const nodes = parseUiNodes(xml);
+      const bubbles = nodes
+        .filter((n) => n.text && (n.resId.includes('message_text') || n.resId.includes('conversation')))
+        .map((n) => n.text);
+      const messages = bubbles.length > 0 ? bubbles : nodes.map((n) => n.text).filter(Boolean);
+      return { messages };
+    }
+
     default:
       throw new Error(`Unknown RPA step: ${type}`);
   }

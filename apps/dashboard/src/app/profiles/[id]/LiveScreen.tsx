@@ -96,6 +96,17 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
 
   useEffect(() => () => cleanup(), [cleanup]);
 
+  // Auto-start the stream once on mount when the device is online, so opening a
+  // device goes straight to a live view. The user can still Stop/Start manually.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (online && !autoStarted.current) {
+      autoStarted.current = true;
+      void connect();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online]);
+
   function send(obj: Record<string, unknown>) {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -170,6 +181,7 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
       </div>
 
       <div className="live-screen-stage">
+        <div className="live-phone-frame">
         <div
           className={`live-screen-frame ${live ? 'is-live' : ''}`}
           tabIndex={0}
@@ -183,16 +195,40 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
           <img ref={imgRef} alt="Canlı cihaz ekranı" className="live-screen-img" draggable={false} />
           {!live ? (
             <div className="live-screen-placeholder">
-              {state === 'idle' || state === 'error' || state === 'offline' ? (
+              {state === 'connecting' ? (
                 <>
-                  <Maximize2 size={32} />
-                  <p>{online ? 'Cihazı canlı görmek ve uzaktan kontrol etmek için yayını başlatın.' : 'Cihaz çevrimdışı görünüyor.'}</p>
+                  <Loader2 size={36} className="spin" />
+                  <p>Bağlanıyor…</p>
                 </>
               ) : (
-                <Loader2 size={32} className="spin" />
+                <>
+                  {online ? (
+                    <button
+                      type="button"
+                      className="live-play-btn"
+                      onClick={connect}
+                      aria-label="Yayını başlat"
+                      title="Yayını başlat"
+                    >
+                      <Play size={34} />
+                    </button>
+                  ) : (
+                    <Maximize2 size={32} />
+                  )}
+                  <p>
+                    {online
+                      ? state === 'error'
+                        ? 'Bağlantı hatası — tekrar denemek için oynata basın.'
+                        : state === 'offline'
+                          ? 'Cihaz bir sunucuya atanmamış.'
+                          : 'Canlı görüntü için oynata basın.'
+                      : 'Cihaz çevrimdışı görünüyor.'}
+                  </p>
+                </>
               )}
             </div>
           ) : null}
+        </div>
         </div>
 
         {/* Android navigation bar — works whenever the stream is live. */}

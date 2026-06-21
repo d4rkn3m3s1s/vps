@@ -61,6 +61,29 @@ paths:
       summary: List devices
     post:
       summary: Create a device
+  /devices/quick:
+    post:
+      summary: Quick profile — provision a disposable cloud phone in one call
+      description: >
+        Multilogin-style one-call provisioning. Creates a cloud phone with a
+        fresh randomized fingerprint (auto-named, tagged `quick` in metadata) and
+        optionally dispatches a start job. Authenticate with an automation API
+        key (x-api-key) for programmatic use.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                countryCode: { type: string, description: 2-letter country for the fingerprint }
+                deviceModel: { type: string }
+                androidVersion: { type: string }
+                ramGb: { type: integer }
+                cpuCores: { type: integer }
+                autoStart: { type: boolean, description: dispatch an EMULATOR_START job }
+      responses:
+        '201':
+          description: Created (returns { device, job? })
   /devices/{id}:
     get:
       summary: Get a device
@@ -74,6 +97,54 @@ paths:
   /devices/{id}/heartbeat:
     post:
       summary: Update device heartbeat
+  /accounts/providers/status:
+    get:
+      summary: Account-provider connectivity (SMS / email / identity)
+  /accounts/sms/balance:
+    get:
+      summary: SMS provider balance (sms-bus)
+  /accounts/sms/number:
+    post:
+      summary: Rent a disposable phone number for a service
+  /accounts/sms/number/{requestId}/otp:
+    get:
+      summary: Read the OTP for a rented number
+  /accounts/identity:
+    post:
+      summary: Generate a fake identity (name/address/DOB)
+  /accounts/mail/inbox:
+    post:
+      summary: Mint a disposable email inbox
+  /accounts/mail/messages:
+    get:
+      summary: List messages in a disposable inbox
+  /accounts/batch:
+    post:
+      summary: Create a batch of accounts to provision (N at once)
+  /accounts/batch/accounts:
+    get:
+      summary: List generated accounts
+  /accounts/batch/accounts/{id}/provision:
+    post:
+      summary: Provision one account (identity + email + number)
+  /accounts/batch/accounts/{id}/register:
+    post:
+      summary: Run on-device signup (Instagram) for one provisioned account
+      description: >
+        Dispatches a REGISTER_INSTAGRAM job to the chosen device. The host agent
+        drives the Instagram email-signup RPA, reading the confirmation code from
+        the disposable inbox. Stops and reports if it hits an SMS/captcha wall.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200':
+          description: Registration job dispatched (account → REGISTERING)
 components:
   securitySchemes:
     bearerAuth:

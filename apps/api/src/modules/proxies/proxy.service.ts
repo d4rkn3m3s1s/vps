@@ -113,8 +113,8 @@ export class ProxyService {
     return toPublic(proxy);
   }
 
-  async update(id: string, input: ProxyUpdateInput) {
-    await this.assertExists(id);
+  async update(id: string, input: ProxyUpdateInput, workspaceId?: string) {
+    await this.getOwned(id, workspaceId);
     const proxy = await prisma.proxy.update({
       where: { id },
       data: {
@@ -143,8 +143,8 @@ export class ProxyService {
     return proxy.password ? decryptString(proxy.password) : null;
   }
 
-  async remove(id: string) {
-    await this.assertExists(id);
+  async remove(id: string, workspaceId?: string) {
+    await this.getOwned(id, workspaceId);
     return prisma.proxy.delete({ where: { id } });
   }
 
@@ -219,9 +219,8 @@ export class ProxyService {
   //
   // SOCKS5 isn't tunnelable via ProxyAgent, so rather than fabricate an OK we
   // leave it UNKNOWN ("not verified") instead of claiming a status we can't back.
-  async check(id: string) {
-    const proxy = await prisma.proxy.findUnique({ where: { id } });
-    if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+  async check(id: string, workspaceId?: string) {
+    const proxy = await this.getOwned(id, workspaceId);
 
     let status: 'OK' | 'FAILED' | 'UNKNOWN' = 'FAILED';
     let exportIp: string | null = null;
@@ -278,5 +277,16 @@ export class ProxyService {
   private async assertExists(id: string): Promise<void> {
     const proxy = await prisma.proxy.findUnique({ where: { id } });
     if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+  }
+
+  // Workspace-scoped ownership check: returns the proxy only if the caller owns
+  // it (or the caller is a service identity with no workspace). Prevents a tenant
+  // from editing/deleting/probing another tenant's proxy by id.
+  private async getOwned(id: string, workspaceId?: string): Promise<Proxy> {
+    const proxy = await prisma.proxy.findUnique({ where: { id } });
+    if (!proxy || (workspaceId && proxy.workspaceId && proxy.workspaceId !== workspaceId)) {
+      throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+    }
+    return proxy;
   }
 }

@@ -217,7 +217,8 @@ export async function getDeviceHandler(req: Request, res: Response): Promise<voi
 export async function updateDeviceHandler(req: Request, res: Response): Promise<void> {
   const input = deviceUpdateSchema.parse(req.body);
   const id = requireDeviceId(req);
-  const data = await deviceService.updateDevice(id, input);
+  if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'control');
+  const data = await deviceService.updateDevice(id, input, getWorkspaceId(req));
   deviceHub.broadcast({ type: 'device.updated', deviceId: id, payload: data, timestamp: new Date().toISOString() });
   await writeAuditLog({
     userId: req.auth?.userId,
@@ -270,12 +271,12 @@ export async function createGroupHandler(req: Request, res: Response): Promise<v
 
 export async function updateGroupHandler(req: Request, res: Response): Promise<void> {
   const input = groupUpdateSchema.parse(req.body);
-  const data = await deviceService.updateGroup(requireGroupId(req), input);
+  const data = await deviceService.updateGroup(requireGroupId(req), input, getWorkspaceId(req));
   res.json({ data });
 }
 
 export async function deleteGroupHandler(req: Request, res: Response): Promise<void> {
-  await deviceService.deleteGroup(requireGroupId(req));
+  await deviceService.deleteGroup(requireGroupId(req), getWorkspaceId(req));
   res.status(204).send();
 }
 
@@ -288,9 +289,16 @@ export async function deviceStatusSummaryHandler(req: Request, res: Response): P
 // command executes once a KVM host is attached to the fleet.
 export async function deviceShellHandler(req: Request, res: Response): Promise<void> {
   const id = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  // Load-bearing: resolve the device strictly within the caller's workspace so a
+  // tenant can't queue an arbitrary shell command against another tenant's device
+  // (the host agent runs the job by device.hostId binding). getDevice uses a
+  // workspace-scoped findFirst → cross-workspace ids return null → 404.
+  const device = await deviceService.getDevice(id, workspaceId);
+  if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
   if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'control');
   const { command } = shellSchema.parse(req.body);
-  const job = await createJobRecord('EMULATOR_SHELL', { deviceId: id, command });
+  const job = await createJobRecord('EMULATOR_SHELL', { deviceId: id, command } as never, undefined, workspaceId);
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.shell',

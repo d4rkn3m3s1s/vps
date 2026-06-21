@@ -116,8 +116,11 @@ export class DeviceService {
     return { device: created, ...(job ? { job } : {}) };
   }
 
-  async updateDevice(id: string, input: DeviceUpdateInput) {
-    await this.assertDeviceExists(id);
+  async updateDevice(id: string, input: DeviceUpdateInput, workspaceId?: string) {
+    // Workspace-scoped: a tenant must not rename/move/reassign another tenant's
+    // device by id (e.g. reattach it to an attacker-controlled host).
+    const dev = await prisma.device.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+    if (!dev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     if (input.groupId) {
       await this.assertGroupExists(input.groupId);
     }
@@ -200,8 +203,9 @@ export class DeviceService {
     });
   }
 
-  async updateGroup(id: string, input: DeviceGroupUpdateInput) {
-    await this.assertGroupExists(id);
+  async updateGroup(id: string, input: DeviceGroupUpdateInput, workspaceId?: string) {
+    const group = await prisma.deviceGroup.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+    if (!group) throw new AppError('Device group not found', 404, 'DEVICE_GROUP_NOT_FOUND');
     return prisma.deviceGroup.update({
       where: { id },
       data: {
@@ -212,8 +216,9 @@ export class DeviceService {
     });
   }
 
-  async deleteGroup(id: string) {
-    await this.assertGroupExists(id);
+  async deleteGroup(id: string, workspaceId?: string) {
+    const group = await prisma.deviceGroup.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+    if (!group) throw new AppError('Device group not found', 404, 'DEVICE_GROUP_NOT_FOUND');
     return prisma.deviceGroup.delete({ where: { id } });
   }
 

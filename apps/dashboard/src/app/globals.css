@@ -14,6 +14,11 @@
   --panel-border-hover: rgba(79, 124, 255, 0.55);
   --text: #eef2ff;
   --muted: #8b95b8;
+  /* Aliases: some later sections reference --border / --text-muted (which were
+     never defined and silently fell back to hardcoded light colors). Define them
+     as aliases of the real tokens so those sections track the theme. */
+  --border: var(--panel-border);
+  --text-muted: var(--muted);
   --accent: #4f7cff;
   --accent-2: #6a93ff;
   --accent-3: #9db4ff;
@@ -34,11 +39,16 @@
 
 html {
   color-scheme: dark;
+  /* Guard against a stray wide child forcing a horizontal scrollbar on the
+     whole page (the bottom/side scroll bug). Vertical scroll stays normal. */
+  overflow-x: hidden;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  max-width: 100%;
+  overflow-x: hidden;
   background:
     radial-gradient(900px circle at 8% -5%, rgba(79, 124, 255, 0.16), transparent 45%),
     radial-gradient(1000px circle at 100% 0%, rgba(106, 147, 255, 0.14), transparent 42%),
@@ -1302,7 +1312,11 @@ main {
   gap: 0.9rem;
   animation: modalIn 0.32s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
-  overflow: hidden;
+  /* Tall modals (RPA/AI/fingerprint editors) must scroll inside the viewport
+     instead of pushing their header+footer (close/save) off-screen. */
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .modal::before {
@@ -1661,10 +1675,37 @@ main {
   font: inherit;
   padding: 0 0.7rem;
   outline: none;
+  /* Render native controls (select popup, date picker, calendar) in dark mode
+     so an opened <select> dropdown isn't a white, unreadable list. */
+  color-scheme: dark;
 }
 
 .field-input:focus {
   border-color: var(--accent);
+}
+
+/* Native <select> dropdown options: force readable dark colors. Without this,
+   the opened option list uses the OS/browser default (white bg) and is
+   unreadable on the dark dashboard. */
+.field-input option,
+select.field-input option,
+.inline-select option,
+.group-select option,
+select option {
+  background-color: #0e1730;
+  color: var(--text);
+}
+
+/* Any bare select/textarea in the app inherits dark rendering too. */
+select,
+textarea,
+input[type='text'],
+input[type='email'],
+input[type='password'],
+input[type='number'],
+input[type='search'],
+input[type='date'] {
+  color-scheme: dark;
 }
 
 .field-row {

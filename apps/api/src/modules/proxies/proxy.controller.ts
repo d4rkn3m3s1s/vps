@@ -54,13 +54,13 @@ export async function createProxyHandler(req: Request, res: Response): Promise<v
 export async function updateProxyHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
   const input = updateSchema.parse(req.body);
-  const proxy = await proxyService.update(id, input);
+  const proxy = await proxyService.update(id, input, getWorkspaceId(req));
   res.json({ data: proxy });
 }
 
 export async function deleteProxyHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await proxyService.remove(id);
+  await proxyService.remove(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'proxy.delete',
@@ -75,7 +75,7 @@ export async function deleteProxyHandler(req: Request, res: Response): Promise<v
 
 export async function checkProxyHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  const proxy = await proxyService.check(id);
+  const proxy = await proxyService.check(id, getWorkspaceId(req));
   res.json({ data: proxy });
 }
 
@@ -113,7 +113,7 @@ export async function autoAssignProxyHandler(req: Request, res: Response): Promi
 // proxies this hits the provider's change-IP URL; here it re-probes the exit IP.
 export async function rotateProxyHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  const proxy = await proxyService.check(id);
+  const proxy = await proxyService.check(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'proxy.rotate',

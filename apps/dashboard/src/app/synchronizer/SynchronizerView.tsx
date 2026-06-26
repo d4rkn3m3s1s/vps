@@ -2,8 +2,19 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
+import {
+  Radio,
+  Trash2,
+  Play,
+  Crown,
+  Smartphone,
+  Activity,
+  Users,
+  Layers,
+  CircleDot
+} from 'lucide-react';
 
 export type SyncDevice = {
   id: string;
@@ -77,17 +88,23 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
     }
   }
 
+  const onlineCount = devices.filter((d) => d.status === 'ONLINE').length;
+  const followerCount = leader !== null ? Math.max(0, selected.size - 1) : 0;
+  const leaderName = leader !== null ? (devices.find((d) => d.id === leader)?.name ?? '—') : '—';
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="SENKRONİZATÖR"
         title="Senkronize Edici"
         subtitle="Bir bulut telefonun eylemlerini gruptaki diğer tüm telefonlara yansıtın."
         actions={
           <>
             <button type="button" className="btn-ghost" onClick={() => { setSelected(new Set()); setLeader(null); }}>
-              Temizle
+              <Trash2 size={15} /> Temizle
             </button>
             <button type="button" className="btn-primary" disabled={!canSync || syncing} onClick={startSync}>
+              <Play size={15} />
               {syncing ? 'Başlatılıyor…' : `Senkronizasyonu başlat (${selected.size})`}
             </button>
           </>
@@ -96,55 +113,121 @@ export function SynchronizerView({ devices }: { devices: SyncDevice[] }) {
 
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
 
-      {devices.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">⧉</div>
-          <h3>Henüz bulut telefon yok</h3>
-          <p>Önce profiller oluşturun, ardından girişlerini yansıtmak için burada iki veya daha fazlasını seçin.</p>
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam Telefon"
+            value={<span className="mono">{devices.length}</span>}
+            sub={`${onlineCount} çalışıyor`}
+            tone="cyan"
+            icon={<Smartphone size={16} />}
+          />
+          <HoloStat
+            label="Seçili"
+            value={<span className="mono">{selected.size}</span>}
+            sub={canSync ? 'Senkronizasyona hazır' : 'En az 2 seçin'}
+            tone={canSync ? 'success' : 'cyan'}
+            icon={<Users size={16} />}
+          />
+          <HoloStat
+            label="Lider"
+            value={<span className="mono">{leader !== null ? leaderName : '—'}</span>}
+            sub={leader !== null ? 'Kaynak cihaz' : 'Lider seçilmedi'}
+            tone={leader !== null ? 'violet' : 'warning'}
+            icon={<Crown size={16} />}
+          />
+          <HoloStat
+            label="Takipçiler"
+            value={<span className="mono">{followerCount}</span>}
+            sub="Yansıtılan cihaz"
+            tone="cyan"
+            icon={<Layers size={16} />}
+          />
         </div>
+      </Reveal>
+
+      {devices.length === 0 ? (
+        <Reveal>
+          <HoloPanel title="Bulut telefon yok" icon={<Radio size={16} />} scan>
+            <div className="table-empty">
+              <h3>Henüz bulut telefon yok</h3>
+              <p>Önce profiller oluşturun, ardından girişlerini yansıtmak için burada iki veya daha fazlasını seçin.</p>
+            </div>
+          </HoloPanel>
+        </Reveal>
       ) : (
-        <>
-          <p className="helper" style={{ marginBottom: '14px' }}>
-            2 veya daha fazla telefon seçin, ardından birini <strong>lider</strong> olarak işaretleyin. Girişleri her takipçiye yansıtılır.
-          </p>
-          <div className="profile-grid">
-            {devices.map((d) => {
-              const isSel = selected.has(d.id);
-              const isLeader = leader === d.id;
-              return (
-                <article
-                  key={d.id}
-                  className={`profile-card sync-card${isSel ? ' sync-card-selected' : ''}`}
-                  onClick={() => toggle(d.id)}
-                >
-                  <div className="row">
-                    <strong>{d.name}</strong>
-                    <span className="status-chip">
-                      <span className={d.status === 'ONLINE' ? 'dot dot-online' : 'dot dot-offline'} />
-                      {d.status === 'ONLINE' ? 'Çalışıyor' : 'Durduruldu'}
-                    </span>
-                  </div>
-                  <div className="helper">Android {d.androidVersion ?? '—'}</div>
-                  <div className="row" style={{ marginTop: '10px' }}>
-                    <span className="helper">{isSel ? 'Seçili' : 'Seçmek için dokun'}</span>
-                    {isSel && (
-                      <button
-                        type="button"
-                        className={isLeader ? 'btn-primary btn-xs' : 'btn-ghost btn-xs'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setLeader(d.id);
-                        }}
-                      >
-                        {isLeader ? '★ Lider' : 'Lider yap'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </>
+        <Reveal>
+          <HoloPanel
+            title="Senkronizasyon Filosu"
+            icon={<Radio size={16} />}
+            tilt
+            scan
+            actions={
+              <span className="status-chip">
+                <span className="dot dot-online" />
+                <span className="mono">{onlineCount}</span> aktif
+              </span>
+            }
+          >
+            <p className="helper" style={{ marginBottom: '14px' }}>
+              2 veya daha fazla telefon seçin, ardından birini <strong>lider</strong> olarak işaretleyin. Girişleri her takipçiye yansıtılır.
+            </p>
+            <div className="holo-grid-auto">
+              {devices.map((d) => {
+                const isSel = selected.has(d.id);
+                const isLeader = leader === d.id;
+                return (
+                  <Holo3D
+                    key={d.id}
+                    className={`holo-card sync-card${isSel ? ' sync-card-selected' : ''}${isLeader ? ' sync-card-leader' : ''}`}
+                  >
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => toggle(d.id)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(d.id); } }}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div className="row">
+                        <strong>
+                          {isLeader && <Crown size={14} className="mono" style={{ marginRight: 4, verticalAlign: '-2px' }} />}
+                          {d.name}
+                        </strong>
+                        <span className="status-chip">
+                          <span className={d.status === 'ONLINE' ? 'dot dot-online' : 'dot dot-offline'} />
+                          {d.status === 'ONLINE' ? 'Çalışıyor' : 'Durduruldu'}
+                        </span>
+                      </div>
+                      <div className="helper" style={{ marginTop: 6 }}>
+                        <Activity size={12} style={{ verticalAlign: '-1px', marginRight: 4 }} />
+                        Android <span className="mono">{d.androidVersion ?? '—'}</span>
+                      </div>
+                      <div className="row" style={{ marginTop: '12px' }}>
+                        <span className="helper">
+                          <CircleDot size={12} style={{ verticalAlign: '-1px', marginRight: 4 }} />
+                          {isSel ? 'Seçili' : 'Seçmek için dokun'}
+                        </span>
+                        {isSel && (
+                          <button
+                            type="button"
+                            className={isLeader ? 'btn-primary btn-xs' : 'btn-ghost btn-xs'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLeader(d.id);
+                            }}
+                          >
+                            <Crown size={12} />
+                            {isLeader ? 'Lider' : 'Lider yap'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </Holo3D>
+                );
+              })}
+            </div>
+          </HoloPanel>
+        </Reveal>
       )}
     </PageMotion>
   );

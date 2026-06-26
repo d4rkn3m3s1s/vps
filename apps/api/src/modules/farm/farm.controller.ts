@@ -48,13 +48,13 @@ export async function createCampaignHandler(req: Request, res: Response): Promis
 export async function updateCampaignHandler(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id);
   const input = updateSchema.parse(req.body);
-  const data = await farmService.updateCampaign(id, input);
+  const data = await farmService.updateCampaign(id, input, getWorkspaceId(req));
   res.json({ data });
 }
 
 export async function deleteCampaignHandler(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id);
-  res.json({ data: await farmService.deleteCampaign(id) });
+  res.json({ data: await farmService.deleteCampaign(id, getWorkspaceId(req)) });
 }
 
 export async function listAccountsHandler(req: Request, res: Response): Promise<void> {
@@ -80,7 +80,7 @@ export async function riskHandler(req: Request, res: Response): Promise<void> {
 // Clear an auto-paused device so it resumes farming.
 export async function resumeHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
-  res.json({ data: await farmService.resumeAccount(deviceId) });
+  res.json({ data: await farmService.resumeAccount(deviceId, getWorkspaceId(req)) });
 }
 
 const importSchema = z.object({
@@ -141,7 +141,7 @@ export async function updateCredentialsHandler(req: Request, res: Response): Pro
 export async function actionLogHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
   const limit = req.query.limit ? Number(req.query.limit) : 100;
-  res.json({ data: await farmService.listActionLog(deviceId, limit) });
+  res.json({ data: await farmService.listActionLog(deviceId, limit, getWorkspaceId(req)) });
 }
 
 // Download the account roster + warmup state as CSV.
@@ -155,7 +155,7 @@ export async function exportHandler(req: Request, res: Response): Promise<void> 
 // Generate the current 6-digit TOTP code from the account's encrypted 2FA seed.
 export async function totpHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
-  const data = await farmService.getTotpCode(deviceId);
+  const data = await farmService.getTotpCode(deviceId, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'farm.totp.generate',
@@ -173,7 +173,7 @@ export async function totpHandler(req: Request, res: Response): Promise<void> {
 export async function healthTrendHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
   const limit = req.query.limit ? Number(req.query.limit) : 50;
-  res.json({ data: await farmService.getHealthTrend(deviceId, limit) });
+  res.json({ data: await farmService.getHealthTrend(deviceId, limit, getWorkspaceId(req)) });
 }
 
 // Bulk actions on selected accounts (tags / pause / resume / group).
@@ -186,7 +186,7 @@ const bulkSchema = z.object({
 
 export async function bulkHandler(req: Request, res: Response): Promise<void> {
   const { deviceIds, action, tags, groupId } = bulkSchema.parse(req.body);
-  const result = await farmService.bulkAction(deviceIds, action, { tags, groupId });
+  const result = await farmService.bulkAction(deviceIds, action, { tags, groupId }, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'farm.bulk',

@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Search, Download, RotateCcw } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { Search, Download, RotateCcw, ShieldCheck, Activity, Users, Cpu, ScrollText, Filter } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
 
 export type AuditLog = {
   id: string;
@@ -23,6 +23,7 @@ function csvCell(value: unknown): string {
 export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
   const [logs, setLogs] = useState<AuditLog[]>(initialLogs);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
   // Filters.
   const [action, setAction] = useState('');
   const [actor, setActor] = useState('');
@@ -45,12 +46,14 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
 
   const apply = useCallback(async () => {
     setLoading(true);
+    setError(false);
     try {
       const res = await fetch(`/api/audit?${buildQuery(200)}`);
+      if (!res.ok) throw new Error('fetch failed');
       const json = await res.json();
       setLogs(Array.isArray(json.data) ? json.data : []);
     } catch {
-      setLogs([]);
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -89,9 +92,15 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
     URL.revokeObjectURL(url);
   }
 
+  // Derived telemetry for the HoloStat deck (presentation-only).
+  const uniqueActors = new Set(logs.map((l) => l.user?.email ?? 'system')).size;
+  const uniqueActions = new Set(logs.map((l) => l.action)).size;
+  const systemEvents = logs.filter((l) => !l.user?.email).length;
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="DENETİM KAYDI"
         title="Denetim"
         subtitle="Güvenlik ve etkinlik kayıt izi."
         actions={
@@ -101,64 +110,128 @@ export function AuditView({ initialLogs }: { initialLogs: AuditLog[] }) {
         }
       />
 
-      <div className="audit-filters">
-        <div className="search-box">
-          <span className="search-icon" aria-hidden><Search size={14} /></span>
-          <input type="text" placeholder="İşlem (örn. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Kayıt İzi"
+            value={<span className="mono">{logs.length}</span>}
+            sub="aktif görünüm (≤ 200)"
+            tone="cyan"
+            icon={<ScrollText size={16} />}
+          />
+          <HoloStat
+            label="Aktörler"
+            value={<span className="mono">{uniqueActors}</span>}
+            sub="benzersiz kullanıcı"
+            tone="cyan"
+            icon={<Users size={16} />}
+          />
+          <HoloStat
+            label="İşlem Türü"
+            value={<span className="mono">{uniqueActions}</span>}
+            sub="benzersiz eylem"
+            tone="violet"
+            icon={<Activity size={16} />}
+          />
+          <HoloStat
+            label="Sistem Olayı"
+            value={<span className="mono">{systemEvents}</span>}
+            sub="otomatik kaynaklı"
+            tone="cyan"
+            icon={<Cpu size={16} />}
+          />
         </div>
-        <input className="field-input" type="text" placeholder="Kullanıcı e-postası" value={actor} onChange={(e) => setActor(e.target.value)} />
-        <label className="audit-date">
-          <span className="helper">Başlangıç</span>
-          <input className="field-input" type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
-        </label>
-        <label className="audit-date">
-          <span className="helper">Bitiş</span>
-          <input className="field-input" type="date" value={to} onChange={(e) => setTo(e.target.value)} />
-        </label>
-        <button type="button" className="btn-ghost" onClick={reset} title="Filtreleri temizle">
-          <RotateCcw size={14} /> Sıfırla
-        </button>
-      </div>
+      </Reveal>
 
-      <div className="profile-table-wrap">
-        <table className="profile-table">
-          <thead>
-            <tr>
-              <th>İşlem</th>
-              <th>Kaynak</th>
-              <th>Kullanıcı</th>
-              <th>IP</th>
-              <th>Zaman</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={5}><div className="table-empty"><span>Yükleniyor…</span></div></td></tr>
-            ) : logs.length === 0 ? (
-              <tr>
-                <td colSpan={5}>
-                  <div className="table-empty">
-                    <div className="empty-art">☰</div>
-                    <span>Eşleşen denetim kaydı yok</span>
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              logs.map((l) => (
-                <tr key={l.id}>
-                  <td><strong>{l.action}</strong></td>
-                  <td className="mono helper">{l.resourceType}{l.resourceId ? `:${l.resourceId.slice(0, 8)}` : ''}</td>
-                  <td>{l.user?.email ?? 'sistem'}</td>
-                  <td className="mono helper">{l.ip ?? '—'}</td>
-                  <td className="helper">{new Date(l.createdAt).toLocaleString('tr-TR')}</td>
+      <Reveal delay={0.05}>
+        <HoloPanel title="Filtre Konsolu" icon={<Filter size={16} />}>
+          <div className="audit-filters">
+            <div className="search-box">
+              <span className="search-icon" aria-hidden><Search size={14} /></span>
+              <input type="text" placeholder="İşlem (örn. device.delete)" value={action} onChange={(e) => setAction(e.target.value)} />
+            </div>
+            <input className="field-input" type="text" placeholder="Kullanıcı e-postası" value={actor} onChange={(e) => setActor(e.target.value)} />
+            <label className="audit-date">
+              <span className="helper">Başlangıç</span>
+              <input className="field-input" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} />
+            </label>
+            <label className="audit-date">
+              <span className="helper">Bitiş</span>
+              <input className="field-input" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} />
+            </label>
+            <button type="button" className="btn-ghost" onClick={reset} title="Filtreleri temizle">
+              <RotateCcw size={14} /> Sıfırla
+            </button>
+          </div>
+        </HoloPanel>
+      </Reveal>
+
+      <Reveal delay={0.1}>
+        <HoloPanel
+          title="Olay Akışı"
+          icon={<ShieldCheck size={16} />}
+          actions={<span className="status-chip"><span className={`dot ${loading ? 'dot-busy' : 'dot-online'}`} />{loading ? 'Senkronize…' : 'Canlı'}</span>}
+        >
+          <div className="profile-table-wrap">
+            <table className="profile-table">
+              <thead>
+                <tr>
+                  <th>İşlem</th>
+                  <th>Kaynak</th>
+                  <th>Kullanıcı</th>
+                  <th>IP</th>
+                  <th>Zaman</th>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {loading ? (
+                  Array.from({ length: 6 }).map((_, i) => (
+                    <tr key={`sk-${i}`} className="skeleton-row">
+                      <td><span className="skeleton" /></td>
+                      <td><span className="skeleton" /></td>
+                      <td><span className="skeleton" /></td>
+                      <td><span className="skeleton" /></td>
+                      <td><span className="skeleton" /></td>
+                    </tr>
+                  ))
+                ) : error ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="table-empty">
+                        <p className="form-status form-status--err">Denetim kayıtları yüklenemedi.</p>
+                        <button type="button" className="btn-ghost" onClick={() => void apply()}>
+                          <RotateCcw size={14} /> Tekrar dene
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : logs.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <div className="table-empty">
+                        <div className="empty-art">☰</div>
+                        <span>Eşleşen denetim kaydı yok</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  logs.map((l) => (
+                    <tr key={l.id}>
+                      <td><strong>{l.action}</strong></td>
+                      <td className="mono helper">{l.resourceType}{l.resourceId ? `:${l.resourceId.slice(0, 8)}` : ''}</td>
+                      <td>{l.user?.email ?? 'sistem'}</td>
+                      <td className="mono helper">{l.ip ?? '—'}</td>
+                      <td className="helper">{new Date(l.createdAt).toLocaleString('tr-TR')}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
 
-      <p className="helper" style={{ marginTop: '0.75rem' }}>{logs.length} kayıt gösteriliyor (en fazla 200). Dışa aktarma, filtrelenen kümeyi içerir.</p>
+          <p className="helper helper--note">{logs.length} kayıt gösteriliyor (en fazla 200). Dışa aktarma, filtrelenen kümeyi içerir.</p>
+        </HoloPanel>
+      </Reveal>
     </PageMotion>
   );
 }

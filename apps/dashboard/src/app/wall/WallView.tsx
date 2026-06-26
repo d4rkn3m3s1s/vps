@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Grid3x3, Play, Square, Link2, Crown, ChevronLeft, Circle, Square as SquareIcon } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { Grid3x3, Play, Square, Link2, Crown, ChevronLeft, Circle, Square as SquareIcon, Radio, MonitorPlay, Layers } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
 import { useDeviceStream } from './useDeviceStream';
 
@@ -13,7 +13,11 @@ const KEY = { BACK: 4, HOME: 3, RECENTS: 187 } as const;
 
 export function WallView({ devices, groups }: { devices: WallDevice[]; groups: WallGroup[] }) {
   const [groupFilter, setGroupFilter] = useState('all');
-  const [running, setRunning] = useState(false);
+  // Bulk control is a one-shot signal: each tick tells every cell to start or
+  // stop. Cells also have their own Play/Stop button for per-device control, so
+  // `bulk` only nudges them — it doesn't lock their individual state.
+  const [bulk, setBulk] = useState<{ cmd: 'start' | 'stop'; n: number }>({ cmd: 'stop', n: 0 });
+  const [liveCount, setLiveCount] = useState(0);
   const [syncMode, setSyncMode] = useState(false);
   const [leader, setLeader] = useState<string | null>(null);
   const [cols, setCols] = useState(4);
@@ -29,9 +33,10 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="CİHAZ DUVARI"
         title="Canlı Duvar"
-        subtitle="Tüm telefonları aynı anda canlı izleyin; senkron modda bir lider tüm filoyu sürer."
+        subtitle={`Telefonları tek tek veya toplu canlı izleyin${liveCount > 0 ? ` · ${liveCount} canlı` : ''}. Senkron modda bir lider tüm filoyu sürer.`}
         actions={
           <>
             <select className="inline-select" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
@@ -44,14 +49,42 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
             <button type="button" className={syncMode ? 'btn-primary' : 'btn-ghost'} onClick={() => { setSyncMode((s) => !s); setLeader(null); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <Link2 size={14} /> Senkron {syncMode ? 'açık' : 'kapalı'}
             </button>
-            {running ? (
-              <button type="button" className="btn-ghost" onClick={() => setRunning(false)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Square size={14} /> Durdur</button>
-            ) : (
-              <button type="button" className="btn-primary" disabled={shown.length === 0} onClick={() => setRunning(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} /> Yayınları başlat</button>
-            )}
+            <button type="button" className="btn-primary" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'start', n: b.n + 1 }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} /> Hepsini başlat</button>
+            <button type="button" className="btn-ghost" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'stop', n: b.n + 1 }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Square size={14} /> Hepsini durdur</button>
           </>
         }
       />
+
+      <div className="holo-stats-grid" style={{ marginBottom: '1rem' }}>
+        <HoloStat
+          label="Gösterilen cihaz"
+          value={<span className="mono">{shown.length}</span>}
+          sub={`Toplam ${devices.length} cihaz`}
+          tone="cyan"
+          icon={<MonitorPlay size={16} />}
+        />
+        <HoloStat
+          label="Canlı yayın"
+          value={<span className="mono">{liveCount}</span>}
+          sub={liveCount > 0 ? 'akış aktif' : 'beklemede'}
+          tone={liveCount > 0 ? 'success' : 'cyan'}
+          icon={<Radio size={16} />}
+        />
+        <HoloStat
+          label="Izgara"
+          value={<span className="mono">{cols}×</span>}
+          sub="sütun düzeni"
+          tone="violet"
+          icon={<Grid3x3 size={16} />}
+        />
+        <HoloStat
+          label="Senkron mod"
+          value={<span className="mono">{syncMode ? (leader ? followers.length + 1 : 'AÇIK') : 'KAPALI'}</span>}
+          sub={syncMode ? (leader ? `${followers.length} takipçi` : 'lider bekleniyor') : 'pasif'}
+          tone={syncMode ? 'warning' : 'cyan'}
+          icon={<Layers size={16} />}
+        />
+      </div>
 
       {syncMode ? (
         <p className="helper" style={{ marginBottom: '0.75rem' }}>
@@ -61,49 +94,74 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
       ) : null}
 
       {shown.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">▦</div>
-          <h3>Gösterilecek cihaz yok</h3>
-          <p>Bir grup seçin veya önce profil oluşturun.</p>
-        </div>
+        <HoloPanel title="Cihaz duvarı" icon={<MonitorPlay size={16} />}>
+          <div className="empty-state">
+            <div className="empty-art">▦</div>
+            <h3>Gösterilecek cihaz yok</h3>
+            <p>Bir grup seçin veya önce profil oluşturun.</p>
+          </div>
+        </HoloPanel>
       ) : (
-        <div className="wall-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
-          {shown.map((d) => (
-            <WallCell
-              key={d.id}
-              device={d}
-              running={running}
-              syncMode={syncMode}
-              isLeader={leader === d.id}
-              followers={leader === d.id ? followers : []}
-              onMakeLeader={() => setLeader(d.id)}
-            />
-          ))}
-        </div>
+        <HoloPanel
+          title="Cihaz duvarı"
+          icon={<MonitorPlay size={16} />}
+          actions={<span className="status-chip"><span className="dot dot-live" /> {liveCount} canlı · {shown.length} cihaz</span>}
+        >
+          <div className="wall-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+            {shown.map((d) => (
+              <WallCell
+                key={d.id}
+                device={d}
+                bulk={bulk}
+                syncMode={syncMode}
+                isLeader={leader === d.id}
+                followers={leader === d.id ? followers : []}
+                onMakeLeader={() => setLeader(d.id)}
+                onLiveChange={(isLive) => setLiveCount((c) => Math.max(0, c + (isLive ? 1 : -1)))}
+              />
+            ))}
+          </div>
+        </HoloPanel>
       )}
     </PageMotion>
   );
 }
 
 function WallCell({
-  device, running, syncMode, isLeader, followers, onMakeLeader
+  device, bulk, syncMode, isLeader, followers, onMakeLeader, onLiveChange
 }: {
   device: WallDevice;
-  running: boolean;
+  bulk: { cmd: 'start' | 'stop'; n: number };
   syncMode: boolean;
   isLeader: boolean;
   followers: string[];
   onMakeLeader: () => void;
+  onLiveChange: (isLive: boolean) => void;
 }) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const { state, fps, start, stop, send, toDevice } = useDeviceStream(device.id, imgRef);
   const down = useRef<{ x: number; y: number; t: number } | null>(null);
 
-  // Start/stop the stream with the wall's running toggle.
+  // React to bulk start/stop nudges from the toolbar. Each bulk click bumps
+  // bulk.n so the same command can fire repeatedly; we skip the initial mount.
+  const lastBulk = useRef(0);
   useEffect(() => {
-    if (running) void start(); else stop();
+    if (bulk.n === 0 || bulk.n === lastBulk.current) return;
+    lastBulk.current = bulk.n;
+    if (bulk.cmd === 'start') void start(); else stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running]);
+  }, [bulk]);
+
+  // Report live/offline transitions up so the toolbar can show a count.
+  const wasLive = useRef(false);
+  useEffect(() => {
+    const isLive = state === 'live';
+    if (isLive !== wasLive.current) {
+      wasLive.current = isLive;
+      onLiveChange(isLive);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   // Keep the leader's mirror set in sync with the follower list.
   useEffect(() => {
@@ -131,23 +189,57 @@ function WallCell({
   }
 
   const live = state === 'live';
+  const connecting = state === 'connecting';
   return (
-    <div className={`wall-cell ${isLeader ? 'wall-cell-leader' : ''}`}>
+    <Holo3D className={`wall-cell ${isLeader ? 'wall-cell-leader' : ''}`} max={5} glare={false}>
+      <span className="holo-corner holo-corner-tl" aria-hidden />
+      <span className="holo-corner holo-corner-tr" aria-hidden />
+      <span className="holo-corner holo-corner-bl" aria-hidden />
+      <span className="holo-corner holo-corner-br" aria-hidden />
       <div className="wall-cell-head">
         <span className="wall-cell-name">{device.name}</span>
-        {live ? <span className="wall-cell-fps">{fps}fps</span> : <span className="wall-cell-state">{state === 'connecting' ? '…' : state === 'offline' ? 'sunucu yok' : state === 'error' ? 'hata' : '—'}</span>}
+        {live ? (
+          <span className="wall-cell-fps mono"><span className="dot dot-live" />{fps}fps</span>
+        ) : (
+          <span className="wall-cell-state">{connecting ? '…' : state === 'offline' ? 'sunucu yok' : state === 'error' ? 'hata' : '—'}</span>
+        )}
       </div>
       <div
         className={`wall-cell-frame ${interactive ? 'is-interactive' : ''}`}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
       >
+        <span className="holo-scan" aria-hidden />
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img ref={imgRef} alt={device.name} className="wall-cell-img" draggable={false} />
-        {!live ? <div className="wall-cell-placeholder">{running ? '…' : '▦'}</div> : null}
+        <img
+          ref={imgRef}
+          alt=""
+          className="wall-cell-img"
+          draggable={false}
+          /* Hide the <img> until a frame arrives, so an empty src never shows the
+             browser's broken-image icon + alt text. */
+          style={{ display: live ? 'block' : 'none' }}
+        />
+        {!live ? (
+          <div className="wall-cell-placeholder">
+            {connecting ? (
+              '…'
+            ) : (
+              <button type="button" className="wall-cell-play" onClick={() => void start()} title="Yayını başlat" aria-label="Yayını başlat">
+                <Play size={20} />
+              </button>
+            )}
+          </div>
+        ) : null}
         {isLeader ? <span className="wall-cell-badge"><Crown size={11} /> Lider</span> : null}
       </div>
       <div className="wall-cell-foot">
+        {/* Per-device Play/Stop — each cell opens/closes independently. */}
+        {live || connecting ? (
+          <button type="button" className="btn-ghost btn-xs" onClick={() => stop()} title="Durdur"><Square size={11} /> Durdur</button>
+        ) : (
+          <button type="button" className="btn-ghost btn-xs" onClick={() => void start()} title="Başlat"><Play size={11} /> Başlat</button>
+        )}
         {syncMode && !isLeader && live ? (
           <button type="button" className="btn-ghost btn-xs" onClick={onMakeLeader}><Crown size={11} /> Lider yap</button>
         ) : null}
@@ -159,6 +251,6 @@ function WallCell({
           </span>
         ) : null}
       </div>
-    </div>
+    </Holo3D>
   );
 }

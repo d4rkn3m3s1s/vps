@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Download, FileJson } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { Download, FileJson, BarChart3, Activity, Cpu, BellRing, Gauge, Layers } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 import { downloadCsv } from '../../lib/csv';
 
 type Summary = {
@@ -80,7 +80,8 @@ export function ReportsView() {
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="RAPORLAR"
         title="Raporlar"
         subtitle="Çalışma alanı operasyonel özeti ve dışa aktarma"
         actions={
@@ -100,35 +101,66 @@ export function ReportsView() {
         }
       />
 
-      <div className="stats">
-        <div className="metric"><p className="metric-label">Aralıktaki görevler</p><p className="metric-value">{s?.jobs.inRange ?? 0}</p><p className="metric-sub">{s?.jobs.total ?? 0} toplam</p></div>
-        <div className="metric"><p className="metric-label">Başarı oranı</p><p className="metric-value">{s?.jobs.successRate ?? 0}%</p><p className="metric-sub">{s?.jobs.completed ?? 0} başarılı · {s?.jobs.failed ?? 0} başarısız</p></div>
-        <div className="metric"><p className="metric-label">Cihazlar</p><p className="metric-value">{s?.devices.total ?? 0}</p><p className="metric-sub">{s?.devices.online ?? 0} çevrimiçi</p></div>
-        <div className="metric"><p className="metric-label">Tetiklenen uyarılar</p><p className="metric-value">{s?.alertEvents ?? 0}</p><p className="metric-sub">aralıkta</p></div>
-      </div>
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            tone="info"
+            icon={<Activity size={16} />}
+            label="Aralıktaki görevler"
+            value={<span className="mono">{s?.jobs.inRange ?? 0}</span>}
+            sub={<span className="mono">{s?.jobs.total ?? 0}</span>}
+          />
+          <HoloStat
+            tone="success"
+            icon={<Gauge size={16} />}
+            label="Başarı oranı"
+            value={<span className="mono">{s?.jobs.successRate ?? 0}%</span>}
+            sub={<><span className="mono">{s?.jobs.completed ?? 0}</span> başarılı · <span className="mono">{s?.jobs.failed ?? 0}</span> başarısız</>}
+          />
+          <HoloStat
+            tone="cyan"
+            icon={<Cpu size={16} />}
+            label="Cihazlar"
+            value={<span className="mono">{s?.devices.total ?? 0}</span>}
+            sub={<><span className="mono">{s?.devices.online ?? 0}</span> çevrimiçi</>}
+          />
+          <HoloStat
+            tone="warning"
+            icon={<BellRing size={16} />}
+            label="Tetiklenen uyarılar"
+            value={<span className="mono">{s?.alertEvents ?? 0}</span>}
+            sub="aralıkta"
+          />
+        </div>
+      </Reveal>
 
-      <div className="panel">
-        <h2>Türe göre görevler</h2>
-        <div className="panel-stack">
+      <Reveal delay={0.06}>
+        <HoloPanel title="Türe göre görevler" icon={<BarChart3 size={16} />} scan>
           {!s || s.jobsByType.length === 0 ? (
             <p className="helper">Bu aralıkta görev yok.</p>
           ) : (
-            s.jobsByType.map((row) => {
-              const max = s.jobsByType[0]?.count || 1;
-              const pct = Math.round((row.count / max) * 100);
-              return (
-                <div className="report-bar-row" key={row.type}>
-                  <span className="report-bar-label">{row.type}</span>
-                  <div className="report-bar-track">
-                    <div className="report-bar-fill" style={{ width: `${pct}%` }} />
-                  </div>
-                  <span className="report-bar-count">{row.count}</span>
-                </div>
-              );
-            })
+            <div className="holo-grid-auto">
+              {s.jobsByType.map((row) => {
+                const max = s.jobsByType[0]?.count || 1;
+                const pct = Math.round((row.count / max) * 100);
+                return (
+                  <Holo3D className="holo-stat holo-tone-violet" max={6} key={row.type}>
+                    <div className="holo-stat-top">
+                      <span className="holo-stat-ico"><Layers size={16} /></span>
+                      <span className="holo-stat-label">{row.type}</span>
+                    </div>
+                    <div className="holo-stat-value mono">{row.count}</div>
+                    <div className="report-bar-track" style={{ marginTop: 10 }}>
+                      <div className="report-bar-fill" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="holo-stat-sub mono">{pct}%</div>
+                  </Holo3D>
+                );
+              })}
+            </div>
           )}
-        </div>
-      </div>
+        </HoloPanel>
+      </Reveal>
     </PageMotion>
   );
 }

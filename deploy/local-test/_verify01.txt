@@ -1,0 +1,5 @@
+booted (1)
+input_devices=
+net_state=Validated
+focus_shown=mInputShown=true
+OK123_landed=1

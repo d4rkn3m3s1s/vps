@@ -17,12 +17,19 @@ const TABS = [
 export function AdminTabs() {
   const pathname = usePathname();
   return (
-    <nav className="admin-tabs">
+    <nav className="admin-tabs" aria-label="Yönetim sekmeleri">
       {TABS.map((tab) => {
-        const active = tab.exact ? pathname === tab.href : pathname.startsWith(tab.href);
+        const active = tab.exact
+          ? pathname === tab.href
+          : pathname === tab.href || pathname.startsWith(`${tab.href}/`);
         const Icon = tab.icon;
         return (
-          <Link key={tab.href} href={tab.href} className={`admin-tab${active ? ' admin-tab-active' : ''}`}>
+          <Link
+            key={tab.href}
+            href={tab.href}
+            className={`admin-tab${active ? ' admin-tab-active' : ''}`}
+            aria-current={active ? 'page' : undefined}
+          >
             <Icon size={15} />
             <span>{tab.label}</span>
           </Link>

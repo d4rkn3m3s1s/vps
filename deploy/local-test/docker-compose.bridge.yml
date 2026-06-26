@@ -1,0 +1,57 @@
+# VPS Fleet — LOCAL TEST Android stack (BRIDGE NETWORK variant)
+#
+# Use this once the custom WSL2 kernel has bridge/netfilter modules loaded
+# (run `sudo bash net-up.sh` first). Unlike the host-network variant, each phone
+# gets its OWN network namespace + IP, so redroid's fixed in-container ADB port
+# (5555) no longer collides between phones — we just PUBLISH each to a distinct
+# host port. This is what makes multi-device (2-3 phones at once) actually work,
+# and bridged containers reach the internet via docker's NAT.
+#
+#   sudo bash net-up.sh                                  # load modules + start docker
+#   sudo docker compose -f docker-compose.bridge.yml up -d
+#   adb connect 127.0.0.1:5555 ; adb connect 127.0.0.1:5556
+#
+# The host agent / register.mjs still see them at 127.0.0.1:5555 and :5556 —
+# no change needed there.
+
+services:
+  phone-01:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-01
+    privileged: true
+    # Each phone in its own netns; ADB stays on the container-internal 5555 and
+    # is published to host 5555. No adbd_port juggling, no host-port collision.
+    ports:
+      - "127.0.0.1:5555:5555"
+    volumes:
+      - phone01-data:/data
+    command:
+      # Low res/dpi keeps each raw-PNG screencap small so the codec-free WS stream
+      # sustains higher fps. Persisted via boot args (read on first boot only —
+      # wipe the volume with `down -v` to change after first boot).
+      - androidboot.redroid_width=600
+      - androidboot.redroid_height=1280
+      - androidboot.redroid_dpi=240
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+  phone-02:
+    image: redroid/redroid:13.0.0-latest
+    container_name: fleet-local-phone-02
+    privileged: true
+    ports:
+      - "127.0.0.1:5556:5555"
+    volumes:
+      - phone02-data:/data
+    command:
+      - androidboot.redroid_width=600
+      - androidboot.redroid_height=1280
+      - androidboot.redroid_dpi=240
+      - androidboot.redroid_fps=30
+      - androidboot.redroid_gpu_mode=guest
+    restart: unless-stopped
+
+volumes:
+  phone01-data:
+  phone02-data:

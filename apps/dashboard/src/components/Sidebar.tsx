@@ -10,9 +10,9 @@ import {
   Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
   BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings
+  Settings, UserPlus, TrendingUp, DollarSign
 } from 'lucide-react';
-import { useI18n } from '../lib/i18n';
+import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 type NavItem = {
@@ -39,7 +39,8 @@ const NAV: NavGroup[] = [
       { href: '/library', tkey: 'nav.library', icon: Library },
       { href: '/applications', tkey: 'nav.applications', icon: AppWindow },
       { href: '/images', tkey: 'nav.images', icon: Layers },
-      { href: '/ai', tkey: 'nav.ai', icon: Sparkles }
+      { href: '/ai', tkey: 'nav.ai', icon: Sparkles },
+      { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus }
     ]
   },
   {
@@ -47,6 +48,8 @@ const NAV: NavGroup[] = [
     items: [
       { href: '/', tkey: 'nav.overview', icon: Gauge },
       { href: '/analytics', tkey: 'nav.analytics', icon: LineChart },
+      { href: '/trends', tkey: 'nav.trends', icon: TrendingUp },
+      { href: '/costs', tkey: 'nav.costs', icon: DollarSign },
       { href: '/health', tkey: 'nav.health', icon: HeartPulse },
       { href: '/reports', tkey: 'nav.reports', icon: FileText },
       { href: '/farm', tkey: 'nav.farm', icon: Sprout },
@@ -172,7 +175,11 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
         ))}
       </nav>
 
-      {role !== 'admin' ? (
+      {/* Plan/quota card is customer-facing chrome: show it ONLY for known
+          non-admin roles. Admins (and self-hosted operators) are uncapped, and
+          while the role is still loading (null) we hide it to avoid flashing a
+          "Free / 2 phones" badge at an admin. */}
+      {role && role !== 'admin' ? (
         <div className="plan-card">
           <div className="plan-head">
             <span className="plan-badge">Free</span>
@@ -184,9 +191,12 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
         </div>
       ) : null}
 
-      <button type="button" className="logout-btn" onClick={handleLogout}>
-        ⎋ {t('common.signout')}
-      </button>
+      <div className="sidebar-foot">
+        <LanguageSwitcher />
+        <button type="button" className="logout-btn" onClick={handleLogout}>
+          ⎋ {t('common.signout')}
+        </button>
+      </div>
       </aside>
     </>
   );

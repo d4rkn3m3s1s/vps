@@ -9,8 +9,13 @@ export type AutomationWorkflow = {
   name: string;
   kind: 'rpa' | 'schedule';
   status: 'ACTIVE' | 'PAUSED' | 'IDLE';
-  devices: number;
-  successRate: number;
+  // Real target device count when known (schedules bind 0/1 device); null when
+  // the record doesn't persist a device target (RPA flows pass devices at run
+  // time). We don't show a fabricated "whole fleet" count.
+  devices: number | null;
+  // Real number of times this flow/schedule has run. We don't show a success
+  // rate because the backend doesn't track per-run success/fail yet.
+  runs: number;
   lastRun: string | null;
   editHref: string;
 };
@@ -79,8 +84,10 @@ export function AutomationCenter({ workflows }: { workflows: AutomationWorkflow[
             </header>
 
             <div className="wf-stats">
-              <div><span className="wf-stat-v">{wf.devices}</span><span className="wf-stat-l">Cihaz</span></div>
-              <div><span className="wf-stat-v">{wf.successRate}%</span><span className="wf-stat-l">Başarı</span></div>
+              {wf.devices !== null && (
+                <div><span className="wf-stat-v">{wf.devices}</span><span className="wf-stat-l">Cihaz</span></div>
+              )}
+              <div><span className="wf-stat-v">{wf.runs}</span><span className="wf-stat-l">Çalıştırma</span></div>
               <div>
                 <span className="wf-stat-v">{wf.lastRun ? new Date(wf.lastRun).toLocaleDateString('tr-TR') : '—'}</span>
                 <span className="wf-stat-l">Son çalıştırma</span>

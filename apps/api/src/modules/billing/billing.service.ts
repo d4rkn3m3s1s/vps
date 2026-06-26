@@ -9,12 +9,13 @@ type StripeSubscription = {
   status: string;
   cancel_at_period_end?: boolean;
   metadata?: Record<string, string> | null;
-  items: { data: Array<{ price?: { id?: string } | null }> };
+  items: { data: Array<{ price?: { id?: string; unit_amount?: number | null } | null }> };
 };
 import { env } from '../../config/env';
 import { AppError } from '../../lib/errors';
 import { PLANS, planFromKey, planFromPriceId, type PlanKey } from './billing.plans';
 import { alertsService } from '../alerts/alerts.service';
+import { REFERRAL_REWARD_RATE } from '../referral/referral.service';
 
 // Lazily construct the Stripe client so the app boots without billing configured.
 type StripeClient = InstanceType<typeof Stripe>;
@@ -73,11 +74,13 @@ export class BillingService {
   }
 
   // Enforced before creating a device. Throws 402 if the plan limit is reached.
-  async assertCanAddDevice(workspaceId: string): Promise<void> {
+  // `unlimited` skips the quota check entirely — used for admins / workspace
+  // owners on a self-hosted install, who shouldn't be capped by billing plans.
+  async assertCanAddDevice(workspaceId: string, opts: { unlimited?: boolean } = {}): Promise<void> {
     const sub = await this.ensureSubscription(workspaceId);
     const plan = planFromKey(sub.plan);
     const count = await prisma.device.count({ where: { workspaceId } });
-    if (count >= plan.deviceLimit) {
+    if (!opts.unlimited && count >= plan.deviceLimit) {
       throw new AppError(
         `Device limit reached for the ${plan.name} plan (${plan.deviceLimit}). Upgrade to add more.`,
         402,
@@ -85,8 +88,9 @@ export class BillingService {
       );
     }
     // After this device, what % of the quota is used? Fire QUOTA_HIGH alerts.
+    // Unlimited (admin/owner) accounts have no quota to warn about.
     const pctAfter = Math.round(((count + 1) / plan.deviceLimit) * 100);
-    if (pctAfter >= 80) {
+    if (!opts.unlimited && pctAfter >= 80) {
       void alertsService.evaluate(workspaceId, 'QUOTA_HIGH', {
         title: 'Device quota almost full',
         detail: `${count + 1}/${plan.deviceLimit} cloud phones used (${pctAfter}%)`,
@@ -210,6 +214,33 @@ export class BillingService {
         cancelAtPeriodEnd: sub.cancel_at_period_end ?? false,
         ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000) } : {})
       }
+    });
+
+    // Referral conversion: when this workspace's first paid plan goes live, mark
+    // the referral that brought its owner in as CONVERTED and credit the referrer
+    // a share of the actual first payment. Best-effort — never block the webhook.
+    if (status === 'ACTIVE' || status === 'TRIALING') {
+      const amountCents = sub.items.data[0]?.price?.unit_amount ?? 0;
+      await this.convertReferralForWorkspace(workspaceId, amountCents).catch(() => undefined);
+    }
+  }
+
+  // Find the referral that brought this workspace's owner in and mark it
+  // CONVERTED + compute the reward, once.
+  private async convertReferralForWorkspace(workspaceId: string, paidCents: number): Promise<void> {
+    const owner = await prisma.workspaceMember.findFirst({
+      where: { workspaceId, role: 'admin' },
+      include: { user: { select: { email: true } } }
+    });
+    if (!owner?.user?.email) return;
+    const referral = await prisma.referral.findFirst({
+      where: { referredEmail: owner.user.email, status: 'SIGNED_UP' }
+    });
+    if (!referral) return;
+    const rewardCents = Math.round(paidCents * REFERRAL_REWARD_RATE);
+    await prisma.referral.update({
+      where: { id: referral.id },
+      data: { status: 'CONVERTED', rewardCents }
     });
   }
 }

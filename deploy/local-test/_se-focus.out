@@ -1,0 +1,6 @@
+input_devices=
+cc focused (sendevent)=focused="false"
+phone focused (sendevent)=focused="false"
+cc=
+phone=
+NEXT=enabled="false"

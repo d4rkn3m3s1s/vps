@@ -14,6 +14,19 @@ const heartbeatSchema = z.object({
   capacity: z.coerce.number().int().nonnegative().optional()
 });
 
+const deviceMetricsSchema = z.object({
+  devices: z
+    .array(
+      z.object({
+        serial: z.string().min(1),
+        cpuUsage: z.coerce.number().min(0).max(100).optional(),
+        memoryUsage: z.coerce.number().min(0).max(100).optional(),
+        diskUsage: z.coerce.number().min(0).max(100).optional()
+      })
+    )
+    .default([])
+});
+
 function requireHost(req: Request) {
   if (!req.hostAgent) throw new AppError('Host agent not authenticated', 401, 'UNAUTHORIZED');
   return req.hostAgent;
@@ -39,4 +52,11 @@ export async function agentHeartbeatHandler(req: Request, res: Response): Promis
   const input = heartbeatSchema.parse(req.body);
   const updated = await agentService.heartbeat(host, input);
   res.json({ data: { id: updated.id, status: updated.status, lastSeenAt: updated.lastSeenAt } });
+}
+
+// Agent reports per-device CPU/mem/disk; we map serial -> deviceId and persist.
+export async function updateDeviceMetricsHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = deviceMetricsSchema.parse(req.body);
+  res.json({ data: await agentService.updateDeviceMetrics(host, input) });
 }

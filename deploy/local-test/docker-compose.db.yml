@@ -1,0 +1,37 @@
+# VPS Fleet — LOCAL TEST data services (BRIDGE NETWORK variant)
+#
+# Postgres + Redis on docker's bridge network, published to the host's own
+# 5432 / 6379. The API started on the host reaches them at localhost:5432 /
+# localhost:6379 — matching apps/api/.env. Use this with the bridge-mode kernel
+# setup (run `sudo bash net-up.sh` first); it replaces db-hostnet.yml, which
+# fails under WSL2 mirrored networking.
+#
+#   sudo docker compose -f docker-compose.db.yml up -d
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fleet-local-postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vps_emulator
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: fleet-local-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,13 +1,32 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
+import {
+  Sparkles,
+  Plus,
+  Cpu,
+  Workflow,
+  Play,
+  Pencil,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  X,
+  Layers,
+  Activity,
+  Smartphone,
+  ListOrdered
+} from 'lucide-react';
 
 export type RpaDevice = { id: string; name: string };
 
 export type RpaStep = {
+  // Stable per-step id used as React key on the reorderable/deletable step list.
+  // Not part of the persisted payload (stripped before save).
+  _id?: string;
   type: 'tap' | 'type' | 'wait' | 'swipe' | 'openApp' | 'shell' | 'keyevent';
   x?: number;
   y?: number;
@@ -42,6 +61,16 @@ const STEP_ICON: Record<RpaStep['type'], string> = {
 };
 
 type Toast = { kind: 'ok' | 'err'; text: string } | null;
+
+let stepIdSeq = 0;
+function newStepId(): string {
+  stepIdSeq += 1;
+  return `step-${Date.now().toString(36)}-${stepIdSeq}`;
+}
+// Attach a stable _id to each step (used as React key on the reorderable list).
+function withStepIds(steps: RpaStep[]): RpaStep[] {
+  return steps.map((s) => (s._id ? s : { ...s, _id: newStepId() }));
+}
 
 function describeStep(s: RpaStep): string {
   switch (s.type) {
@@ -79,6 +108,19 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
 
+  // Escape closes whichever modal is open (unless a request is in flight).
+  useEffect(() => {
+    if (!aiOpen && !editing && !runFlow) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      if (aiOpen && !aiBusy) setAiOpen(false);
+      else if (editing && !busy) setEditing(null);
+      else if (runFlow && !busy) setRunFlow(null);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [aiOpen, editing, runFlow, aiBusy, busy]);
+
   function flash(t: Toast) {
     setToast(t);
     setTimeout(() => setToast(null), 3500);
@@ -95,7 +137,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     setEditing(flow);
     setName(flow.name);
     setDescription(flow.description ?? '');
-    setSteps(flow.steps);
+    setSteps(withStepIds(flow.steps));
   }
 
   function addStep(type: RpaStep['type']) {
@@ -108,7 +150,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
       shell: { type: 'shell', command: '' },
       keyevent: { type: 'keyevent', keycode: 4 }
     };
-    setSteps((s) => [...s, defaults[type]]);
+    setSteps((s) => [...s, { ...defaults[type], _id: newStepId() }]);
   }
 
   function updateStep(i: number, patch: Partial<RpaStep>) {
@@ -136,7 +178,8 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     }
     setBusy(true);
     try {
-      const body = { name: name.trim(), description: description.trim(), steps };
+      const cleanSteps = steps.map(({ _id, ...rest }) => rest);
+      const body = { name: name.trim(), description: description.trim(), steps: cleanSteps };
       const isNew = !editing?.id;
       const res = await fetch(isNew ? '/api/rpa' : `/api/rpa/${editing!.id}`, {
         method: isNew ? 'POST' : 'PUT',
@@ -201,7 +244,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
       setEditing({ id: '', name: '', description: null, steps: [], runCount: 0, lastRunAt: null });
       setName(draft.name);
       setDescription(draft.description ?? '');
-      setSteps(draft.steps);
+      setSteps(withStepIds(draft.steps));
       setAiOpen(false);
       setAiPrompt('');
       flash({ kind: 'ok', text: `AI ${draft.steps.length} adımlık akış oluşturdu — gözden geçirip kaydedin.` });
@@ -212,27 +255,46 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     }
   }
 
+  // Derived summary metrics (presentation only).
+  const totalSteps = flows.reduce((acc, f) => acc + f.steps.length, 0);
+  const totalRuns = flows.reduce((acc, f) => acc + f.runCount, 0);
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="RPA STÜDYOSU"
         title="RPA Studio"
         subtitle="Görsel otomasyon akışları oluşturun ve bunları bulut telefonlarınızda çalıştırın."
         actions={
           <>
             <button type="button" className="btn-ghost" onClick={() => setAiOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              ✦ AI ile oluştur
+              <Sparkles size={15} /> AI ile oluştur
             </button>
-            <button type="button" className="btn-primary" onClick={openNew}>
-              + Yeni akış
+            <button type="button" className="btn-primary" onClick={openNew} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Plus size={15} /> Yeni akış
             </button>
           </>
         }
       />
 
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat label="Otomasyon akışı" value={<span className="mono">{flows.length}</span>} sub="Kayıtlı akış" tone="info" icon={<Workflow size={16} />} />
+          <HoloStat label="Toplam adım" value={<span className="mono">{totalSteps}</span>} sub="Tüm akışlar" tone="cyan" icon={<ListOrdered size={16} />} />
+          <HoloStat label="Çalıştırma" value={<span className="mono">{totalRuns}</span>} sub="Kümülatif tetikleme" tone="violet" icon={<Activity size={16} />} />
+          <HoloStat label="Hedef cihaz" value={<span className="mono">{devices.length}</span>} sub="Kullanılabilir telefon" tone="success" icon={<Smartphone size={16} />} />
+        </div>
+      </Reveal>
+
       {aiOpen ? (
         <div className="modal-overlay" onClick={() => !aiBusy && setAiOpen(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <header className="modal-head"><h2>✦ AI ile akış oluştur</h2></header>
+          <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Sparkles size={18} /> AI ile akış oluştur</h2>
+              <button type="button" className="modal-close" aria-label="Kapat" onClick={() => !aiBusy && setAiOpen(false)}>
+                <X size={16} />
+              </button>
+            </header>
             <div className="modal-body">
               <p className="helper">Telefonda ne yapılmasını istediğinizi doğal dille yazın; AI bunu çalıştırılabilir adımlara çevirir.</p>
               <textarea
@@ -257,49 +319,60 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
 
       {flows.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">⚙</div>
-          <h3>Henüz otomasyon akışı yok</h3>
-          <p>Dokun / yaz / kaydır / bekle adımlarından oluşan bir akış oluşturun ve telefonlarınıza gönderin.</p>
-          <button type="button" className="btn-primary" onClick={openNew}>
-            + Yeni akış
-          </button>
-        </div>
+        <Reveal>
+          <HoloPanel title="Otomasyon akışları" icon={<Workflow size={16} />}>
+            <div className="empty-state">
+              <div className="empty-art">⚙</div>
+              <h3>Henüz otomasyon akışı yok</h3>
+              <p>Dokun / yaz / kaydır / bekle adımlarından oluşan bir akış oluşturun ve telefonlarınıza gönderin.</p>
+              <button type="button" className="btn-primary" onClick={openNew} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <Plus size={15} /> Yeni akış
+              </button>
+            </div>
+          </HoloPanel>
+        </Reveal>
       ) : (
-        <div className="app-grid">
-          {flows.map((flow) => (
-            <article className="flow-card" key={flow.id}>
-              <div className="flow-card-head">
-                <span className="app-icon">⚙</span>
-                <div>
-                  <strong>{flow.name}</strong>
-                  <p className="helper">{flow.description || 'Açıklama yok'}</p>
+        <Reveal>
+          <div className="holo-grid-auto">
+            {flows.map((flow) => (
+              <Holo3D className="holo-card" key={flow.id} max={6}>
+                <div className="flow-card-head">
+                  <span className="app-icon"><Workflow size={18} /></span>
+                  <div>
+                    <strong>{flow.name}</strong>
+                    <p className="helper">{flow.description || 'Açıklama yok'}</p>
+                  </div>
                 </div>
-              </div>
-              <span className="helper mono">{flow.steps.length} adım · {flow.runCount}× çalıştırıldı</span>
-              <div className="row-actions flow-actions">
-                <button type="button" className="action-btn" onClick={() => openEdit(flow)}>
-                  Düzenle
-                </button>
-                <button type="button" className="action-btn" onClick={() => setRunFlow(flow)}>
-                  Çalıştır
-                </button>
-                <button type="button" className="action-btn action-danger" onClick={() => remove(flow)}>
-                  Sil
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
+                <div className="status-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <span className="dot dot-cyan" />
+                  <span className="helper mono">{flow.steps.length} adım · {flow.runCount}× çalıştırıldı</span>
+                </div>
+                <div className="row-actions flow-actions" style={{ marginTop: 'auto' }}>
+                  <button type="button" className="btn-ghost btn-xs" onClick={() => openEdit(flow)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <Pencil size={13} /> Düzenle
+                  </button>
+                  <button type="button" className="btn-primary btn-xs" onClick={() => setRunFlow(flow)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <Play size={13} /> Çalıştır
+                  </button>
+                  <button type="button" className="btn-ghost btn-xs action-danger" onClick={() => remove(flow)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <Trash2 size={13} /> Sil
+                  </button>
+                </div>
+              </Holo3D>
+            ))}
+          </div>
+        </Reveal>
       )}
 
       {editing ? (
         <div className="modal-overlay" onClick={() => !busy && setEditing(null)}>
-          <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-wide" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{editing.id ? 'Akışı düzenle' : 'Yeni akış'}</h2>
+              <h2 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <Workflow size={18} />{editing.id ? 'Akışı düzenle' : 'Yeni akış'}
+              </h2>
               <button type="button" className="modal-close" onClick={() => !busy && setEditing(null)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
 
@@ -316,7 +389,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
             <div className="modal-section">
               <div className="row">
-                <h3>Adımlar ({steps.length})</h3>
+                <h3 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Layers size={15} /> Adımlar ({steps.length})</h3>
                 <div className="step-add">
                   {STEP_TYPES.map((t) => (
                     <button key={t} type="button" className="step-add-btn" onClick={() => addStep(t)} title={`${t} ekle`}>
@@ -331,8 +404,8 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                   <li className="helper">Henüz adım yok — yukarıdan bir tane ekleyin.</li>
                 ) : (
                   steps.map((step, i) => (
-                    <li className="step-item" key={i}>
-                      <span className="step-num">{i + 1}</span>
+                    <li className="step-item" key={step._id ?? i}>
+                      <span className="step-num mono">{i + 1}</span>
                       <span className="step-ico">{STEP_ICON[step.type]}</span>
                       <div className="step-fields">
                         <span className="step-type">{step.type}</span>
@@ -367,9 +440,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                         )}
                       </div>
                       <div className="step-ctrls">
-                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, -1)} disabled={i === 0}>↑</button>
-                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}>↓</button>
-                        <button type="button" className="step-ctrl step-del" onClick={() => removeStep(i)}>✕</button>
+                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, -1)} disabled={i === 0}><ArrowUp size={13} /></button>
+                        <button type="button" className="step-ctrl" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}><ArrowDown size={13} /></button>
+                        <button type="button" className="step-ctrl step-del" onClick={() => removeStep(i)}><X size={13} /></button>
                       </div>
                     </li>
                   ))
@@ -391,16 +464,16 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
       {runFlow ? (
         <div className="modal-overlay" onClick={() => !busy && setRunFlow(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>"{runFlow.name}" çalıştır</h2>
+              <h2 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Play size={18} /> "{runFlow.name}" çalıştır</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setRunFlow(null)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
             <p className="helper">{runFlow.steps.map(describeStep).join(' → ')}</p>
             <div className="modal-section">
-              <h3>Hedef telefonları seçin</h3>
+              <h3 style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Cpu size={15} /> Hedef telefonları seçin</h3>
               <div className="run-devices">
                 {devices.length === 0 ? (
                   <span className="helper">Kullanılabilir cihaz yok.</span>

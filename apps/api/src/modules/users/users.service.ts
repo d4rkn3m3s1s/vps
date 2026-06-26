@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { referralService } from '../referral/referral.service';
 
 export async function listUsers() {
   const users = await prisma.user.findMany({
@@ -23,13 +24,17 @@ export async function listUsers() {
   }));
 }
 
-export async function createUser(input: { email: string; password: string; role?: string | undefined }) {
+export async function createUser(input: { email: string; password: string; role?: string | undefined; referralCode?: string | undefined }) {
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) throw new AppError('A user with that email already exists', 409, 'USER_EXISTS');
   const passwordHash = await bcrypt.hash(input.password, 12);
   const user = await prisma.user.create({
     data: { email: input.email, passwordHash, role: input.role ?? 'member' }
   });
+  // If they came in via an invite code, record the referral (idempotent, best-effort).
+  if (input.referralCode) {
+    await referralService.recordSignup(input.referralCode, input.email).catch(() => undefined);
+  }
   return { id: user.id, email: user.email, role: user.role, createdAt: user.createdAt };
 }
 

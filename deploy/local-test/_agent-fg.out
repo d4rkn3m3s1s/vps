@@ -1,0 +1,6 @@
+starting node at Thu Jun 25 18:03:54 +03 2026
+[agent 2026-06-25T15:03:54.718Z] starting — polling http://localhost:4000 every 3000ms
+[agent 2026-06-25T15:03:55.383Z] stream channel connected
+[agent 2026-06-25T15:03:55.392Z] claimed job cmqtme6y6002yj5rfm0qo0gv9 (REGISTER_WHATSAPP) -> 127.0.0.1:5555
+[agent 2026-06-25T15:05:37.131Z] completed cmqtme6y6002yj5rfm0qo0gv9
+[agent 2026-06-25T15:05:37.134Z] shutting down.

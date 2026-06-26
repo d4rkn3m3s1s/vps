@@ -4,9 +4,6 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowUpRight, Award, Crown, X } from 'lucide-react';
 
-const VIDEO_URL =
-  'https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260606_154941_df1a96e1-a06f-450c-bd02-d863414cc1a0.mp4';
-
 // VPS Fleet-themed nav. "Inquire"/"Studio" etc. map to our actual surfaces.
 const NAV_LINKS = [
   { label: 'Phones', href: '/profiles' },
@@ -15,29 +12,25 @@ const NAV_LINKS = [
   { label: 'Contact', href: '/login' }
 ];
 
+// Capability highlights for the marketing hero — feature statements, not
+// fabricated usage numbers (we don't claim install/uptime stats we can't back).
 const STATS = [
-  { value: '10K+', label: 'Cloud Phones Run' },
-  { value: '99.9%', label: 'Fleet Uptime' },
-  { value: '24/7', label: 'Automation Engine' }
+  { value: 'KVM', label: 'Gerçek Android Cihazlar' },
+  { value: 'RPA', label: 'Görsel Otomasyon Akışları' },
+  { value: '7/24', label: 'Otomasyon Motoru' }
 ];
 
 export function HeroLanding() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-[60] overflow-hidden bg-black font-inter">
-      {/* Fullscreen looping background video */}
-      <video
-        className="absolute inset-0 h-full w-full object-cover"
-        autoPlay
-        muted
-        loop
-        playsInline
-        src={VIDEO_URL}
-      />
+    <div className="login-stage fixed inset-0 z-[60] overflow-hidden font-inter">
+      {/* OLED canvas + drifting accent aurora + engineering grid (brand-consistent) */}
+      <div className="login-aurora" aria-hidden />
+      <div className="login-grid" aria-hidden />
       {/* Dark gradient overlay so the overlaid content stays readable */}
-      <div className="absolute inset-0 bg-gradient-to-r from-black/80 via-black/50 to-black/20" />
-      <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-black/40" />
+      <div className="absolute inset-0 bg-gradient-to-r from-[#04060d]/85 via-[#04060d]/55 to-[#04060d]/25" />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#04060d]/80 via-transparent to-[#04060d]/40" />
 
       {/* ───────────────────────────── Navbar ───────────────────────────── */}
       <header className="absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-5 sm:px-10 lg:px-16 lg:py-7">

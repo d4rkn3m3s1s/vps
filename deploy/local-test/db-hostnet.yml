@@ -1,0 +1,32 @@
+# VPS Fleet — LOCAL TEST data services (HOST NETWORK variant)
+#
+# Postgres + Redis on the host network, for the same custom-WSL2-kernel setup as
+# docker-compose.hostnet.yml (Docker daemon running with the default bridge
+# disabled). They listen on the host's own 5432 / 6379, so the API started on the
+# host reaches them at localhost:5432 / localhost:6379 — matching apps/api/.env.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fleet-local-postgres
+    network_mode: host
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: vps_emulator
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: fleet-local-redis
+    network_mode: host
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

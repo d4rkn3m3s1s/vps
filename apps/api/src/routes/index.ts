@@ -1,4 +1,8 @@
 import type { Express } from 'express';
+import { accountsRouter } from '../modules/accounts/accounts.routes';
+import { trendsRouter } from '../modules/trends/trends.routes';
+import { costsRouter } from '../modules/costs/costs.routes';
+import { notificationsRouter } from '../modules/notifications/notifications.routes';
 import { agentRouter } from '../modules/agent/agent.routes';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { alertsRouter } from '../modules/alerts/alerts.routes';
@@ -32,6 +36,7 @@ import { streamRouter } from '../modules/stream/stream.routes';
 import { systemRouter } from '../modules/system/system.routes';
 import { usageRouter } from '../modules/usage/usage.routes';
 import { usersRouter } from '../modules/users/users.routes';
+import { resourcesRouter } from '../modules/resources/resources.routes';
 import { vastRouter } from '../modules/vast/vast.routes';
 import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
 import { workspaceRouter } from '../modules/workspace/workspace.routes';
@@ -77,4 +82,9 @@ export function registerRoutes(app: Express): void {
   app.use('/ai', aiRouter);
   app.use('/calendar', calendarRouter);
   app.use('/usage', usageRouter);
+  app.use('/resources', resourcesRouter);
+  app.use('/accounts', accountsRouter);
+  app.use('/trends', trendsRouter);
+  app.use('/costs', costsRouter);
+  app.use('/notifications', notificationsRouter);
 }

@@ -41,6 +41,10 @@ enum JobType {
   EMULATOR_PULL_FILE
   EMULATOR_CLIPBOARD_SET
   EMULATOR_CLIPBOARD_GET
+  REGISTER_INSTAGRAM
+  REGISTER_WHATSAPP
+  WHATSAPP_SEND
+  WHATSAPP_READ
 }
 
 enum HostStatus {
@@ -68,6 +72,9 @@ model Host {
   // provider-side instance/contract id so we can manage (destroy) it later.
   provider       String?
   vastInstanceId String?
+  // Hourly USD cost locked at provision time (e.g. Vast.ai dph_total) so the cost
+  // panel can compute total GPU spend without re-querying the provider.
+  costPerHour    Float?
   workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -171,12 +178,55 @@ model Workspace {
   webhooks      Webhook[]
   hosts         Host[]
   libraryAssets LibraryAsset[]
+  resourceGuides ResourceGuide[]
   socialAccounts SocialAccount[]
   alertRules    AlertRule[]
   alertEvents   AlertEvent[]
   snapshots     DeviceSnapshot[]
   scheduledPosts ScheduledPost[]
+  generatedAccounts GeneratedAccount[]
   settings      WorkspaceSettings?
+  metricSnapshots MetricSnapshot[]
+  notificationChannels NotificationChannel[]
+}
+
+// Daily time-series rollup of fleet metrics — one row per workspace per UTC day.
+// Written by the metrics rollup ticker; read by the trend-analytics endpoint.
+model MetricSnapshot {
+  id                String   @id @default(cuid())
+  workspaceId       String?
+  day               DateTime @db.Date
+  devices           Int      @default(0)
+  onlineDevices     Int      @default(0)
+  jobs              Int      @default(0)
+  jobsCompleted     Int      @default(0)
+  jobsFailed        Int      @default(0)
+  farmAccounts      Int      @default(0)
+  avgHealthScore    Int      @default(0)
+  onlineMinutes     Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
+  @@index([workspaceId, day])
+}
+
+// Per-workspace outbound notification channel (Telegram / Slack / Discord).
+// The config (bot token / webhook url / chat id) is AES-encrypted at rest.
+model NotificationChannel {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  type         String   // "telegram" | "slack" | "discord"
+  configEnc    String   // AES-256-GCM encrypted JSON
+  active       Boolean  @default(true)
+  lastTestedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, type])
+  @@index([workspaceId])
 }
 
 // One-to-one policy/configuration row for a workspace. Persisted security
@@ -514,6 +564,21 @@ model LibraryAsset {
   @@index([workspaceId])
 }
 
+// FAQ / how-to entries shown on the Resources page. DB-backed so operators can
+// curate their own help content per workspace instead of it being hardcoded.
+model ResourceGuide {
+  id          String   @id @default(cuid())
+  question    String
+  answer      String
+  sortOrder   Int      @default(0)
+  workspaceId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
 model Proxy {
   id          String       @id @default(cuid())
   label       String
@@ -636,6 +701,11 @@ model MarketplaceListing {
   category    ListingCategory @default(TEMPLATE)
   icon        String          @default("◈")
   price       String          @default("Free")
+  // When set, installing the listing dispatches an EMULATOR_INSTALL_APK job per
+  // selected device (same path as the app catalog). Listings without an apkUrl
+  // are non-installable templates/integrations and only bump the counter.
+  apkUrl      String?
+  packageName String?
   installs    Int             @default(0)
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
@@ -951,4 +1021,54 @@ model ScheduledPost {
 
   @@index([workspaceId])
   @@index([status, scheduledFor])
+}
+
+// Account farm — accounts being auto-created in batches. Tracks the full
+// provisioning lifecycle: a fake identity + a disposable inbox + a rented phone
+// number + the OTP, then the on-device registration via RPA. Secrets are
+// AES-256-GCM encrypted at rest and never returned raw to clients.
+enum GeneratedAccountStatus {
+  PENDING        // queued, nothing done yet
+  IDENTITY_READY // fake identity generated
+  CONTACT_READY  // email + phone number provisioned
+  AWAITING_OTP   // number rented, waiting for the SMS code
+  REGISTERING    // on-device RPA registration in progress
+  ACTIVE         // account created successfully
+  FAILED         // gave up (no OTP, RPA error, etc.)
+}
+
+model GeneratedAccount {
+  id            String   @id @default(cuid())
+  batchId       String?  // groups accounts created in one batch run
+  platform      String   // whatsapp | instagram | facebook
+  status        GeneratedAccountStatus @default(PENDING)
+
+  // Identity (from the identity provider).
+  firstName     String?
+  lastName      String?
+  gender        String?
+  birthDate     String?  // ISO date
+  countryCode   String?  // 2-letter
+
+  // Contact + secrets (encrypted where sensitive).
+  emailAddress  String?
+  username      String?
+  passwordEnc   String?  // encrypted
+  phoneNumber   String?
+  smsRequestId  String?  // provider's rental id (poll/cancel)
+  otpCodeEnc    String?  // encrypted once received
+
+  // Where it ran + free-form notes.
+  deviceId      String?
+  error         String?
+  notes         String?
+
+  workspaceId   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([batchId])
+  @@index([status])
 }

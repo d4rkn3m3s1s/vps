@@ -113,8 +113,8 @@ export class ProxyService {
     return toPublic(proxy);
   }
 
-  async update(id: string, input: ProxyUpdateInput) {
-    await this.assertExists(id);
+  async update(id: string, input: ProxyUpdateInput, workspaceId?: string) {
+    await this.getOwned(id, workspaceId);
     const proxy = await prisma.proxy.update({
       where: { id },
       data: {
@@ -143,8 +143,8 @@ export class ProxyService {
     return proxy.password ? decryptString(proxy.password) : null;
   }
 
-  async remove(id: string) {
-    await this.assertExists(id);
+  async remove(id: string, workspaceId?: string) {
+    await this.getOwned(id, workspaceId);
     return prisma.proxy.delete({ where: { id } });
   }
 
@@ -210,33 +210,66 @@ export class ProxyService {
     return { assigned: true, proxyId: pick.id, matchedCountry: matched.length > 0 };
   }
 
-  // Lightweight "check": attempts to fetch the public IP through the proxy's
-  // host:port via an HTTP CONNECT-style probe. Without a real network egress we
-  // mark it OK if the host resolves to a plausible value, FAILED otherwise.
-  async check(id: string) {
-    const proxy = await prisma.proxy.findUnique({ where: { id } });
-    if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+  // Health check: actually route a public-IP probe THROUGH the proxy and record
+  // the real egress IP. HTTP/HTTPS proxies are tunnelled with undici's
+  // ProxyAgent (built into Node's global fetch stack — no extra dependency). The
+  // proxy is only marked OK when the tunnelled request succeeds; the recorded
+  // exportIp is the IP seen by the upstream service through the proxy, i.e. the
+  // proxy's real exit IP, not this server's.
+  //
+  // SOCKS5 isn't tunnelable via ProxyAgent, so rather than fabricate an OK we
+  // leave it UNKNOWN ("not verified") instead of claiming a status we can't back.
+  async check(id: string, workspaceId?: string) {
+    const proxy = await this.getOwned(id, workspaceId);
 
-    let status: 'OK' | 'FAILED' = 'FAILED';
+    let status: 'OK' | 'FAILED' | 'UNKNOWN' = 'FAILED';
     let exportIp: string | null = null;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      // Probe public IP (in production this request would route via the proxy).
-      const res = await fetch('https://api.ipify.org?format=json', { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const json = (await res.json()) as { ip?: string };
-        exportIp = json.ip ?? null;
-        status = 'OK';
+
+    if (proxy.type === 'SOCKS5') {
+      // No SOCKS tunnel available here — don't fabricate a result.
+      status = 'UNKNOWN';
+    } else {
+      try {
+        // undici ships inside Node (it backs global fetch). We import it via a
+        // computed specifier so the bundler/TS doesn't hard-require its type
+        // package, and treat ProxyAgent/dispatcher loosely. The `dispatcher`
+        // fetch option is honored by Node's fetch even though it's absent from
+        // the standard fetch typings.
+        const undiciMod = 'undici';
+        const undici = (await import(undiciMod)) as {
+          ProxyAgent: new (opts: { uri: string }) => { close(): Promise<void> };
+        };
+        const auth =
+          proxy.username
+            ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password ? decryptString(proxy.password) : '')}@`
+            : '';
+        const dispatcher = new undici.ProxyAgent({ uri: `http://${auth}${proxy.host}:${proxy.port}` });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        try {
+          // The IP this returns is the one the upstream sees → the proxy's exit IP.
+          const res = await fetch('https://api.ipify.org?format=json', {
+            signal: controller.signal,
+            dispatcher
+          } as unknown as RequestInit);
+          if (res.ok) {
+            const json = (await res.json()) as { ip?: string };
+            exportIp = json.ip ?? null;
+            status = exportIp ? 'OK' : 'FAILED';
+          }
+        } finally {
+          clearTimeout(timer);
+          await dispatcher.close().catch(() => undefined);
+        }
+      } catch {
+        status = 'FAILED';
       }
-    } catch {
-      status = 'FAILED';
     }
 
     const updated = await prisma.proxy.update({
       where: { id },
-      data: { status, exportIp, lastCheckedAt: new Date() }
+      // On a failed/unknown check don't keep a stale exportIp around.
+      data: { status, exportIp: status === 'OK' ? exportIp : null, lastCheckedAt: new Date() }
     });
     return toPublic(updated);
   }
@@ -244,5 +277,16 @@ export class ProxyService {
   private async assertExists(id: string): Promise<void> {
     const proxy = await prisma.proxy.findUnique({ where: { id } });
     if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+  }
+
+  // Workspace-scoped ownership check: returns the proxy only if the caller owns
+  // it (or the caller is a service identity with no workspace). Prevents a tenant
+  // from editing/deleting/probing another tenant's proxy by id.
+  private async getOwned(id: string, workspaceId?: string): Promise<Proxy> {
+    const proxy = await prisma.proxy.findUnique({ where: { id } });
+    if (!proxy || (workspaceId && proxy.workspaceId && proxy.workspaceId !== workspaceId)) {
+      throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
+    }
+    return proxy;
   }
 }

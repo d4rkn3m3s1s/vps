@@ -1,8 +1,36 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import {
+  Smartphone,
+  Search,
+  Plus,
+  LayoutGrid,
+  List,
+  CheckSquare,
+  Activity,
+  Wifi,
+  Cpu,
+  MemoryStick,
+  MapPin,
+  Fingerprint,
+  Server,
+  Layers,
+  Hash,
+  Globe,
+  Power,
+  RefreshCw,
+  Trash2,
+  FolderInput,
+  Network,
+  Package,
+  Send,
+  X
+} from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 
 export type ProvisioningModel = { model: string; manufacturer: string; brand: string; resolution: string; dpi: number; osVersions: string[] };
 export type ProvisioningCatalog = { models: ProvisioningModel[]; ramTiers: number[]; cpuTiers: number[] };
@@ -77,6 +105,7 @@ function statusClass(status: string): string {
     case 'ERROR':
       return 'dot dot-error';
     case 'STARTING':
+    case 'STOPPING':
     case 'UPDATING':
     case 'REBOOTING':
       return 'dot dot-busy';
@@ -91,6 +120,17 @@ function flag(metadata?: Record<string, unknown> | null): string {
 }
 
 const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'Dosya gönder', 'Sil'] as const;
+
+const BULK_ICONS: Record<string, ReactNode> = {
+  'Başlat': <Power size={13} />,
+  'Kapat': <Power size={13} />,
+  'Yeniden başlat': <RefreshCw size={13} />,
+  'Taşı': <FolderInput size={13} />,
+  'Proxy ata': <Network size={13} />,
+  'Uygulama yükle': <Package size={13} />,
+  'Dosya gönder': <Send size={13} />,
+  'Sil': <Trash2 size={13} />
+};
 
 export function ProfilesView({
   devices,
@@ -159,6 +199,14 @@ export function ProfilesView({
   }
 
   const selectionCount = selected.size;
+
+  // Fleet telemetry derived for the HoloStat deck.
+  const onlineCount = useMemo(() => devices.filter((d) => d.status === 'ONLINE').length, [devices]);
+  const busyCount = useMemo(
+    () => devices.filter((d) => d.status === 'STARTING' || d.status === 'UPDATING' || d.status === 'REBOOTING' || d.status === 'STOPPING').length,
+    [devices]
+  );
+  const errorCount = useMemo(() => devices.filter((d) => d.status === 'ERROR').length, [devices]);
 
   // Lazy-load the provisioning catalog the first time the create modal opens.
   useEffect(() => {
@@ -426,6 +474,38 @@ export function ProfilesView({
     }
   }
 
+  // Modal open/close helpers — each clears the shared `error` state so a message
+  // from one modal never leaks into another (P8).
+  function openCreate() {
+    setError(null);
+    setCreateOpen(true);
+  }
+  function closeCreate() {
+    if (busy) return;
+    setError(null);
+    setCreateOpen(false);
+  }
+  function closeMove() {
+    if (busy) return;
+    setError(null);
+    setMoveOpen(false);
+  }
+  function closePush() {
+    if (busy) return;
+    setError(null);
+    setPushOpen(false);
+  }
+  function closeProxy() {
+    if (busy) return;
+    setError(null);
+    setProxyOpen(false);
+  }
+  function closeApp() {
+    if (busy) return;
+    setError(null);
+    setAppOpen(false);
+  }
+
   function runBulk(action: string) {
     if (selectionCount === 0) return undefined;
     if (action === 'Sil') return deleteSelected();
@@ -433,18 +513,22 @@ export function ProfilesView({
     if (action === 'Kapat') return bulkJob('EMULATOR_STOP', 'STOPPING');
     if (action === 'Yeniden başlat') return bulkJob('EMULATOR_START', 'REBOOTING');
     if (action === 'Dosya gönder') {
+      setError(null);
       setPushOpen(true);
       return undefined;
     }
     if (action === 'Proxy ata') {
+      setError(null);
       setProxyOpen(true);
       return undefined;
     }
     if (action === 'Uygulama yükle') {
+      setError(null);
       setAppOpen(true);
       return undefined;
     }
     if (action === 'Taşı') {
+      setError(null);
       setMoveOpen(true);
       return undefined;
     }
@@ -453,206 +537,237 @@ export function ProfilesView({
 
   return (
     <div className="profiles">
-      <header className="profiles-topbar">
-        <div className="topbar-left">
-          <select className="group-select" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-            <option value="all">Tüm gruplar</option>
-            <option value="ungrouped">Grupsuz</option>
-            {groups.map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.name}
-              </option>
-            ))}
-          </select>
-          <div className="search-box">
-            <span className="search-icon" aria-hidden>
-              ⌕
-            </span>
-            <input
-              type="text"
-              placeholder="Profil adı"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="topbar-right">
-          <div className="mode-toggle" role="tablist" aria-label="Görünüm modu">
-            <button
-              type="button"
-              className={mode === 'card' ? 'active' : ''}
-              onClick={() => setMode('card')}
-            >
-              Kart
-            </button>
-            <button
-              type="button"
-              className={mode === 'list' ? 'active' : ''}
-              onClick={() => setMode('list')}
-            >
-              Liste
-            </button>
-          </div>
-          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
-            + Yeni profil
+      <HoloHeader
+        eyebrow="CİHAZ FİLOSU"
+        title="Profiller"
+        subtitle="Bulut telefon filonuzu yönetin — başlatın, taşıyın, parmak izi ve proxy atayın."
+        actions={
+          <button type="button" className="btn-primary" onClick={openCreate}>
+            <Plus size={15} /> Yeni profil
           </button>
-        </div>
-      </header>
+        }
+      />
 
-      <div className={`action-bar${selectionCount > 0 ? ' action-bar-active' : ''}`}>
-        <label className="select-all">
-          <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-          <span>{selectionCount > 0 ? `${selectionCount} seçili` : 'Tümünü seç'}</span>
-        </label>
-        <div className="action-buttons">
-          {BULK_ACTIONS.map((action) => (
-            <button
-              key={action}
-              type="button"
-              className={action === 'Sil' ? 'action-btn action-danger' : 'action-btn'}
-              disabled={selectionCount === 0 || busy}
-              title={selectionCount === 0 ? 'Önce profilleri seçin' : action}
-              onClick={() => runBulk(action)}
-            >
-              {action}
-            </button>
-          ))}
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat label="TOPLAM CİHAZ" value={<span className="mono">{devices.length}</span>} sub="Filodaki profiller" tone="cyan" icon={<Smartphone size={15} />} />
+          <HoloStat label="ÇEVRİMİÇİ" value={<span className="mono">{onlineCount}</span>} sub="Aktif çalışan" tone="success" icon={<Activity size={15} />} />
+          <HoloStat label="İŞLEMDE" value={<span className="mono">{busyCount}</span>} sub="Geçiş durumunda" tone="warning" icon={<RefreshCw size={15} />} />
+          <HoloStat label="HATA" value={<span className="mono">{errorCount}</span>} sub="Müdahale gerekli" tone="error" icon={<Power size={15} />} />
         </div>
-      </div>
+      </Reveal>
+
+      <Reveal delay={0.05}>
+        <HoloPanel title="Filtre ve görünüm" icon={<Search size={16} />} scan={false}
+          actions={
+            <HoloTabs<ViewMode>
+              active={mode}
+              onChange={setMode}
+              tabs={[
+                { key: 'card', label: 'Kart', icon: <LayoutGrid size={13} /> },
+                { key: 'list', label: 'Liste', icon: <List size={13} /> }
+              ]}
+            />
+          }
+        >
+          <div className="field-row">
+            <label className="field">
+              <span>Grup</span>
+              <select className="field-input" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+                <option value="all">Tüm gruplar</option>
+                <option value="ungrouped">Grupsuz</option>
+                {groups.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Ara</span>
+              <input
+                type="text"
+                className="field-input mono"
+                placeholder="Profil adı"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </label>
+          </div>
+        </HoloPanel>
+      </Reveal>
+
+      <Reveal delay={0.08}>
+        <HoloPanel title="Toplu işlemler" icon={<CheckSquare size={16} />} scan={false}
+          actions={
+            <label className="status-chip" style={{ cursor: 'pointer' }}>
+              <input type="checkbox" className="select-check" checked={allSelected} onChange={toggleAll} aria-label="Tümünü seç" />
+              <span className="mono">{selectionCount > 0 ? `${selectionCount} seçili` : 'Tümünü seç'}</span>
+            </label>
+          }
+        >
+          <div className="action-buttons">
+            {BULK_ACTIONS.map((action) => (
+              <button
+                key={action}
+                type="button"
+                className={action === 'Sil' ? 'btn-ghost btn-xs action-danger' : 'btn-ghost btn-xs'}
+                disabled={selectionCount === 0 || busy}
+                title={selectionCount === 0 ? 'Önce profilleri seçin' : action}
+                onClick={() => runBulk(action)}
+              >
+                {BULK_ICONS[action]} {action}
+              </button>
+            ))}
+          </div>
+        </HoloPanel>
+      </Reveal>
 
       {filtered.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">☁</div>
-          <h3>Henüz profil yok</h3>
-          <p>Başlamak için ilk bulut telefon profilinizi oluşturun.</p>
-          <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)}>
-            + Yeni profil
-          </button>
-        </div>
+        <Reveal delay={0.1}>
+          <HoloPanel>
+            <div className="empty-state">
+              <div className="empty-art"><Smartphone size={40} /></div>
+              <h3>Henüz profil yok</h3>
+              <p>Başlamak için ilk bulut telefon profilinizi oluşturun.</p>
+              <button type="button" className="btn-primary" onClick={openCreate}>
+                <Plus size={15} /> Yeni profil
+              </button>
+            </div>
+          </HoloPanel>
+        </Reveal>
       ) : mode === 'card' ? (
-        <div className="profile-grid">
-          <button type="button" className="create-card" onClick={() => setCreateOpen(true)}>
-            <div className="create-art">+</div>
-            <strong>Yeni bir profil oluştur</strong>
-            <span className="create-cta">Oluştur</span>
-          </button>
+        <Reveal delay={0.1}>
+          <div className="holo-grid-auto">
+            <Holo3D className="holo-card create-card" max={5}>
+              <button type="button" className="create-card-btn" onClick={openCreate}>
+                <div className="create-art"><Plus size={28} /></div>
+                <strong>Yeni bir profil oluştur</strong>
+                <span className="create-cta">Oluştur</span>
+              </button>
+            </Holo3D>
 
-          {filtered.map((device) => {
-            const isSelected = selected.has(device.id);
-            return (
-              <article key={device.id} className={`profile-card${isSelected ? ' profile-card-selected' : ''}`}>
-                <div className="card-head">
-                  <label className="card-check">
-                    <input type="checkbox" checked={isSelected} onChange={() => toggle(device.id)} />
-                  </label>
-                  <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
-                    {device.name}
-                  </Link>
-                  <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Cihazı aç" title="Cihazı aç">
-                    ⋮
-                  </Link>
-                </div>
-                <ul className="card-meta">
-                  <li>
-                    <span className="meta-icon">▣</span>
-                    <span className="mono">{device.uuid.slice(0, 18)}</span>
-                  </li>
-                  <li>
-                    <span className="meta-icon">⌖</span>
-                    {device.fingerprint?.country ?? flag(device.metadata)}
-                    {device.fingerprint?.gpsEnabled ? <span className="gps-pill">GPS</span> : null}
-                  </li>
-                  <li>
-                    <span className="meta-icon">▤</span>
-                    {device.fingerprint ? `${device.fingerprint.manufacturer} ${device.fingerprint.model}` : 'Parmak izi yok'}
-                  </li>
-                  <li>
-                    <span className="meta-icon">⌨</span>
-                    Android {device.fingerprint?.osVersion ?? device.androidVersion ?? '—'}
-                  </li>
-                  <li>
-                    <span className="meta-icon">⇄</span>
-                    {device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'Proxy yok'}
-                  </li>
-                  <li>
-                    <span className="meta-icon">≣</span>
-                    {device.group?.name ?? 'Grupsuz'}
-                  </li>
-                </ul>
-                <div className="card-foot">
-                  <span className="status-chip">
-                    <span className={statusClass(device.status)} />
-                    {STATUS_LABEL[device.status] ?? device.status}
-                  </span>
-                  <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
-                    ⊚ Parmak izi
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
+            {filtered.map((device) => {
+              const isSelected = selected.has(device.id);
+              return (
+                <Holo3D key={device.id} className={`holo-card profile-card${isSelected ? ' profile-card-selected' : ''}`} max={6}>
+                  <div className="card-head">
+                    <label className="card-check">
+                      <input type="checkbox" className="select-check" checked={isSelected} onChange={() => toggle(device.id)} aria-label={`${device.name} seç`} />
+                    </label>
+                    <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
+                      {device.name}
+                    </Link>
+                    <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Cihazı aç" title="Cihazı aç">
+                      ⋮
+                    </Link>
+                  </div>
+                  <ul className="card-meta">
+                    <li>
+                      <span className="meta-icon"><Hash size={13} /></span>
+                      <span className="mono">{device.uuid.slice(0, 18)}</span>
+                    </li>
+                    <li>
+                      <span className="meta-icon"><MapPin size={13} /></span>
+                      {device.fingerprint?.country ?? flag(device.metadata)}
+                      {device.fingerprint?.gpsEnabled ? <span className="gps-pill">GPS</span> : null}
+                    </li>
+                    <li>
+                      <span className="meta-icon"><Smartphone size={13} /></span>
+                      {device.fingerprint ? `${device.fingerprint.manufacturer} ${device.fingerprint.model}` : 'Parmak izi yok'}
+                    </li>
+                    <li>
+                      <span className="meta-icon"><Cpu size={13} /></span>
+                      Android {device.fingerprint?.osVersion ?? device.androidVersion ?? '—'}
+                    </li>
+                    <li>
+                      <span className="meta-icon"><Wifi size={13} /></span>
+                      {device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : 'Proxy yok'}
+                    </li>
+                    <li>
+                      <span className="meta-icon"><Layers size={13} /></span>
+                      {device.group?.name ?? 'Grupsuz'}
+                    </li>
+                  </ul>
+                  <div className="card-foot">
+                    <span className="status-chip">
+                      <span className={statusClass(device.status)} />
+                      {STATUS_LABEL[device.status] ?? device.status}
+                    </span>
+                    <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
+                      <Fingerprint size={13} /> Parmak izi
+                    </button>
+                  </div>
+                </Holo3D>
+              );
+            })}
+          </div>
+        </Reveal>
       ) : (
-        <div className="profile-table-wrap">
-          <table className="profile-table">
-            <thead>
-              <tr>
-                <th className="col-check">
-                  <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-                </th>
-                <th>Ad</th>
-                <th>Durum</th>
-                <th>Konum</th>
-                <th>Android</th>
-                <th>Proxy</th>
-                <th>Grup</th>
-                <th>CPU / RAM</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((device) => {
-                const isSelected = selected.has(device.id);
-                return (
-                  <tr key={device.id} className={isSelected ? 'row-selected' : ''}>
-                    <td className="col-check">
-                      <input type="checkbox" checked={isSelected} onChange={() => toggle(device.id)} />
-                    </td>
-                    <td>
-                      <strong>{device.name}</strong>
-                      <div className="helper mono">{device.uuid.slice(0, 14)}</div>
-                    </td>
-                    <td>
-                      <span className="status-chip">
-                        <span className={statusClass(device.status)} />
-                        {STATUS_LABEL[device.status] ?? device.status}
-                      </span>
-                    </td>
-                    <td>{flag(device.metadata)}</td>
-                    <td>{device.androidVersion ?? '—'}</td>
-                    <td className="mono">{device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : '—'}</td>
-                    <td>{device.group?.name ?? 'Ungrouped'}</td>
-                    <td className="mono">
-                      {Math.round(device.cpuUsage)}% / {Math.round(device.memoryUsage)}%
-                    </td>
+        <Reveal delay={0.1}>
+          <HoloPanel title="Cihaz listesi" icon={<List size={16} />}>
+            <div className="profile-table-wrap">
+              <table className="profile-table">
+                <thead>
+                  <tr>
+                    <th className="col-check">
+                      <input type="checkbox" className="select-check" checked={allSelected} onChange={toggleAll} aria-label="Tümünü seç" />
+                    </th>
+                    <th>Ad</th>
+                    <th>Durum</th>
+                    <th>Konum</th>
+                    <th>Android</th>
+                    <th>IP / Port</th>
+                    <th>Grup</th>
+                    <th>CPU / RAM</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {filtered.map((device) => {
+                    const isSelected = selected.has(device.id);
+                    return (
+                      <tr key={device.id} className={isSelected ? 'row-selected' : ''}>
+                        <td className="col-check">
+                          <input type="checkbox" className="select-check" checked={isSelected} onChange={() => toggle(device.id)} aria-label={`${device.name} seç`} />
+                        </td>
+                        <td>
+                          <strong>{device.name}</strong>
+                          <div className="helper mono">{device.uuid.slice(0, 14)}</div>
+                        </td>
+                        <td>
+                          <span className="status-chip">
+                            <span className={statusClass(device.status)} />
+                            {STATUS_LABEL[device.status] ?? device.status}
+                          </span>
+                        </td>
+                        <td>{device.fingerprint?.country ?? flag(device.metadata)}</td>
+                        <td>Android {device.fingerprint?.osVersion ?? device.androidVersion ?? '—'}</td>
+                        <td className="mono">{device.ipAddress ? `${device.ipAddress}:${device.adbPort ?? '—'}` : '—'}</td>
+                        <td>{device.group?.name ?? 'Grupsuz'}</td>
+                        <td className="mono">
+                          {Math.round(device.cpuUsage)}% / {Math.round(device.memoryUsage)}%
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </HoloPanel>
+        </Reveal>
       )}
 
       <footer className="profiles-foot">
-        <span className="helper">Toplam: {filtered.length} kayıt</span>
+        <span className="helper mono">Toplam: {filtered.length} kayıt</span>
       </footer>
 
       {moveOpen ? (
-        <div className="modal-overlay" onClick={() => !busy && setMoveOpen(false)}>
+        <div className="modal-overlay" onClick={closeMove}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{selectionCount} profili taşı</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setMoveOpen(false)}>
-                ✕
+              <h2><FolderInput size={16} /> {selectionCount} profili taşı</h2>
+              <button type="button" className="modal-close" onClick={closeMove}>
+                <X size={16} />
               </button>
             </header>
             <label className="field">
@@ -672,7 +787,7 @@ export function ProfilesView({
             </label>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setMoveOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={closeMove}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={moveSelected}>
@@ -684,12 +799,12 @@ export function ProfilesView({
       ) : null}
 
       {createOpen ? (
-        <div className="modal-overlay" onClick={() => !busy && setCreateOpen(false)}>
+        <div className="modal-overlay" onClick={closeCreate}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Yeni profil</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setCreateOpen(false)}>
-                ✕
+              <h2><Plus size={16} /> Yeni profil</h2>
+              <button type="button" className="modal-close" onClick={closeCreate}>
+                <X size={16} />
               </button>
             </header>
 
@@ -775,7 +890,7 @@ export function ProfilesView({
             {error ? <p className="field-error">{error}</p> : null}
 
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setCreateOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={closeCreate}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={createProfile}>
@@ -790,9 +905,9 @@ export function ProfilesView({
         <div className="modal-overlay" onClick={() => !fpBusy && setFpDevice(null)}>
           <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Cihaz parmak izi — {fpDevice.name}</h2>
+              <h2><Fingerprint size={16} /> Cihaz parmak izi — {fpDevice.name}</h2>
               <button type="button" className="modal-close" onClick={() => !fpBusy && setFpDevice(null)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
 
@@ -814,10 +929,11 @@ export function ProfilesView({
             )}
 
             <div className="modal-section">
-              <h3>GPS / SIM simülasyonu</h3>
+              <h3><MapPin size={14} /> GPS / SIM simülasyonu</h3>
               <label className="field-check">
                 <input
                   type="checkbox"
+                  className="admin-switch"
                   checked={gpsForm.gpsEnabled}
                   onChange={(e) => setGpsForm((g) => ({ ...g, gpsEnabled: e.target.checked }))}
                 />
@@ -862,7 +978,7 @@ export function ProfilesView({
 
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" disabled={fpBusy} onClick={regenerateFingerprint}>
-                {fpBusy ? '…' : '↻ Parmak izini yeniden üret'}
+                {fpBusy ? '…' : <><RefreshCw size={13} /> Parmak izini yeniden üret</>}
               </button>
               <button type="button" className="btn-primary" disabled={fpBusy} onClick={saveGps}>
                 {fpBusy ? 'Kaydediliyor…' : 'GPS kaydet'}
@@ -873,12 +989,12 @@ export function ProfilesView({
       ) : null}
 
       {pushOpen ? (
-        <div className="modal-overlay" onClick={() => !busy && setPushOpen(false)}>
+        <div className="modal-overlay" onClick={closePush}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{selectionCount} telefona dosya gönder</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setPushOpen(false)}>
-                ✕
+              <h2><Send size={16} /> {selectionCount} telefona dosya gönder</h2>
+              <button type="button" className="modal-close" onClick={closePush}>
+                <X size={16} />
               </button>
             </header>
             <label className="field">
@@ -914,7 +1030,7 @@ export function ProfilesView({
             </div>
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setPushOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={closePush}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy} onClick={pushFile}>
@@ -926,12 +1042,12 @@ export function ProfilesView({
       ) : null}
 
       {proxyOpen ? (
-        <div className="modal-overlay" onClick={() => !busy && setProxyOpen(false)}>
+        <div className="modal-overlay" onClick={closeProxy}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{selectionCount} telefona proxy ata</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setProxyOpen(false)}>
-                ✕
+              <h2><Network size={16} /> {selectionCount} telefona proxy ata</h2>
+              <button type="button" className="modal-close" onClick={closeProxy}>
+                <X size={16} />
               </button>
             </header>
             {proxies.length === 0 ? (
@@ -951,7 +1067,7 @@ export function ProfilesView({
             )}
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setProxyOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={closeProxy}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy || !proxyChoice} onClick={assignProxy}>
@@ -963,12 +1079,12 @@ export function ProfilesView({
       ) : null}
 
       {appOpen ? (
-        <div className="modal-overlay" onClick={() => !busy && setAppOpen(false)}>
+        <div className="modal-overlay" onClick={closeApp}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>{selectionCount} telefona uygulama yükle</h2>
-              <button type="button" className="modal-close" onClick={() => !busy && setAppOpen(false)}>
-                ✕
+              <h2><Package size={16} /> {selectionCount} telefona uygulama yükle</h2>
+              <button type="button" className="modal-close" onClick={closeApp}>
+                <X size={16} />
               </button>
             </header>
             {apps.length === 0 ? (
@@ -988,7 +1104,7 @@ export function ProfilesView({
             )}
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => !busy && setAppOpen(false)}>
+              <button type="button" className="btn-ghost" onClick={closeApp}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={busy || !appChoice} onClick={installApp}>

@@ -6,7 +6,9 @@ import { createJobRecord } from '../jobs/jobs.service';
 // A single RPA step. `type` drives what the runner does; other fields are
 // step-specific (e.g. tap has x/y, type has text, wait has ms).
 export type RpaStep = {
-  type: 'tap' | 'type' | 'wait' | 'swipe' | 'openApp' | 'shell' | 'keyevent';
+  type:
+    | 'tap' | 'type' | 'wait' | 'swipe' | 'openApp' | 'shell' | 'keyevent'
+    | 'uiDump' | 'tapText' | 'tapDesc' | 'tapId' | 'waitText' | 'readMessages';
   x?: number | undefined;
   y?: number | undefined;
   x2?: number | undefined;
@@ -16,6 +18,8 @@ export type RpaStep = {
   packageName?: string | undefined;
   command?: string | undefined;
   keycode?: number | undefined;
+  query?: string | undefined;
+  timeoutMs?: number | undefined;
 };
 
 export type RpaFlowInput = {

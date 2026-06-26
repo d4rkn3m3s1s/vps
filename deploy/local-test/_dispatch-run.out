@@ -1,0 +1,8 @@
+device=cmqlrf4ni000gj50fjimgvk4u number=905551234567
+job=cmqtn9105004tj5rfl9yvsxvt
+[agent 2026-06-25T15:15:23.405Z] starting — polling http://localhost:4000 every 3000ms
+[agent 2026-06-25T15:15:24.046Z] stream channel connected
+[agent 2026-06-25T15:15:24.054Z] claimed job cmqtn9105004tj5rfl9yvsxvt (REGISTER_WHATSAPP) -> 127.0.0.1:5555
+[agent 2026-06-25T15:15:53.747Z] stream start cmqlrf4ni000gj50fjimgvk4u @ 20fps cap
+[agent 2026-06-25T15:16:17.110Z] job cmqtn9105004tj5rfl9yvsxvt failed: id yok: com.whatsapp:id/registration_phone
+[agent 2026-06-25T15:17:56.364Z] shutting down.

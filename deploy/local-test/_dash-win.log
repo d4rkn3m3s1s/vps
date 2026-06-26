@@ -1,0 +1,10 @@
+   - Local:        http://localhost:3000
+   ▲ Next.js 15.5.19
+   - Network:      http://172.28.0.1:3000
+   - Environments: .env
+ ✓ Starting...
+ ✓ Ready in 1853ms
+ ✓ Compiled /middleware in 122ms (115 modules)
+ ○ Compiling /welcome ...
+ ✓ Compiled /welcome in 4.1s (1590 modules)
+ GET /welcome 200 in 4542ms

@@ -7,7 +7,8 @@ import { createUser, deleteUser, listUsers } from './users.service';
 const createSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  role: z.enum(['admin', 'member', 'viewer']).optional()
+  role: z.enum(['admin', 'member', 'viewer']).optional(),
+  referralCode: z.string().optional()
 });
 
 export async function listUsersHandler(_req: Request, res: Response): Promise<void> {

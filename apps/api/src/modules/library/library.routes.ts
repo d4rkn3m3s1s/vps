@@ -6,6 +6,6 @@ import { createAssetHandler, deleteAssetHandler, listAssetsHandler } from './lib
 
 export const libraryRouter = Router();
 
-libraryRouter.get('/', requireApiKey, asyncHandler(listAssetsHandler));
+libraryRouter.get('/', requireApiKey, authenticateJwt, asyncHandler(listAssetsHandler));
 libraryRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createAssetHandler));
 libraryRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteAssetHandler));

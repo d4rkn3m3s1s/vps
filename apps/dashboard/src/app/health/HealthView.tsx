@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Activity, Cpu, MemoryStick, HardDrive, RefreshCw } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Activity, Cpu, MemoryStick, HardDrive, RefreshCw, ServerCog, Wifi, AlertTriangle, Gauge } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
 
 type Device = {
@@ -15,15 +15,33 @@ type Device = {
   lastSeen?: string | null;
 };
 
-const STATUS_TONE: Record<string, string> = {
-  ONLINE: 'tone-ok',
-  OFFLINE: 'tone-muted',
-  ERROR: 'tone-bad',
-  STARTING: 'tone-warn',
-  STOPPING: 'tone-warn',
-  REBOOTING: 'tone-warn',
-  UPDATING: 'tone-warn'
+const STATUS_LABEL: Record<string, string> = {
+  ONLINE: 'Çalışıyor',
+  OFFLINE: 'Çevrimdışı',
+  ERROR: 'Hata',
+  BUSY: 'Meşgul',
+  STARTING: 'Başlatılıyor',
+  STOPPING: 'Durduruluyor',
+  REBOOTING: 'Yeniden başlatılıyor',
+  UPDATING: 'Güncelleniyor'
 };
+
+function statusClass(status: string): string {
+  switch (status) {
+    case 'ONLINE':
+      return 'dot dot-online';
+    case 'ERROR':
+      return 'dot dot-error';
+    case 'BUSY':
+    case 'STARTING':
+    case 'STOPPING':
+    case 'UPDATING':
+    case 'REBOOTING':
+      return 'dot dot-busy';
+    default:
+      return 'dot dot-offline';
+  }
+}
 
 function pct(n?: number): number {
   if (typeof n !== 'number' || Number.isNaN(n)) return 0;
@@ -51,16 +69,19 @@ function ago(iso?: string | null): string {
 export function HealthView() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   async function load(isRefresh = false) {
     if (isRefresh) setRefreshing(true);
     try {
       const res = await fetch('/api/devices');
+      if (!res.ok) throw new Error('fetch failed');
       const json = await res.json();
       if (Array.isArray(json.data)) setDevices(json.data);
+      setError(false);
     } catch {
-      /* keep previous */
+      setError(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -94,7 +115,8 @@ export function HealthView() {
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="SAĞLIK İZLEME"
         title="Filo sağlığı"
         subtitle="Tüm bulut telefonlardaki canlı kaynak kullanımı ve durum."
         actions={
@@ -105,75 +127,96 @@ export function HealthView() {
       />
 
       {/* Top summary */}
-      <div className="stats">
-        <div className="metric">
-          <p className="metric-label">Çevrimiçi</p>
-          <p className="metric-value">{stats.online}<span className="metric-sub"> / {stats.total}</span></p>
-        </div>
-        <div className="metric">
-          <p className="metric-label">Ort. CPU</p>
-          <p className="metric-value">{stats.cpu}%</p>
-        </div>
-        <div className="metric">
-          <p className="metric-label">Ort. bellek</p>
-          <p className="metric-value">{stats.mem}%</p>
-        </div>
-        <div className="metric">
-          <p className="metric-label">Hatalar</p>
-          <p className="metric-value">{stats.error}</p>
-        </div>
+      <div className="holo-stats-grid">
+        <HoloStat
+          label="Çevrimiçi"
+          tone="success"
+          icon={<Wifi size={16} />}
+          value={<span className="mono">{stats.online}</span>}
+          sub={<span className="mono">/ {stats.total} cihaz</span>}
+        />
+        <HoloStat
+          label="Ort. CPU"
+          tone="cyan"
+          icon={<Cpu size={16} />}
+          value={<span className="mono">{stats.cpu}%</span>}
+        />
+        <HoloStat
+          label="Ort. bellek"
+          tone="violet"
+          icon={<MemoryStick size={16} />}
+          value={<span className="mono">{stats.mem}%</span>}
+        />
+        <HoloStat
+          label="Hatalar"
+          tone={stats.error > 0 ? 'error' : 'neutral'}
+          icon={<AlertTriangle size={16} />}
+          value={<span className="mono">{stats.error}</span>}
+          sub={<span className="mono">{stats.offline} çevrimdışı</span>}
+        />
       </div>
 
       {/* Fleet-wide averages */}
-      <div className="panel">
-        <h2><Activity size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Filo ortalamaları</h2>
+      <HoloPanel title="Filo ortalamaları" icon={<Activity size={16} />}>
         <div className="health-avg-grid">
           <GaugeRow icon={<Cpu size={14} />} label="CPU" value={stats.cpu} />
           <GaugeRow icon={<MemoryStick size={14} />} label="Bellek" value={stats.mem} />
           <GaugeRow icon={<HardDrive size={14} />} label="Disk" value={stats.disk} />
         </div>
-      </div>
+      </HoloPanel>
 
       {/* Per-device */}
-      <div className="panel">
-        <h2>Cihazlar</h2>
+      <HoloPanel title="Cihazlar" icon={<ServerCog size={16} />} scan={false}>
         {loading ? (
-          <p className="helper">Filo sağlığı yükleniyor…</p>
+          <div className="holo-grid-auto">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div className="skeleton-row" key={i} />
+            ))}
+          </div>
+        ) : error ? (
+          <div>
+            <p className="form-status form-status--err">Filo sağlığı yüklenemedi.</p>
+            <button type="button" className="btn-ghost" onClick={() => load(true)}>
+              Tekrar dene
+            </button>
+          </div>
         ) : sorted.length === 0 ? (
           <p className="helper">Henüz cihaz yok.</p>
         ) : (
-          <div className="health-table">
-            <div className="health-row health-head">
-              <span>Cihaz</span>
-              <span>Durum</span>
-              <span>CPU</span>
-              <span>Bellek</span>
-              <span>Disk</span>
-              <span>Son görülme</span>
-            </div>
+          <div className="holo-grid-auto">
             {sorted.map((d) => {
               const c = pct(d.cpuUsage);
               const m = pct(d.memoryUsage);
               const k = pct(d.diskUsage);
               return (
-                <div className="health-row" key={d.id}>
-                  <span className="health-name">{d.name}</span>
-                  <span><span className={`status-dot ${STATUS_TONE[d.status] ?? 'tone-muted'}`} />{d.status.toLowerCase()}</span>
-                  <UsageCell value={c} />
-                  <UsageCell value={m} />
-                  <UsageCell value={k} />
-                  <span className="helper">{ago(d.lastSeen)}</span>
-                </div>
+                <Holo3D className="holo-card health-card" key={d.id} max={7}>
+                  <div className="health-card-head">
+                    <span className="health-name">{d.name}</span>
+                    <span className="status-chip">
+                      <span className={statusClass(d.status)} />
+                      {STATUS_LABEL[d.status] ?? d.status}
+                    </span>
+                  </div>
+                  <div className="health-card-metrics">
+                    <MetricLine icon={<Cpu size={13} />} label="CPU" value={c} />
+                    <MetricLine icon={<MemoryStick size={13} />} label="Bellek" value={m} />
+                    <MetricLine icon={<HardDrive size={13} />} label="Disk" value={k} />
+                  </div>
+                  <div className="health-card-foot helper">
+                    <Gauge size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                    Son görülme: <span className="mono">{ago(d.lastSeen)}</span>
+                  </div>
+                </Holo3D>
               );
             })}
           </div>
         )}
-      </div>
+      </HoloPanel>
     </PageMotion>
   );
 }
 
-function GaugeRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: number }) {
+function GaugeRow({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
   return (
     <div className="health-gauge">
       <div className="health-gauge-head">
@@ -187,13 +230,17 @@ function GaugeRow({ icon, label, value }: { icon: React.ReactNode; label: string
   );
 }
 
-function UsageCell({ value }: { value: number }) {
+function MetricLine({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
   return (
-    <span className="health-usage">
+    <div className="health-usage">
+      <span className="health-usage-head">
+        <span className="health-usage-ico">{icon}</span>
+        <span>{label}</span>
+        <span className="health-usage-num mono">{value}%</span>
+      </span>
       <span className="health-bar health-bar-sm">
         <span className={`health-bar-fill ${barTone(value)}`} style={{ width: `${value}%` }} />
       </span>
-      <span className="health-usage-num mono">{value}%</span>
-    </span>
+    </div>
   );
 }

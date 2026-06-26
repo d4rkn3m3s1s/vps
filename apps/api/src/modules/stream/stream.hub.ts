@@ -5,6 +5,7 @@ import { prisma } from '../../db/prisma';
 import { logger } from '../../lib/logger';
 import { sha256 } from '../../lib/crypto';
 import { verifyAccessToken } from '../../lib/jwt';
+import { deviceHub } from '../devices/device.hub';
 
 // ── Live screen streaming + remote control ──────────────────────────────────
 //
@@ -74,12 +75,16 @@ export class StreamHub {
         void this.handleAgentUpgrade(req, socket as never, head);
       } else if (pathname === '/ws/stream') {
         void this.handleViewerUpgrade(req, socket as never, head);
+      } else if (pathname === '/ws/devices') {
+        // deviceHub runs in noServer mode; this single upgrade router owns the
+        // server's 'upgrade' event and dispatches /ws/devices to it.
+        deviceHub.handleUpgrade(req, socket as never, head);
+      } else {
+        socket.destroy();
       }
-      // Other paths (e.g. /ws/devices) are handled by their own WSS attached to
-      // the same server; we simply ignore them here.
     });
 
-    logger.info('Stream hub attached (/ws/agent-stream, /ws/stream)');
+    logger.info('Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices)');
   }
 
   // ── Agent side ────────────────────────────────────────────────────────────
@@ -114,12 +119,20 @@ export class StreamHub {
   private onAgentMessage(_agent: AgentSocket, data: Buffer, isBinary: boolean): void {
     if (!isBinary || data.length < FRAME_PREFIX.length + 36) return;
     if (!data.subarray(0, FRAME_PREFIX.length).equals(FRAME_PREFIX)) return;
-    const deviceId = data.subarray(FRAME_PREFIX.length, FRAME_PREFIX.length + 36).toString('utf8');
+    // The agent right-pads the device id to a fixed 36 chars (cuids are ~25), so
+    // trim it back before looking up viewers — otherwise the padded id never
+    // matches the real key and every frame is silently dropped.
+    const deviceId = data.subarray(FRAME_PREFIX.length, FRAME_PREFIX.length + 36).toString('utf8').trim();
     const frame = data.subarray(FRAME_PREFIX.length + 36);
     const set = this.viewers.get(deviceId);
     if (!set || set.size === 0) return;
     for (const v of set) {
-      if (v.readyState === WebSocket.OPEN) v.send(frame, { binary: true });
+      // Per-viewer backpressure: skip a slow viewer instead of letting its send
+      // queue grow unbounded (which head-of-lines fast viewers on the wall and
+      // grows API memory). A dropped frame just means the next one is fresher.
+      if (v.readyState === WebSocket.OPEN && v.bufferedAmount < 4_000_000) {
+        v.send(frame, { binary: true });
+      }
     }
   }
 
@@ -130,6 +143,7 @@ export class StreamHub {
     const deviceId = url.searchParams.get('deviceId') ?? '';
     const rawSocket = socket as unknown as import('node:net').Socket;
     if (!token || !deviceId) {
+      logger.warn('[stream] viewer rejected: missing token/deviceId');
       rawSocket.destroy();
       return;
     }
@@ -139,7 +153,8 @@ export class StreamHub {
       const claims = verifyAccessToken(token);
       userId = claims.sub;
       workspaceId = claims.workspaceId;
-    } catch {
+    } catch (err) {
+      logger.warn(`[stream] viewer rejected: bad token (${(err as Error).message})`);
       rawSocket.destroy();
       return;
     }
@@ -147,9 +162,11 @@ export class StreamHub {
     // workspace. Cross-workspace peeking is rejected.
     const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { id: true, hostId: true, workspaceId: true, ipAddress: true, adbPort: true } }).catch(() => null);
     if (!device || (workspaceId && device.workspaceId && device.workspaceId !== workspaceId)) {
+      logger.warn(`[stream] viewer rejected: device=${device ? 'found' : 'MISSING'} dws=${device?.workspaceId} vws=${workspaceId}`);
       rawSocket.destroy();
       return;
     }
+    logger.info(`[stream] viewer accepted for device ${deviceId} (host=${device.hostId ?? 'none'})`);
 
     this.viewerWss!.handleUpgrade(req, rawSocket, head, (ws) => {
       const v = ws as ViewerSocket;
@@ -161,7 +178,9 @@ export class StreamHub {
       const serial = device.ipAddress && device.adbPort ? `${device.ipAddress}:${device.adbPort}` : null;
       // First viewer for this device → tell the host to start capturing.
       if ((this.viewers.get(deviceId)?.size ?? 0) === 1) {
-        this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 12, quality: 60 });
+        // Ask for 20fps; the agent caps at 30 and drops frames under backpressure,
+        // so requesting more here lifts the whole pipeline off the old 12fps pin.
+        this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
       }
 
       v.on('message', (raw) => this.onViewerMessage(v, raw as Buffer, device.hostId, serial));

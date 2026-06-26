@@ -33,11 +33,18 @@ export const AUTOMATION_TEMPLATES = [
   { title: 'TikTok account warmup', description: 'Simulate human actions. Each action item is paired with an interval to stay natural.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false }
 ];
 
+// Marketplace listings. Items with an `apkUrl` + `packageName` are real,
+// installable APKs — installing one dispatches an EMULATOR_INSTALL_APK job per
+// selected device. Items without (templates/integrations) are not installable
+// apps and only bump the counter when "installed".
+//
+// install counts start at 0 and grow from REAL installs (installListing bumps
+// them) — we don't seed fabricated popularity numbers.
 export const MARKETPLACE_LISTINGS = [
-  { title: 'Warm-up Routine', category: 'TEMPLATE' as const, icon: '◫', description: 'Auto-scrolls feeds and likes to age fresh accounts naturally.', price: 'Free', installs: 1200 },
-  { title: 'Bulk Account Creator', category: 'AUTOMATION' as const, icon: '✦', description: 'Provisions accounts across phones with unique fingerprints.', price: '$19', installs: 840 },
-  { title: 'Residential Proxy Pack', category: 'INTEGRATION' as const, icon: '⇄', description: 'Rotating residential IPs across 40+ countries, per-phone binding.', price: '$29/mo', installs: 610 },
-  { title: 'TikTok Engager', category: 'AUTOMATION' as const, icon: '▤', description: 'Follows, comments and DMs on a schedule with human-like timing.', price: '$24', installs: 2100 },
-  { title: 'Profile Fingerprint Kit', category: 'TEMPLATE' as const, icon: '◈', description: 'Realistic device, locale and sensor profiles to avoid detection.', price: 'Free', installs: 3400 },
-  { title: 'Cookie Importer', category: 'INTEGRATION' as const, icon: '❏', description: 'Bulk-imports session cookies into matching cloud phones.', price: '$9', installs: 430 }
+  { title: 'Warm-up Routine', category: 'TEMPLATE' as const, icon: '◫', description: 'Auto-scrolls feeds and likes to age fresh accounts naturally.', price: 'Free', installs: 0 },
+  { title: 'Bulk Account Creator', category: 'AUTOMATION' as const, icon: '✦', description: 'Provisions accounts across phones with unique fingerprints.', price: '$19', installs: 0 },
+  { title: 'Residential Proxy Pack', category: 'INTEGRATION' as const, icon: '⇄', description: 'Rotating residential IPs across 40+ countries, per-phone binding.', price: '$29/mo', installs: 0 },
+  { title: 'TikTok Engager', category: 'AUTOMATION' as const, icon: '▤', description: 'Follows, comments and DMs on a schedule with human-like timing.', price: '$24', installs: 0 },
+  { title: 'Profile Fingerprint Kit', category: 'TEMPLATE' as const, icon: '◈', description: 'Realistic device, locale and sensor profiles to avoid detection.', price: 'Free', installs: 0 },
+  { title: 'Cookie Importer', category: 'INTEGRATION' as const, icon: '❏', description: 'Bulk-imports session cookies into matching cloud phones.', price: '$9', installs: 0 }
 ];

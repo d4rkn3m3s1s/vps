@@ -83,15 +83,38 @@ export class CatalogService {
         category: l.category as ListingCategory,
         icon: l.icon,
         price: l.price,
-        installs: l.installs
+        installs: l.installs,
+        ...('apkUrl' in l && l.apkUrl ? { apkUrl: l.apkUrl as string } : {}),
+        ...('packageName' in l && l.packageName ? { packageName: l.packageName as string } : {})
       }))
     });
   }
 
-  async installListing(id: string) {
+  // Installs a marketplace listing onto each selected device. When the listing
+  // carries an APK (apkUrl + packageName) this records one EMULATOR_INSTALL_APK
+  // job per device — the same agent path the app catalog uses — so a "Kur" click
+  // actually puts the app on the phones, not just bumps a counter. Listings with
+  // no APK (pure templates/integrations) just increment the counter.
+  async installListing(id: string, deviceIds: string[]) {
     const listing = await prisma.marketplaceListing.findUnique({ where: { id } });
     if (!listing) return null;
-    return prisma.marketplaceListing.update({ where: { id }, data: { installs: { increment: 1 } } });
+    if (!listing.apkUrl || !listing.packageName || deviceIds.length === 0) {
+      const updated = await prisma.marketplaceListing.update({
+        where: { id },
+        data: { installs: { increment: 1 } }
+      });
+      return { ...updated, installed: 0, jobIds: [] as string[] };
+    }
+    const apkPath = listing.apkUrl;
+    const packageName = listing.packageName;
+    const jobs = await Promise.all(
+      deviceIds.map((deviceId) => createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath }))
+    );
+    const updated = await prisma.marketplaceListing.update({
+      where: { id },
+      data: { installs: { increment: deviceIds.length } }
+    });
+    return { ...updated, installed: jobs.length, jobIds: jobs.map((j) => j.id) };
   }
 }
 

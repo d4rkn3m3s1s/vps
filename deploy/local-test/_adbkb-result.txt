@@ -1,0 +1,6 @@
+apk: 18595
+Performing Streamed Install
+Success
+shown=mInputShown=true
+Broadcast completed: result=0
+ZZTEST_landed=0

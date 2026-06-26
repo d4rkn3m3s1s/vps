@@ -14,6 +14,7 @@ import {
   clipboardGetHandler,
   clipboardSetHandler,
   createDeviceHandler,
+  quickProfileHandler,
   createGroupHandler,
   deleteDeviceHandler,
   deleteGroupHandler,
@@ -36,6 +37,7 @@ deviceRouter.get('/status/summary', requireApiKey, optionalJwt, asyncHandler(dev
 deviceRouter.get('/groups', requireApiKey, optionalJwt, asyncHandler(listGroupsHandler));
 deviceRouter.get('/provisioning-catalog', requireApiKey, optionalJwt, asyncHandler(provisioningCatalogHandler));
 deviceRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createDeviceHandler));
+deviceRouter.post('/quick', requireApiKey, authenticateJwt, asyncHandler(quickProfileHandler));
 deviceRouter.post('/groups', requireApiKey, authenticateJwt, asyncHandler(createGroupHandler));
 deviceRouter.put('/groups/:id', requireApiKey, authenticateJwt, asyncHandler(updateGroupHandler));
 deviceRouter.delete('/groups/:id', requireApiKey, authenticateJwt, asyncHandler(deleteGroupHandler));

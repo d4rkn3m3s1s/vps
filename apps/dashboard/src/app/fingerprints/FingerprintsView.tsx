@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Fingerprint, RefreshCw, MapPin, Smartphone, Signal, Globe2 } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import type { ReactNode } from 'react';
+import { Fingerprint, RefreshCw, MapPin, Smartphone, Signal, Globe2, Cpu, Radar } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
 
 type Device = { id: string; name: string; status?: string };
@@ -149,147 +150,200 @@ export function FingerprintsView() {
     }
   }
 
+  // Derived summary metrics (presentation only — no new fetches).
+  const onlineCount = devices.filter((d) => (d.status ?? '').toUpperCase() === 'ONLINE').length;
+  const gpsLabel = fp ? (fp.gpsEnabled ? 'AKTİF' : 'KAPALI') : '—';
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="PARMAK İZİ MOTORU"
         title="Cihaz kimlikleri"
         subtitle="Her bulut telefonun parmak izini, SIM yerel ayarını ve GPS'ini yönetin — algılama önleme katmanı."
       />
 
-      <div className="section-grid">
-        {/* Device picker */}
-        <div className="panel">
-          <h2>
-            <Smartphone size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Bulut telefonlar
-          </h2>
-          {devices.length === 0 ? (
-            <p className="helper">Henüz cihaz yok. Önce bir bulut telefon oluşturun.</p>
-          ) : (
-            <div className="fp-device-list">
-              {devices.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  className={`fp-device-item${selected === d.id ? ' fp-device-active' : ''}`}
-                  onClick={() => setSelected(d.id)}
-                >
-                  <span className="fp-device-name">{d.name}</span>
-                  {d.status ? <span className="fp-device-status">{d.status.toLowerCase()}</span> : null}
-                </button>
-              ))}
-            </div>
-          )}
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Bulut telefon"
+            value={<span className="mono">{devices.length}</span>}
+            sub={`${onlineCount} çevrimiçi`}
+            tone="cyan"
+            icon={<Smartphone size={16} />}
+          />
+          <HoloStat
+            label="Ülke kataloğu"
+            value={<span className="mono">{countries.length}</span>}
+            sub="yerel ayar profili"
+            tone="violet"
+            icon={<Globe2 size={16} />}
+          />
+          <HoloStat
+            label="Aktif kimlik"
+            value={<span className="mono">{fp ? fp.model : '—'}</span>}
+            sub={fp ? `${fp.manufacturer} · ${fp.osVersion}` : 'cihaz seçilmedi'}
+            tone="info"
+            icon={<Fingerprint size={16} />}
+          />
+          <HoloStat
+            label="GPS sinyali"
+            value={<span className="mono">{gpsLabel}</span>}
+            sub={fp ? fp.timezone : 'beklemede'}
+            tone={fp && fp.gpsEnabled ? 'success' : 'warning'}
+            icon={<Radar size={16} />}
+          />
         </div>
+      </Reveal>
+
+      <div className="holo-grid-2">
+        {/* Device picker */}
+        <Reveal>
+          <HoloPanel title="Bulut telefonlar" icon={<Smartphone size={16} />}>
+            {devices.length === 0 ? (
+              <p className="helper">Henüz cihaz yok. Önce bir bulut telefon oluşturun.</p>
+            ) : (
+              <div className="holo-grid-auto">
+                {devices.map((d) => {
+                  const isOnline = (d.status ?? '').toUpperCase() === 'ONLINE';
+                  return (
+                    <Holo3D
+                      key={d.id}
+                      max={5}
+                      className={`fp-device-item${selected === d.id ? ' fp-device-active' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        className="fp-device-btn"
+                        onClick={() => setSelected(d.id)}
+                        style={{ all: 'unset', cursor: 'pointer', display: 'block', width: '100%' }}
+                      >
+                        <span className="fp-device-name">
+                          <span className={`dot ${isOnline ? 'dot-online' : d.status ? 'dot-offline' : 'dot-error'}`} />
+                          {d.name}
+                        </span>
+                        {d.status ? (
+                          <span className="status-chip mono">{d.status.toLowerCase()}</span>
+                        ) : null}
+                      </button>
+                    </Holo3D>
+                  );
+                })}
+              </div>
+            )}
+          </HoloPanel>
+        </Reveal>
 
         {/* Fingerprint detail */}
-        <div className="panel">
-          <h2>
-            <Fingerprint size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Kimlik
-          </h2>
-          {!fp ? (
-            <p className="helper">{selected ? 'Kimlik yükleniyor…' : 'Bir cihaz seçin.'}</p>
-          ) : (
-            <>
-              <div className="fp-grid">
-                <FpField label="Üretici" value={fp.manufacturer} />
-                <FpField label="Model" value={fp.model} />
-                <FpField label="Marka" value={fp.brand} />
-                <FpField label="OS sürümü" value={fp.osVersion} />
-                <FpField label="Yapı" value={fp.buildNumber} />
-                <FpField label="Çözünürlük" value={`${fp.resolution} · ${fp.dpi}dpi`} />
-                <FpField label="IMEI" value={fp.imei} mono />
-                <FpField label="Android ID" value={fp.androidId} mono />
-                <FpField label="Seri No" value={fp.serialNo} mono />
-                <FpField label="MAC" value={fp.macAddress} mono />
-                <FpField label="Operatör" value={`${fp.carrier} (${fp.mcc}/${fp.mnc})`} />
-                <FpField label="Telefon numarası" value={fp.phoneNumber ?? '—'} mono />
-                <FpField label="Dil" value={fp.language} />
-                <FpField label="Saat dilimi" value={fp.timezone} />
-              </div>
-
-              {/* Regenerate */}
-              <div className="fp-action-block">
-                <h3 className="adb-subhead">
-                  <Globe2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Kimliği yeniden oluştur
-                </h3>
-                <p className="helper">
-                  Seçilen ülke için tutarlı ve yeni bir cihaz parmak izi (IMEI, Android ID, MAC, SIM) oluşturun.
-                  Oturumlar arasında kimliği değiştirmek için bunu kullanın.
-                </p>
-                <div className="fp-action-row">
-                  <select
-                    className="field-input"
-                    value={regenCountry}
-                    onChange={(e) => setRegenCountry(e.target.value)}
-                  >
-                    <option value="">Rastgele ülke</option>
-                    {countries.map((c) => (
-                      <option key={c.countryCode} value={c.countryCode}>
-                        {c.country} ({c.countryCode}) · {c.timezone}
-                      </option>
-                    ))}
-                  </select>
-                  <label className="fp-check">
-                    <input type="checkbox" checked={regenGps} onChange={(e) => setRegenGps(e.target.checked)} /> GPS açık
-                  </label>
-                  <button type="button" className="btn-primary" disabled={busy} onClick={regenerate}>
-                    <RefreshCw size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} />
-                    {busy ? 'İşleniyor…' : 'Yeniden oluştur'}
-                  </button>
+        <Reveal delay={0.08}>
+          <HoloPanel title="Kimlik" icon={<Fingerprint size={16} />} scan>
+            {!fp ? (
+              <p className="helper">{selected ? 'Kimlik yükleniyor…' : 'Bir cihaz seçin.'}</p>
+            ) : (
+              <>
+                <div className="holo-grid-3">
+                  <FpField label="Üretici" value={fp.manufacturer} />
+                  <FpField label="Model" value={fp.model} />
+                  <FpField label="Marka" value={fp.brand} />
+                  <FpField label="OS sürümü" value={fp.osVersion} />
+                  <FpField label="Yapı" value={fp.buildNumber} />
+                  <FpField label="Çözünürlük" value={`${fp.resolution} · ${fp.dpi}dpi`} />
+                  <FpField label="IMEI" value={fp.imei} mono />
+                  <FpField label="Android ID" value={fp.androidId} mono />
+                  <FpField label="Seri No" value={fp.serialNo} mono />
+                  <FpField label="MAC" value={fp.macAddress} mono />
+                  <FpField label="Operatör" value={`${fp.carrier} (${fp.mcc}/${fp.mnc})`} />
+                  <FpField label="Telefon numarası" value={fp.phoneNumber ?? '—'} mono />
+                  <FpField label="Dil" value={fp.language} />
+                  <FpField label="Saat dilimi" value={fp.timezone} />
                 </div>
-              </div>
 
-              {/* GPS */}
-              <div className="fp-action-block">
-                <h3 className="adb-subhead">
-                  <MapPin size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS konumu
-                </h3>
-                <p className="helper">
-                  Mevcut: {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'GPS devre dışı'}.{' '}
-                  Kesin koordinatlar girin veya ülkeden türetilen konumu korumak için boş bırakın.
-                </p>
-                <div className="fp-action-row">
-                  <input
-                    className="field-input mono"
-                    value={lat}
-                    onChange={(e) => setLat(e.target.value)}
-                    placeholder="Enlem (örn. 40.7128)"
-                  />
-                  <input
-                    className="field-input mono"
-                    value={lng}
-                    onChange={(e) => setLng(e.target.value)}
-                    placeholder="Boylam (örn. -74.0060)"
-                  />
-                  <button type="button" className="btn-ghost" disabled={busy} onClick={saveGps}>
-                    <Signal size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS kaydet
-                  </button>
+                {/* Regenerate */}
+                <div className="fp-action-block">
+                  <h3 className="adb-subhead">
+                    <Globe2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Kimliği yeniden oluştur
+                  </h3>
+                  <p className="helper">
+                    Seçilen ülke için tutarlı ve yeni bir cihaz parmak izi (IMEI, Android ID, MAC, SIM) oluşturun.
+                    Oturumlar arasında kimliği değiştirmek için bunu kullanın.
+                  </p>
+                  <div className="fp-action-row">
+                    <select
+                      className="field-input"
+                      value={regenCountry}
+                      onChange={(e) => setRegenCountry(e.target.value)}
+                    >
+                      <option value="">Rastgele ülke</option>
+                      {countries.map((c) => (
+                        <option key={c.countryCode} value={c.countryCode}>
+                          {c.country} ({c.countryCode}) · {c.timezone}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="fp-check">
+                      <input type="checkbox" checked={regenGps} onChange={(e) => setRegenGps(e.target.checked)} /> GPS açık
+                    </label>
+                    <button type="button" className="btn-primary" disabled={busy} onClick={regenerate}>
+                      <RefreshCw size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} />
+                      {busy ? 'İşleniyor…' : 'Yeniden oluştur'}
+                    </button>
+                  </div>
                 </div>
-                {fp.latitude != null && fp.longitude != null ? (
-                  <a
-                    className="helper fp-map-link"
-                    href={`https://www.openstreetmap.org/?mlat=${fp.latitude}&mlon=${fp.longitude}#map=11/${fp.latitude}/${fp.longitude}`}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Haritada görüntüle ↗
-                  </a>
-                ) : null}
-              </div>
 
-              {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
-            </>
-          )}
-        </div>
+                {/* GPS */}
+                <div className="fp-action-block">
+                  <h3 className="adb-subhead">
+                    <MapPin size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS konumu
+                  </h3>
+                  <p className="helper">
+                    Mevcut: {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'GPS devre dışı'}.{' '}
+                    Kesin koordinatlar girin veya ülkeden türetilen konumu korumak için boş bırakın.
+                  </p>
+                  <div className="fp-action-row">
+                    <input
+                      className="field-input mono"
+                      value={lat}
+                      onChange={(e) => setLat(e.target.value)}
+                      placeholder="Enlem (örn. 40.7128)"
+                    />
+                    <input
+                      className="field-input mono"
+                      value={lng}
+                      onChange={(e) => setLng(e.target.value)}
+                      placeholder="Boylam (örn. -74.0060)"
+                    />
+                    <button type="button" className="btn-ghost" disabled={busy} onClick={saveGps}>
+                      <Signal size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> GPS kaydet
+                    </button>
+                  </div>
+                  {fp.latitude != null && fp.longitude != null ? (
+                    <a
+                      className="helper fp-map-link"
+                      href={`https://www.openstreetmap.org/?mlat=${fp.latitude}&mlon=${fp.longitude}#map=11/${fp.latitude}/${fp.longitude}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Haritada görüntüle ↗
+                    </a>
+                  ) : null}
+                </div>
+
+                {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
+              </>
+            )}
+          </HoloPanel>
+        </Reveal>
       </div>
     </PageMotion>
   );
 }
 
-function FpField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function FpField({ label, value, mono }: { label: string; value: string; mono?: boolean }): ReactNode {
   return (
     <div className="fp-field">
-      <span className="fp-field-label">{label}</span>
+      <span className="fp-field-label">
+        <Cpu size={11} style={{ marginRight: 4, verticalAlign: 'middle', opacity: 0.6 }} />
+        {label}
+      </span>
       <span className={`fp-field-value${mono ? ' mono' : ''}`}>{value}</span>
     </div>
   );

@@ -1,6 +1,8 @@
 import { env } from '../../config/env';
+import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import type { RpaStep } from '../rpa/rpa.service';
+import { farmService } from '../farm/farm.service';
 
 // ── AI-driven automation: natural language → RPA flow ───────────────────────
 //
@@ -84,6 +86,168 @@ function sanitizeStep(raw: unknown): RpaStep | null {
 
 export type GeneratedFlow = { name: string; description: string; steps: RpaStep[] };
 
+// ── Shared Anthropic forced-tool call ───────────────────────────────────────
+// Calls the Messages API forcing a single tool and returns the parsed tool input.
+// Same wire format / error handling as generateFlow above (no temperature, no
+// budget_tokens — Opus 4.8 rejects them; 60s AbortController).
+async function callForcedTool(
+  system: string,
+  userContent: string,
+  tool: { name: string; description: string; input_schema: unknown },
+  maxTokens = 2048
+): Promise<Record<string, unknown>> {
+  if (!env.anthropicApiKey) {
+    throw new AppError('AI yapılandırılmamış: ANTHROPIC_API_KEY eksik', 503, 'AI_NOT_CONFIGURED');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': env.anthropicApiKey,
+        'anthropic-version': ANTHROPIC_VERSION
+      },
+      body: JSON.stringify({
+        model: env.anthropicModel,
+        max_tokens: maxTokens,
+        system,
+        tools: [tool],
+        tool_choice: { type: 'tool', name: tool.name },
+        messages: [{ role: 'user', content: userContent }]
+      })
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof Error && e.name === 'AbortError') throw new AppError('AI isteği zaman aşımına uğradı', 504, 'AI_TIMEOUT');
+    throw new AppError('AI servisine ulaşılamadı', 502, 'AI_UNREACHABLE');
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new AppError(`AI hatası (${res.status})`, 502, 'AI_ERROR', detail.slice(0, 300));
+  }
+
+  const body = (await res.json()) as { content?: Array<{ type: string; name?: string; input?: unknown }> };
+  const toolUse = (body.content ?? []).find((b) => b.type === 'tool_use' && b.name === tool.name);
+  if (!toolUse?.input || typeof toolUse.input !== 'object') {
+    throw new AppError('AI geçerli bir yanıt üretemedi', 502, 'AI_BAD_OUTPUT');
+  }
+  return toolUse.input as Record<string, unknown>;
+}
+
+// ── AI Insights types ───────────────────────────────────────────────────────
+export type InsightSeverity = 'low' | 'medium' | 'high';
+export type InsightPriority = 'low' | 'medium' | 'high';
+export type FleetInsights = {
+  anomalies: Array<{ title: string; severity: InsightSeverity; description: string }>;
+  recommendations: Array<{ action: string; priority: InsightPriority; reason: string }>;
+  summary: string;
+};
+
+const REPORT_INSIGHTS_TOOL = {
+  name: 'report_insights',
+  description:
+    'Report fleet health analysis: detected anomalies and prioritized, actionable recommendations for an Android cloud-phone + account-farming operator.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      anomalies: {
+        type: 'array',
+        description: 'Notable anomalies or warning signs detected in the fleet signals.',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Short anomaly title' },
+            severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+            description: { type: 'string', description: 'What it is and why it matters' }
+          },
+          required: ['title', 'severity', 'description']
+        }
+      },
+      recommendations: {
+        type: 'array',
+        description: 'Prioritized actions the operator should take.',
+        items: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', description: 'Concrete action to take' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+            reason: { type: 'string', description: 'Why this action helps' }
+          },
+          required: ['action', 'priority', 'reason']
+        }
+      },
+      summary: { type: 'string', description: 'One-paragraph overall fleet health summary' }
+    },
+    required: ['anomalies', 'recommendations', 'summary']
+  }
+} as const;
+
+const INSIGHTS_SYSTEM = [
+  'You are a fleet health analyst for an Android cloud-phone + social-account-farming platform.',
+  'Given compact JSON signals about devices, farm accounts and recent jobs, surface real anomalies',
+  'and a short list of prioritized, actionable recommendations.',
+  'Rules:',
+  '- Always call the report_insights tool; never answer in prose.',
+  '- Ground every anomaly and recommendation in the provided numbers; do not invent data.',
+  '- If signals look healthy, say so with low-severity anomalies and light recommendations.',
+  '- You may write in Turkish (the operators are Turkish-speaking); English is fine too.'
+].join('\n');
+
+const SEVERITIES = new Set<InsightSeverity>(['low', 'medium', 'high']);
+function coerceSeverity(v: unknown): InsightSeverity {
+  return typeof v === 'string' && SEVERITIES.has(v as InsightSeverity) ? (v as InsightSeverity) : 'low';
+}
+
+// ── Fleet query (natural language → safe read-only query) ───────────────────
+export type FleetQueryType =
+  | 'top_unhealthy'
+  | 'top_active'
+  | 'paused_accounts'
+  | 'offline_devices'
+  | 'high_risk'
+  | 'campaign_status';
+
+const QUERY_TYPES = new Set<FleetQueryType>([
+  'top_unhealthy',
+  'top_active',
+  'paused_accounts',
+  'offline_devices',
+  'high_risk',
+  'campaign_status'
+]);
+
+const CLASSIFY_QUERY_TOOL = {
+  name: 'classify_query',
+  description:
+    'Classify a natural-language fleet question into one of a fixed set of safe, read-only query intents and a result limit.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      type: {
+        type: 'string',
+        enum: ['top_unhealthy', 'top_active', 'paused_accounts', 'offline_devices', 'high_risk', 'campaign_status'],
+        description:
+          'top_unhealthy=lowest-health farm accounts; top_active=most active accounts; paused_accounts=paused accounts; offline_devices=offline/error devices; high_risk=highest ban-risk accounts; campaign_status=farm campaign overview.'
+      },
+      limit: { type: 'number', description: 'How many rows to return (1-50, default 10)' }
+    },
+    required: ['type']
+  }
+} as const;
+
+const CLASSIFY_SYSTEM = [
+  'You map an operator question about their Android cloud-phone / account-farming fleet',
+  'to ONE of the fixed query intents and a row limit.',
+  'Always call the classify_query tool; never answer in prose.',
+  'Pick the closest intent even if the wording is loose.'
+].join('\n');
+
 export const aiService = {
   configured(): boolean {
     return Boolean(env.anthropicApiKey);
@@ -146,5 +310,203 @@ export const aiService = {
       description: typeof out.description === 'string' ? out.description.slice(0, 200) : '',
       steps
     };
+  },
+
+  // ── AI Insights ─────────────────────────────────────────────────────────
+  // Gather compact fleet signals (farm summary/risk, device status counts,
+  // 7-day job outcomes), ask Claude to surface anomalies + prioritized
+  // recommendations via a forced tool, and return the parsed report.
+  async generateInsights(workspaceId?: string): Promise<FleetInsights> {
+    if (!env.anthropicApiKey) {
+      throw new AppError('AI yapılandırılmamış: ANTHROPIC_API_KEY eksik', 503, 'AI_NOT_CONFIGURED');
+    }
+    const ws = workspaceId ? { workspaceId } : {};
+
+    // Farm signals — reuse the farm module's summary + risk where available,
+    // falling back to a direct aggregate if anything throws.
+    let farm: unknown = null;
+    try {
+      farm = await farmService.getSummary(workspaceId);
+    } catch {
+      const accounts = await prisma.farmAccount.findMany({ where: ws, select: { healthScore: true, paused: true } });
+      const total = accounts.length;
+      farm = {
+        accounts: {
+          total,
+          paused: accounts.filter((a) => a.paused).length,
+          atRisk: accounts.filter((a) => a.healthScore < 50).length,
+          avgHealth: total ? Math.round(accounts.reduce((s, a) => s + a.healthScore, 0) / total) : 0
+        }
+      };
+    }
+
+    let topRisk: Array<{ deviceName: string | null; score: number; band: string }> = [];
+    try {
+      const risk = await farmService.getRiskScores(workspaceId);
+      topRisk = risk.slice(0, 5).map((r) => ({ deviceName: r.deviceName, score: r.score, band: r.band }));
+    } catch {
+      topRisk = [];
+    }
+
+    // Device status distribution.
+    const deviceGroups = await prisma.device.groupBy({
+      by: ['status'],
+      where: ws,
+      _count: { _all: true }
+    }).catch(() => [] as Array<{ status: string; _count: { _all: number } }>);
+    const devices: Record<string, number> = {};
+    for (const g of deviceGroups as Array<{ status: string; _count: { _all: number } }>) {
+      devices[g.status] = g._count._all;
+    }
+
+    // Last-7-day job outcomes.
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const [jobsCompleted, jobsFailed] = await Promise.all([
+      prisma.job.count({ where: { ...ws, status: 'COMPLETED', createdAt: { gte: since } } }).catch(() => 0),
+      prisma.job.count({ where: { ...ws, status: 'FAILED', createdAt: { gte: since } } }).catch(() => 0)
+    ]);
+
+    const context = {
+      farm,
+      topBanRisk: topRisk,
+      devices,
+      jobsLast7d: { completed: jobsCompleted, failed: jobsFailed }
+    };
+
+    const input = await callForcedTool(
+      INSIGHTS_SYSTEM,
+      'Analyze these fleet signals and report anomalies + prioritized recommendations:\n\n' +
+        JSON.stringify(context, null, 2),
+      REPORT_INSIGHTS_TOOL,
+      2048
+    );
+
+    const anomaliesRaw = Array.isArray(input.anomalies) ? input.anomalies : [];
+    const recsRaw = Array.isArray(input.recommendations) ? input.recommendations : [];
+    return {
+      anomalies: anomaliesRaw
+        .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object')
+        .map((a) => ({
+          title: typeof a.title === 'string' ? a.title.slice(0, 160) : 'Anomali',
+          severity: coerceSeverity(a.severity),
+          description: typeof a.description === 'string' ? a.description.slice(0, 600) : ''
+        })),
+      recommendations: recsRaw
+        .filter((r): r is Record<string, unknown> => Boolean(r) && typeof r === 'object')
+        .map((r) => ({
+          action: typeof r.action === 'string' ? r.action.slice(0, 200) : 'Öneri',
+          priority: coerceSeverity(r.priority),
+          reason: typeof r.reason === 'string' ? r.reason.slice(0, 400) : ''
+        })),
+      summary: typeof input.summary === 'string' ? input.summary.slice(0, 1200) : ''
+    };
+  },
+
+  // ── Natural-language fleet query ─────────────────────────────────────────
+  // Classify the question into one safe read-only intent via a forced tool,
+  // then run the corresponding workspace-scoped Prisma query.
+  async queryFleet(
+    workspaceId: string | undefined,
+    query: string
+  ): Promise<{ type: FleetQueryType; message: string; result: Array<Record<string, unknown>> }> {
+    if (!env.anthropicApiKey) {
+      throw new AppError('AI yapılandırılmamış: ANTHROPIC_API_KEY eksik', 503, 'AI_NOT_CONFIGURED');
+    }
+    const trimmed = query.trim();
+    if (trimmed.length < 3) throw new AppError('Sorgu çok kısa', 400, 'EMPTY_QUERY');
+
+    const input = await callForcedTool(CLASSIFY_SYSTEM, trimmed, CLASSIFY_QUERY_TOOL, 256);
+    const type: FleetQueryType = QUERY_TYPES.has(input.type as FleetQueryType)
+      ? (input.type as FleetQueryType)
+      : 'campaign_status';
+    const rawLimit = typeof input.limit === 'number' && Number.isFinite(input.limit) ? Math.round(input.limit) : 10;
+    const limit = Math.min(50, Math.max(1, rawLimit));
+    const ws = workspaceId ? { workspaceId } : {};
+
+    let result: Array<Record<string, unknown>> = [];
+    let message = '';
+
+    if (type === 'top_unhealthy') {
+      const rows = await prisma.farmAccount.findMany({
+        where: ws,
+        orderBy: { healthScore: 'asc' },
+        take: limit,
+        include: { device: { select: { name: true } } }
+      });
+      result = rows.map((r) => ({
+        device: r.device?.name ?? r.deviceId,
+        healthScore: r.healthScore,
+        warmupStage: r.warmupStage,
+        paused: r.paused
+      }));
+      message = `En düşük sağlıklı ${result.length} hesap`;
+    } else if (type === 'top_active') {
+      const rows = await prisma.farmAccount.findMany({
+        where: ws,
+        orderBy: { totalActions: 'desc' },
+        take: limit,
+        include: { device: { select: { name: true } } }
+      });
+      result = rows.map((r) => ({
+        device: r.device?.name ?? r.deviceId,
+        totalActions: r.totalActions,
+        actionsToday: r.actionsToday,
+        healthScore: r.healthScore
+      }));
+      message = `En aktif ${result.length} hesap`;
+    } else if (type === 'paused_accounts') {
+      const rows = await prisma.farmAccount.findMany({
+        where: { ...ws, paused: true },
+        orderBy: { healthScore: 'asc' },
+        take: limit,
+        include: { device: { select: { name: true } } }
+      });
+      result = rows.map((r) => ({
+        device: r.device?.name ?? r.deviceId,
+        healthScore: r.healthScore,
+        pausedReason: r.pausedReason
+      }));
+      message = `${result.length} duraklatılmış hesap`;
+    } else if (type === 'offline_devices') {
+      const rows = await prisma.device.findMany({
+        where: { ...ws, status: { in: ['OFFLINE', 'ERROR'] } },
+        orderBy: { updatedAt: 'desc' },
+        take: limit,
+        select: { name: true, status: true, updatedAt: true }
+      });
+      result = rows.map((r) => ({
+        device: r.name,
+        status: r.status,
+        updatedAt: r.updatedAt.toISOString()
+      }));
+      message = `${result.length} çevrimdışı/hatalı cihaz`;
+    } else if (type === 'high_risk') {
+      const risk = await farmService.getRiskScores(workspaceId);
+      result = risk.slice(0, limit).map((r) => ({
+        device: r.deviceName ?? r.deviceId,
+        riskScore: r.score,
+        band: r.band,
+        healthScore: r.healthScore,
+        paused: r.paused
+      }));
+      message = `En yüksek ban riskli ${result.length} hesap`;
+    } else {
+      const rows = await prisma.farmCampaign.findMany({
+        where: ws,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        select: { name: true, status: true, runCount: true, lastRunAt: true, nextRunAt: true }
+      });
+      result = rows.map((r) => ({
+        name: r.name,
+        status: r.status,
+        runCount: r.runCount,
+        lastRunAt: r.lastRunAt ? r.lastRunAt.toISOString() : null,
+        nextRunAt: r.nextRunAt ? r.nextRunAt.toISOString() : null
+      }));
+      message = `${result.length} kampanya`;
+    }
+
+    return { type, message, result };
   }
 };

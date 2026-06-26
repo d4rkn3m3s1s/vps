@@ -1,8 +1,10 @@
--- CreateEnum
-CREATE TYPE "DeviceStatus" AS ENUM ('ONLINE', 'OFFLINE', 'STARTING', 'STOPPING', 'ERROR', 'UPDATING', 'REBOOTING');
+-- CreateEnum (idempotent: the base_schema migration may already have created this)
+DO $$ BEGIN
+  CREATE TYPE "DeviceStatus" AS ENUM ('ONLINE', 'OFFLINE', 'STARTING', 'STOPPING', 'ERROR', 'UPDATING', 'REBOOTING');
+EXCEPTION WHEN duplicate_object THEN null; END $$;
 
 -- CreateTable
-CREATE TABLE "DeviceGroup" (
+CREATE TABLE IF NOT EXISTS "DeviceGroup" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "description" TEXT,
@@ -13,7 +15,7 @@ CREATE TABLE "DeviceGroup" (
 );
 
 -- CreateTable
-CREATE TABLE "Device" (
+CREATE TABLE IF NOT EXISTS "Device" (
     "id" TEXT NOT NULL,
     "uuid" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -34,10 +36,12 @@ CREATE TABLE "Device" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "DeviceGroup_name_key" ON "DeviceGroup"("name");
+CREATE UNIQUE INDEX IF NOT EXISTS "DeviceGroup_name_key" ON "DeviceGroup"("name");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Device_uuid_key" ON "Device"("uuid");
+CREATE UNIQUE INDEX IF NOT EXISTS "Device_uuid_key" ON "Device"("uuid");
 
 -- AddForeignKey
-ALTER TABLE "Device" ADD CONSTRAINT "Device_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES "DeviceGroup"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$ BEGIN
+  ALTER TABLE "Device" ADD CONSTRAINT "Device_groupId_fkey" FOREIGN KEY ("groupId") REFERENCES "DeviceGroup"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION WHEN duplicate_object THEN null; END $$;

@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { KeyRound, Plus, Trash2, Copy, Check, Loader2 } from 'lucide-react';
+import { KeyRound, Plus, Trash2, Copy, Check, Loader2, ShieldCheck, Activity, Ban, Sparkles, X } from 'lucide-react';
+import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
 
 type ApiKey = {
   id: string;
@@ -17,6 +18,7 @@ const ALL_SCOPES = ['read', 'write', 'admin'] as const;
 
 export default function ApiKeysPage() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
+  const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<string[]>(['read']);
   const [busy, setBusy] = useState(false);
@@ -39,6 +41,8 @@ export default function ApiKeysPage() {
       if (Array.isArray(json.data)) setKeys(json.data);
     } catch {
       /* ignore */
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -103,78 +107,91 @@ export default function ApiKeysPage() {
     }
   }
 
+  const activeCount = keys.filter((k) => !k.revoked).length;
+  const revokedCount = keys.filter((k) => k.revoked).length;
+  const usedCount = keys.filter((k) => k.lastUsedAt).length;
+
   return (
-    <section className="section-grid">
-      <div className="panel">
-        <h2>
-          <KeyRound size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> API anahtarları
-        </h2>
-        <p className="helper" style={{ marginTop: '-0.25rem' }}>
-          Harici entegrasyonlar için anahtar oluşturun. <span className="mono">x-api-key</span> başlığı olarak gönderin. Anahtarlar
-          yalnızca oluşturulduğunda bir kez gösterilir — güvenli bir yerde saklayın.
-        </p>
-
-        <div className="panel-stack" style={{ marginTop: '1rem' }}>
-          {keys.length === 0 ? <p className="helper">Henüz API anahtarı yok.</p> : null}
-          {keys.map((k) => (
-            <div className="row alert-rule-row" key={k.id}>
-              <div>
-                <strong>{k.name}</strong>{' '}
-                {k.revoked ? <span className="policy-tag">İptal edildi</span> : null}
-                <div className="helper mono">
-                  {k.maskedKey} · {k.scopes.join(', ')} ·{' '}
-                  {k.lastUsedAt ? `son kullanım ${new Date(k.lastUsedAt).toLocaleDateString('tr-TR')}` : 'hiç kullanılmadı'}
-                </div>
-              </div>
-              {!k.revoked ? (
-                <button type="button" className="icon-btn" disabled={revokingId === k.id} onClick={() => revoke(k)} aria-label={`${k.name} anahtarını iptal et`} title="İptal et">
-                  {revokingId === k.id ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
-                </button>
-              ) : null}
-            </div>
-          ))}
+    <section className="admin-stack">
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat label="Toplam anahtar" value={<span className="mono">{keys.length}</span>} tone="info" icon={<KeyRound size={15} />} />
+          <HoloStat label="Aktif" value={<span className="mono">{activeCount}</span>} sub="çalışan anahtar" tone="success" icon={<ShieldCheck size={15} />} />
+          <HoloStat label="Kullanımda" value={<span className="mono">{usedCount}</span>} sub="en az bir kez çağrıldı" tone="cyan" icon={<Activity size={15} />} />
+          <HoloStat label="İptal edildi" value={<span className="mono">{revokedCount}</span>} tone={revokedCount > 0 ? 'warning' : 'violet'} icon={<Ban size={15} />} />
         </div>
+      </Reveal>
 
-        {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
-      </div>
-
-      <div className="panel">
-        <h2>Anahtar oluştur</h2>
-        <div className="admin-form">
-          <div className="admin-field">
-            <label htmlFor="key-name">Ad</label>
-            <input
-              id="key-name"
-              className="field-input"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="örn. CI hattı, Zapier"
-            />
-          </div>
-          <div className="admin-field">
-            <label>Kapsamlar</label>
-            <div className="scope-row">
-              {ALL_SCOPES.map((s) => (
-                <label key={s} className={`scope-chip${scopes.includes(s) ? ' scope-chip-on' : ''}`}>
-                  <input type="checkbox" checked={scopes.includes(s)} onChange={() => toggleScope(s)} />
-                  {s}
-                </label>
+      <div className="holo-grid-2">
+        <Reveal delay={0.05}>
+          <HoloPanel title="Etkin anahtarlar" icon={<KeyRound size={16} />}>
+            <div className="panel-stack">
+              {loading
+                ? [0, 1, 2].map((i) => <div key={`sk-${i}`} className="skeleton skeleton-row" />)
+                : null}
+              {!loading && keys.length === 0 ? <p className="helper">Henüz API anahtarı yok.</p> : null}
+              {keys.map((k) => (
+                <div className="row alert-rule-row" key={k.id}>
+                  <div>
+                    <strong>{k.name}</strong>{' '}
+                    {k.revoked ? <span className="status-chip"><span className="dot dot-error" />İptal edildi</span> : <span className="status-chip"><span className="dot dot-success" />Aktif</span>}
+                    <div className="helper mono">
+                      {k.maskedKey} · {k.scopes.join(', ')} ·{' '}
+                      {k.lastUsedAt ? `son kullanım ${new Date(k.lastUsedAt).toLocaleDateString('tr-TR')}` : 'hiç kullanılmadı'}
+                    </div>
+                  </div>
+                  {!k.revoked ? (
+                    <button type="button" className="icon-btn" disabled={revokingId === k.id} onClick={() => revoke(k)} aria-label={`${k.name} anahtarını iptal et`} title="İptal et">
+                      {revokingId === k.id ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+                    </button>
+                  ) : null}
+                </div>
               ))}
             </div>
-          </div>
-          <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={create}>
-            <Plus size={15} /> {busy ? 'Oluşturuluyor…' : 'Anahtar oluştur'}
-          </button>
-        </div>
+
+            {msg ? <p className="helper helper--note">{msg}</p> : null}
+          </HoloPanel>
+        </Reveal>
+
+        <Reveal delay={0.1}>
+          <HoloPanel title="Anahtar oluştur" icon={<Sparkles size={16} />} scan>
+            <div className="admin-form">
+              <div className="admin-field field">
+                <label htmlFor="key-name">Ad</label>
+                <input
+                  id="key-name"
+                  className="field-input"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="örn. CI hattı, Zapier"
+                />
+              </div>
+              <div className="admin-field field">
+                <label>Kapsamlar</label>
+                <div className="scope-row">
+                  {ALL_SCOPES.map((s) => (
+                    <label key={s} className={`scope-chip${scopes.includes(s) ? ' scope-chip-on' : ''}`}>
+                      <input type="checkbox" checked={scopes.includes(s)} onChange={() => toggleScope(s)} />
+                      {s}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <button type="button" className="btn-primary" disabled={busy || !name.trim()} onClick={create}>
+                <Plus size={15} /> {busy ? 'Oluşturuluyor…' : 'Anahtar oluştur'}
+              </button>
+            </div>
+          </HoloPanel>
+        </Reveal>
       </div>
 
       {revealed ? (
         <div className="modal-overlay" onClick={() => setRevealed(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Yeni API anahtarınız</h2>
-              <button type="button" className="modal-close" onClick={() => setRevealed(null)}>
-                ✕
+              <h2><KeyRound size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} />Yeni API anahtarınız</h2>
+              <button type="button" className="modal-close" onClick={() => setRevealed(null)} aria-label="Kapat">
+                <X size={16} />
               </button>
             </header>
             <p className="helper">

@@ -6,6 +6,7 @@ import { deviceHub } from '../devices/device.hub';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { sendMail } from '../mail/mail.service';
 import { alertEmail } from '../mail/mail.templates';
+import { dispatch as notificationsDispatch } from '../notifications/notifications.service';
 
 export type AlertRuleInput = {
   name: string;
@@ -134,6 +135,8 @@ export class AlertsService {
         if (rule.email) {
           void this.emailAdmins(workspaceId, rule.name, context.title, context.detail);
         }
+        // Fan out to any configured Telegram/Slack/Discord channels (best-effort).
+        void notificationsDispatch(workspaceId, { title: context.title, detail: context.detail });
       }
     } catch {
       /* alerting must never break the main flow */

@@ -173,7 +173,8 @@ export const farmService = {
       midFlowId?: string | undefined;
       matureFlowId?: string | undefined;
       status?: 'ACTIVE' | 'PAUSED' | 'COMPLETED' | undefined;
-    }
+    },
+    workspaceId?: string
   ) {
     const data: Record<string, unknown> = {};
     if (input.name !== undefined) data.name = input.name.trim();
@@ -191,11 +192,21 @@ export const farmService = {
     if (input.midFlowId !== undefined) data.midFlowId = input.midFlowId || null;
     if (input.matureFlowId !== undefined) data.matureFlowId = input.matureFlowId || null;
     if (input.status !== undefined) data.status = input.status;
-    return prisma.farmCampaign.update({ where: { id }, data });
+    // Workspace-scope the write so a tenant can't modify another tenant's
+    // campaign by id (updateMany with a workspace filter, then return the row).
+    const { count } = await prisma.farmCampaign.updateMany({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
+      data
+    });
+    if (count === 0) throw new AppError('Kampanya bulunamadı', 404, 'FARM_CAMPAIGN_NOT_FOUND');
+    return prisma.farmCampaign.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
   },
 
-  async deleteCampaign(id: string) {
-    await prisma.farmCampaign.delete({ where: { id } });
+  async deleteCampaign(id: string, workspaceId?: string) {
+    const { count } = await prisma.farmCampaign.deleteMany({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) }
+    });
+    if (count === 0) throw new AppError('Kampanya bulunamadı', 404, 'FARM_CAMPAIGN_NOT_FOUND');
     return { deleted: true };
   },
 
@@ -257,8 +268,9 @@ export const farmService = {
   // never leaves the server; only the short-lived code is returned (so it can be
   // typed into a login flow or fed to an RPA step). Includes seconds remaining
   // in the current 30s window so the UI can show a countdown.
-  async getTotpCode(deviceId: string): Promise<{ code: string; secondsRemaining: number }> {
-    const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
+  async getTotpCode(deviceId: string, workspaceId?: string): Promise<{ code: string; secondsRemaining: number }> {
+    // Workspace-scoped: never mint another tenant's live 2FA code by deviceId.
+    const acct = await prisma.farmAccount.findFirst({ where: { deviceId, ...(workspaceId ? { workspaceId } : {}) } });
     if (!acct?.totpSecretEnc) throw new AppError('Bu hesapta kayıtlı 2FA anahtarı yok', 400, 'NO_TOTP_SECRET');
     let secret: string;
     try {
@@ -281,9 +293,9 @@ export const farmService = {
   // ── Health trend ────────────────────────────────────────────────────────
   // Build a chronological health series from the action log's healthAfter
   // snapshots, so the UI can chart how an account's health moved over time.
-  async getHealthTrend(deviceId: string, limit = 50): Promise<{ at: string; health: number; kind: string }[]> {
+  async getHealthTrend(deviceId: string, limit = 50, workspaceId?: string): Promise<{ at: string; health: number; kind: string }[]> {
     const rows = await prisma.farmActionLog.findMany({
-      where: { deviceId, healthAfter: { not: null } },
+      where: { deviceId, healthAfter: { not: null }, ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'asc' },
       take: Math.min(500, Math.max(1, limit)),
       select: { createdAt: true, healthAfter: true, kind: true }
@@ -297,11 +309,20 @@ export const farmService = {
   async bulkAction(
     deviceIds: string[],
     action: 'addTags' | 'removeTags' | 'pause' | 'resume' | 'setGroup',
-    payload: { tags?: string[] | undefined; groupId?: string | undefined } = {}
+    payload: { tags?: string[] | undefined; groupId?: string | undefined } = {},
+    workspaceId?: string
   ): Promise<{ affected: number }> {
     if (deviceIds.length === 0) return { affected: 0 };
+    // Only act on accounts the caller owns — prevents cross-tenant bulk mutation.
+    const owned = new Set(
+      (await prisma.farmAccount.findMany({
+        where: { deviceId: { in: deviceIds }, ...(workspaceId ? { workspaceId } : {}) },
+        select: { deviceId: true }
+      })).map((a) => a.deviceId)
+    );
     let affected = 0;
     for (const deviceId of deviceIds) {
+      if (!owned.has(deviceId)) continue;
       const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
       if (!acct) continue;
       if (action === 'addTags' && payload.tags?.length) {
@@ -327,7 +348,14 @@ export const farmService = {
   // Ensure a FarmAccount row exists for a device (created lazily as devices farm).
   async ensureAccount(deviceId: string, workspaceId?: string) {
     const existing = await prisma.farmAccount.findUnique({ where: { deviceId } });
-    if (existing) return existing;
+    if (existing) {
+      // If the caller is workspace-scoped, the existing row must belong to it —
+      // otherwise this is a cross-tenant access attempt.
+      if (workspaceId && existing.workspaceId && existing.workspaceId !== workspaceId) {
+        throw new AppError('Hesap bulunamadı', 404, 'FARM_ACCOUNT_NOT_FOUND');
+      }
+      return existing;
+    }
     return prisma.farmAccount.create({
       data: { deviceId, ...(workspaceId ? { workspaceId } : {}) }
     });
@@ -491,9 +519,9 @@ export const farmService = {
   },
 
   // Per-account timeline (most recent first).
-  async listActionLog(deviceId: string, limit = 100) {
+  async listActionLog(deviceId: string, limit = 100, workspaceId?: string) {
     return prisma.farmActionLog.findMany({
-      where: { deviceId },
+      where: { deviceId, ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'desc' },
       take: Math.min(500, Math.max(1, limit))
     });
@@ -543,7 +571,10 @@ export const farmService = {
 
   // Admin "resume" — clears the auto-pause and gives a small health rebound so
   // the device isn't immediately re-paused.
-  async resumeAccount(deviceId: string) {
+  async resumeAccount(deviceId: string, workspaceId?: string) {
+    // Verify ownership before unpausing — no cross-tenant resume by deviceId.
+    const owned = await prisma.farmAccount.findFirst({ where: { deviceId, ...(workspaceId ? { workspaceId } : {}) } });
+    if (!owned) throw new AppError('Hesap bulunamadı', 404, 'FARM_ACCOUNT_NOT_FOUND');
     const acct = await prisma.farmAccount.update({
       where: { deviceId },
       data: { paused: false, pausedReason: null, consecutiveErrors: 0, healthScore: 50 }

@@ -2,8 +2,22 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import { PageHeader } from '../../components/PageHeader';
-import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
+import {
+  Cpu,
+  Plus,
+  Search,
+  Sparkles,
+  LayoutGrid,
+  Workflow,
+  ScrollText,
+  Smartphone,
+  Play,
+  X,
+  Activity,
+  Star,
+  Boxes
+} from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 
 export type Template = {
   id: string;
@@ -19,6 +33,12 @@ export type AutoDevice = { id: string; name: string };
 
 const TABS = ['Pazar Yeri', 'Özel görevler', 'Kayıtlar'] as const;
 
+const TAB_DEFS: { key: (typeof TABS)[number]; label: string; icon: React.ReactNode }[] = [
+  { key: 'Pazar Yeri', label: 'Pazar Yeri', icon: <LayoutGrid size={14} /> },
+  { key: 'Özel görevler', label: 'Özel görevler', icon: <Workflow size={14} /> },
+  { key: 'Kayıtlar', label: 'Kayıtlar', icon: <ScrollText size={14} /> }
+];
+
 function PlatformBadge({ platform, color }: { platform: string; color: string }) {
   return (
     <span className="tpl-badge" style={{ background: color }}>
@@ -33,10 +53,10 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
   const [runTpl, setRunTpl] = useState<Template | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
 
-  function flash(t: string) {
-    setToast(t);
+  function flash(text: string, kind: 'ok' | 'err' = 'ok') {
+    setToast({ text, kind });
     setTimeout(() => setToast(null), 3000);
   }
 
@@ -58,7 +78,7 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
       flash(`"${runTpl.title}" ${picked.size} telefonda başlatıldı`);
       setRunTpl(null);
     } catch {
-      flash(`${runTpl.title} başlatılamadı`);
+      flash(`${runTpl.title} başlatılamadı`, 'err');
     } finally {
       setBusy(false);
     }
@@ -70,98 +90,182 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
   );
   const recommended = filtered.filter((t) => t.recommended);
 
+  const totalTemplates = templates.length;
+  const recommendedTotal = useMemo(() => templates.filter((t) => t.recommended).length, [templates]);
+  const totalRuns = useMemo(() => templates.reduce((acc, t) => acc + (t.uses || 0), 0), [templates]);
+
   function TemplateCard({ t }: { t: Template }) {
     return (
-      <MotionItem className="tpl-card">
+      <Holo3D className="tpl-card holo-card-3d" max={7}>
         <div className="tpl-head">
           <PlatformBadge platform={t.platform} color={t.color} />
           <strong>{t.title}</strong>
+          {t.recommended ? <Star size={13} className="mono" style={{ marginLeft: 'auto', opacity: 0.8 }} /> : null}
         </div>
         <p className="helper">{t.description}</p>
-        <div className="row" style={{ marginTop: 'auto' }}>
-          {t.uses > 0 ? <span className="helper mono">{t.uses} çalıştırma</span> : <span />}
-          <button type="button" className="btn-ghost tpl-run" onClick={() => openRun(t)}>
-            Şablonu kullan
+        <div className="row" style={{ marginTop: 'auto', alignItems: 'center' }}>
+          {t.uses > 0 ? (
+            <span className="status-chip mono">
+              <Activity size={12} /> {t.uses} çalıştırma
+            </span>
+          ) : (
+            <span />
+          )}
+          <button type="button" className="btn-ghost btn-xs tpl-run" onClick={() => openRun(t)}>
+            <Play size={13} /> Şablonu kullan
           </button>
         </div>
-      </MotionItem>
+      </Holo3D>
     );
   }
 
   return (
-    <PageMotion className="page">
-      <PageHeader
+    <div className="page">
+      <HoloHeader
+        eyebrow="OTOMASYON"
         title="Otomasyon"
         subtitle="Bulut telefonlarınızda kodsuz RPA şablonlarını çalıştırın."
         actions={
-          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}>
-            + Yeni görev
+          <Link
+            href="/rpa"
+            className="btn-primary icon-row"
+            style={{ textDecoration: 'none' }}
+          >
+            <Plus size={15} /> Yeni görev
           </Link>
         }
       />
 
-      <div className="tabs">
-        {TABS.map((t) => (
-          <button key={t} type="button" className={tab === t ? 'tab tab-active' : 'tab'} onClick={() => setTab(t)}>
-            {t}
-          </button>
-        ))}
-      </div>
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam şablon"
+            value={<span className="mono">{totalTemplates}</span>}
+            sub="Pazar yerinde"
+            tone="cyan"
+            icon={<Boxes size={16} />}
+          />
+          <HoloStat
+            label="Önerilen"
+            value={<span className="mono">{recommendedTotal}</span>}
+            sub="Editör seçimi"
+            tone="violet"
+            icon={<Sparkles size={16} />}
+          />
+          <HoloStat
+            label="Bağlı telefon"
+            value={<span className="mono">{devices.length}</span>}
+            sub="Hedeflenebilir"
+            tone="info"
+            icon={<Smartphone size={16} />}
+          />
+          <HoloStat
+            label="Toplam çalıştırma"
+            value={<span className="mono">{totalRuns}</span>}
+            sub="Tüm şablonlar"
+            tone="success"
+            icon={<Activity size={16} />}
+          />
+        </div>
+      </Reveal>
+
+      <HoloTabs tabs={TAB_DEFS} active={tab} onChange={setTab} />
 
       {tab === 'Pazar Yeri' ? (
         <>
-          <div className="toolbar-row">
-            <div className="search-box">
-              <span className="search-icon">⌕</span>
-              <input type="text" placeholder="Şablon adı" value={query} onChange={(e) => setQuery(e.target.value)} />
-            </div>
-          </div>
+          <Reveal>
+            <HoloPanel title="Şablon ara" icon={<Search size={15} />} scan={false}>
+              <div className="toolbar-row">
+                <div className="search-box">
+                  <span className="search-icon">
+                    <Search size={14} />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Şablon adı"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+            </HoloPanel>
+          </Reveal>
 
           {recommended.length > 0 ? (
-            <>
-              <h3 className="section-label">★ Önerilen</h3>
-              <StaggerGrid className="tpl-grid">
-                {recommended.map((t) => (
-                  <TemplateCard t={t} key={t.id} />
-                ))}
-              </StaggerGrid>
-            </>
+            <Reveal>
+              <HoloPanel title="Önerilen" icon={<Sparkles size={15} />}>
+                <div className="holo-grid-auto">
+                  {recommended.map((t) => (
+                    <TemplateCard t={t} key={t.id} />
+                  ))}
+                </div>
+              </HoloPanel>
+            </Reveal>
           ) : null}
 
-          <h3 className="section-label">▤ Tüm şablonlar</h3>
-          <StaggerGrid className="tpl-grid">
-            {filtered.map((t) => (
-              <TemplateCard t={t} key={`all-${t.id}`} />
-            ))}
-          </StaggerGrid>
+          <Reveal>
+            <HoloPanel title="Tüm şablonlar" icon={<LayoutGrid size={15} />}>
+              <div className="holo-grid-auto">
+                {filtered.map((t) => (
+                  <TemplateCard t={t} key={`all-${t.id}`} />
+                ))}
+              </div>
+            </HoloPanel>
+          </Reveal>
         </>
       ) : tab === 'Özel görevler' ? (
-        <div className="empty-state">
-          <div className="empty-art">⚙</div>
-          <h3>Özel görevler</h3>
-          <p>RPA Studio'da kendi kodsuz otomasyonlarınızı oluşturun ve yönetin.</p>
-          <Link href="/rpa" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
-            RPA Studio'yu aç →
-          </Link>
-        </div>
+        <Reveal>
+          <HoloPanel title="Özel görevler" icon={<Workflow size={15} />}>
+            <div className="empty-state">
+              <div className="empty-art">
+                <Cpu size={36} />
+              </div>
+              <h3>Özel görevler</h3>
+              <p>RPA Studio'da kendi kodsuz otomasyonlarınızı oluşturun ve yönetin.</p>
+              <Link
+                href="/rpa"
+                className="btn-primary icon-row"
+                style={{ textDecoration: 'none', marginTop: '0.75rem' }}
+              >
+                RPA Studio'yu aç →
+              </Link>
+            </div>
+          </HoloPanel>
+        </Reveal>
       ) : (
-        <div className="empty-state">
-          <div className="empty-art">▤</div>
-          <h3>Kayıtlar</h3>
-          <p>Her otomasyon çalıştırması bir iş olarak kaydedilir. Canlı durumu ve geçmişi İşler sayfasında görüntüleyin.</p>
-          <Link href="/jobs" className="btn-primary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none', marginTop: '0.75rem' }}>
-            İşleri görüntüle →
-          </Link>
-        </div>
+        <Reveal>
+          <HoloPanel title="Kayıtlar" icon={<ScrollText size={15} />}>
+            <div className="empty-state">
+              <div className="empty-art">
+                <ScrollText size={36} />
+              </div>
+              <h3>Kayıtlar</h3>
+              <p>
+                Her otomasyon çalıştırması bir iş olarak kaydedilir. Canlı durumu ve geçmişi İşler sayfasında
+                görüntüleyin.
+              </p>
+              <Link
+                href="/jobs"
+                className="btn-primary icon-row"
+                style={{ textDecoration: 'none', marginTop: '0.75rem' }}
+              >
+                İşleri görüntüle →
+              </Link>
+            </div>
+          </HoloPanel>
+        </Reveal>
       )}
 
       {runTpl ? (
         <div className="modal-overlay" onClick={() => !busy && setRunTpl(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>"{runTpl.title}" çalıştır</h2>
+              <h2>
+                <Play size={16} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                "{runTpl.title}" çalıştır
+              </h2>
               <button type="button" className="modal-close" onClick={() => !busy && setRunTpl(null)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
             <p className="helper">{runTpl.description}</p>
@@ -185,15 +289,23 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
                           })
                         }
                       />
-                      <span>{d.name}</span>
+                      <span>
+                        <Smartphone size={13} style={{ verticalAlign: '-2px', marginRight: 4, opacity: 0.7 }} />
+                        {d.name}
+                      </span>
                     </label>
                   ))
                 )}
               </div>
             </div>
             <footer className="modal-foot">
-              <span className="helper">{picked.size} seçili</span>
-              <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmRun}>
+              <span className="helper mono">{picked.size} seçili</span>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={busy || picked.size === 0}
+                onClick={confirmRun}
+              >
                 {busy ? 'Başlatılıyor…' : `${picked.size} telefonda çalıştır`}
               </button>
             </footer>
@@ -201,7 +313,7 @@ export function AutomationView({ templates, devices }: { templates: Template[]; 
         </div>
       ) : null}
 
-      {toast ? <div className="toast toast-ok">{toast}</div> : null}
-    </PageMotion>
+      {toast ? <div className={`toast toast-${toast.kind}`}>{toast.text}</div> : null}
+    </div>
   );
 }

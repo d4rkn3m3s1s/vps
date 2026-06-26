@@ -1,8 +1,18 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { PageHeader } from '../../components/PageHeader';
-import { StaggerGrid, MotionItem, PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
+import {
+  Upload,
+  Search,
+  Download,
+  LayoutGrid,
+  Users,
+  Package,
+  Smartphone,
+  X,
+  CheckCircle2
+} from 'lucide-react';
 
 export type AppItem = {
   id: string;
@@ -84,48 +94,73 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
     [apps, category, query]
   );
 
+  const totalInstalls = useMemo(() => apps.reduce((sum, app) => sum + app.installs, 0), [apps]);
+  const categoryCount = useMemo(() => new Set(apps.map((app) => app.category)).size, [apps]);
+
   return (
-    <PageMotion className="page">
-      <PageHeader
+    <div className="page holo-page">
+      <HoloHeader
+        eyebrow="UYGULAMA MAĞAZASI"
         title="Uygulamalar"
         subtitle="Gerçek APK kataloğu — seçili bulut telefonlara tek tıkla kurun."
-        actions={<button type="button" className="btn-primary">⬆ APK Yükle</button>}
+        actions={
+          <button type="button" className="btn-primary">
+            <Upload size={15} /> APK Yükle
+          </button>
+        }
       />
 
-      <div className="tabs">
-        <button type="button" className={tab === 'store' ? 'tab tab-active' : 'tab'} onClick={() => setTab('store')}>
-          Uygulama Mağazası ({apps.length})
-        </button>
-        <button type="button" className={tab === 'team' ? 'tab tab-active' : 'tab'} onClick={() => setTab('team')}>
-          Ekip uygulamaları
-        </button>
-      </div>
+      <Reveal className="holo-stats-grid">
+        <HoloStat label="Katalog Uygulaması" value={apps.length} sub="toplam paket" tone="info" icon={<Package size={16} />} />
+        <HoloStat label="Toplam Kurulum" value={totalInstalls} sub="tüm telefonlar" tone="cyan" icon={<Download size={16} />} />
+        <HoloStat label="Kategori" value={categoryCount} sub="aktif segment" tone="violet" icon={<LayoutGrid size={16} />} />
+        <HoloStat label="Bağlı Telefon" value={devices.length} sub="kurulum hedefi" tone="success" icon={<Smartphone size={16} />} />
+      </Reveal>
 
-      <div className="toolbar-row">
-        <select className="group-select" value={category} onChange={(e) => setCategory(e.target.value)}>
-          {CATEGORIES.map((cat) => (
-            <option key={cat} value={cat}>
-              {CATEGORY_LABELS[cat] ?? cat}
-            </option>
-          ))}
-        </select>
-        <div className="search-box">
-          <span className="search-icon">⌕</span>
-          <input type="text" placeholder="Anahtar kelime ara" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <HoloTabs
+        tabs={[
+          { key: 'store', label: `Uygulama Mağazası (${apps.length})`, icon: <Package size={15} /> },
+          { key: 'team', label: 'Ekip uygulamaları', icon: <Users size={15} /> }
+        ]}
+        active={tab}
+        onChange={setTab}
+      />
+
+      <HoloPanel className="holo-toolbar-panel" scan={false}>
+        <div className="toolbar-row">
+          <select className="field-input group-select" value={category} onChange={(e) => setCategory(e.target.value)}>
+            {CATEGORIES.map((cat) => (
+              <option key={cat} value={cat}>
+                {CATEGORY_LABELS[cat] ?? cat}
+              </option>
+            ))}
+          </select>
+          <div className="search-box">
+            <span className="search-icon"><Search size={15} /></span>
+            <input type="text" placeholder="Anahtar kelime ara" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
         </div>
-      </div>
+      </HoloPanel>
 
       {tab === 'team' ? (
-        <div className="empty-state">
-          <div className="empty-art">▤</div>
-          <h3>Henüz ekip uygulaması yok</h3>
-          <p>Ekibinizin bulut telefonlarında paylaşmak için bir APK yükleyin.</p>
-          <button type="button" className="btn-primary">⬆ APK Yükle</button>
-        </div>
+        <HoloPanel title="Ekip Uygulamaları" icon={<Users size={16} />}>
+          <div className="empty-state">
+            <div className="empty-art"><LayoutGrid size={40} /></div>
+            <h3>Henüz ekip uygulaması yok</h3>
+            <p>Ekibinizin bulut telefonlarında paylaşmak için bir APK yükleyin.</p>
+            <button type="button" className="btn-primary">
+              <Upload size={15} /> APK Yükle
+            </button>
+          </div>
+        </HoloPanel>
       ) : (
-        <StaggerGrid className="app-grid">
+        <Reveal className="holo-grid-auto app-grid">
           {filtered.map((app) => (
-            <MotionItem className="app-card" key={app.id}>
+            <Holo3D className="holo-panel app-card" key={app.id} max={5}>
+              <span className="holo-corner holo-corner-tl" aria-hidden />
+              <span className="holo-corner holo-corner-tr" aria-hidden />
+              <span className="holo-corner holo-corner-bl" aria-hidden />
+              <span className="holo-corner holo-corner-br" aria-hidden />
               <div className="app-card-main">
                 <AppIcon short={app.shortLabel} color={app.color} />
                 <div className="app-meta">
@@ -136,21 +171,25 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
                   </span>
                 </div>
               </div>
-              <button type="button" className="install-btn" onClick={() => openInstall(app)}>
-                Kur
+              <button type="button" className="btn-primary btn-xs install-btn" onClick={() => openInstall(app)}>
+                <Download size={13} /> Kur
               </button>
-            </MotionItem>
+            </Holo3D>
           ))}
-        </StaggerGrid>
+        </Reveal>
       )}
 
       {installApp ? (
         <div className="modal-overlay" onClick={() => !busy && setInstallApp(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal holo-panel" onClick={(e) => e.stopPropagation()}>
+            <span className="holo-corner holo-corner-tl" aria-hidden />
+            <span className="holo-corner holo-corner-tr" aria-hidden />
+            <span className="holo-corner holo-corner-bl" aria-hidden />
+            <span className="holo-corner holo-corner-br" aria-hidden />
             <header className="modal-head">
-              <h2>{installApp.name} Kur</h2>
+              <h2><Download size={18} /> {installApp.name} Kur</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setInstallApp(null)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
             <p className="helper mono">{installApp.packageName} · v{installApp.version}</p>
@@ -174,14 +213,14 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
                           })
                         }
                       />
-                      <span>{d.name}</span>
+                      <span><Smartphone size={13} className="mono" /> {d.name}</span>
                     </label>
                   ))
                 )}
               </div>
             </div>
             <footer className="modal-foot">
-              <span className="helper">{picked.size} seçili</span>
+              <span className="helper mono">{picked.size} seçili</span>
               <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmInstall}>
                 {busy ? 'Kuruluyor…' : `${picked.size} telefona kur`}
               </button>
@@ -190,7 +229,11 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         </div>
       ) : null}
 
-      {toast ? <div className="toast toast-ok">{toast}</div> : null}
-    </PageMotion>
+      {toast ? (
+        <div className="toast toast-ok">
+          <CheckCircle2 size={15} /> {toast}
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -16,7 +16,7 @@
 //   FLEET_HEARTBEAT_MS    heartbeat interval (default 30000)
 //   FLEET_ADB             path to adb binary (default "adb")
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -30,6 +30,14 @@ const HOST_KEY = process.env.FLEET_HOST_KEY || '';
 const POLL_MS = Number(process.env.FLEET_POLL_MS || 3000);
 const HEARTBEAT_MS = Number(process.env.FLEET_HEARTBEAT_MS || 30000);
 const ADB = process.env.FLEET_ADB || 'adb';
+// Optional H.264 fast-stream path. When FLEET_FFMPEG points at an ffmpeg binary,
+// streaming uses `screenrecord --output-format=h264 | ffmpeg -> mjpeg` instead of
+// per-frame PNG screencap (which caps at ~1fps). ffmpeg is an external binary
+// (not an npm dep), so the agent stays dependency-free; without it we fall back
+// to the PNG path automatically.
+const FFMPEG = process.env.FLEET_FFMPEG || '';
+const STREAM_W = Number(process.env.FLEET_STREAM_W || 540);   // capture width for h264
+const STREAM_BITRATE = process.env.FLEET_STREAM_BITRATE || '4M';
 // Live streaming: convert the API URL to its ws(s) origin. Streaming needs the
 // global WebSocket client (Node 21+); on older Node it is silently skipped.
 const STREAM_URL = API_URL.replace(/^http/, 'ws') + `/ws/agent-stream?key=${encodeURIComponent(HOST_KEY)}`;
@@ -227,6 +235,15 @@ async function runJob(job) {
     case 'REGISTER_INSTAGRAM':
       return registerInstagram(serial, payload);
 
+    case 'REGISTER_WHATSAPP':
+      return registerWhatsApp(serial, payload);
+
+    case 'WHATSAPP_SEND':
+      return whatsappSend(serial, payload);
+
+    case 'WHATSAPP_READ':
+      return whatsappRead(serial, payload);
+
     default:
       throw new Error(`Unsupported job type: ${type}`);
   }
@@ -332,6 +349,397 @@ async function registerInstagram(serial, payload) {
   if (/mobile number|confirm.*number/i.test(texts)) return { status: 'SMS_WALL', note: 'IG SMS doğrulaması istedi (numara ücreti gerekli)', screenTexts: texts.slice(0, 400) };
 
   return { status: 'CREATED', note: 'Hesap oluşturuldu', screenTexts: texts.slice(0, 400) };
+}
+
+// ── Shared UIAutomator action helpers, bound to one device serial ────────────
+//
+// These wrap the parse/find primitives into the small vocabulary every
+// element-based flow needs (dump, tap-by-content, type-into-field, wait-for).
+// registerWhatsApp / whatsappSend / whatsappRead all build on this.
+function waHelpers(serial) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const dump = async () => parseUiNodes(await uiDumpXml(serial));
+  const tapNode = async (n) => { if (n) await adb(serial, ['shell', 'input', 'tap', String(n.cx), String(n.cy)]); };
+  const find = async (q, field = 'any') => findNode(await dump(), q, field);
+  // Whether ADBKeyboard is the active IME (set by ensureAdbKeyboard). When true,
+  // typeText/clearField inject via its broadcast instead of `input text`.
+  let adbKeyboardActive = false;
+  // Make ADBKeyboard the default IME if it's installed (it injects text reliably
+  // on redroid where `input text` is dropped). No-op if the IME isn't present.
+  const ensureAdbKeyboard = async () => {
+    try {
+      const imes = await adb(serial, ['shell', 'ime', 'list', '-a', '-s']);
+      if (!imes.includes('adbkeyboard')) { adbKeyboardActive = false; return false; }
+      await adb(serial, ['shell', 'ime', 'enable', ADB_IME]);
+      await adb(serial, ['shell', 'ime', 'set', ADB_IME]);
+      adbKeyboardActive = true;
+      return true;
+    } catch { adbKeyboardActive = false; return false; }
+  };
+  // Tap the first element matching q (by text/desc/id). Throws if absent.
+  const tapBy = async (q, field = 'any') => {
+    const n = findNode(await dump(), q, field);
+    if (!n) throw new Error(`buton yok: ${q}`);
+    await tapNode(n);
+  };
+  // Tap q only if present; returns whether it was found.
+  const tapIf = async (q, field = 'any') => {
+    const n = findNode(await dump(), q, field);
+    if (n) { await tapNode(n); return true; }
+    return false;
+  };
+  // Type text into the currently-focused field. On redroid / custom ROMs the
+  // plain `input text` IME path is unreliable, so prefer ADBKeyboard's
+  // `ADB_INPUT_TEXT` broadcast (injects via a real IME) when it's the default
+  // keyboard; fall back to `input text` otherwise.
+  const typeText = async (text) => {
+    const s = String(text);
+    if (adbKeyboardActive) {
+      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', s]);
+    } else {
+      await adb(serial, ['shell', 'input', 'text', s.replace(/ /g, '%s')]);
+    }
+  };
+  const clearField = async () => {
+    if (adbKeyboardActive) { await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT']); return; }
+    await adb(serial, ['shell', 'input', 'keyevent', '123']); // move-end
+    for (let i = 0; i < 24; i++) await adb(serial, ['shell', 'input', 'keyevent', '67']); // del
+  };
+  // Focus a field (by text/desc/id) and type into it.
+  const typeInto = async (q, text, field = 'any') => {
+    const n = findNode(await dump(), q, field);
+    if (!n) throw new Error(`alan yok: ${q}`);
+    await tapNode(n); await sleep(600);
+    await typeText(text);
+  };
+  // Tap an element by resource-id (most stable across app updates/locales).
+  const tapById = async (resId) => {
+    const n = findNode(await dump(), resId, 'id');
+    if (!n) throw new Error(`id yok: ${resId}`);
+    await tapNode(n);
+  };
+  // Focus a field by resource-id and type into it. `clear` first wipes any
+  // pre-filled value.
+  const typeIntoId = async (resId, text, clear = false) => {
+    const n = findNode(await dump(), resId, 'id');
+    if (!n) throw new Error(`id yok: ${resId}`);
+    await tapNode(n); await sleep(400);
+    if (clear) await clearField();
+    await typeText(text);
+  };
+  // Wait until an element matching q appears (timeout → throw).
+  const waitFor = async (q, ms = 15000, field = 'any') => {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      if (findNode(await dump(), q, field)) return true;
+      await sleep(1000);
+    }
+    throw new Error(`ekran gelmedi: ${q}`);
+  };
+  // Like waitFor but returns boolean instead of throwing (for optional screens).
+  const seen = async (q, ms = 6000, field = 'any') => {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      if (findNode(await dump(), q, field)) return true;
+      await sleep(800);
+    }
+    return false;
+  };
+  // Flatten all visible text on screen (for wall detection / debugging).
+  const screenText = async () => (await dump()).map((n) => n.text).filter(Boolean).join(' | ');
+  return { sleep, dump, tapNode, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, waitFor, seen, screenText };
+}
+
+const WA_PKG = 'com.whatsapp';
+const ADB_IME = 'com.android.adbkeyboard/.AdbIME';
+
+// Split an E.164-ish number ("+905551234567" / "905551234567") into a country
+// calling-code and the local part WhatsApp's two fields expect. We match the
+// longest known calling code prefix; unknown prefixes fall back to a 1–3 digit
+// best guess (most CCs are 1–3 digits).
+const CALLING_CODES = ['1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49', '51', '52', '53', '54', '55', '56', '57', '58', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '93', '94', '95', '98', '212', '213', '216', '218', '220', '233', '234', '254', '351', '352', '353', '354', '358', '359', '370', '371', '372', '373', '380', '420', '421', '852', '855', '880', '886', '961', '962', '963', '964', '965', '966', '971', '972', '973', '974', '977', '992', '994', '995', '998'];
+function splitE164(raw) {
+  const digits = String(raw).replace(/[^\d]/g, '');
+  // Longest matching calling code wins (e.g. 90 before 9).
+  const match = CALLING_CODES
+    .filter((c) => digits.startsWith(c))
+    .sort((a, b) => b.length - a.length)[0];
+  if (match) return { cc: match, local: digits.slice(match.length) };
+  // Fallback: assume a 2-digit CC.
+  return { cc: digits.slice(0, 2), local: digits.slice(2) };
+}
+
+// ── WhatsApp account registration (UIAutomator, element-based) ───────────────
+//
+// Drives the WhatsApp first-run signup, which is PHONE-NUMBER based (no email):
+//   EULA → permissions → country+number → confirm → SMS OTP → profile name.
+//
+// The OTP is NOT read by the agent — WhatsApp texts it to the rented number held
+// by the SMS provider (sms-bus). The control plane polls that provider and either
+// (a) passes the code in the payload as `otpCode`, or (b) we wait for it to be
+// pushed. To keep the agent zero-dep and stateless, the OTP must be supplied:
+// payload carries { phoneNumber, otpCode?, fullName, countryCode? }. If otpCode
+// is absent we stop at OTP_WAIT so the control plane can re-dispatch with it.
+//
+// WhatsApp runs hard device-integrity checks; on x86 emulators it frequently
+// shows "your phone number has been banned" / "couldn't verify". We DON'T fight
+// that — we detect the wall and report it so the operator can switch to a real
+// ARM device. The happy path is verified on real devices.
+//
+// payload: { phoneNumber, fullName, otpCode?, countryCode?, apkUrl? }
+async function registerWhatsApp(serial, payload) {
+  const phoneNumber = String(p(payload, 'phoneNumber', '')).trim();
+  const fullName = String(p(payload, 'fullName', '')).trim();
+  const otpCode = String(p(payload, 'otpCode', '')).trim();
+  const apkUrl = p(payload, 'apkUrl', '');
+  if (!phoneNumber) throw new Error('phoneNumber gerekli');
+  if (!fullName) throw new Error('fullName gerekli');
+
+  const h = waHelpers(serial);
+
+  // 0) Ensure WhatsApp is installed; optionally side-load from apkUrl.
+  const installed = (await adb(serial, ['shell', 'pm', 'list', 'packages', WA_PKG]))
+    .includes(WA_PKG);
+  if (!installed) {
+    if (!apkUrl) return { status: 'NOT_INSTALLED', note: 'WhatsApp kurulu değil ve apkUrl verilmedi' };
+    const local = await download(String(apkUrl), 'whatsapp.apk');
+    try { await adb(serial, ['install', '-r', '-g', local]); } finally { await safeRm(local); }
+  }
+
+  // The signup screen sequence below was mapped LIVE on a real device (WhatsApp
+  // 2.25.x). resource-ids are stable across locales, so we drive fields by id.
+
+  // 0b) Pre-grant runtime permissions so the "Allow notifications/contacts"
+  //     dialogs never pop up mid-flow (they overlay registration_phone and
+  //     stall the run). pm grant is a no-op if already granted or not declared.
+  for (const perm of [
+    'android.permission.POST_NOTIFICATIONS', 'android.permission.READ_CONTACTS',
+    'android.permission.WRITE_CONTACTS', 'android.permission.GET_ACCOUNTS',
+    'android.permission.READ_PHONE_STATE', 'android.permission.CAMERA',
+    'android.permission.RECORD_AUDIO'
+  ]) {
+    await adb(serial, ['shell', 'pm', 'grant', WA_PKG, perm]).catch(() => undefined);
+  }
+
+  // 0c) Prefer ADBKeyboard for text entry — on redroid the stock IME drops
+  //     `input text` into WhatsApp's fields, so number entry silently fails.
+  await h.ensureAdbKeyboard();
+
+  // 1) Launch fresh.
+  await launchApp(serial, WA_PKG, null);
+  await h.sleep(8000);
+
+  // 2) Custom-ROM / emulator alert ("...unsupported... OK"). Dismiss if shown.
+  if (await h.seen('custom ROM', 6000) || await h.seen('Alert', 1000)) {
+    await h.tapBy('OK').catch(() => undefined); await h.sleep(2000);
+  }
+
+  // 3) EULA — the button is "AGREE AND CONTINUE" (caps). Try both casings.
+  if (await h.seen('AGREE AND CONTINUE', 12000)) { await h.tapBy('AGREE AND CONTINUE'); await h.sleep(4000); }
+  else if (await h.seen('Agree and continue', 2000)) { await h.tapBy('Agree and continue'); await h.sleep(4000); }
+
+  // 4) Modern WhatsApp opens the "Link as companion device" (QR) screen by
+  //    default. New-number signup lives behind the overflow menu:
+  //    ⋮ (More options) → "Register new account".
+  if (await h.seen('companion device', 8000) || await h.seen('Link a device', 2000)) {
+    await h.tapBy('More options', 'desc').catch(() => undefined); await h.sleep(1500);
+    await h.tapBy('Register new account').catch(() => undefined); await h.sleep(3000);
+  }
+
+  // 5) Phone-number screen. Fields by resource-id:
+  //    registration_cc = country-code box, registration_phone = number box.
+  //    We split the E.164 number into CC + local part. The agent receives the
+  //    number with a leading country code (e.g. "905551234567" or "+905551234567").
+  //
+  // Modern WhatsApp pops a runtime "Allow WhatsApp to send you notifications?"
+  // permission dialog (package com.android.permissioncontroller) that overlays
+  // the phone screen and HIDES registration_phone — so we must dismiss it BEFORE
+  // waiting for the field. The button is "ALLOW" (caps) with resource-id
+  // permission_allow_button. Loop a few times since up to 2 perm dialogs can
+  // stack (notifications, then contacts).
+  for (let i = 0; i < 3; i++) {
+    const granted = await h.tapById('com.android.permissioncontroller:id/permission_allow_button').then(() => true).catch(() => false)
+      || await h.tapIf('ALLOW') || await h.tapIf('Allow') || await h.tapIf('While using the app') || await h.tapIf('Continue');
+    if (!granted) break;
+    await h.sleep(1200);
+  }
+
+  // On Play-Services emulators/devices, Google pops a "Choose a phone number"
+  // bottom-sheet (com.google.android.gms PhoneNumberHintActivity) that OVERLAYS
+  // and hides registration_phone — the agent then can't find the field. Dismiss
+  // it: BACK closes the sheet; a couple of attempts in case it re-appears.
+  for (let i = 0; i < 3; i++) {
+    const focus = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/PhoneNumberHint|assistedsignin|credentials\.assistedsignin/i.test(focus)) {
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      await h.sleep(1200);
+    } else break;
+  }
+
+  await h.waitFor('com.whatsapp:id/registration_phone', 20000, 'id').catch(() => undefined);
+  // One more sweep in case a permission dialog appeared after the field loaded.
+  await h.tapById('com.android.permissioncontroller:id/permission_allow_button').catch(() => undefined);
+  // And in case the Google number-hint sheet appeared late, dismiss it again.
+  {
+    const focus = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/PhoneNumberHint|assistedsignin/i.test(focus)) { await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined); await h.sleep(1000); }
+  }
+  const { cc, local } = splitE164(phoneNumber);
+  // Fill country code (clear first — it may be pre-filled from locale).
+  if (cc) await h.typeIntoId('com.whatsapp:id/registration_cc', cc, true).catch(() => undefined);
+  await h.sleep(400);
+  await h.typeIntoId('com.whatsapp:id/registration_phone', local, true);
+  await h.sleep(600);
+  // Submit (registration_submit), with a text fallback.
+  await h.tapById('com.whatsapp:id/registration_submit').catch(async () => { await h.tapBy('NEXT'); });
+  await h.sleep(2500);
+
+  // 6) Confirmation dialog ("You entered the phone number ... Is this OK?").
+  if (await h.seen('OK', 6000)) { await h.tapBy('OK'); await h.sleep(5000); }
+
+  // 7) Device-integrity / ban walls — bail with a clear status.
+  const wall = await h.screenText();
+  if (/banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many|try again/i.test(wall)) {
+    return { status: 'DEVICE_WALL', note: 'WhatsApp cihazı/numarayı reddetti (emülatör/ban) — gerçek ARM cihaz gerekli', screenTexts: wall.slice(0, 400) };
+  }
+
+  // 8) OTP. WhatsApp shows a 6-digit code entry. If we weren't given the code,
+  //    stop and let the control plane re-dispatch once the SMS provider has it.
+  await h.waitFor('digit code', 30000).catch(() => undefined);
+  if (!otpCode) {
+    return { status: 'OTP_WAIT', note: 'SMS kodu bekleniyor — kod gelince otpCode ile tekrar gönderin', phoneNumber };
+  }
+  // The code field is usually a single focusable entry; type the digits.
+  await typeOtp(serial, h, otpCode);
+  await h.sleep(5000);
+
+  // 7) Some flows re-show a wall after a bad/late code.
+  const afterOtp = await h.screenText();
+  if (/(invalid|wrong|incorrect).*code|try again later/i.test(afterOtp)) {
+    return { status: 'OTP_REJECTED', note: 'SMS kodu reddedildi', screenTexts: afterOtp.slice(0, 400) };
+  }
+
+  // 8) Profile name → finish. (Restore-backup prompt may appear; skip it.)
+  await h.tapIf('Skip'); await h.tapIf('SKIP');
+  if (await h.seen('your name', 12000) || await h.seen('Profile info', 4000)) {
+    await h.typeInto('Type your name here', fullName).catch(async () => {
+      // Fallback: tap the first EditText-like node and type.
+      await h.typeInto('name', fullName);
+    });
+    await h.sleep(600);
+    await h.tapBy('Next'); await h.sleep(5000);
+  }
+
+  const done = await h.screenText();
+  return { status: 'CREATED', note: 'WhatsApp hesabı oluşturuldu', phoneNumber, screenTexts: done.slice(0, 400) };
+}
+
+// Type a 6-digit OTP, robust to either one combined field or six single-digit
+// boxes. We focus the first entry, then type digit-by-digit (input text moves
+// focus automatically in the six-box layout).
+async function typeOtp(serial, h, code) {
+  const digits = String(code).replace(/\D/g, '');
+  const field = await h.find('digit code', 'any') || await h.find('code', 'any');
+  if (field) await h.tapNode(field);
+  await h.sleep(400);
+  await adb(serial, ['shell', 'input', 'text', digits]);
+}
+
+// Dismiss the modal dialogs WhatsApp shows on emulators/custom ROMs that block
+// the chat UI (e.g. "You have a custom ROM installed … OK"). The OK button is a
+// real Button node; tap it by text. Safe no-op if no dialog is present.
+async function dismissBlockingDialogs(serial, h) {
+  for (let i = 0; i < 3; i++) {
+    const nodes = await h.dump();
+    const hasAlert = nodes.some((n) => /custom ROM|unsupported|Alert/i.test(n.text || ''));
+    if (!hasAlert) return;
+    // Prefer a clickable OK/CONTINUE button node.
+    const btn = nodes.find((n) => n.clickable && /^(OK|CONTINUE|GOT IT)$/i.test((n.text || '').trim()))
+      || nodes.find((n) => /^(OK|CONTINUE|GOT IT)$/i.test((n.text || '').trim()));
+    if (!btn) return;
+    await h.tapNode(btn);
+    await h.sleep(1200);
+  }
+}
+
+// ── WhatsApp: send a message ────────────────────────────────────────────────
+//
+// Uses the wa.me deep link so we don't need the recipient saved as a contact:
+//   am start -a VIEW -d "https://wa.me/<number>?text=<urlencoded>"
+// This opens the chat with the text pre-filled in the compose box; we then tap
+// Send. Works whether or not the number is in the address book.
+//
+// payload: { to (E.164 digits, no +), message }
+async function whatsappSend(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const message = String(p(payload, 'message', ''));
+  if (!to) throw new Error('to (telefon numarası) gerekli');
+  if (!message) throw new Error('message gerekli');
+
+  const h = waHelpers(serial);
+  const url = `https://wa.me/${to}?text=${encodeURIComponent(message)}`;
+  await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, WA_PKG]);
+  await h.sleep(5000);
+  await dismissBlockingDialogs(serial, h);
+
+  // "X is not on WhatsApp" / invalid-number dialog → report, don't hang.
+  const txt = await h.screenText();
+  if (/not on whatsapp|invalid|isn.?t a valid/i.test(txt)) {
+    return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: txt.slice(0, 300) };
+  }
+
+  // The compose box is pre-filled by the deep link. Tap the Send button
+  // (content-desc "Send"). If the text wasn't pre-filled, type it ourselves.
+  if (!(await h.find('Send', 'desc'))) {
+    // No send button yet — focus the input and type the message.
+    await h.typeInto('Type a message', message).catch(() => undefined);
+    await h.sleep(500);
+  }
+  const sendBtn = await h.find('Send', 'desc');
+  if (!sendBtn) return { status: 'COMPOSE_FAILED', note: 'Gönder butonu bulunamadı', to, screenTexts: (await h.screenText()).slice(0, 300) };
+  await h.tapNode(sendBtn);
+  await h.sleep(1500);
+
+  return { status: 'SENT', to, message };
+}
+
+// ── WhatsApp: read messages from a chat ─────────────────────────────────────
+//
+// Opens a chat (by contact name if given, else assumes a chat is already open or
+// opens via wa.me) and pulls the visible message bubbles. WhatsApp tags each
+// bubble's text with resource-id .../message_text.
+//
+// payload: { from? (contact name to open), to? (number to open via wa.me) }
+async function whatsappRead(serial, payload) {
+  const from = String(p(payload, 'from', '')).trim();
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const h = waHelpers(serial);
+
+  // Make sure a chat is open.
+  if (to) {
+    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', `https://wa.me/${to}`, WA_PKG]);
+    await h.sleep(5000);
+  } else if (from) {
+    await launchApp(serial, WA_PKG, null);
+    await h.sleep(4000);
+    // Open search, type the contact, tap the first chat hit.
+    if (await h.tapIf('Search', 'desc')) {
+      await h.sleep(800);
+      await adb(serial, ['shell', 'input', 'text', from.replace(/ /g, '%s')]);
+      await h.sleep(1500);
+      await h.tapBy(from, 'text').catch(() => undefined);
+      await h.sleep(2500);
+    }
+  }
+  await dismissBlockingDialogs(serial, h);
+
+  // Pull bubbles. Prefer the message_text id; fall back to all on-screen text.
+  const nodes = await h.dump();
+  const bubbles = nodes
+    .filter((n) => n.text && n.resId.includes('message_text'))
+    .map((n) => n.text);
+  const messages = bubbles.length > 0 ? bubbles : nodes.map((n) => n.text).filter(Boolean);
+  return { status: 'OK', count: messages.length, messages: messages.slice(-50) };
 }
 
 // Poll a catchmail inbox for the latest 4-8 digit verification code.
@@ -686,9 +1094,87 @@ async function captureFrame(serial) {
   return stdout;
 }
 
+// Fast streaming via on-device H.264 + ffmpeg → MJPEG. screenrecord emits a live
+// H.264 elementary stream; ffmpeg decodes it and re-encodes to a continuous MJPEG
+// stream on stdout. We split that stream on JPEG SOI/EOI markers and push each
+// complete JPEG as one frame over the existing FRM: protocol — so the dashboard
+// is unchanged, but frames arrive at 20-30fps instead of ~1fps. screenrecord has
+// a 180s hard limit, so we respawn the pipeline when it ends.
+function startCaptureH264(ws, deviceId, serial) {
+  void ensureConnected(serial);
+  const prefix = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId))]);
+  const MAX_BUFFERED = 1_500_000;
+  const state = { serial, h264: true, rec: null, ff: null, stopped: false, buf: Buffer.alloc(0) };
+
+  const spawnPipeline = () => {
+    if (state.stopped) return;
+    // 1) screenrecord → raw H.264 on stdout (downscaled for speed)
+    const rec = spawn(ADB, ['-s', serial, 'exec-out',
+      `screenrecord --output-format=h264 --size ${STREAM_W}x${Math.round(STREAM_W * 20 / 9)} --bit-rate ${bitrateBps(STREAM_BITRATE)} --time-limit=170 -`
+    ], { windowsHide: true });
+    // 2) ffmpeg: H.264 stdin → MJPEG stdout (q=6 ~ good/small, low latency flags)
+    // No fps filter: it re-clones the last frame on a static screen and actually
+    // throttled output to ~0fps in testing. Passing every decoded frame yields
+    // ~20-25fps with live motion and idles cheaply when the screen is still.
+    const ff = spawn(FFMPEG, [
+      '-loglevel', 'error', '-fflags', 'nobuffer', '-flags', 'low_delay',
+      '-f', 'h264', '-i', 'pipe:0',
+      '-an', '-c:v', 'mjpeg', '-q:v', '7', '-pix_fmt', 'yuvj420p',
+      '-f', 'mjpeg', 'pipe:1'
+    ], { windowsHide: true });
+    state.rec = rec; state.ff = ff;
+
+    rec.stdout.on('data', (d) => { try { ff.stdin.write(d); } catch { /* ff gone */ } });
+    rec.on('error', (e) => log(`[screenrecord] spawn error: ${e.message}`));
+    // screenrecord has a hard time-limit; on close, end ffmpeg's stdin and respawn
+    // the whole pipeline so the stream is continuous.
+    rec.on('close', () => { try { ff.stdin.end(); } catch { /* ignore */ } if (!state.stopped) setTimeout(spawnPipeline, 200); });
+    ff.stdin.on('error', () => { /* pipe closed; rec close will respawn */ });
+
+    // Parse the MJPEG stream: frames are JPEG (FFD8 ... FFD9). Accumulate and emit
+    // each complete JPEG.
+    ff.stdout.on('data', (chunk) => {
+      state.buf = state.buf.length ? Buffer.concat([state.buf, chunk]) : chunk;
+      // Emit every complete JPEG currently in the buffer.
+      let start = state.buf.indexOf(SOI);
+      while (start !== -1) {
+        const end = state.buf.indexOf(EOI, start + 2);
+        if (end === -1) break; // incomplete; wait for more
+        const jpeg = state.buf.subarray(start, end + 2);
+        if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) {
+          ws.send(Buffer.concat([prefix, jpeg]));
+        }
+        state.buf = state.buf.subarray(end + 2);
+        start = state.buf.indexOf(SOI);
+      }
+      // Guard against unbounded growth if no EOI ever arrives.
+      if (state.buf.length > 8_000_000) state.buf = Buffer.alloc(0);
+    });
+    ff.stderr.on('data', (d) => { const s = d.toString().trim(); if (s && /error|invalid|failed/i.test(s)) log(`[ffmpeg] ${s.slice(0, 200)}`); });
+    ff.on('error', (e) => log(`[ffmpeg] spawn error: ${e.message} — is FLEET_FFMPEG correct?`));
+    ff.on('close', () => { if (!state.stopped) setTimeout(spawnPipeline, 200); });
+  };
+
+  spawnPipeline();
+  captures.set(deviceId, state);
+  log(`stream start ${deviceId} via H.264 (${STREAM_W}px)`);
+}
+
+const SOI = Buffer.from([0xff, 0xd8]); // JPEG start-of-image
+const EOI = Buffer.from([0xff, 0xd9]); // JPEG end-of-image
+function bitrateBps(s) {
+  const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*([mMkK]?)$/);
+  if (!m) return 4_000_000;
+  const n = parseFloat(m[1]);
+  const unit = m[2].toLowerCase();
+  return Math.round(n * (unit === 'm' ? 1_000_000 : unit === 'k' ? 1_000 : 1));
+}
+
 function startCapture(ws, deviceId, serial, fps) {
   stopCapture(deviceId);
   if (!serial) return;
+  // Prefer the H.264 fast path when ffmpeg is configured.
+  if (FFMPEG) { startCaptureH264(ws, deviceId, serial); return; }
   // Cap at 30fps; capture frames are raw PNG (large), so the real limiter is how
   // fast a frame serializes over the socket, not the timer.
   const interval = Math.max(33, Math.round(1000 / Math.min(30, Math.max(1, fps || STREAM_DEFAULT_FPS))));
@@ -721,7 +1207,10 @@ function startCapture(ws, deviceId, serial, fps) {
 function stopCapture(deviceId) {
   const s = captures.get(deviceId);
   if (s) {
-    clearInterval(s.timer);
+    s.stopped = true;
+    if (s.timer) clearInterval(s.timer);
+    if (s.rec) { try { s.rec.kill(); } catch { /* ignore */ } }
+    if (s.ff) { try { s.ff.kill(); } catch { /* ignore */ } }
     captures.delete(deviceId);
     log(`stream stop ${deviceId}`);
   }

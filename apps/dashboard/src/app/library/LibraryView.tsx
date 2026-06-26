@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
+import { Library, Plus, Trash2, Image as ImageIcon, Film, Package, Cookie, File, Database, Tags, HardDrive, X } from 'lucide-react';
 
 export type Asset = {
   id: string;
@@ -15,12 +16,12 @@ export type Asset = {
   createdAt: string;
 };
 
-const TYPE_ICON: Record<string, string> = {
-  IMAGE: '🖼',
-  VIDEO: '🎞',
-  APK: '📦',
-  COOKIE: '🍪',
-  OTHER: '❏'
+const TYPE_ICON: Record<string, ReactNode> = {
+  IMAGE: <ImageIcon size={18} />,
+  VIDEO: <Film size={18} />,
+  APK: <Package size={18} />,
+  COOKIE: <Cookie size={18} />,
+  OTHER: <File size={18} />
 };
 
 function formatSize(bytes: number): string {
@@ -36,6 +37,9 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', type: 'IMAGE', url: '', tags: '' });
+
+  const totalSize = assets.reduce((acc, a) => acc + a.sizeBytes, 0);
+  const distinctTypes = new Set(assets.map((a) => a.type)).size;
 
   async function add() {
     if (!form.name.trim()) {
@@ -79,57 +83,102 @@ export function LibraryView({ assets }: { assets: Asset[] }) {
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="VARLIK KÜTÜPHANESİ"
         title="Kütüphane"
         subtitle="Paylaşılan medya, APK'ler, çerezler ve hesap varlıkları."
-        actions={<button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Varlık ekle</button>}
+        actions={
+          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
+            <Plus size={16} /> Varlık ekle
+          </button>
+        }
       />
 
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam Varlık"
+            value={<span className="mono">{assets.length}</span>}
+            sub="kayıtlı kaynak"
+            tone="info"
+            icon={<Database size={16} />}
+          />
+          <HoloStat
+            label="Toplam Boyut"
+            value={<span className="mono">{formatSize(totalSize)}</span>}
+            sub="depolanan veri"
+            tone="cyan"
+            icon={<HardDrive size={16} />}
+          />
+          <HoloStat
+            label="Tür Çeşidi"
+            value={<span className="mono">{distinctTypes}</span>}
+            sub="farklı format"
+            tone="violet"
+            icon={<Tags size={16} />}
+          />
+        </div>
+      </Reveal>
+
       {assets.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">◳</div>
-          <h3>Henüz varlık yok</h3>
-          <p>Bulut telefonlarınız arasında yeniden kullanmak için görseller, videolar, APK'ler veya çerez dosyaları ekleyin.</p>
-          <button type="button" className="btn-primary" onClick={() => setOpen(true)}>+ Varlık ekle</button>
-        </div>
-      ) : (
-        <div className="app-grid">
-          {assets.map((a) => (
-            <article className="app-card" key={a.id}>
-              <div className="app-card-main">
-                <span className="app-icon" style={{ background: 'rgba(124,140,255,0.18)', fontSize: '1.3rem' }}>
-                  {TYPE_ICON[a.type] ?? '❏'}
-                </span>
-                <div className="app-meta">
-                  <strong>{a.name}</strong>
-                  <span className="helper mono">
-                    {a.type} · {formatSize(a.sizeBytes)}
-                  </span>
-                  {a.tags.length > 0 ? (
-                    <span className="helper">{a.tags.map((t) => `#${t}`).join(' ')}</span>
-                  ) : null}
-                </div>
-              </div>
-              <button
-                type="button"
-                className="install-btn action-danger"
-                disabled={busyId === a.id}
-                onClick={() => remove(a.id)}
-              >
-                Sil
+        <Reveal delay={0.05}>
+          <HoloPanel title="Henüz varlık yok" icon={<Library size={18} />}>
+            <div className="empty-state">
+              <div className="empty-art">◳</div>
+              <h3>Kütüphane boş</h3>
+              <p>Bulut telefonlarınız arasında yeniden kullanmak için görseller, videolar, APK'ler veya çerez dosyaları ekleyin.</p>
+              <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
+                <Plus size={16} /> Varlık ekle
               </button>
-            </article>
-          ))}
-        </div>
+            </div>
+          </HoloPanel>
+        </Reveal>
+      ) : (
+        <Reveal delay={0.05}>
+          <div className="holo-grid-auto">
+            {assets.map((a) => (
+              <Holo3D className="holo-panel" key={a.id} max={5}>
+                <span className="holo-corner holo-corner-tl" aria-hidden />
+                <span className="holo-corner holo-corner-tr" aria-hidden />
+                <span className="holo-corner holo-corner-bl" aria-hidden />
+                <span className="holo-corner holo-corner-br" aria-hidden />
+                <div className="holo-panel-body">
+                  <div className="app-card-main">
+                    <span className="holo-panel-ico" style={{ fontSize: '1.1rem' }}>
+                      {TYPE_ICON[a.type] ?? <File size={18} />}
+                    </span>
+                    <div className="app-meta">
+                      <strong>{a.name}</strong>
+                      <span className="helper mono">
+                        {a.type} · {formatSize(a.sizeBytes)}
+                      </span>
+                      {a.tags.length > 0 ? (
+                        <span className="helper">{a.tags.map((t) => `#${t}`).join(' ')}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ghost btn-xs action-danger"
+                    disabled={busyId === a.id}
+                    onClick={() => remove(a.id)}
+                  >
+                    <Trash2 size={14} /> Sil
+                  </button>
+                </div>
+              </Holo3D>
+            ))}
+          </div>
+        </Reveal>
       )}
 
       {open ? (
         <div className="modal-overlay" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Varlık ekle</h2>
+              <h2><Plus size={16} /> Varlık ekle</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
             <label className="field">

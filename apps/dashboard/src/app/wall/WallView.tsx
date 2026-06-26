@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Grid3x3, Play, Square, Link2, Crown, ChevronLeft, Circle, Square as SquareIcon } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { Grid3x3, Play, Square, Link2, Crown, ChevronLeft, Circle, Square as SquareIcon, Radio, MonitorPlay, Layers } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
 import { useDeviceStream } from './useDeviceStream';
 
@@ -33,7 +33,8 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="CİHAZ DUVARI"
         title="Canlı Duvar"
         subtitle={`Telefonları tek tek veya toplu canlı izleyin${liveCount > 0 ? ` · ${liveCount} canlı` : ''}. Senkron modda bir lider tüm filoyu sürer.`}
         actions={
@@ -54,6 +55,37 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
         }
       />
 
+      <div className="holo-stats-grid" style={{ marginBottom: '1rem' }}>
+        <HoloStat
+          label="Gösterilen cihaz"
+          value={<span className="mono">{shown.length}</span>}
+          sub={`Toplam ${devices.length} cihaz`}
+          tone="cyan"
+          icon={<MonitorPlay size={16} />}
+        />
+        <HoloStat
+          label="Canlı yayın"
+          value={<span className="mono">{liveCount}</span>}
+          sub={liveCount > 0 ? 'akış aktif' : 'beklemede'}
+          tone={liveCount > 0 ? 'success' : 'cyan'}
+          icon={<Radio size={16} />}
+        />
+        <HoloStat
+          label="Izgara"
+          value={<span className="mono">{cols}×</span>}
+          sub="sütun düzeni"
+          tone="violet"
+          icon={<Grid3x3 size={16} />}
+        />
+        <HoloStat
+          label="Senkron mod"
+          value={<span className="mono">{syncMode ? (leader ? followers.length + 1 : 'AÇIK') : 'KAPALI'}</span>}
+          sub={syncMode ? (leader ? `${followers.length} takipçi` : 'lider bekleniyor') : 'pasif'}
+          tone={syncMode ? 'warning' : 'cyan'}
+          icon={<Layers size={16} />}
+        />
+      </div>
+
       {syncMode ? (
         <p className="helper" style={{ marginBottom: '0.75rem' }}>
           <Crown size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
@@ -62,26 +94,34 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
       ) : null}
 
       {shown.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-art">▦</div>
-          <h3>Gösterilecek cihaz yok</h3>
-          <p>Bir grup seçin veya önce profil oluşturun.</p>
-        </div>
+        <HoloPanel title="Cihaz duvarı" icon={<MonitorPlay size={16} />}>
+          <div className="empty-state">
+            <div className="empty-art">▦</div>
+            <h3>Gösterilecek cihaz yok</h3>
+            <p>Bir grup seçin veya önce profil oluşturun.</p>
+          </div>
+        </HoloPanel>
       ) : (
-        <div className="wall-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
-          {shown.map((d) => (
-            <WallCell
-              key={d.id}
-              device={d}
-              bulk={bulk}
-              syncMode={syncMode}
-              isLeader={leader === d.id}
-              followers={leader === d.id ? followers : []}
-              onMakeLeader={() => setLeader(d.id)}
-              onLiveChange={(isLive) => setLiveCount((c) => Math.max(0, c + (isLive ? 1 : -1)))}
-            />
-          ))}
-        </div>
+        <HoloPanel
+          title="Cihaz duvarı"
+          icon={<MonitorPlay size={16} />}
+          actions={<span className="status-chip"><span className="dot dot-live" /> {liveCount} canlı · {shown.length} cihaz</span>}
+        >
+          <div className="wall-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+            {shown.map((d) => (
+              <WallCell
+                key={d.id}
+                device={d}
+                bulk={bulk}
+                syncMode={syncMode}
+                isLeader={leader === d.id}
+                followers={leader === d.id ? followers : []}
+                onMakeLeader={() => setLeader(d.id)}
+                onLiveChange={(isLive) => setLiveCount((c) => Math.max(0, c + (isLive ? 1 : -1)))}
+              />
+            ))}
+          </div>
+        </HoloPanel>
       )}
     </PageMotion>
   );
@@ -151,11 +191,15 @@ function WallCell({
   const live = state === 'live';
   const connecting = state === 'connecting';
   return (
-    <div className={`wall-cell ${isLeader ? 'wall-cell-leader' : ''}`}>
+    <Holo3D className={`wall-cell ${isLeader ? 'wall-cell-leader' : ''}`} max={5} glare={false}>
+      <span className="holo-corner holo-corner-tl" aria-hidden />
+      <span className="holo-corner holo-corner-tr" aria-hidden />
+      <span className="holo-corner holo-corner-bl" aria-hidden />
+      <span className="holo-corner holo-corner-br" aria-hidden />
       <div className="wall-cell-head">
         <span className="wall-cell-name">{device.name}</span>
         {live ? (
-          <span className="wall-cell-fps">{fps}fps</span>
+          <span className="wall-cell-fps mono"><span className="dot dot-live" />{fps}fps</span>
         ) : (
           <span className="wall-cell-state">{connecting ? '…' : state === 'offline' ? 'sunucu yok' : state === 'error' ? 'hata' : '—'}</span>
         )}
@@ -165,8 +209,17 @@ function WallCell({
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
       >
+        <span className="holo-scan" aria-hidden />
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img ref={imgRef} alt={device.name} className="wall-cell-img" draggable={false} />
+        <img
+          ref={imgRef}
+          alt=""
+          className="wall-cell-img"
+          draggable={false}
+          /* Hide the <img> until a frame arrives, so an empty src never shows the
+             browser's broken-image icon + alt text. */
+          style={{ display: live ? 'block' : 'none' }}
+        />
         {!live ? (
           <div className="wall-cell-placeholder">
             {connecting ? (
@@ -198,6 +251,6 @@ function WallCell({
           </span>
         ) : null}
       </div>
-    </div>
+    </Holo3D>
   );
 }

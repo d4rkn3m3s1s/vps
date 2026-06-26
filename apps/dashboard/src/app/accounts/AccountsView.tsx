@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Smartphone, Mail, UserRound, RefreshCw, Phone, Copy, Check, Loader2, XCircle } from 'lucide-react';
+import { Smartphone, Mail, UserRound, RefreshCw, Phone, Copy, Check, Loader2, XCircle, Activity, PackageOpen, SlidersHorizontal, SignalHigh } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat } from '../../components/hud';
 import { BatchPanel } from './BatchPanel';
 
 type ProviderStatus = {
@@ -24,8 +25,18 @@ type OtpResult = { status: 'waiting' | 'received' | 'cancelled' | 'expired'; cod
 // Friendly platform → matched against the provider's project list by title.
 const PLATFORMS = ['WhatsApp', 'Instagram', 'Facebook', 'Telegram'];
 
-function Dot({ ok }: { ok: boolean }) {
-  return <span className={ok ? 'dot dot-online' : 'dot dot-error'} />;
+// OTP durum → Türkçe etiket (semantik nokta korunur).
+const OTP_LABEL: Record<OtpResult['status'], string> = {
+  waiting: 'Bekleniyor…',
+  received: 'Alındı',
+  cancelled: 'İptal edildi',
+  expired: 'Süresi doldu'
+};
+
+// Sağlayıcı durum noktası: null iken nötr (offline) gri, aksi halde online/error.
+function Dot({ ok }: { ok: boolean | null }) {
+  const cls = ok === null ? 'dot dot-offline' : ok ? 'dot dot-online' : 'dot dot-error';
+  return <span className={cls} />;
 }
 
 function CopyBtn({ value }: { value: string }) {
@@ -173,45 +184,59 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
   }
 
   const s = status;
+  const onlineCount = (s ? Number(!!s.sms.ok) + Number(!!s.mail.ok) + Number(!!s.identity.ok) : 0);
+  const allOnline = !!s && s.sms.ok && s.mail.ok && s.identity.ok;
   return (
     <>
-      {/* Provider status */}
-      <div className="stats">
-        <div className="metric">
-          <p className="metric-label"><Smartphone size={14} /> SMS (sms-bus)</p>
-          <p className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Dot ok={!!s?.sms.ok} /> {s?.sms.ok ? 'Bağlı' : 'Bağlı değil'}
-          </p>
-          <p className="metric-sub">{s?.sms.detail ?? '—'}</p>
-        </div>
-        <div className="metric">
-          <p className="metric-label"><Mail size={14} /> E-posta (catchmail)</p>
-          <p className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Dot ok={!!s?.mail.ok} /> {s?.mail.ok ? 'Bağlı' : 'Bağlı değil'}
-          </p>
-          <p className="metric-sub">{s?.mail.detail ?? '—'}</p>
-        </div>
-        <div className="metric">
-          <p className="metric-label"><UserRound size={14} /> Kimlik (randomuser)</p>
-          <p className="metric-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Dot ok={!!s?.identity.ok} /> {s?.identity.ok ? 'Bağlı' : 'Bağlı değil'}
-          </p>
-          <p className="metric-sub">{s?.identity.detail ?? '—'}</p>
-        </div>
-        <div className="metric" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+      <HoloHeader
+        eyebrow="HESAP FABRİKASI"
+        title="Hesap Fabrikası"
+        subtitle="SMS, e-posta ve kimlik sağlayıcılarını tek panelden yönet; OTP'yi otomatik bekle."
+        actions={(
           <button type="button" className="btn-ghost" disabled={refreshing} onClick={refreshStatus} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Durumu yenile
           </button>
-        </div>
+        )}
+      />
+
+      {/* Provider status deck */}
+      <div className="holo-stats-grid">
+        <HoloStat
+          tone={s ? (s.sms.ok ? 'success' : 'error') : 'neutral'}
+          icon={<Smartphone size={15} />}
+          label="SMS · sms-bus"
+          value={<span className="icon-row" style={{ gap: 8 }}><Dot ok={s ? s.sms.ok : null} /> {s ? (s.sms.ok ? 'Bağlı' : 'Bağlı değil') : 'Yükleniyor…'}</span>}
+          sub={s ? (s.sms.detail || '—') : 'Bilinmiyor'}
+        />
+        <HoloStat
+          tone={s ? (s.mail.ok ? 'success' : 'error') : 'neutral'}
+          icon={<Mail size={15} />}
+          label="E-posta · catchmail"
+          value={<span className="icon-row" style={{ gap: 8 }}><Dot ok={s ? s.mail.ok : null} /> {s ? (s.mail.ok ? 'Bağlı' : 'Bağlı değil') : 'Yükleniyor…'}</span>}
+          sub={s ? (s.mail.detail || '—') : 'Bilinmiyor'}
+        />
+        <HoloStat
+          tone={s ? (s.identity.ok ? 'success' : 'error') : 'neutral'}
+          icon={<UserRound size={15} />}
+          label="Kimlik · randomuser"
+          value={<span className="icon-row" style={{ gap: 8 }}><Dot ok={s ? s.identity.ok : null} /> {s ? (s.identity.ok ? 'Bağlı' : 'Bağlı değil') : 'Yükleniyor…'}</span>}
+          sub={s ? (s.identity.detail || '—') : 'Bilinmiyor'}
+        />
+        <HoloStat
+          tone={s ? (allOnline ? 'cyan' : 'warning') : 'neutral'}
+          icon={<SignalHigh size={15} />}
+          label="Aktif sağlayıcı"
+          value={<span className="mono">{s ? `${onlineCount}/3` : '—/3'}</span>}
+          sub={s ? (allOnline ? 'Tüm kanallar çevrimiçi' : 'Bazı kanallar kapalı') : 'Bilinmiyor'}
+        />
       </div>
 
       {err ? <p className="field-error" style={{ marginTop: 12 }}>{err}</p> : null}
 
       {/* Builder */}
-      <section className="section-grid" style={{ marginTop: 16 }}>
+      <section className="holo-grid-2" style={{ marginTop: 16 }}>
         {/* Controls */}
-        <div className="panel">
-          <h2>Hesap hazırla</h2>
+        <HoloPanel title="Hesap hazırla" icon={<SlidersHorizontal size={16} />} tilt>
           <div className="field-row">
             <label className="field">
               <span>Platform</span>
@@ -242,25 +267,30 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
           <p className="helper" style={{ marginTop: 8 }}>
             Numara alındığında OTP otomatik beklenir. sms-bus bakiyesinden ücret düşer; gelmezse iptal edip iade alabilirsiniz.
           </p>
-        </div>
+        </HoloPanel>
 
         {/* Result */}
-        <div className="panel">
-          <h2>Hesap paketi</h2>
+        <HoloPanel title="Hesap paketi" icon={<PackageOpen size={16} />} tilt>
           <div className="panel-stack">
             {/* Number + OTP */}
             <div className="row">
               <span><Phone size={13} /> Numara</span>
-              <span className="mono helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 {rented ? <>+{rented.number} <CopyBtn value={rented.number} /></> : '—'}
               </span>
             </div>
             <div className="row">
               <span>OTP kodu</span>
               <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                {otp?.status === 'received' ? <><strong>{otp.code}</strong> <CopyBtn value={otp.code!} /></>
-                  : polling ? <><Loader2 size={13} className="spin" /> bekleniyor…</>
-                  : otp?.status === 'cancelled' ? 'iptal' : '—'}
+                {otp?.status === 'received' ? (
+                  <><span className="dot dot-online" /> <strong>{otp.code}</strong> <CopyBtn value={otp.code!} /></>
+                ) : polling ? (
+                  <><span className="dot dot-busy" /> <Loader2 size={13} className="spin" /> {OTP_LABEL.waiting}</>
+                ) : otp?.status === 'cancelled' ? (
+                  <><span className="dot dot-error" /> {OTP_LABEL.cancelled}</>
+                ) : otp?.status === 'expired' ? (
+                  <><span className="dot dot-error" /> {OTP_LABEL.expired}</>
+                ) : '—'}
                 {rented && otp?.status !== 'received' ? (
                   <button type="button" className="btn-ghost btn-xs" onClick={cancelNumber} title="İptal et"><XCircle size={12} /></button>
                 ) : null}
@@ -269,7 +299,7 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
             {/* Email */}
             <div className="row">
               <span><Mail size={13} /> E-posta</span>
-              <span className="mono helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                 {inbox ? <>{inbox} <CopyBtn value={inbox} /></> : '—'}
               </span>
             </div>
@@ -285,11 +315,13 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
               <div className="row"><span><UserRound size={13} /> Kimlik</span><span className="helper">—</span></div>
             )}
           </div>
-        </div>
+        </HoloPanel>
       </section>
 
       {/* Batch farm */}
-      <BatchPanel />
+      <HoloPanel title="Toplu üretim" icon={<Activity size={16} />} className="holo-batch" scan>
+        <BatchPanel />
+      </HoloPanel>
     </>
   );
 }

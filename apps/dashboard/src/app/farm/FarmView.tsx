@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren, HeartPulse, Megaphone } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
-import { PageMotion, StaggerGrid, MotionItem, AnimatedNumber } from '../../components/Motion';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren, HeartPulse, Megaphone, LayoutDashboard, Users } from 'lucide-react';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
+import { AnimatedNumber } from '../../components/Motion';
 
 type Flow = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -180,7 +180,9 @@ export function FarmView() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [risk, setRisk] = useState<Risk[]>([]);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -217,12 +219,13 @@ export function FarmView() {
     matureFlowId: ''
   });
 
-  function flash(t: string) {
-    setMsg(t);
+  function flash(text: string, kind: 'ok' | 'err' = 'ok') {
+    setMsg({ text, kind });
     setTimeout(() => setMsg(null), 4000);
   }
 
   async function loadAll() {
+    setError(false);
     try {
       const [cRes, fRes, gRes, aRes, sRes, rRes] = await Promise.all([
         fetch('/api/farm/campaigns'),
@@ -232,6 +235,7 @@ export function FarmView() {
         fetch('/api/farm/summary'),
         fetch('/api/farm/risk')
       ]);
+      if (![cRes, aRes, sRes, rRes].every((r) => r.ok)) throw new Error('fetch failed');
       const [cJson, fJson, gJson, aJson, sJson, rJson] = await Promise.all([cRes.json(), fRes.json(), gRes.json(), aRes.json(), sRes.json(), rRes.json()]);
       if (Array.isArray(cJson.data)) setCampaigns(cJson.data);
       if (Array.isArray(fJson.data)) setFlows(fJson.data);
@@ -240,7 +244,10 @@ export function FarmView() {
       if (sJson.data) setSummary(sJson.data as Summary);
       if (Array.isArray(rJson.data)) setRisk(rJson.data as Risk[]);
     } catch {
-      flash('Çiftlik verileri yüklenemedi.');
+      setError(true);
+      flash('Çiftlik verileri yüklenemedi.', 'err');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -257,7 +264,7 @@ export function FarmView() {
         const [name, countryCode, groupName] = l.split(',').map((c) => c.trim());
         return { name, countryCode: countryCode || undefined, groupName: groupName || undefined };
       }).filter((r) => r.name);
-      if (rows.length === 0) return flash('CSV içinde geçerli satır bulunamadı.');
+      if (rows.length === 0) return flash('CSV içinde geçerli satır bulunamadı.', 'err');
       const res = await fetch('/api/farm/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -268,7 +275,7 @@ export function FarmView() {
       flash(`${json.data?.created ?? 0} cihaz oluşturuldu, ${json.data?.skipped ?? 0} atlandı.`);
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'İçe aktarma başarısız');
+      flash(e instanceof Error ? e.message : 'İçe aktarma başarısız', 'err');
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -283,7 +290,7 @@ export function FarmView() {
       flash('Cihaz tekrar çalıştırıldı.');
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Devam ettirilemedi');
+      flash(e instanceof Error ? e.message : 'Devam ettirilemedi', 'err');
     } finally {
       setBusy(false);
     }
@@ -330,7 +337,7 @@ export function FarmView() {
       if (!res.ok) throw new Error(json.message ?? 'Kod üretilemedi');
       setTotp(json.data);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Kod üretilemedi');
+      flash(e instanceof Error ? e.message : 'Kod üretilemedi', 'err');
     }
   }
 
@@ -340,7 +347,7 @@ export function FarmView() {
 
   // Bulk action on selected accounts.
   async function runBulk(action: 'addTags' | 'removeTags' | 'pause' | 'resume', tags?: string[]) {
-    if (selected.size === 0) return flash('Önce hesap seçin.');
+    if (selected.size === 0) return flash('Önce hesap seçin.', 'err');
     setBusy(true);
     try {
       const res = await fetch('/api/farm/accounts/bulk', {
@@ -355,7 +362,7 @@ export function FarmView() {
       setBulkTags('');
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Toplu işlem başarısız');
+      flash(e instanceof Error ? e.message : 'Toplu işlem başarısız', 'err');
     } finally {
       setBusy(false);
     }
@@ -396,7 +403,7 @@ export function FarmView() {
       setAcctOpen(null);
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Kaydedilemedi');
+      flash(e instanceof Error ? e.message : 'Kaydedilemedi', 'err');
     } finally {
       setBusy(false);
     }
@@ -407,7 +414,7 @@ export function FarmView() {
   }, []);
 
   async function createCampaign() {
-    if (!form.name.trim()) return flash('Kampanya adı gereklidir.');
+    if (!form.name.trim()) return flash('Kampanya adı gereklidir.', 'err');
     setBusy(true);
     try {
       const body = {
@@ -438,7 +445,7 @@ export function FarmView() {
       flash('Kampanya oluşturuldu ve çalışıyor.');
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Kampanya oluşturulamadı');
+      flash(e instanceof Error ? e.message : 'Kampanya oluşturulamadı', 'err');
     } finally {
       setBusy(false);
     }
@@ -456,7 +463,7 @@ export function FarmView() {
       if (!res.ok) throw new Error('Güncellenemedi');
       await loadAll();
     } catch {
-      flash('Kampanya güncellenemedi.');
+      flash('Kampanya güncellenemedi.', 'err');
     } finally {
       setBusy(false);
     }
@@ -471,7 +478,7 @@ export function FarmView() {
       flash('Kampanya silindi.');
       await loadAll();
     } catch {
-      flash('Kampanya silinemedi.');
+      flash('Kampanya silinemedi.', 'err');
     } finally {
       setBusy(false);
     }
@@ -486,7 +493,7 @@ export function FarmView() {
       flash(`Motor çalıştı: ${json.data?.campaigns ?? 0} kampanyada ${json.data?.dispatched ?? 0} işlem gönderildi.`);
       await loadAll();
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Motor çalıştırılamadı');
+      flash(e instanceof Error ? e.message : 'Motor çalıştırılamadı', 'err');
     } finally {
       setBusy(false);
     }
@@ -511,9 +518,16 @@ export function FarmView() {
     return true;
   });
 
+  const farmTabs: { key: 'overview' | 'campaigns' | 'accounts'; label: string; icon?: ReactNode }[] = [
+    { key: 'overview', label: 'Genel bakış', icon: <LayoutDashboard size={14} /> },
+    { key: 'campaigns', label: `Kampanyalar (${campaigns.length})`, icon: <Megaphone size={14} /> },
+    { key: 'accounts', label: `Isıtma hesapları (${accounts.length})`, icon: <Users size={14} /> }
+  ];
+
   return (
-    <PageMotion className="page">
-      <PageHeader
+    <div className="page holo-page">
+      <HoloHeader
+        eyebrow="HESAP ÇİFTLİĞİ"
         title="Çiftlik"
         subtitle="Cihaz filonuzda insansı, zamanlanmış hesap ısıtma."
         actions={
@@ -525,164 +539,179 @@ export function FarmView() {
               style={{ display: 'none' }}
               onChange={(e) => { const f = e.target.files?.[0]; if (f) void importCsv(f); }}
             />
-            <button type="button" className="btn-ghost" disabled={busy} onClick={() => fileRef.current?.click()} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" className="btn-ghost icon-row" disabled={busy} onClick={() => fileRef.current?.click()}>
               <Upload size={14} /> CSV içe aktar
             </button>
-            <button type="button" className="btn-ghost" disabled={busy || accounts.length === 0} onClick={exportCsv} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" className="btn-ghost icon-row" disabled={busy || accounts.length === 0} onClick={exportCsv}>
               <FileDown size={14} /> CSV indir
             </button>
-            <button type="button" className="btn-ghost" disabled={busy} onClick={runNow} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" className="btn-ghost icon-row" disabled={busy} onClick={runNow}>
               <Zap size={14} /> Motoru şimdi çalıştır
             </button>
-            <button type="button" className="btn-primary" onClick={() => setCreateOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <button type="button" className="btn-primary icon-row" onClick={() => setCreateOpen(true)}>
               <Plus size={14} /> Yeni kampanya
             </button>
           </>
         }
       />
 
-      <div className="tabs">
-        <button type="button" className={tab === 'overview' ? 'tab tab-active' : 'tab'} onClick={() => setTab('overview')}>
-          Genel bakış
-        </button>
-        <button type="button" className={tab === 'campaigns' ? 'tab tab-active' : 'tab'} onClick={() => setTab('campaigns')}>
-          Kampanyalar ({campaigns.length})
-        </button>
-        <button type="button" className={tab === 'accounts' ? 'tab tab-active' : 'tab'} onClick={() => setTab('accounts')}>
-          Isıtma hesapları ({accounts.length})
-        </button>
-      </div>
+      <HoloTabs tabs={farmTabs} active={tab} onChange={setTab} />
 
-      {msg ? <p className="helper" style={{ marginBottom: '0.75rem' }}>{msg}</p> : null}
+      {msg ? <p className={`form-status form-status--${msg.kind}`} style={{ marginBottom: '0.75rem' }}>{msg.text}</p> : null}
 
-      {tab === 'overview' ? (
+      {loading ? (
+        <HoloPanel title="Çiftlik yükleniyor" icon={<HeartPulse size={16} />}>
+          <div aria-busy="true" aria-live="polite">
+            <span className="sr-only">Çiftlik verileri yükleniyor…</span>
+            {Array.from({ length: 6 }).map((_, i) => <div key={i} className="skeleton skeleton-row" />)}
+          </div>
+        </HoloPanel>
+      ) : error ? (
+        <HoloPanel title="Çiftlik" icon={<ShieldAlert size={16} />}>
+          <div className="empty-state">
+            <p className="form-status form-status--err">Çiftlik verileri yüklenemedi.</p>
+            <button type="button" className="btn-ghost icon-row" onClick={() => { setLoading(true); void loadAll(); }}>
+              <RotateCw size={14} /> Tekrar dene
+            </button>
+          </div>
+        </HoloPanel>
+      ) : tab === 'overview' ? (
         <>
           {/* Hero health gauge + animated KPI cards. */}
-          <div className="farm-hero">
-            <MotionItem className="metric farm-hero-gauge" lift={false}>
-              <HealthGauge value={summary?.accounts.avgHealth ?? 0} />
-              <div className="farm-hero-meta">
-                <p className="metric-label"><HeartPulse size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />Filo sağlığı</p>
-                <p className="helper" style={{ margin: 0 }}>
-                  {summary?.accounts.total ?? 0} hesap · {summary?.accounts.atRisk ?? 0} risk · {summary?.accounts.paused ?? 0} duraklatıldı
-                </p>
+          <Reveal>
+            <div className="holo-grid-3" style={{ alignItems: 'stretch' }}>
+              <HoloPanel title="Filo sağlığı" icon={<HeartPulse size={16} />} className="holo-span-1">
+                <div className="farm-hero-gauge" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <HealthGauge value={summary?.accounts.avgHealth ?? 0} />
+                  <div className="farm-hero-meta">
+                    <p className="helper" style={{ margin: 0 }}>
+                      {summary?.accounts.total ?? 0} hesap · {summary?.accounts.atRisk ?? 0} risk · {summary?.accounts.paused ?? 0} duraklatıldı
+                    </p>
+                  </div>
+                </div>
+              </HoloPanel>
+
+              <div className="holo-stats-grid holo-span-2" style={{ gridColumn: 'span 2' }}>
+                <HoloStat
+                  label="Aktif kampanya"
+                  tone="cyan"
+                  icon={<Megaphone size={16} />}
+                  value={<span className="mono"><AnimatedNumber value={summary?.campaigns.active ?? 0} format={false} /></span>}
+                  sub={<span className="mono">/ {summary?.campaigns.total ?? 0}</span>}
+                />
+                <HoloStat
+                  label="Bugünkü aksiyon"
+                  tone="cyan"
+                  icon={<Activity size={16} />}
+                  value={<span className="mono"><AnimatedNumber value={summary?.actions.today ?? 0} format={false} /></span>}
+                />
+                <HoloStat
+                  label="Proxy (sağlıklı / toplam)"
+                  tone="success"
+                  icon={<Globe size={16} />}
+                  value={<span className="mono"><AnimatedNumber value={summary?.proxies.healthy ?? 0} format={false} /> / {summary?.proxies.total ?? 0}</span>}
+                  sub={(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad">{summary?.proxies.failed} ölü</span> : undefined}
+                />
+                <HoloStat
+                  label="Ban riski (yüksek / orta)"
+                  tone={(summary?.risk.high ?? 0) > 0 ? 'error' : 'violet'}
+                  icon={<Siren size={16} />}
+                  value={
+                    <span className="mono">
+                      <span className={(summary?.risk.high ?? 0) > 0 ? 'farm-proxy-bad' : ''}><AnimatedNumber value={summary?.risk.high ?? 0} format={false} /></span>
+                      {' / '}{summary?.risk.medium ?? 0}
+                    </span>
+                  }
+                />
               </div>
-            </MotionItem>
-
-            <StaggerGrid className="farm-kpis">
-              <MotionItem className="metric ov-metric">
-                <span className="metric-ico metric-ico-blue"><Megaphone size={18} /></span>
-                <p className="metric-label">Aktif kampanya</p>
-                <p className="metric-value"><AnimatedNumber value={summary?.campaigns.active ?? 0} format={false} /><span className="metric-sub"> / {summary?.campaigns.total ?? 0}</span></p>
-              </MotionItem>
-              <MotionItem className="metric ov-metric">
-                <span className="metric-ico metric-ico-cyan"><Activity size={18} /></span>
-                <p className="metric-label">Bugünkü aksiyon</p>
-                <p className="metric-value"><AnimatedNumber value={summary?.actions.today ?? 0} format={false} /></p>
-              </MotionItem>
-              <MotionItem className="metric ov-metric">
-                <span className="metric-ico metric-ico-green"><Globe size={18} /></span>
-                <p className="metric-label">Proxy (sağlıklı / toplam)</p>
-                <p className="metric-value">
-                  <AnimatedNumber value={summary?.proxies.healthy ?? 0} format={false} /><span className="metric-sub"> / {summary?.proxies.total ?? 0}</span>
-                  {(summary?.proxies.failed ?? 0) > 0 ? <span className="farm-proxy-bad"> · {summary?.proxies.failed} ölü</span> : null}
-                </p>
-              </MotionItem>
-              <MotionItem className="metric ov-metric">
-                <span className={`metric-ico ${(summary?.risk.high ?? 0) > 0 ? 'metric-ico-red' : 'metric-ico-violet'}`}><Siren size={18} /></span>
-                <p className="metric-label">Ban riski (yüksek / orta)</p>
-                <p className="metric-value">
-                  <span className={(summary?.risk.high ?? 0) > 0 ? 'farm-proxy-bad' : ''}><AnimatedNumber value={summary?.risk.high ?? 0} format={false} /></span>
-                  <span className="metric-sub"> / {summary?.risk.medium ?? 0}</span>
-                </p>
-              </MotionItem>
-            </StaggerGrid>
-          </div>
-
-          <div className="section-grid">
-            {/* Warmup-stage distribution */}
-            <div className="panel">
-              <h2>Isıtma aşaması dağılımı</h2>
-              {(summary?.accounts.total ?? 0) === 0 ? (
-                <p className="helper">Henüz ısıtma verisi yok.</p>
-              ) : (
-                <div className="farm-dist">
-                  {(summary?.stageDistribution ?? []).map((count, i) => {
-                    const total = summary?.accounts.total || 1;
-                    const w = Math.round((count / total) * 100);
-                    return (
-                      <div className="farm-dist-row" key={i}>
-                        <span className="farm-dist-label">{STAGE_LABEL[i + 1]}</span>
-                        <span className="health-bar"><span className={`health-bar-fill farm-stage-bar-${i + 1}`} style={{ width: `${w}%` }} /></span>
-                        <span className="farm-dist-num mono">{count}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
             </div>
+          </Reveal>
 
-            {/* At-risk devices */}
-            <div className="panel">
-              <h2><ShieldAlert size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Risk altındaki cihazlar</h2>
-              {(summary?.atRiskList.length ?? 0) === 0 ? (
-                <p className="helper">Risk altında cihaz yok — filo sağlıklı. 🎉</p>
-              ) : (
-                <div className="group-device-list">
-                  {summary?.atRiskList.map((a) => (
-                    <div key={a.deviceId} className="group-device-row">
-                      <span className="group-device-name mono">{a.deviceId.slice(0, 10)}…</span>
-                      <span className={`farm-health-pill ${a.healthScore < 30 ? 'tone-bad' : 'tone-warn'}`}>{a.healthScore}</span>
-                      {a.paused ? <span className="farm-status farm-status-paused" title={a.pausedReason ?? ''}>duraklatıldı</span> : null}
-                      {a.paused ? (
-                        <button type="button" className="btn-ghost group-move-btn" disabled={busy} onClick={() => resumeAccount(a.deviceId)}>
-                          <RotateCw size={12} /> Devam
-                        </button>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+          <Reveal delay={0.05}>
+            <div className="holo-grid-3" style={{ marginTop: '1rem' }}>
+              {/* Warmup-stage distribution */}
+              <HoloPanel title="Isıtma aşaması dağılımı" icon={<TrendingUp size={16} />}>
+                {(summary?.accounts.total ?? 0) === 0 ? (
+                  <p className="helper">Henüz ısıtma verisi yok.</p>
+                ) : (
+                  <div className="farm-dist">
+                    {(summary?.stageDistribution ?? []).map((count, i) => {
+                      const total = summary?.accounts.total || 1;
+                      const w = Math.round((count / total) * 100);
+                      return (
+                        <div className="farm-dist-row" key={i}>
+                          <span className="farm-dist-label">{STAGE_LABEL[i + 1]}</span>
+                          <span className="health-bar"><span className={`health-bar-fill farm-stage-bar-${i + 1}`} style={{ width: `${w}%` }} /></span>
+                          <span className="farm-dist-num mono">{count}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </HoloPanel>
 
-            {/* Proactive ban-risk: devices drifting toward a ban, with the
-                leading-indicator reasons that raised each score. */}
-            <div className="panel">
-              <h2><Siren size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Ban riski (öngörücü)</h2>
-              {flaggedRisk.length === 0 ? (
-                <p className="helper">Yükselen ban riski yok — davranış sınırlar içinde. ✅</p>
-              ) : (
-                <div className="farm-risk-list">
-                  {flaggedRisk.map((r) => (
-                    <div key={r.deviceId} className={`farm-risk-row farm-risk-${r.band}`}>
-                      <div className="farm-risk-head">
-                        <RiskGauge score={r.score} band={r.band} />
-                        <span className="group-device-name mono">{r.deviceName ?? `${r.deviceId.slice(0, 10)}…`}</span>
-                        {r.paused ? <span className="farm-status farm-status-paused">duraklatıldı</span> : null}
+              {/* At-risk devices */}
+              <HoloPanel title="Risk altındaki cihazlar" icon={<ShieldAlert size={16} />}>
+                {(summary?.atRiskList.length ?? 0) === 0 ? (
+                  <p className="helper">Risk altında cihaz yok — filo sağlıklı. 🎉</p>
+                ) : (
+                  <div className="group-device-list">
+                    {summary?.atRiskList.map((a) => (
+                      <div key={a.deviceId} className="group-device-row">
+                        <span className="group-device-name mono">{a.deviceId.slice(0, 10)}…</span>
+                        <span className={`farm-health-pill ${a.healthScore < 30 ? 'tone-bad' : 'tone-warn'}`}>{a.healthScore}</span>
+                        {a.paused ? <span className="farm-status farm-status-paused" title={a.pausedReason ?? ''}>duraklatıldı</span> : null}
+                        {a.paused ? (
+                          <button type="button" className="btn-ghost group-move-btn" disabled={busy} onClick={() => resumeAccount(a.deviceId)}>
+                            <RotateCw size={12} /> Devam
+                          </button>
+                        ) : null}
                       </div>
-                      <div className="farm-risk-factors">
-                        {r.factors.length === 0 ? <span className="helper">—</span> : r.factors.map((f) => (
-                          <span key={f.code} className="farm-risk-chip" title={`+${f.weight}`}>{f.label}</span>
-                        ))}
+                    ))}
+                  </div>
+                )}
+              </HoloPanel>
+
+              {/* Proactive ban-risk: devices drifting toward a ban, with the
+                  leading-indicator reasons that raised each score. */}
+              <HoloPanel title="Ban riski (öngörücü)" icon={<Siren size={16} />}>
+                {flaggedRisk.length === 0 ? (
+                  <p className="helper">Yükselen ban riski yok — davranış sınırlar içinde. ✅</p>
+                ) : (
+                  <div className="farm-risk-list">
+                    {flaggedRisk.map((r) => (
+                      <div key={r.deviceId} className={`farm-risk-row farm-risk-${r.band}`}>
+                        <div className="farm-risk-head">
+                          <RiskGauge score={r.score} band={r.band} />
+                          <span className="group-device-name mono">{r.deviceName ?? `${r.deviceId.slice(0, 10)}…`}</span>
+                          {r.paused ? <span className="farm-status farm-status-paused">duraklatıldı</span> : null}
+                        </div>
+                        <div className="farm-risk-factors">
+                          {r.factors.length === 0 ? <span className="helper">—</span> : r.factors.map((f) => (
+                            <span key={f.code} className="farm-risk-chip" title={`+${f.weight}`}>{f.label}</span>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+              </HoloPanel>
             </div>
-          </div>
+          </Reveal>
         </>
       ) : tab === 'campaigns' ? (
         campaigns.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-art">🌱</div>
-            <h3>Henüz kampanya yok</h3>
-            <p>Bir cihaz grubunda insansı bir zamanlamayla RPA akışı çalıştırmak için bir kampanya oluşturun.</p>
-          </div>
+          <HoloPanel title="Kampanyalar" icon={<Megaphone size={16} />}>
+            <div className="empty-state">
+              <div className="empty-art">🌱</div>
+              <h3>Henüz kampanya yok</h3>
+              <p>Bir cihaz grubunda insansı bir zamanlamayla RPA akışı çalıştırmak için bir kampanya oluşturun.</p>
+            </div>
+          </HoloPanel>
         ) : (
-          <div className="farm-grid">
+          <div className="holo-grid-auto">
             {campaigns.map((c) => (
-              <article key={c.id} className={`farm-card farm-card-${c.status.toLowerCase()}`}>
+              <Holo3D key={c.id} className={`holo-card farm-card farm-card-${c.status.toLowerCase()}`} max={5}>
                 <div className="farm-card-head">
                   <div>
                     <strong className="farm-card-title">{c.name}</strong>
@@ -705,36 +734,38 @@ export function FarmView() {
                   <span><ShieldAlert size={12} /> oto-duraklat &lt;{c.autoPauseThreshold} · {c.rotateProxy ? 'proxy rotasyonu açık' : 'proxy rotasyonu kapalı'}</span>
                   <span className="helper">{c.runCount} çalışma · sıradaki {new Date(c.nextRunAt).toLocaleTimeString('tr-TR')}</span>
                 </div>
-              </article>
+              </Holo3D>
             ))}
           </div>
         )
       ) : (
         accounts.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-art">📈</div>
-            <h3>Henüz ısıtma verisi yok</h3>
-            <p>Bir kampanya cihazlarını işlemeye başladığında hesaplar burada otomatik olarak görünür.</p>
-          </div>
+          <HoloPanel title="Isıtma hesapları" icon={<Users size={16} />}>
+            <div className="empty-state">
+              <div className="empty-art">📈</div>
+              <h3>Henüz ısıtma verisi yok</h3>
+              <p>Bir kampanya cihazlarını işlemeye başladığında hesaplar burada otomatik olarak görünür.</p>
+            </div>
+          </HoloPanel>
         ) : (
-          <div className="panel">
+          <HoloPanel title="Isıtma hesapları" icon={<Users size={16} />} scan={false}>
             {/* Filter bar */}
             <div className="farm-filter-bar">
               <span className="farm-search">
                 <Search size={14} />
                 <input className="field-input" placeholder="Cihaz, kullanıcı, e-posta veya etiket ara…" value={filterText} onChange={(e) => setFilterText(e.target.value)} />
               </span>
-              <select className="field-input farm-filter-sel" value={filterPlatform} onChange={(e) => setFilterPlatform(e.target.value)}>
+              <select className="inline-select farm-filter-sel" value={filterPlatform} onChange={(e) => setFilterPlatform(e.target.value)}>
                 <option value="">Tüm platformlar</option>
                 {platformOptions.map((p) => <option key={p} value={p}>{p}</option>)}
               </select>
-              <select className="field-input farm-filter-sel" value={filterHealth} onChange={(e) => setFilterHealth(e.target.value)}>
+              <select className="inline-select farm-filter-sel" value={filterHealth} onChange={(e) => setFilterHealth(e.target.value)}>
                 <option value="">Tüm durumlar</option>
                 <option value="healthy">Sağlıklı (≥70)</option>
                 <option value="risk">Risk (&lt;50)</option>
                 <option value="paused">Duraklatılan</option>
               </select>
-              <span className="helper farm-filter-count">{filteredAccounts.length} / {accounts.length}</span>
+              <span className="helper farm-filter-count mono">{filteredAccounts.length} / {accounts.length}</span>
             </div>
 
             {/* Bulk action bar (shown when rows are selected) */}
@@ -756,7 +787,7 @@ export function FarmView() {
             <div className="health-table">
               <div className="health-row health-head" style={{ gridTemplateColumns: '28px 1.3fr 0.9fr 0.85fr 0.45fr 0.45fr 0.55fr 0.9fr 0.95fr 0.75fr' }}>
                 <span>
-                  <input type="checkbox" aria-label="Tümünü seç"
+                  <input type="checkbox" aria-label="Tümünü seç" className="farm-sel-check"
                     checked={filteredAccounts.length > 0 && filteredAccounts.every((a) => selected.has(a.deviceId))}
                     onChange={(e) => setSelected(e.target.checked ? new Set(filteredAccounts.map((a) => a.deviceId)) : new Set())} />
                 </span>
@@ -764,7 +795,7 @@ export function FarmView() {
               </div>
               {filteredAccounts.map((a) => (
                 <div key={a.id} className={`health-row ${selected.has(a.deviceId) ? 'farm-row-sel' : ''}`} style={{ gridTemplateColumns: '28px 1.3fr 0.9fr 0.85fr 0.45fr 0.45fr 0.55fr 0.9fr 0.95fr 0.75fr' }}>
-                  <span><input type="checkbox" checked={selected.has(a.deviceId)} onChange={() => toggleSelect(a.deviceId)} /></span>
+                  <span><input type="checkbox" className="farm-sel-check" aria-label={`${a.device?.name ?? a.deviceId.slice(0, 8)} seç`} checked={selected.has(a.deviceId)} onChange={() => toggleSelect(a.deviceId)} /></span>
                   <span className="health-name">
                     {a.device?.name ?? a.deviceId.slice(0, 8)}
                     {(() => {
@@ -783,9 +814,9 @@ export function FarmView() {
                     )}
                   </span>
                   <span><span className={`farm-stage farm-stage-${a.warmupStage}`}>{STAGE_LABEL[a.warmupStage] ?? a.warmupStage}</span></span>
-                  <span>{a.daysActive}</span>
-                  <span>{a.actionsToday}</span>
-                  <span>{a.totalActions}</span>
+                  <span className="mono">{a.daysActive}</span>
+                  <span className="mono">{a.actionsToday}</span>
+                  <span className="mono">{a.totalActions}</span>
                   <span className="health-usage">
                     <span className="health-bar health-bar-sm">
                       <span className={`health-bar-fill ${a.healthScore >= 70 ? 'bar-ok' : a.healthScore >= 40 ? 'bar-warn' : 'bar-bad'}`} style={{ width: `${a.healthScore}%` }} />
@@ -810,14 +841,14 @@ export function FarmView() {
               ))}
               {filteredAccounts.length === 0 ? <p className="helper" style={{ padding: '1rem' }}>Filtreye uyan hesap yok.</p> : null}
             </div>
-          </div>
+          </HoloPanel>
         )
       )}
 
       {createOpen ? (
         <div className="modal-overlay" onClick={() => !busy && setCreateOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <header className="modal-head"><h2>Yeni çiftlik kampanyası</h2></header>
+            <header className="modal-head"><h2><Megaphone size={16} style={{ verticalAlign: 'middle', marginRight: 6 }} /> Yeni çiftlik kampanyası</h2></header>
             <div className="modal-body farm-form">
               <label className="distribute-field">
                 <span className="helper">Kampanya adı</span>
@@ -884,8 +915,8 @@ export function FarmView() {
                   <input className="field-input" type="number" min={0} max={100} value={form.autoPauseThreshold} onChange={(e) => setForm({ ...form, autoPauseThreshold: e.target.value })} />
                 </label>
                 <label className="distribute-field" style={{ justifyContent: 'flex-end' }}>
-                  <span className="fp-check" style={{ marginTop: '1.5rem' }}>
-                    <input type="checkbox" checked={form.rotateProxy} onChange={(e) => setForm({ ...form, rotateProxy: e.target.checked })} /> Her çalışmada proxy döndür
+                  <span className="fp-check icon-row" style={{ marginTop: '1.5rem' }}>
+                    <input type="checkbox" className="admin-switch" checked={form.rotateProxy} onChange={(e) => setForm({ ...form, rotateProxy: e.target.checked })} /> Her çalışmada proxy döndür
                   </span>
                 </label>
               </div>
@@ -939,8 +970,8 @@ export function FarmView() {
                     <button type="button" className="btn-ghost" onClick={genTotp}><KeyRound size={13} /> 2FA kodu üret</button>
                     {totp ? (
                       <span className="farm-totp-code" onClick={() => copyText(totp.code)} title="Kopyalamak için tıkla">
-                        <span className="farm-totp-digits">{totp.code.slice(0, 3)} {totp.code.slice(3)}</span>
-                        <span className="farm-totp-ttl">{totp.secondsRemaining}s</span>
+                        <span className="farm-totp-digits mono">{totp.code.slice(0, 3)} {totp.code.slice(3)}</span>
+                        <span className="farm-totp-ttl mono">{totp.secondsRemaining}s</span>
                         <Copy size={12} />
                       </span>
                     ) : <span className="helper">Kasadaki anahtardan anlık kod üretir</span>}
@@ -998,7 +1029,7 @@ export function FarmView() {
           </div>
         </div>
       ) : null}
-    </PageMotion>
+    </div>
   );
 }
 

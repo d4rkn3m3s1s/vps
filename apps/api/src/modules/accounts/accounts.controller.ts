@@ -12,15 +12,31 @@ export async function providerStatusHandler(_req: Request, res: Response): Promi
 
 // ── SMS (sms-bus) ────────────────────────────────────────────────────────────
 export async function smsBalanceHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await accountsService.smsBalance() });
+  try {
+    res.json({ data: await accountsService.smsBalance() });
+  } catch (err) {
+    res.json({ data: null, unavailable: true, reason: err instanceof Error ? err.message : 'provider unreachable' });
+  }
 }
 
+// These two are read-only catalog lookups the accounts UI fetches on mount. If
+// the SMS provider is unreachable (no internet / provider down) we degrade
+// gracefully to an empty list + `unavailable` flag instead of a 500, so the page
+// renders a "provider offline" state rather than crashing.
 export async function smsCountriesHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await accountsService.smsCountries() });
+  try {
+    res.json({ data: await accountsService.smsCountries() });
+  } catch (err) {
+    res.json({ data: [], unavailable: true, reason: err instanceof Error ? err.message : 'provider unreachable' });
+  }
 }
 
 export async function smsProjectsHandler(_req: Request, res: Response): Promise<void> {
-  res.json({ data: await accountsService.smsProjects() });
+  try {
+    res.json({ data: await accountsService.smsProjects() });
+  } catch (err) {
+    res.json({ data: [], unavailable: true, reason: err instanceof Error ? err.message : 'provider unreachable' });
+  }
 }
 
 const getNumberSchema = z.object({

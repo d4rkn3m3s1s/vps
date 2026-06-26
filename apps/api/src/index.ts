@@ -11,6 +11,7 @@ import { schedulerService } from './modules/scheduler/scheduler.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
+import { tickTrendsRollup } from './modules/trends/trends.service';
 import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
 import { webhooksService } from './modules/webhooks/webhooks.service';
@@ -76,6 +77,14 @@ async function main(): Promise<void> {
         logger.error('Farm tick failed', { error: error instanceof Error ? error.message : String(error) });
       });
   }, 60_000).unref();
+
+  // Metrics rollup: snapshot today's fleet metrics into the MetricSnapshot
+  // time-series so the Trends page can show historical charts. Every 5 min.
+  setInterval(() => {
+    tickTrendsRollup().catch((error) => {
+      logger.error('Trends rollup failed', { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, 300_000).unref();
 
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
   // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without

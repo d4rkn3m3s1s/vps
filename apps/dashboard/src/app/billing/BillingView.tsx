@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, Zap, ExternalLink } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import type { ReactNode } from 'react';
+import { Check, Zap, ExternalLink, CreditCard, Receipt, Gauge, Users, Smartphone, Clock, DollarSign, Activity } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 
 type PlanCard = {
   key: string;
@@ -25,13 +26,13 @@ type Billing = {
   billingConfigured: boolean;
 };
 
-function UsageBar({ label, used, limit }: { label: string; used: number; limit: number }) {
+function UsageBar({ label, used, limit, icon }: { label: string; used: number; limit: number; icon?: ReactNode }) {
   const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-  const tone = pct >= 100 ? '#EF4444' : pct >= 80 ? '#F59E0B' : '#4F7CFF';
+  const tone = pct >= 100 ? '#EF4444' : pct >= 80 ? '#F59E0B' : '#22C55E';
   return (
     <div className="usage-row">
       <div className="usage-head">
-        <span>{label}</span>
+        <span>{icon ? <span className="holo-stat-ico" style={{ marginRight: 6 }}>{icon}</span> : null}{label}</span>
         <span className="mono">{used} / {limit}</span>
       </div>
       <div className="infra-track">
@@ -108,70 +109,117 @@ export function BillingView() {
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="FATURALANDIRMA"
         title="Faturalama"
         subtitle={billing ? `Mevcut plan: ${billing.planName} · ${billing.status}` : 'Planlar, kullanım & abonelik'}
-        actions={
-          billing?.plan !== 'free' ? (
-            <button type="button" className="btn-ghost" disabled={busy === 'portal'} onClick={openPortal}>
-              <ExternalLink size={15} /> Aboneliği yönet
-            </button>
-          ) : undefined
-        }
+        {...(billing?.plan !== 'free'
+          ? {
+              actions: (
+                <button type="button" className="btn-ghost" disabled={busy === 'portal'} onClick={openPortal}>
+                  <ExternalLink size={15} /> Aboneliği yönet
+                </button>
+              )
+            }
+          : {})}
       />
 
       {!billing?.billingConfigured ? (
-        <div className="panel" style={{ borderColor: 'rgba(245,158,11,0.4)' }}>
-          <p className="helper">
-            ⚠ Stripe henüz yapılandırılmadı. Gerçek ödemeyi etkinleştirmek için API <code>.env</code> dosyasına <code>STRIPE_SECRET_KEY</code>
-            ve fiyat kimliklerini ekleyin. Planlar ve kota uygulaması hâlihazırda çalışmaktadır.
-          </p>
-        </div>
+        <Reveal>
+          <HoloPanel title="Stripe yapılandırması" icon={<CreditCard size={16} />} className="holo-tone-warning" scan={false}>
+            <p className="helper">
+              ⚠ Stripe henüz yapılandırılmadı. Gerçek ödemeyi etkinleştirmek için API <code>.env</code> dosyasına <code>STRIPE_SECRET_KEY</code>
+              ve fiyat kimliklerini ekleyin. Planlar ve kota uygulaması hâlihazırda çalışmaktadır.
+            </p>
+          </HoloPanel>
+        </Reveal>
       ) : null}
 
       {error ? <div className="toast toast-error">{error}</div> : null}
 
       {billing ? (
         <>
-          <div className="panel">
-            <h2>Kullanım</h2>
-            <div className="usage-grid">
-              <UsageBar label="Bulut telefonlar" used={billing.usage.devices.used} limit={billing.usage.devices.limit} />
-              <UsageBar label="Ekip üyeleri" used={billing.usage.members.used} limit={billing.usage.members.limit} />
+          <Reveal>
+            <div className="holo-stats-grid">
+              <HoloStat
+                label="Bulut telefonlar"
+                value={<span className="mono">{billing.usage.devices.used} / {billing.usage.devices.limit}</span>}
+                sub="Aktif cihaz kotası"
+                tone="cyan"
+                icon={<Smartphone size={16} />}
+              />
+              <HoloStat
+                label="Ekip üyeleri"
+                value={<span className="mono">{billing.usage.members.used} / {billing.usage.members.limit}</span>}
+                sub="Koltuk kullanımı"
+                tone="violet"
+                icon={<Users size={16} />}
+              />
+              <HoloStat
+                label="Mevcut plan"
+                value={billing.planName}
+                sub={billing.status}
+                tone="info"
+                icon={<CreditCard size={16} />}
+              />
+              {usage ? (
+                <HoloStat
+                  label="Tahmini maliyet"
+                  value={<span className="mono">{fmtCost(usage.estimatedCostCents)}</span>}
+                  sub={`Son ${usage.days} gün`}
+                  tone="success"
+                  icon={<DollarSign size={16} />}
+                />
+              ) : null}
             </div>
-          </div>
+          </Reveal>
+
+          <Reveal delay={0.05}>
+            <HoloPanel title="Kullanım" icon={<Gauge size={16} />} tilt>
+              <div className="usage-grid">
+                <UsageBar label="Bulut telefonlar" used={billing.usage.devices.used} limit={billing.usage.devices.limit} icon={<Smartphone size={13} />} />
+                <UsageBar label="Ekip üyeleri" used={billing.usage.members.used} limit={billing.usage.members.limit} icon={<Users size={13} />} />
+              </div>
+            </HoloPanel>
+          </Reveal>
 
           {usage ? <UsageMeterPanel usage={usage} /> : null}
 
-          <div className="plans-grid">
-            {billing.plans.map((p) => {
-              const current = p.key === billing.plan;
-              return (
-                <div key={p.key} className={`plan-tier${current ? ' plan-tier-current' : ''}`}>
-                  {current ? <span className="plan-tier-badge">Mevcut</span> : null}
-                  <h3>{p.name}</h3>
-                  <div className="plan-tier-price">{p.priceLabel}</div>
-                  <ul className="plan-tier-features">
-                    {p.features.map((f) => (
-                      <li key={f}><Check size={14} /> {f}</li>
-                    ))}
-                  </ul>
-                  {current ? (
-                    <button type="button" className="btn-ghost" disabled>Mevcut plan</button>
-                  ) : p.purchasable ? (
-                    <button type="button" className="btn-primary" disabled={busy === p.key} onClick={() => upgrade(p.key)}>
-                      <Zap size={15} /> {busy === p.key ? 'Yönlendiriliyor…' : `${p.name} planına yükselt`}
-                    </button>
-                  ) : (
-                    <button type="button" className="btn-ghost" disabled>Portalda düşür</button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <Reveal delay={0.1}>
+            <HoloPanel title="Planlar" icon={<Receipt size={16} />} scan={false}>
+              <div className="plans-grid">
+                {billing.plans.map((p) => {
+                  const current = p.key === billing.plan;
+                  return (
+                    <Holo3D key={p.key} className={`plan-tier${current ? ' plan-tier-current' : ''}`} max={5}>
+                      {current ? <span className="plan-tier-badge">Mevcut</span> : null}
+                      <h3>{p.name}</h3>
+                      <div className="plan-tier-price mono">{p.priceLabel}</div>
+                      <ul className="plan-tier-features">
+                        {p.features.map((f) => (
+                          <li key={f}><Check size={14} /> {f}</li>
+                        ))}
+                      </ul>
+                      {current ? (
+                        <button type="button" className="btn-ghost" disabled>Mevcut plan</button>
+                      ) : p.purchasable ? (
+                        <button type="button" className="btn-primary" disabled={busy === p.key} onClick={() => upgrade(p.key)}>
+                          <Zap size={15} /> {busy === p.key ? 'Yönlendiriliyor…' : `${p.name} planına yükselt`}
+                        </button>
+                      ) : (
+                        <button type="button" className="btn-ghost" disabled>Portalda düşür</button>
+                      )}
+                    </Holo3D>
+                  );
+                })}
+              </div>
+            </HoloPanel>
+          </Reveal>
         </>
       ) : (
-        <div className="panel"><p className="helper">Faturalama bilgileri yükleniyor…</p></div>
+        <HoloPanel title="Faturalama" icon={<CreditCard size={16} />}>
+          <p className="helper">Faturalama bilgileri yükleniyor…</p>
+        </HoloPanel>
       )}
     </PageMotion>
   );
@@ -182,45 +230,66 @@ export function BillingView() {
 function UsageMeterPanel({ usage }: { usage: Usage }) {
   const max = Math.max(1, ...usage.series.map((s) => s.minutes));
   return (
-    <div className="panel">
-      <h2>Kullanım sayacı (son {usage.days} gün)</h2>
-      <div className="meter-stats">
-        <div className="meter-stat">
-          <span className="meter-label">Toplam süre</span>
-          <span className="meter-value">{usage.totalHours} sa<span className="meter-sub"> ({usage.totalMinutes} dk)</span></span>
+    <Reveal delay={0.08}>
+      <HoloPanel title={`Kullanım sayacı (son ${usage.days} gün)`} icon={<Activity size={16} />} tilt>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam süre"
+            value={<span className="mono">{usage.totalHours} sa</span>}
+            sub={`${usage.totalMinutes} dk`}
+            tone="cyan"
+            icon={<Clock size={16} />}
+          />
+          <HoloStat
+            label="Tahmini maliyet"
+            value={<span className="mono">{fmtCost(usage.estimatedCostCents)}</span>}
+            sub="Dönem toplamı"
+            tone="success"
+            icon={<DollarSign size={16} />}
+          />
+          <HoloStat
+            label="Dakika ücreti"
+            value={<span className="mono">{fmtCost(usage.ratePerMinuteCents)}</span>}
+            sub="/dk"
+            tone="violet"
+            icon={<Gauge size={16} />}
+          />
         </div>
-        <div className="meter-stat">
-          <span className="meter-label">Tahmini maliyet</span>
-          <span className="meter-value">{fmtCost(usage.estimatedCostCents)}</span>
-        </div>
-        <div className="meter-stat">
-          <span className="meter-label">Dakika ücreti</span>
-          <span className="meter-value">{fmtCost(usage.ratePerMinuteCents)}<span className="meter-sub">/dk</span></span>
-        </div>
-      </div>
 
-      {usage.series.length > 0 ? (
-        <div className="meter-chart" role="img" aria-label="Günlük kullanım">
-          {usage.series.map((s) => (
-            <span key={s.date} className="meter-bar-wrap" title={`${s.date}: ${s.minutes} dk`}>
-              <span className="meter-bar" style={{ height: `${Math.round((s.minutes / max) * 100)}%` }} />
-            </span>
-          ))}
-        </div>
-      ) : <p className="helper">Henüz ölçülen kullanım yok — cihazlar çalıştıkça birikir.</p>}
+        {usage.series.length > 0 ? (
+          <div className="meter-chart" role="img" aria-label="Günlük kullanım">
+            {usage.series.map((s) => (
+              <span key={s.date} className="meter-bar-wrap" title={`${s.date}: ${s.minutes} dk`}>
+                <span className="meter-bar" style={{ height: `${Math.round((s.minutes / max) * 100)}%` }} />
+              </span>
+            ))}
+          </div>
+        ) : <p className="helper">Henüz ölçülen kullanım yok — cihazlar çalıştıkça birikir.</p>}
 
-      {usage.topDevices.length > 0 ? (
-        <div className="meter-top">
-          <h3 className="meter-top-head">En çok kullanan cihazlar</h3>
-          {usage.topDevices.map((d) => (
-            <div key={d.deviceId} className="meter-top-row">
-              <span className="meter-top-name">{d.name}</span>
-              <span className="meter-top-min mono">{Math.round(d.minutes / 60 * 10) / 10} sa</span>
-              <span className="meter-top-cost">{fmtCost(d.costCents)}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+        {usage.topDevices.length > 0 ? (
+          <div className="profile-table-wrap" style={{ marginTop: 16 }}>
+            <h3 className="meter-top-head">En çok kullanan cihazlar</h3>
+            <table className="profile-table">
+              <thead>
+                <tr>
+                  <th>Cihaz</th>
+                  <th>Süre</th>
+                  <th>Maliyet</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.topDevices.map((d) => (
+                  <tr key={d.deviceId}>
+                    <td className="meter-top-name">{d.name}</td>
+                    <td className="mono">{Math.round(d.minutes / 60 * 10) / 10} sa</td>
+                    <td className="mono">{fmtCost(d.costCents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </HoloPanel>
+    </Reveal>
   );
 }

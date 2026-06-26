@@ -18,7 +18,10 @@ export const JobTypes = [
   'EMULATOR_PULL_FILE',
   'EMULATOR_CLIPBOARD_SET',
   'EMULATOR_CLIPBOARD_GET',
-  'REGISTER_INSTAGRAM'
+  'REGISTER_INSTAGRAM',
+  'REGISTER_WHATSAPP',
+  'WHATSAPP_SEND',
+  'WHATSAPP_READ'
 ] as const;
 
 export type JobStatus = (typeof JobStatuses)[number];

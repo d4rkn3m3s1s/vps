@@ -23,8 +23,11 @@ import {
   pollOtpHandler,
   provisionBatchHandler,
   registerAccountHandler,
+  sendWhatsAppHandler,
+  readWhatsAppHandler,
   cancelAccountHandler,
-  deleteAccountHandler
+  deleteAccountHandler,
+  autoRegisterWhatsAppHandler
 } from './batch.controller';
 
 export const accountsRouter = Router();
@@ -48,6 +51,9 @@ accountsRouter.get('/mail/message/:id', requireApiKey, authenticateJwt, asyncHan
 // Identity (randomuser)
 accountsRouter.post('/identity', requireApiKey, authenticateJwt, asyncHandler(generateIdentityHandler));
 
+// Fully automatic WhatsApp registration (rent number → register → OTP → finish).
+accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, asyncHandler(autoRegisterWhatsAppHandler));
+
 // Batch account farm (GeneratedAccount lifecycle)
 accountsRouter.get('/batch/accounts', requireApiKey, authenticateJwt, asyncHandler(listAccountsHandler));
 accountsRouter.post('/batch', requireApiKey, authenticateJwt, asyncHandler(createBatchHandler));
@@ -55,6 +61,8 @@ accountsRouter.post('/batch/provision', requireApiKey, authenticateJwt, asyncHan
 accountsRouter.get('/batch/accounts/:id', requireApiKey, authenticateJwt, asyncHandler(getAccountHandler));
 accountsRouter.post('/batch/accounts/:id/provision', requireApiKey, authenticateJwt, asyncHandler(provisionAccountHandler));
 accountsRouter.post('/batch/accounts/:id/register', requireApiKey, authenticateJwt, asyncHandler(registerAccountHandler));
+accountsRouter.post('/batch/accounts/:id/whatsapp/send', requireApiKey, authenticateJwt, asyncHandler(sendWhatsAppHandler));
+accountsRouter.post('/batch/accounts/:id/whatsapp/read', requireApiKey, authenticateJwt, asyncHandler(readWhatsAppHandler));
 accountsRouter.get('/batch/accounts/:id/otp', requireApiKey, authenticateJwt, asyncHandler(pollOtpHandler));
 accountsRouter.post('/batch/accounts/:id/cancel', requireApiKey, authenticateJwt, asyncHandler(cancelAccountHandler));
 accountsRouter.delete('/batch/accounts/:id', requireApiKey, authenticateJwt, asyncHandler(deleteAccountHandler));

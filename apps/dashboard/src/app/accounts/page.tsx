@@ -1,4 +1,3 @@
-import { PageHeader } from '../../components/PageHeader';
 import { PageMotion } from '../../components/Motion';
 import { apiCall } from '../../lib/apiClient';
 import { AccountsView } from './AccountsView';
@@ -18,10 +17,6 @@ export default async function AccountsPage() {
 
   return (
     <PageMotion className="page">
-      <PageHeader
-        title="Hesap Üretici"
-        subtitle="WhatsApp / Instagram / Facebook hesapları için tek seferlik numara, e-posta ve sahte kimlik hazırlayın."
-      />
       <AccountsView initialStatus={status} />
     </PageMotion>
   );

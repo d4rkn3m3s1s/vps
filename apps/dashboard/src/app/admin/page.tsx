@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Save } from 'lucide-react';
+import { Save, Building2, ShieldCheck, Users, Smartphone, KeyRound, Clock } from 'lucide-react';
+import { HoloPanel, HoloStat, Reveal } from '../../components/hud';
 
 type Workspace = {
   id: string;
@@ -160,118 +161,161 @@ export default function AdminGeneralPage() {
   const unchanged = !workspace || trimmedName === workspace.name;
   const role = workspace?.role ?? 'viewer';
 
+  // Derive a quick-glance summary of the active security posture for the stat deck.
+  const activePolicies = settings
+    ? POLICY_META.filter((p) => settings[p.key]).length
+    : 0;
+
   return (
-    <section className="section-grid">
-      <div className="panel">
-        <h2>Çalışma Alanı</h2>
-        <div className="admin-form">
-          <div className="admin-field">
-            <label htmlFor="workspace-name">Çalışma alanı adı</label>
-            <input
-              id="workspace-name"
-              className="field-input"
-              type="text"
-              value={name}
-              placeholder="Çalışma alanı adı"
-              disabled={!isAdmin || busy}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </div>
-
-          <div className="row">
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={!isAdmin || busy || !trimmedName || unchanged}
-              onClick={save}
-            >
-              <Save size={15} /> Değişiklikleri kaydet
-            </button>
-            {msg ? <span className="helper">{msg}</span> : null}
-          </div>
-
-          {!isAdmin ? <p className="helper">Ayarları yalnızca çalışma alanı yöneticileri düzenleyebilir.</p> : null}
+    <section className="admin-stack">
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Üyeler"
+            value={<span className="mono">{workspace?.members ?? '—'}</span>}
+            sub="Aktif operatör"
+            tone="cyan"
+            icon={<Users size={16} />}
+          />
+          <HoloStat
+            label="Cihazlar"
+            value={<span className="mono">{workspace?.devices ?? '—'}</span>}
+            sub="Bağlı bulut telefon"
+            tone="cyan"
+            icon={<Smartphone size={16} />}
+          />
+          <HoloStat
+            label="Aktif politika"
+            value={<span className="mono">{settings ? `${activePolicies}/${POLICY_META.length}` : '—'}</span>}
+            sub="Etkin güvenlik kuralı"
+            tone="violet"
+            icon={<ShieldCheck size={16} />}
+          />
+          <HoloStat
+            label="Oturum süresi"
+            value={<span className="mono">{settings?.sessionExpiryHrs ?? '—'}{settings ? ' sa' : ''}</span>}
+            sub="Boştaki oturum geçerliliği"
+            tone="warning"
+            icon={<Clock size={16} />}
+          />
         </div>
+      </Reveal>
 
-        <div className="panel-stack" style={{ marginTop: '1.25rem' }}>
-          <div className="row">
-            <span className="helper">Çalışma alanı kısa adı</span>
-            <span className="mono">{workspace?.slug ?? '—'}</span>
-          </div>
-          <div className="row">
-            <span className="helper">Üyeler</span>
-            <span className="mono">{workspace?.members ?? '—'}</span>
-          </div>
-          <div className="row">
-            <span className="helper">Cihazlar</span>
-            <span className="mono">{workspace?.devices ?? '—'}</span>
-          </div>
-          <div className="row">
-            <span className="helper">Rolünüz</span>
-            <span className={`role-badge role-${role}`}>{role}</span>
-          </div>
-        </div>
-      </div>
+      <div className="holo-grid-2">
+        <Reveal delay={0.05}>
+          <HoloPanel title="Çalışma Alanı" icon={<Building2 size={16} />} tilt>
+            <div className="admin-form">
+              <div className="admin-field">
+                <label htmlFor="workspace-name">Çalışma alanı adı</label>
+                <input
+                  id="workspace-name"
+                  className="field-input"
+                  type="text"
+                  value={name}
+                  placeholder="Çalışma alanı adı"
+                  disabled={!isAdmin || busy}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
 
-      <div className="panel">
-        <h2>Güvenlik politikası</h2>
-        <div className="panel-stack">
-          {POLICY_META.map((policy) => (
-            <div className="admin-toggle-row" key={policy.key}>
-              <span className="toggle-meta">
-                <strong>
-                  {policy.title}{' '}
-                  {policy.enforced ? (
-                    <span className="policy-tag policy-tag-on">Zorunlu</span>
-                  ) : (
-                    <span className="policy-tag">Tavsiye</span>
-                  )}
-                </strong>
-                <span>{policy.description}</span>
-              </span>
-              <input
-                type="checkbox"
-                role="switch"
-                checked={settings ? settings[policy.key] : false}
-                disabled={!isAdmin || !settings || policyBusy === policy.key}
-                onChange={(e) => togglePolicy(policy.key, e.target.checked)}
-                aria-label={policy.title}
-              />
+              <div className="row">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={!isAdmin || busy || !trimmedName || unchanged}
+                  onClick={save}
+                >
+                  <Save size={15} /> Değişiklikleri kaydet
+                </button>
+                {msg ? <span className="helper">{msg}</span> : null}
+              </div>
+
+              {!isAdmin ? <p className="helper">Ayarları yalnızca çalışma alanı yöneticileri düzenleyebilir.</p> : null}
             </div>
-          ))}
 
-          <div className="admin-toggle-row">
-            <span className="toggle-meta">
-              <strong>Oturum süresi (saat)</strong>
-              <span>Boştaki bir oturumun ne kadar süre geçerli kalacağı. (Tavsiye niteliğinde — bir sonraki girişte uygulanır.)</span>
-            </span>
-            <input
-              className="field-input"
-              style={{ width: '5rem' }}
-              type="number"
-              min={1}
-              max={720}
-              value={settings?.sessionExpiryHrs ?? 12}
-              disabled={!isAdmin || !settings || policyBusy === 'sessionExpiryHrs'}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (settings) setSettings({ ...settings, sessionExpiryHrs: v });
-              }}
-              onBlur={(e) => void saveSessionExpiry(Number(e.target.value))}
-              aria-label="Oturum süresi saat"
-            />
-          </div>
-        </div>
-        {!isAdmin ? (
-          <p className="helper" style={{ marginTop: '0.75rem' }}>
-            Güvenlik politikasını yalnızca çalışma alanı yöneticileri değiştirebilir.
-          </p>
-        ) : (
-          <p className="helper" style={{ marginTop: '0.75rem' }}>
-            <strong>Zorunlu</strong> politikalar anında yürürlüğe girer. Tavsiye niteliğindekiler bir sonraki girişte veya
-            parola sıfırlamada uygulanır.
-          </p>
-        )}
+            <div className="panel-stack" style={{ marginTop: '1.25rem' }}>
+              <div className="row">
+                <span className="helper">Çalışma alanı kısa adı</span>
+                <span className="mono">{workspace?.slug ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="helper">Üyeler</span>
+                <span className="mono">{workspace?.members ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="helper">Cihazlar</span>
+                <span className="mono">{workspace?.devices ?? '—'}</span>
+              </div>
+              <div className="row">
+                <span className="helper">Rolünüz</span>
+                <span className={`role-badge role-${role}`}>{role}</span>
+              </div>
+            </div>
+          </HoloPanel>
+        </Reveal>
+
+        <Reveal delay={0.1}>
+          <HoloPanel title="Güvenlik Politikası" icon={<ShieldCheck size={16} />} tilt>
+            <div className="panel-stack">
+              {POLICY_META.map((policy) => (
+                <div className="admin-toggle-row" key={policy.key}>
+                  <span className="toggle-meta">
+                    <strong>
+                      {policy.title}{' '}
+                      {policy.enforced ? (
+                        <span className="policy-tag policy-tag-on">Zorunlu</span>
+                      ) : (
+                        <span className="policy-tag">Tavsiye</span>
+                      )}
+                    </strong>
+                    <span>{policy.description}</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    className="admin-switch"
+                    checked={settings ? settings[policy.key] : false}
+                    disabled={!isAdmin || !settings || policyBusy === policy.key}
+                    onChange={(e) => togglePolicy(policy.key, e.target.checked)}
+                    aria-label={policy.title}
+                  />
+                </div>
+              ))}
+
+              <div className="admin-toggle-row">
+                <span className="toggle-meta">
+                  <strong><KeyRound size={13} className="mono" /> Oturum süresi (saat)</strong>
+                  <span>Boştaki bir oturumun ne kadar süre geçerli kalacağı. (Tavsiye niteliğinde — bir sonraki girişte uygulanır.)</span>
+                </span>
+                <input
+                  className="field-input"
+                  style={{ width: '5rem' }}
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={settings?.sessionExpiryHrs ?? 12}
+                  disabled={!isAdmin || !settings || policyBusy === 'sessionExpiryHrs'}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (settings) setSettings({ ...settings, sessionExpiryHrs: v });
+                  }}
+                  onBlur={(e) => void saveSessionExpiry(Number(e.target.value))}
+                  aria-label="Oturum süresi saat"
+                />
+              </div>
+            </div>
+            {!isAdmin ? (
+              <p className="helper" style={{ marginTop: '0.75rem' }}>
+                Güvenlik politikasını yalnızca çalışma alanı yöneticileri değiştirebilir.
+              </p>
+            ) : (
+              <p className="helper" style={{ marginTop: '0.75rem' }}>
+                <strong>Zorunlu</strong> politikalar anında yürürlüğe girer. Tavsiye niteliğindekiler bir sonraki girişte veya
+                parola sıfırlamada uygulanır.
+              </p>
+            )}
+          </HoloPanel>
+        </Reveal>
       </div>
     </section>
   );

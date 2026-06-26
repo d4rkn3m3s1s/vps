@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Shield, Trash2, UserPlus } from 'lucide-react';
+import { Shield, Trash2, UserPlus, Users, Crown, Building2, Mail } from 'lucide-react';
+import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
 
 type Member = { id: string; userId: string; email: string; role: string };
 type Workspace = {
@@ -21,12 +22,19 @@ export default function MembersPage() {
   const [email, setEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('operator');
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
+  const [msgKind, setMsgKind] = useState<'ok' | 'err'>('ok');
 
   const loadMembers = useCallback(async (wsId: string) => {
-    const res = await fetch(`/api/workspaces/${wsId}/members`);
-    const json = await res.json();
-    if (Array.isArray(json.data)) setMembers(json.data as Member[]);
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/workspaces/${wsId}/members`);
+      const json = await res.json();
+      if (Array.isArray(json.data)) setMembers(json.data as Member[]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -44,15 +52,18 @@ export default function MembersPage() {
         if (ws) {
           setWorkspace(ws);
           void loadMembers(ws.id);
+        } else {
+          setLoading(false);
         }
       } catch {
-        /* ignore */
+        setLoading(false);
       }
     })();
   }, [loadMembers]);
 
-  function flash(text: string) {
+  function flash(text: string, kind: 'ok' | 'err' = 'ok') {
     setMsg(text);
+    setMsgKind(kind);
     setTimeout(() => setMsg(null), 3000);
   }
 
@@ -70,7 +81,7 @@ export default function MembersPage() {
       flash(`${member.email} artık ${newRole}`);
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Rol değiştirilemedi');
+      flash(e instanceof Error ? e.message : 'Rol değiştirilemedi', 'err');
     } finally {
       setBusy(false);
     }
@@ -91,7 +102,7 @@ export default function MembersPage() {
       flash(`${memberEmail} çıkarıldı`);
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Üye çıkarılamadı');
+      flash(e instanceof Error ? e.message : 'Üye çıkarılamadı', 'err');
     } finally {
       setBusy(false);
     }
@@ -112,7 +123,7 @@ export default function MembersPage() {
       setEmail('');
       await loadMembers(workspace.id);
     } catch (e) {
-      flash(e instanceof Error ? e.message : 'Davet başarısız oldu');
+      flash(e instanceof Error ? e.message : 'Davet başarısız oldu', 'err');
     } finally {
       setBusy(false);
     }
@@ -122,90 +133,171 @@ export default function MembersPage() {
   const adminCount = members.filter((m) => m.role === 'admin').length;
 
   return (
-    <div className="panel-stack">
-      <div className="panel">
-        {workspace ? (
-          <div className="row">
-            <span className="helper">Çalışma alanı</span>
-            <span className="mono">{workspace.name}</span>
-          </div>
-        ) : null}
-        <div className="row">
-          <span className="helper">
-            {members.length} üye · {adminCount} yönetici
-          </span>
+    <section className="admin-stack">
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam üye"
+            value={<span className="mono">{members.length}</span>}
+            sub="aktif erişim"
+            tone="cyan"
+            icon={<Users size={16} />}
+          />
+          <HoloStat
+            label="Yöneticiler"
+            value={<span className="mono">{adminCount}</span>}
+            sub="tam yetki"
+            tone="violet"
+            icon={<Crown size={16} />}
+          />
+          <HoloStat
+            label="Bağlı cihaz"
+            value={<span className="mono">{workspace?.devices ?? 0}</span>}
+            sub="alan envanteri"
+            tone="info"
+            icon={<Shield size={16} />}
+          />
         </div>
+      </Reveal>
 
-        {members.map((m) => (
-          <div className="row" key={m.id}>
-            <span className="mono">{m.email}</span>
-            <span className="member-row-right">
-              <span className={`role-badge role-${m.role}`}>
-                <Shield size={12} style={{ marginRight: 4 }} />
-                {m.role}
+      <Reveal delay={0.05}>
+        <HoloPanel
+          title="Üye listesi"
+          icon={<Users size={16} />}
+          actions={
+            <div className="filter-row">
+              {workspace ? (
+                <span className="status-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Building2 size={13} />
+                  <span className="mono">{workspace.name}</span>
+                </span>
+              ) : null}
+              <span className="helper mono">
+                {members.length} üye · {adminCount} yönetici
               </span>
+            </div>
+          }
+        >
+          <div className="profile-table-wrap">
+            <table className="profile-table">
+              <thead>
+                <tr>
+                  <th>Kullanıcı</th>
+                  <th>Rol</th>
+                  <th>Atama</th>
+                  <th style={{ textAlign: 'right' }}>İşlem</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  Array.from({ length: 4 }).map((_, i) => (
+                    <tr key={`sk-${i}`}>
+                      <td colSpan={4}>
+                        <div className="skeleton skeleton-row" />
+                      </td>
+                    </tr>
+                  ))
+                ) : members.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="empty-cell">
+                      Henüz üye yok
+                    </td>
+                  </tr>
+                ) : (
+                  members.map((m) => (
+                    <tr key={m.id}>
+                      <td>
+                        <span className="mono">{m.email}</span>
+                      </td>
+                      <td>
+                        <span
+                          className={`role-badge role-${m.role}`}
+                          style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                        >
+                          <Shield size={12} />
+                          {m.role}
+                        </span>
+                      </td>
+                      <td>
+                        <select
+                          className="inline-select"
+                          value={m.role}
+                          disabled={!isAdmin || busy}
+                          onChange={(e) => void changeRole(m, e.target.value)}
+                          aria-label={`${m.email} için rol`}
+                        >
+                          {ROLES.map((r) => (
+                            <option key={r} value={r}>
+                              {r}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          disabled={!isAdmin || busy}
+                          onClick={() => void removeMember(m.id, m.email)}
+                          aria-label={`${m.email} kullanıcısını çıkar`}
+                          title="Üyeyi çıkar"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </HoloPanel>
+      </Reveal>
+
+      {isAdmin ? (
+        <Reveal delay={0.1}>
+          <HoloPanel title="Yeni üye davet et" icon={<UserPlus size={16} />}>
+            <div className="member-invite">
+              <input
+                className="field-input"
+                type="email"
+                placeholder="ekip-uyesi@sirket.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
               <select
-                className="role-select"
-                value={m.role}
-                disabled={!isAdmin || busy}
-                onChange={(e) => void changeRole(m, e.target.value)}
-                aria-label={`${m.email} için rol`}
+                className="inline-select"
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value)}
               >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
+                <option value="admin">Yönetici</option>
+                <option value="operator">Operatör</option>
+                <option value="viewer">İzleyici</option>
               </select>
               <button
                 type="button"
-                className="icon-btn"
-                disabled={!isAdmin || busy}
-                onClick={() => void removeMember(m.id, m.email)}
-                aria-label={`${m.email} kullanıcısını çıkar`}
-                title="Üyeyi çıkar"
+                className="btn-primary"
+                disabled={busy || !email.trim()}
+                onClick={() => void invite()}
               >
-                <Trash2 size={14} />
+                <UserPlus size={15} /> Davet et
               </button>
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {isAdmin ? (
-        <div className="panel">
-          <div className="member-invite">
-            <input
-              className="field-input"
-              type="email"
-              placeholder="ekip-uyesi@sirket.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-            <select
-              className="inline-select"
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value)}
-            >
-              <option value="admin">Yönetici</option>
-              <option value="operator">Operatör</option>
-              <option value="viewer">İzleyici</option>
-            </select>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy || !email.trim()}
-              onClick={() => void invite()}
-            >
-              <UserPlus size={15} /> Davet et
-            </button>
-          </div>
-        </div>
+            </div>
+          </HoloPanel>
+        </Reveal>
       ) : (
         <p className="helper">Üyeleri yalnızca çalışma alanı yöneticileri yönetebilir.</p>
       )}
 
-      {msg ? <p className="helper">{msg}</p> : null}
-    </div>
+      {msg ? (
+        <p
+          className={`form-status ${msgKind === 'ok' ? 'form-status--ok' : 'form-status--err'}`}
+          style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          <Mail size={13} />
+          {msg}
+        </p>
+      ) : null}
+    </section>
   );
 }

@@ -1,0 +1,2 @@
+/mnt/c/Yeni klasör/vps/deploy/local-test/_dispatch-and-run.sh: line 28: 32304 Done                    echo "$SUDO_PASS"
+     32305 Killed                  | sudo -S pkill -9 -f 'node agent.mjs' 2> /dev/null

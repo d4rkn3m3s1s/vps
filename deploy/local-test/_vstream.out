@@ -1,0 +1,5 @@
+config=androidboot.use_redroid_stream=1] 
+booted (1)
+input_devices=event0
+net=
+host_route=

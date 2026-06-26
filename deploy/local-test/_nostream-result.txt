@@ -1,0 +1,8 @@
+uinput: crw------- 1 root root 10, 223 Jun 25 16:38 /dev/uinput
+recreated (no stream flag)
+route OK via 172.28.6.1
+booted (5)
+input devices: 
+focus_shown=mInputShown=true
+WORKS99_landed=1
+phone_net=0

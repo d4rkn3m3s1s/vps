@@ -1,0 +1,7 @@
+device=cmqlrf4ni000gj50fjimgvk4u number=905457438530 job=cmqtno2s3000bj5htptg73xdq
+[agent 2026-06-25T15:27:05.524Z] starting — polling http://localhost:4000 every 3000ms
+[agent 2026-06-25T15:27:06.167Z] stream channel connected
+[agent 2026-06-25T15:27:06.173Z] claimed job cmqtno2s3000bj5htptg73xdq (REGISTER_WHATSAPP) -> 127.0.0.1:5555
+[agent 2026-06-25T15:28:43.114Z] completed cmqtno2s3000bj5htptg73xdq
+[agent 2026-06-25T15:29:37.252Z] shutting down.
+[agent 2026-06-25T15:35:58.717Z] stream start cmqlrf4ni000gj50fjimgvk4u @ 20fps cap

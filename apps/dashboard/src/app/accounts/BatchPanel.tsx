@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus } from 'lucide-react';
+import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus, MessageCircle, X, Send, Inbox } from 'lucide-react';
 
 type Account = {
   id: string;
@@ -63,6 +63,13 @@ export function BatchPanel() {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // WhatsApp messaging modal: which account, recipient, body, last-read result.
+  const [waChat, setWaChat] = useState<Account | null>(null);
+  const [waTo, setWaTo] = useState('');
+  const [waMsg, setWaMsg] = useState('');
+  const [waRead, setWaRead] = useState<string[] | null>(null);
+  const [waBusy, setWaBusy] = useState<'send' | 'read' | null>(null);
+  const [waErr, setWaErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -143,6 +150,69 @@ export function BatchPanel() {
     catch { /* ignore */ } finally { setBusy(null); }
   }
 
+  function openWaChat(a: Account) {
+    setWaChat(a); setWaTo(''); setWaMsg(''); setWaRead(null); setWaErr(null);
+  }
+
+  // Dispatch a WhatsApp send job; the agent opens the wa.me chat and taps Send.
+  async function waSend() {
+    if (!waChat) return;
+    if (!waTo.trim() || !waMsg.trim()) { setWaErr('Numara ve mesaj gerekli'); return; }
+    setWaBusy('send'); setWaErr(null);
+    try {
+      const r = await fetch(`/api/accounts/batch/accounts/${waChat.id}/whatsapp/send`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: waTo.replace(/[^\d]/g, ''), message: waMsg })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.data?.message || 'Mesaj gönderilemedi');
+      flash('Mesaj gönderme işi cihaza gönderildi.');
+      setWaMsg('');
+    } catch (e) { setWaErr(e instanceof Error ? e.message : 'Hata'); }
+    finally { setWaBusy(null); }
+  }
+
+  // Dispatch a WhatsApp read job, then poll the resulting job for the messages.
+  async function waReadMsgs() {
+    if (!waChat) return;
+    if (!waTo.trim()) { setWaErr('Okumak için numara girin'); return; }
+    setWaBusy('read'); setWaErr(null); setWaRead(null);
+    try {
+      const r = await fetch(`/api/accounts/batch/accounts/${waChat.id}/whatsapp/read`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: waTo.replace(/[^\d]/g, '') })
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.data?.message || 'Okuma başlatılamadı');
+      const jobId = j.data?.job?.id as string | undefined;
+      if (!jobId) { flash('Okuma işi gönderildi.'); return; }
+      // Poll the job until the agent reports back with the messages.
+      const msgs = await pollJobMessages(jobId);
+      setWaRead(msgs);
+      if (msgs.length === 0) flash('Okundu — görünür mesaj yok.');
+    } catch (e) { setWaErr(e instanceof Error ? e.message : 'Hata'); }
+    finally { setWaBusy(null); }
+  }
+
+  // Poll a job's result for up to ~30s; returns the messages array when ready.
+  async function pollJobMessages(jobId: string): Promise<string[]> {
+    for (let i = 0; i < 15; i++) {
+      await new Promise((res) => setTimeout(res, 2000));
+      try {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const j = await r.json();
+        const job = j.data;
+        if (job?.status === 'COMPLETED') {
+          const result = job.result ?? job.output ?? {};
+          const msgs = Array.isArray(result.messages) ? result.messages : [];
+          return msgs as string[];
+        }
+        if (job?.status === 'FAILED') throw new Error(job.error || 'İş başarısız');
+      } catch { /* keep polling */ }
+    }
+    return [];
+  }
+
   return (
     <section className="panel" style={{ marginTop: 16 }}>
       {toast ? <div className="toast toast-ok">{toast}</div> : null}
@@ -175,7 +245,7 @@ export function BatchPanel() {
         </label>
       </div>
       <p className="helper" style={{ marginTop: 4 }}>
-        Not: Otomatik “Cihazda kayıt” şu an <strong>Instagram</strong> (e-posta ile) içindir. WhatsApp/numara akışı SMS ücreti + manuel onay gerektirir.
+        Not: Otomatik “Cihazda kayıt” <strong>Instagram</strong> (e-posta ile) ve <strong>WhatsApp</strong> (numara + SMS OTP ile) için çalışır. WhatsApp kaydı gerçek SMS doğrulaması ister; emülatörde cihaz bütünlük kontrolüne takılabilir, en yüksek başarı gerçek ARM cihazdadır. Kayıt sonrası WhatsApp hesaplarından <strong>mesaj gönderip okuyabilirsiniz</strong>.
       </p>
 
       <div className="wf-actions" style={{ marginTop: 8, gap: 8 }}>
@@ -216,10 +286,16 @@ export function BatchPanel() {
                       {busy === a.id ? <Loader2 size={11} className="spin" /> : <Play size={11} />} Hazırla
                     </button>
                   ) : null}
-                  {/* On-device signup — Instagram only (email-based, automated). */}
-                  {a.platform === 'instagram' && a.emailAddress && a.status !== 'ACTIVE' ? (
+                  {/* On-device signup — Instagram (email) + WhatsApp (phone+OTP). */}
+                  {((a.platform === 'instagram' && a.emailAddress) || (a.platform === 'whatsapp' && a.phoneNumber)) && a.status !== 'ACTIVE' ? (
                     <button type="button" className="btn-ghost btn-xs" disabled={busy === a.id || !device} onClick={() => register(a.id)} title="Cihazda kayıt aç">
                       {busy === a.id ? <Loader2 size={11} className="spin" /> : <UserPlus size={11} />} Cihazda aç
+                    </button>
+                  ) : null}
+                  {/* WhatsApp messaging — once the account exists on a device. */}
+                  {a.platform === 'whatsapp' && (a.status === 'ACTIVE' || a.status === 'REGISTERING') ? (
+                    <button type="button" className="btn-ghost btn-xs" onClick={() => openWaChat(a)} title="Mesaj gönder / oku">
+                      <MessageCircle size={11} /> Mesaj
                     </button>
                   ) : null}
                   <button type="button" className="btn-ghost btn-xs" disabled={busy === a.id} onClick={() => remove(a.id)} title="Sil"><Trash2 size={11} /></button>
@@ -229,6 +305,65 @@ export function BatchPanel() {
           </tbody>
         </table>
       </div>
+
+      {/* WhatsApp messaging modal */}
+      {waChat ? (
+        <div className="modal-overlay" onClick={() => setWaChat(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h3 style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <MessageCircle size={16} /> WhatsApp — {waChat.fullName || waChat.phoneNumber || waChat.id}
+              </h3>
+              <button type="button" className="modal-close" onClick={() => setWaChat(null)}><X size={16} /></button>
+            </header>
+
+            <div style={{ padding: '4px 0' }}>
+              <p className="helper" style={{ marginBottom: 10 }}>
+                Gönderen hesap numarası: <span className="mono">{waChat.phoneNumber ?? '—'}</span>.
+                Mesaj/okuma işi bağlı cihazda çalışır (wa.me bağlantısıyla, kişi kayıtlı olmasa da).
+              </p>
+
+              <label className="field" style={{ marginBottom: 8 }}>
+                <span>Alıcı numara (ülke kodu ile, + olmadan)</span>
+                <input className="field-input" placeholder="905xxxxxxxxx" value={waTo}
+                  onChange={(e) => setWaTo(e.target.value)} />
+              </label>
+
+              <label className="field" style={{ marginBottom: 8 }}>
+                <span>Mesaj</span>
+                <textarea className="field-input" rows={3} placeholder="Merhaba…" value={waMsg}
+                  onChange={(e) => setWaMsg(e.target.value)} />
+              </label>
+
+              {waErr ? <p className="field-error">{waErr}</p> : null}
+
+              <div className="wf-actions" style={{ gap: 8, marginTop: 6 }}>
+                <button type="button" className="btn-primary" disabled={waBusy !== null} onClick={waSend}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  {waBusy === 'send' ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Gönder
+                </button>
+                <button type="button" className="btn-ghost" disabled={waBusy !== null} onClick={waReadMsgs}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  {waBusy === 'read' ? <Loader2 size={14} className="spin" /> : <Inbox size={14} />} Mesajları oku
+                </button>
+              </div>
+
+              {waRead ? (
+                <div className="panel" style={{ marginTop: 12, maxHeight: 220, overflowY: 'auto' }}>
+                  <p className="helper" style={{ marginBottom: 6 }}>Okunan mesajlar ({waRead.length}):</p>
+                  {waRead.length === 0 ? <p className="helper">— görünür mesaj yok —</p> :
+                    waRead.map((m, i) => (
+                      <div key={i} className="row" style={{ alignItems: 'flex-start' }}>
+                        <span className="helper mono" style={{ minWidth: 22 }}>{i + 1}</span>
+                        <span style={{ whiteSpace: 'pre-wrap' }}>{m}</span>
+                      </div>
+                    ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

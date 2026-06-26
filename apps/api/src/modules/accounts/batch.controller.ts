@@ -50,10 +50,53 @@ export async function registerAccountHandler(req: Request, res: Response): Promi
   res.json({ data: await batchService.registerAccount(getWorkspaceId(req), id(req), deviceId) });
 }
 
+const sendWhatsAppSchema = z.object({
+  to: z.string().min(5),
+  message: z.string().min(1).max(4096),
+  deviceId: z.string().min(1).optional()
+});
+export async function sendWhatsAppHandler(req: Request, res: Response): Promise<void> {
+  const input = sendWhatsAppSchema.parse(req.body);
+  res.json({ data: await batchService.sendWhatsApp(getWorkspaceId(req), id(req), input) });
+}
+
+const readWhatsAppSchema = z
+  .object({
+    from: z.string().min(1).optional(),
+    to: z.string().min(5).optional(),
+    deviceId: z.string().min(1).optional()
+  })
+  .refine((v) => v.from || v.to, { message: 'from veya to gerekli' });
+export async function readWhatsAppHandler(req: Request, res: Response): Promise<void> {
+  const input = readWhatsAppSchema.parse(req.body);
+  res.json({ data: await batchService.readWhatsApp(getWorkspaceId(req), id(req), input) });
+}
+
 export async function cancelAccountHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.cancel(getWorkspaceId(req), id(req)) });
 }
 
 export async function deleteAccountHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.remove(getWorkspaceId(req), id(req)) });
+}
+
+// Fully automatic WhatsApp registration: rent number → register → poll OTP →
+// enter OTP → finish, all server-side. Long-running (awaits on-device jobs +
+// polls the SMS up to ~3 min) — the HTTP call blocks until the pipeline ends.
+const autoRegisterSchema = z.object({
+  deviceId: z.string().min(1),
+  fullName: z.string().min(1).max(80).optional(),
+  countryId: z.coerce.number().int().positive().optional(),
+  batchId: z.string().min(1).optional(),
+  provider: z.enum(['sms-bus', '5sim']).optional()
+});
+export async function autoRegisterWhatsAppHandler(req: Request, res: Response): Promise<void> {
+  const input = autoRegisterSchema.parse(req.body);
+  const result = await batchService.autoRegisterWhatsApp(getWorkspaceId(req), input.deviceId, {
+    ...(input.fullName ? { fullName: input.fullName } : {}),
+    ...(input.countryId ? { countryId: input.countryId } : {}),
+    ...(input.batchId ? { batchId: input.batchId } : {}),
+    ...(input.provider ? { provider: input.provider } : {})
+  });
+  res.json({ data: result });
 }

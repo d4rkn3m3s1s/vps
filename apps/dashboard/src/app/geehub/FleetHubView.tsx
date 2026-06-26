@@ -1,9 +1,21 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader } from '../../components/PageHeader';
-import { PageMotion, StaggerGrid, MotionItem } from '../../components/Motion';
+import {
+  LayoutGrid,
+  Package,
+  Workflow,
+  Plug,
+  Download,
+  Sparkles,
+  Smartphone,
+  Boxes,
+  Tag,
+  X
+} from 'lucide-react';
+import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 
 export type Listing = {
   id: string;
@@ -22,6 +34,12 @@ type Device = { id: string; name: string; status: string };
 
 const CATEGORIES = ['All', 'TEMPLATE', 'AUTOMATION', 'INTEGRATION'];
 const LABEL: Record<string, string> = { TEMPLATE: 'Şablon', AUTOMATION: 'Otomasyon', INTEGRATION: 'Entegrasyon' };
+const CAT_ICON: Record<string, ReactNode> = {
+  All: <LayoutGrid size={14} />,
+  TEMPLATE: <Package size={14} />,
+  AUTOMATION: <Workflow size={14} />,
+  INTEGRATION: <Plug size={14} />
+};
 
 export function FleetHubView({ listings }: { listings: Listing[] }) {
   const router = useRouter();
@@ -95,59 +113,140 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
     setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
   }
 
+  // Derived summary metrics (no new fetches — pure projections of state/props).
+  const totalInstalls = useMemo(() => listings.reduce((sum, l) => sum + l.installs, 0), [listings]);
+  const apkCount = useMemo(() => listings.filter((l) => l.apkUrl && l.packageName).length, [listings]);
+
   return (
     <PageMotion className="page">
-      <PageHeader title="FleetHub" subtitle="Şablonlar, otomasyonlar ve entegrasyonlar için pazar yeri." />
+      <HoloHeader
+        eyebrow="FİLO MERKEZİ"
+        title="FleetHub"
+        subtitle="Şablonlar, otomasyonlar ve entegrasyonlar için pazar yeri."
+      />
 
-      <div className="tab-row">
-        {CATEGORIES.map((c) => (
-          <button key={c} type="button" className={c === cat ? 'tab tab-active' : 'tab'} onClick={() => setCat(c)}>
-            {c === 'All' ? 'Tümü' : LABEL[c]}
-          </button>
-        ))}
-      </div>
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            tone="cyan"
+            icon={<Boxes size={16} />}
+            label="Toplam Modül"
+            value={<span className="mono">{listings.length}</span>}
+            sub="Kataloglanmış öğe"
+          />
+          <HoloStat
+            tone="cyan"
+            icon={<LayoutGrid size={16} />}
+            label="Görüntülenen"
+            value={<span className="mono">{filtered.length}</span>}
+            sub={cat === 'All' ? 'Tüm kategoriler' : LABEL[cat] ?? cat}
+          />
+          <HoloStat
+            tone="violet"
+            icon={<Download size={16} />}
+            label="Toplam Kurulum"
+            value={<span className="mono">{totalInstalls.toLocaleString()}</span>}
+            sub="Filo geneli"
+          />
+          <HoloStat
+            tone="success"
+            icon={<Smartphone size={16} />}
+            label="Kurulabilir APK"
+            value={<span className="mono">{apkCount}</span>}
+            sub={`${devices.length} cihaz hedef`}
+          />
+        </div>
+      </Reveal>
 
-      <StaggerGrid className="app-grid">
-        {filtered.map((l) => (
-          <MotionItem className="app-card" key={l.id}>
-            <div className="app-icon">{l.icon}</div>
-            <div className="app-body">
-              <div className="row">
-                <strong>{l.title}</strong>
-                <span className="badge">{LABEL[l.category] ?? l.category}</span>
-              </div>
-              <p className="helper">{l.description}</p>
-              <div className="row" style={{ marginTop: '8px' }}>
-                <span className="helper mono">↓ {l.installs.toLocaleString()} kurulum</span>
-                <span className="price-tag">{l.price}</span>
-              </div>
-            </div>
-            <button type="button" className="btn-ghost" disabled={busy === l.id} onClick={() => onInstallClick(l)}>
-              {busy === l.id ? '…' : l.apkUrl ? 'Cihaza Kur' : 'Kur'}
-            </button>
-          </MotionItem>
-        ))}
-      </StaggerGrid>
+      <Reveal delay={0.05}>
+        <HoloPanel title="Pazar Yeri" icon={<Sparkles size={16} />} scan>
+          <HoloTabs
+            tabs={CATEGORIES.map((c) => ({
+              key: c,
+              label: c === 'All' ? 'Tümü' : LABEL[c] ?? c,
+              ...(CAT_ICON[c] ? { icon: CAT_ICON[c] } : {})
+            }))}
+            active={cat}
+            onChange={(c) => setCat(c)}
+          />
+
+          <div className="holo-grid-auto" style={{ marginTop: '16px' }}>
+            {filtered.map((l) => (
+              <Holo3D className="holo-card" key={l.id}>
+                <div className="holo-card-top">
+                  <div className="holo-card-ico">{l.icon}</div>
+                  <span className="status-chip">{LABEL[l.category] ?? l.category}</span>
+                </div>
+                <div className="holo-card-body">
+                  <strong className="holo-card-title">{l.title}</strong>
+                  <p className="helper">{l.description}</p>
+                </div>
+                <div className="holo-card-meta field-row">
+                  <span className="helper mono">
+                    <Download size={12} style={{ verticalAlign: '-1px', marginRight: '4px' }} />
+                    {l.installs.toLocaleString()} kurulum
+                  </span>
+                  <span className="status-chip mono">
+                    <Tag size={12} style={{ verticalAlign: '-1px', marginRight: '4px' }} />
+                    {l.price}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={busy === l.id}
+                  onClick={() => onInstallClick(l)}
+                >
+                  {busy === l.id ? '…' : l.apkUrl ? (
+                    <>
+                      <Smartphone size={14} style={{ verticalAlign: '-2px', marginRight: '6px' }} />
+                      Cihaza Kur
+                    </>
+                  ) : (
+                    <>
+                      <Download size={14} style={{ verticalAlign: '-2px', marginRight: '6px' }} />
+                      Kur
+                    </>
+                  )}
+                </button>
+              </Holo3D>
+            ))}
+            {filtered.length === 0 ? <div className="table-empty">Bu kategoride modül yok.</div> : null}
+          </div>
+        </HoloPanel>
+      </Reveal>
 
       {modalListing ? (
         <div className="modal-overlay" onClick={() => setModalListing(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <h2>{modalListing.title} — cihaz seç</h2>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2 className="holo-panel-title">
+                <span className="holo-panel-ico"><Smartphone size={16} /></span>
+                {modalListing.title} — cihaz seç
+              </h2>
+              <button type="button" className="modal-close" onClick={() => setModalListing(null)} aria-label="Kapat">
+                <X size={16} />
+              </button>
+            </div>
             <p className="helper">Bu uygulamayı hangi cihazlara kuralım?</p>
-            <div className="device-pick-list">
+            <div className="holo-grid-2" style={{ marginTop: '12px' }}>
               {devices.length === 0 ? (
-                <p className="helper">Cihaz yok.</p>
+                <p className="helper table-empty">Cihaz yok.</p>
               ) : (
-                devices.map((d) => (
-                  <label key={d.id} className="device-pick-item">
-                    <input type="checkbox" checked={selected.includes(d.id)} onChange={() => toggleDevice(d.id)} />
-                    <span>{d.name}</span>
-                    <span className={`status-dot status-${d.status.toLowerCase()}`} />
-                  </label>
-                ))
+                devices.map((d) => {
+                  const st = d.status.toLowerCase();
+                  const dotCls = st === 'online' ? 'dot-online' : st === 'offline' ? 'dot-offline' : 'dot-error';
+                  return (
+                    <label key={d.id} className="field-row" style={{ cursor: 'pointer', gap: '10px' }}>
+                      <input type="checkbox" checked={selected.includes(d.id)} onChange={() => toggleDevice(d.id)} />
+                      <span style={{ flex: 1 }}>{d.name}</span>
+                      <span className={`dot ${dotCls}`} />
+                    </label>
+                  );
+                })
               )}
             </div>
-            <div className="modal-actions">
+            <div className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => setModalListing(null)}>
                 İptal
               </button>
@@ -157,6 +256,7 @@ export function FleetHubView({ listings }: { listings: Listing[] }) {
                 disabled={selected.length === 0 || busy === modalListing.id}
                 onClick={() => postInstall(modalListing, selected)}
               >
+                <Download size={14} style={{ verticalAlign: '-2px', marginRight: '6px' }} />
                 Kur ({selected.length})
               </button>
             </div>

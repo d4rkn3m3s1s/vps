@@ -1,5 +1,8 @@
 import type { Express } from 'express';
 import { accountsRouter } from '../modules/accounts/accounts.routes';
+import { trendsRouter } from '../modules/trends/trends.routes';
+import { costsRouter } from '../modules/costs/costs.routes';
+import { notificationsRouter } from '../modules/notifications/notifications.routes';
 import { agentRouter } from '../modules/agent/agent.routes';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { alertsRouter } from '../modules/alerts/alerts.routes';
@@ -81,4 +84,7 @@ export function registerRoutes(app: Express): void {
   app.use('/usage', usageRouter);
   app.use('/resources', resourcesRouter);
   app.use('/accounts', accountsRouter);
+  app.use('/trends', trendsRouter);
+  app.use('/costs', costsRouter);
+  app.use('/notifications', notificationsRouter);
 }

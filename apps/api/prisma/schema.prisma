@@ -42,6 +42,9 @@ enum JobType {
   EMULATOR_CLIPBOARD_SET
   EMULATOR_CLIPBOARD_GET
   REGISTER_INSTAGRAM
+  REGISTER_WHATSAPP
+  WHATSAPP_SEND
+  WHATSAPP_READ
 }
 
 enum HostStatus {
@@ -69,6 +72,9 @@ model Host {
   // provider-side instance/contract id so we can manage (destroy) it later.
   provider       String?
   vastInstanceId String?
+  // Hourly USD cost locked at provision time (e.g. Vast.ai dph_total) so the cost
+  // panel can compute total GPU spend without re-querying the provider.
+  costPerHour    Float?
   workspaceId String?
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -180,6 +186,47 @@ model Workspace {
   scheduledPosts ScheduledPost[]
   generatedAccounts GeneratedAccount[]
   settings      WorkspaceSettings?
+  metricSnapshots MetricSnapshot[]
+  notificationChannels NotificationChannel[]
+}
+
+// Daily time-series rollup of fleet metrics — one row per workspace per UTC day.
+// Written by the metrics rollup ticker; read by the trend-analytics endpoint.
+model MetricSnapshot {
+  id                String   @id @default(cuid())
+  workspaceId       String?
+  day               DateTime @db.Date
+  devices           Int      @default(0)
+  onlineDevices     Int      @default(0)
+  jobs              Int      @default(0)
+  jobsCompleted     Int      @default(0)
+  jobsFailed        Int      @default(0)
+  farmAccounts      Int      @default(0)
+  avgHealthScore    Int      @default(0)
+  onlineMinutes     Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, day])
+  @@index([workspaceId, day])
+}
+
+// Per-workspace outbound notification channel (Telegram / Slack / Discord).
+// The config (bot token / webhook url / chat id) is AES-encrypted at rest.
+model NotificationChannel {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  type         String   // "telegram" | "slack" | "discord"
+  configEnc    String   // AES-256-GCM encrypted JSON
+  active       Boolean  @default(true)
+  lastTestedAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, type])
+  @@index([workspaceId])
 }
 
 // One-to-one policy/configuration row for a workspace. Persisted security

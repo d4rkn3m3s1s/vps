@@ -1,13 +1,33 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Send, FolderDown, Link2, CheckSquare, Square } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import {
+  Send,
+  FolderDown,
+  Link2,
+  CheckSquare,
+  Square,
+  Smartphone,
+  Target,
+  Crosshair,
+  Library,
+  Filter,
+  HardDriveDownload
+} from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 
 type Device = { id: string; name: string; status?: string; groupId?: string | null };
 type Group = { id: string; name: string };
 type Asset = { id: string; name: string; url?: string | null; type?: string };
+
+const STATUS_LABELS: Record<string, string> = {
+  online: 'Çevrimiçi',
+  ready: 'Hazır',
+  busy: 'Meşgul',
+  error: 'Hata',
+  offline: 'Çevrimdışı'
+};
 
 export function DistributeView() {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -110,94 +130,183 @@ export function DistributeView() {
 
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="DAĞITIM"
         title="Dosya dağıtımı"
         subtitle="Bir dosyayı kütüphanenizden veya herhangi bir URL'den birçok bulut telefona aynı anda gönderin."
       />
 
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat
+            label="Toplam cihaz"
+            value={<span className="mono">{devices.length}</span>}
+            sub="filodaki bulut telefon"
+            tone="cyan"
+            icon={<Smartphone size={16} />}
+          />
+          <HoloStat
+            label="Görünen hedef"
+            value={<span className="mono">{visibleDevices.length}</span>}
+            sub={groupFilter ? 'filtrelenmiş grup' : 'tüm cihazlar'}
+            tone="cyan"
+            icon={<Target size={16} />}
+          />
+          <HoloStat
+            label="Seçili hedef"
+            value={<span className="mono">{selected.size}</span>}
+            sub="teslimat için kilitlendi"
+            tone={selected.size > 0 ? 'success' : 'warning'}
+            icon={<Crosshair size={16} />}
+          />
+          <HoloStat
+            label="Kütüphane öğesi"
+            value={<span className="mono">{assets.length}</span>}
+            sub="URL'li hazır varlık"
+            tone="violet"
+            icon={<Library size={16} />}
+          />
+        </div>
+      </Reveal>
+
       <div className="section-grid distribute-grid">
         {/* Target devices */}
-        <div className="panel">
-          <h2>Hedef cihazlar ({selected.size} seçili)</h2>
-          <div className="distribute-filter-row">
-            <select className="field-input" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
-              <option value="">Tüm cihazlar</option>
-              {groups.map((g) => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
-            <button type="button" className="btn-ghost" onClick={selectAllVisible} disabled={visibleDevices.length === 0}>
-              {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />} Tümünü seç
-            </button>
-          </div>
-          {visibleDevices.length === 0 ? (
-            <p className="helper">{groupFilter ? 'Bu grupta cihaz yok' : 'Cihaz yok'}.</p>
-          ) : (
-            <div className="distribute-device-list">
-              {visibleDevices.map((d) => (
-                <label key={d.id} className={`distribute-device${selected.has(d.id) ? ' distribute-device-on' : ''}`}>
-                  <input type="checkbox" checked={selected.has(d.id)} onChange={() => toggle(d.id)} />
-                  <span className="distribute-device-name">{d.name}</span>
-                  {d.status ? <span className="fp-device-status">{d.status.toLowerCase()}</span> : null}
-                </label>
-              ))}
+        <Reveal delay={0.05}>
+          <HoloPanel
+            title={`Hedef cihazlar (${selected.size} seçili)`}
+            icon={<Target size={16} />}
+            actions={
+              <button
+                type="button"
+                className="btn-ghost btn-xs"
+                onClick={selectAllVisible}
+                disabled={visibleDevices.length === 0}
+              >
+                {allVisibleSelected ? <CheckSquare size={14} /> : <Square size={14} />} Tümünü seç
+              </button>
+            }
+          >
+            <div className="field-row distribute-filter-row">
+              <span className="holo-stat-ico" aria-hidden>
+                <Filter size={14} />
+              </span>
+              <select
+                className="field-input"
+                value={groupFilter}
+                onChange={(e) => setGroupFilter(e.target.value)}
+              >
+                <option value="">Tüm cihazlar</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
             </div>
-          )}
-        </div>
+
+            {visibleDevices.length === 0 ? (
+              <div className="table-empty">
+                <p className="helper">{groupFilter ? 'Bu grupta cihaz yok' : 'Cihaz yok'}.</p>
+              </div>
+            ) : (
+              <div className="holo-grid-auto distribute-device-list">
+                {visibleDevices.map((d) => {
+                  const on = selected.has(d.id);
+                  const st = d.status ? d.status.toLowerCase() : '';
+                  const dotTone =
+                    st === 'online' || st === 'ready'
+                      ? 'dot-online'
+                      : st === 'busy'
+                        ? 'dot-busy'
+                        : st === 'error' || st === 'offline'
+                          ? 'dot-error'
+                          : 'dot-offline';
+                  return (
+                    <Holo3D
+                      key={d.id}
+                      max={5}
+                      className={`holo-pick-card${on ? ' is-active' : ''}`}
+                    >
+                      <label className={`distribute-device${on ? ' distribute-device-on' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() => toggle(d.id)}
+                        />
+                        <span className="distribute-device-name">
+                          <Smartphone size={13} style={{ marginRight: 6, verticalAlign: 'middle', opacity: 0.8 }} />
+                          {d.name}
+                        </span>
+                        {d.status ? (
+                          <span className="status-chip">
+                            <span className={`dot ${dotTone}`} aria-hidden />
+                            {STATUS_LABELS[st] ?? d.status}
+                          </span>
+                        ) : null}
+                      </label>
+                    </Holo3D>
+                  );
+                })}
+              </div>
+            )}
+          </HoloPanel>
+        </Reveal>
 
         {/* Source + send */}
-        <div className="panel">
-          <h2>Gönderilecek dosya</h2>
-          <div className="distribute-source-tabs">
-            <button type="button" className={source === 'library' ? 'tab tab-active' : 'tab'} onClick={() => setSource('library')}>
-              <FolderDown size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> Kütüphane
-            </button>
-            <button type="button" className={source === 'url' ? 'tab tab-active' : 'tab'} onClick={() => setSource('url')}>
-              <Link2 size={14} style={{ marginRight: 5, verticalAlign: 'middle' }} /> URL
-            </button>
-          </div>
+        <Reveal delay={0.1}>
+          <HoloPanel title="Gönderilecek dosya" icon={<Send size={16} />} tilt>
+            <HoloTabs<'library' | 'url'>
+              tabs={[
+                { key: 'library', label: 'Kütüphane', icon: <FolderDown size={14} /> },
+                { key: 'url', label: 'URL', icon: <Link2 size={14} /> }
+              ]}
+              active={source}
+              onChange={setSource}
+            />
 
-          {source === 'library' ? (
-            <div className="distribute-field">
-              <label className="helper">Kütüphane öğesi</label>
-              {assets.length === 0 ? (
-                <p className="helper">Henüz URL'si olan kütüphane öğesi yok. Kütüphaneye bir tane ekleyin veya bir URL kullanın.</p>
-              ) : (
-                <select className="field-input" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
-                  {assets.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name}{a.type ? ` (${a.type})` : ''}</option>
-                  ))}
-                </select>
-              )}
+            {source === 'library' ? (
+              <div className="field distribute-field">
+                <label className="helper">Kütüphane öğesi</label>
+                {assets.length === 0 ? (
+                  <p className="helper">Henüz URL'si olan kütüphane öğesi yok. Kütüphaneye bir tane ekleyin veya bir URL kullanın.</p>
+                ) : (
+                  <select className="field-input" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
+                    {assets.map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}{a.type ? ` (${a.type})` : ''}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="field distribute-field">
+                  <label className="helper">Dosya URL</label>
+                  <input className="field-input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/photo.jpg" />
+                </div>
+                <div className="field distribute-field">
+                  <label className="helper">Dosya adı (isteğe bağlı)</label>
+                  <input className="field-input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="photo.jpg" />
+                </div>
+              </>
+            )}
+
+            <div className="field distribute-field">
+              <label className="helper">
+                <HardDriveDownload size={13} style={{ marginRight: 5, verticalAlign: 'middle', opacity: 0.8 }} />
+                Kaydedilecek yer
+              </label>
+              <select className="field-input" value={destination} onChange={(e) => setDestination(e.target.value as 'gallery' | 'downloads')}>
+                <option value="gallery">Galeri</option>
+                <option value="downloads">İndirilenler</option>
+              </select>
             </div>
-          ) : (
-            <>
-              <div className="distribute-field">
-                <label className="helper">Dosya URL</label>
-                <input className="field-input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/photo.jpg" />
-              </div>
-              <div className="distribute-field">
-                <label className="helper">Dosya adı (isteğe bağlı)</label>
-                <input className="field-input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="photo.jpg" />
-              </div>
-            </>
-          )}
 
-          <div className="distribute-field">
-            <label className="helper">Kaydedilecek yer</label>
-            <select className="field-input" value={destination} onChange={(e) => setDestination(e.target.value as 'gallery' | 'downloads')}>
-              <option value="gallery">Galeri</option>
-              <option value="downloads">İndirilenler</option>
-            </select>
-          </div>
+            <button type="button" className="btn-primary distribute-send" disabled={busy || selected.size === 0} onClick={distribute}>
+              <Send size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />
+              {busy ? 'Gönderiliyor…' : `${selected.size} cihaza dağıt`}
+            </button>
 
-          <button type="button" className="btn-primary distribute-send" disabled={busy || selected.size === 0} onClick={distribute}>
-            <Send size={15} style={{ marginRight: 6, verticalAlign: 'middle' }} />
-            {busy ? 'Gönderiliyor…' : `${selected.size} cihaza dağıt`}
-          </button>
-
-          {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
-        </div>
+            {msg ? <p className="helper mono" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
+          </HoloPanel>
+        </Reveal>
       </div>
     </PageMotion>
   );

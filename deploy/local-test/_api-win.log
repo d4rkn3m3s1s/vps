@@ -1,0 +1,96 @@
+2026-06-25 23:01:30 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-25 23:01:30 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-25 23:01:30 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-25 23:02:13 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:02:30 [32minfo[39m: Offline detection {"service":"VPS Emulator Platform","devices":3,"hosts":1}
+2026-06-25 23:02:42 [32minfo[39m: [stream] viewer accepted for device cmqn45mfe000lj5my8gz5nr2j (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:02:42 [32minfo[39m: [stream] viewer accepted for device cmqlvzpvs000ij5lmibhtqx5u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:02:42 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:03:27 [32minfo[39m: [stream] viewer accepted for device cmqn45mfe000lj5my8gz5nr2j (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:03:27 [32minfo[39m: [stream] viewer accepted for device cmqlvzpvs000ij5lmibhtqx5u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:03:27 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:05:20 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+2026-06-25 23:06:05 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+2026-06-25 23:47:50 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:47:50 [32minfo[39m: [stream] viewer accepted for device cmqlvzpvs000ij5lmibhtqx5u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-06-25 23:47:50 [32minfo[39m: [stream] viewer accepted for device cmqn45mfe000lj5my8gz5nr2j (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+00:22:48 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-06-26 00:22:53 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-26 00:22:53 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-26 00:22:53 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-26 00:22:53 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+00:23:17 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-06-26 00:23:19 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:19 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:19 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:22 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+00:23:52 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-06-26 00:23:54 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:54 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:54 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-26 00:23:57 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+00:24:10 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-06-26 00:24:12 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:12 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:12 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:15 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+00:24:32 [tsx] change in ./src\modules\accounts\batch.controller.ts Restarting...
+c2026-06-26 00:24:33 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:33 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:33 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-26 00:24:37 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+00:41:45 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+cC:\Yeni klasör\vps\node_modules\zod\v3\types.cjs:45
+                const error = new ZodError_js_1.ZodError(ctx.common.issues);
+                              ^
+
+ZodError: [
+  {
+    "code": "too_small",
+    "minimum": 8,
+    "type": "string",
+    "inclusive": true,
+    "exact": false,
+    "message": "String must contain at least 8 character(s)",
+    "path": [
+      "ADMIN_PASSWORD"
+    ]
+  }
+]
+    at get error (C:\Yeni klasör\vps\node_modules\zod\v3\types.cjs:45:31)
+    at ZodObject.parse (C:\Yeni klasör\vps\node_modules\zod\v3\types.cjs:120:22)
+    at dotenv (C:\Yeni klasör\vps\apps\api\src\config\env.ts:57:26)
+    at Object.<anonymous> (C:\Yeni klasör\vps\apps\api\src\config\env.ts:102:1)
+    at Module._compile (node:internal/modules/cjs/loader:1730:14)
+    at Object.transformer (C:\Yeni klasör\vps\node_modules\tsx\dist\register-BOkp8V6j.cjs:9:3176)
+    at Module.load (node:internal/modules/cjs/loader:1465:32)
+    at Function._load (node:internal/modules/cjs/loader:1282:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:235:24) {
+  issues: [
+    {
+      code: 'too_small',
+      minimum: 8,
+      type: 'string',
+      inclusive: true,
+      exact: false,
+      message: 'String must contain at least 8 character(s)',
+      path: [ 'ADMIN_PASSWORD' ]
+    }
+  ],
+  addIssue: [Function (anonymous)],
+  addIssues: [Function (anonymous)],
+  errors: [
+    {
+      code: 'too_small',
+      minimum: 8,
+      type: 'string',
+      inclusive: true,
+      exact: false,
+      message: 'String must contain at least 8 character(s)',
+      path: [ 'ADMIN_PASSWORD' ]
+    }
+  ]
+}
+
+Node.js v22.17.0

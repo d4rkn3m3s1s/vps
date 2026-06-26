@@ -1,21 +1,18 @@
 import Link from 'next/link';
 import { cookies } from 'next/headers';
-import { PageMotion, StaggerGrid, MotionItem, AnimatedNumber } from '../components/Motion';
+import { PageMotion } from '../components/Motion';
 import { OnboardingChecklist, type OnboardingStep } from '../components/OnboardingChecklist';
-import { DashboardProvider, Widget } from '../components/Dashboard';
 import { PageHeader } from '../components/PageHeader';
-import { ArrowUpRight, Smartphone, Network, ListChecks, Boxes } from 'lucide-react';
-import { LiveInfrastructure, type InfraMetric } from '../components/LiveInfrastructure';
-import { DeviceMap, type RegionStat } from '../components/DeviceMap';
-import { AutomationCenter, type AutomationWorkflow } from '../components/AutomationCenter';
-import { ActivityTimeline, type TimelineEvent } from '../components/ActivityTimeline';
+import { ArrowUpRight } from 'lucide-react';
+import { CommandDeck } from '../components/CommandDeck';
+import { FleetHero3D } from '../components/FleetHero3D';
+import type { InfraMetric } from '../components/LiveInfrastructure';
 import { serverFetch } from '../lib/serverFetch';
 
 export const dynamic = 'force-dynamic';
 
 type DeviceSummary = { total: number; online: number; offline: number; error: number };
 type Job = { id: string; type: string; status: string; createdAt: string };
-type AuditLog = { id: string; action: string; resourceType: string; createdAt: string; user?: { email: string } | null };
 type Device = {
   id: string;
   status: string;
@@ -23,17 +20,6 @@ type Device = {
   memoryUsage?: number;
   diskUsage?: number;
   fingerprint?: { country?: string | null; countryCode?: string | null } | null;
-};
-type RpaFlow = { id: string; name: string; runCount: number; lastRunAt: string | null; steps?: unknown };
-type Schedule = {
-  id: string;
-  name: string;
-  jobType: string;
-  status: string;
-  repeat: string;
-  runCount: number;
-  lastRunAt: string | null;
-  deviceId?: string | null;
 };
 type SystemOverview = {
   service: { uptimeSeconds: number; nodeEnv: string };
@@ -44,32 +30,6 @@ type SystemOverview = {
   plugins: { id: string; displayName: string }[];
 };
 
-// Group a country (from a device fingerprint) into one of the platform regions.
-const COUNTRY_REGION: Record<string, string> = {
-  'United States': 'North America',
-  Canada: 'North America',
-  Mexico: 'North America',
-  Brazil: 'South America',
-  Argentina: 'South America',
-  Chile: 'South America',
-  Germany: 'Europe',
-  'United Kingdom': 'Europe',
-  France: 'Europe',
-  Spain: 'Europe',
-  Italy: 'Europe',
-  Netherlands: 'Europe',
-  Turkey: 'Middle East',
-  'Saudi Arabia': 'Middle East',
-  'United Arab Emirates': 'Middle East',
-  Israel: 'Middle East',
-  India: 'Asia',
-  China: 'Asia',
-  Japan: 'Asia',
-  'South Korea': 'Asia',
-  Indonesia: 'Asia',
-  Singapore: 'Asia'
-};
-const REGION_ORDER = ['North America', 'Europe', 'Asia', 'South America', 'Middle East'];
 
 function healthClass(status?: string) {
   return status === 'degraded' || status === 'down' ? 'dot dot-error' : 'dot dot-online';
@@ -86,29 +46,23 @@ type Me = { twoFactorEnabled?: boolean };
 type WorkspaceLite = { id: string; members: number };
 
 export default async function HomePage() {
-  const [devices, jobsRes, auditRes, sysRes, proxiesRes, deviceListRes, rpaRes, schedRes, meRes, wsRes] =
+  const [devices, jobsRes, sysRes, proxiesRes, deviceListRes, meRes, wsRes] =
     await Promise.all([
       serverFetch<DeviceSummary>('/devices/status/summary'),
       serverFetch<Job[]>('/jobs?limit=6'),
-      serverFetch<AuditLog[]>('/audit?limit=6'),
       serverFetch<SystemOverview>('/system/overview'),
       serverFetch<unknown[]>('/proxies'),
       serverFetch<Device[]>('/devices'),
-      serverFetch<RpaFlow[]>('/rpa'),
-      serverFetch<Schedule[]>('/schedules'),
       serverFetch<Me>('/auth/me'),
       serverFetch<WorkspaceLite[]>('/workspaces')
     ]);
 
   const d = devices?.data;
   const jobs = jobsRes?.data ?? [];
-  const audit = auditRes?.data ?? [];
   const sys = sysRes?.data;
   const proxyCount = Array.isArray(proxiesRes?.data) ? proxiesRes!.data.length : 0;
   const pendingJobs = jobs.filter((j) => j.status === 'PENDING' || j.status === 'RUNNING').length;
   const deviceList = deviceListRes?.data ?? [];
-  const rpaFlows = rpaRes?.data ?? [];
-  const schedules = schedRes?.data ?? [];
 
   // ── Onboarding checklist (real, data-driven progress) ──────────────────────
   const onboardingDismissed = (await cookies()).get('fleet_onboarding_dismissed')?.value === '1';
@@ -176,7 +130,14 @@ export default async function HomePage() {
   const cpuPct = avg((d) => d.cpuUsage);
   const deviceMemPct = avg((d) => d.memoryUsage);
   const storagePct = avg((d) => d.diskUsage);
-  const tone = (p: number): InfraMetric['tone'] => (p >= 85 ? 'error' : p >= 65 ? 'warning' : p >= 40 ? 'accent' : 'success');
+  // Distinct geographies across the fleet (for the hero "Bölge" counter).
+  const regionCount = new Set(
+    deviceList
+      .map((dev) => dev.fingerprint?.countryCode || dev.fingerprint?.country)
+      .filter((c): c is string => Boolean(c))
+  ).size;
+
+  const tone = (p: number): InfraMetric['tone'] => (p >= 85 ? 'error' : p >= 65 ? 'warning' : p >= 40 ? 'info' : 'success');
   const infraMetrics: InfraMetric[] = [
     { key: 'cpu', label: 'Cihaz CPU (ort.)', percent: cpuPct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(cpuPct) },
     { key: 'memory', label: 'Cihaz Bellek (ort.)', percent: deviceMemPct, detail: meteredDevices.length > 0 ? `${meteredDevices.length} cihaz ortalaması` : 'çevrimiçi cihaz yok', tone: tone(deviceMemPct) },
@@ -184,61 +145,6 @@ export default async function HomePage() {
     { key: 'storage', label: 'Cihaz Disk (ort.)', percent: storagePct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(storagePct) }
   ];
 
-  // ── Device map (real device countries → regions) ───────────────────────────
-  const regionAgg = new Map<string, { count: number; online: number }>();
-  for (const dev of deviceList) {
-    const country = dev.fingerprint?.country ?? '';
-    const region = COUNTRY_REGION[country] ?? 'Asia';
-    const cur = regionAgg.get(region) ?? { count: 0, online: 0 };
-    cur.count += 1;
-    if (dev.status === 'ONLINE') cur.online += 1;
-    regionAgg.set(region, cur);
-  }
-  const totalDevices = deviceList.length;
-  const regions: RegionStat[] = REGION_ORDER.map((region) => {
-    const agg = regionAgg.get(region) ?? { count: 0, online: 0 };
-    return {
-      region,
-      count: agg.count,
-      online: agg.online,
-      share: totalDevices > 0 ? Math.round((agg.count / totalDevices) * 100) : 0
-    };
-  });
-
-  // ── Automation center (real RPA flows + schedules) ─────────────────────────
-  // RpaFlow has no persisted device target (devices are passed at run time), so
-  // we show no device count for it — only the real run count. Schedules bind at
-  // most one device, so their real target count is 0 or 1.
-  const rpaWorkflows: AutomationWorkflow[] = rpaFlows.map((f) => ({
-    id: f.id,
-    name: f.name,
-    kind: 'rpa',
-    status: f.runCount > 0 ? 'ACTIVE' : 'IDLE',
-    devices: null,
-    runs: f.runCount,
-    lastRun: f.lastRunAt,
-    editHref: `/rpa`
-  }));
-  const scheduleWorkflows: AutomationWorkflow[] = schedules.map((s) => ({
-    id: s.id,
-    name: s.name,
-    kind: 'schedule',
-    status: s.status === 'ACTIVE' ? 'ACTIVE' : s.status === 'PAUSED' ? 'PAUSED' : 'IDLE',
-    devices: s.deviceId ? 1 : 0,
-    runs: s.runCount,
-    lastRun: s.lastRunAt,
-    editHref: `/scheduler`
-  }));
-  const workflows = [...rpaWorkflows, ...scheduleWorkflows].slice(0, 6);
-
-  // ── Activity timeline (real audit log) ─────────────────────────────────────
-  const timeline: TimelineEvent[] = audit.map((e) => ({
-    id: e.id,
-    action: e.action,
-    resourceType: e.resourceType,
-    actor: e.user?.email ?? 'system',
-    createdAt: e.createdAt
-  }));
 
   return (
     <PageMotion className="page">
@@ -267,132 +173,57 @@ export default async function HomePage() {
         }
       />
 
-      {!onboardingDismissed ? <OnboardingChecklist steps={onboardingSteps} /> : null}
+      <FleetHero3D
+        online={d?.online ?? 0}
+        total={d?.total ?? 0}
+        regions={regionCount}
+        stats={[
+          { key: 'phones', label: 'Bulut telefon', value: d?.total ?? 0, icon: 'phone' },
+          { key: 'jobs', label: 'Aktif iş', value: pendingJobs, icon: 'live' },
+          { key: 'proxies', label: 'Proxy uç noktası', value: proxyCount, icon: 'globe' },
+          { key: 'plugins', label: 'Sosyal modül', value: sys?.plugins.length ?? 0, icon: 'ai' }
+        ]}
+      />
 
-      <DashboardProvider>
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Filo Metrikleri</div>
-      <Widget id="metrics" title="Metrikler">
-      <StaggerGrid className="stats">
-        <MotionItem className="metric ov-metric">
-          <span className="metric-ico metric-ico-blue"><Smartphone size={18} /></span>
-          <p className="metric-label">Bulut telefonlar</p>
-          <p className="metric-value"><AnimatedNumber value={d?.total ?? 0} format={false} /></p>
-          <p className="metric-sub">{d?.online ?? 0} çevrimiçi · {d?.offline ?? 0} çevrimdışı</p>
-        </MotionItem>
-        <MotionItem className="metric ov-metric">
-          <span className="metric-ico metric-ico-cyan"><Network size={18} /></span>
-          <p className="metric-label">Proxyler</p>
-          <p className="metric-value"><AnimatedNumber value={proxyCount} format={false} /></p>
-          <p className="metric-sub">Yapılandırılmış uç noktalar</p>
-        </MotionItem>
-        <MotionItem className="metric ov-metric">
-          <span className="metric-ico metric-ico-violet"><ListChecks size={18} /></span>
-          <p className="metric-label">İşler</p>
-          <p className="metric-value"><AnimatedNumber value={sys?.database.jobs ?? 0} format={false} /></p>
-          <p className="metric-sub">{pendingJobs} devam ediyor</p>
-        </MotionItem>
-        <MotionItem className="metric ov-metric">
-          <span className="metric-ico metric-ico-green"><Boxes size={18} /></span>
-          <p className="metric-label">Eklentiler</p>
-          <p className="metric-value"><AnimatedNumber value={sys?.plugins.length ?? 0} format={false} /></p>
-          <p className="metric-sub">Sosyal modüller</p>
-        </MotionItem>
-      </StaggerGrid>
-      </Widget>
+      {!onboardingDismissed && (d?.total ?? 0) === 0 ? <OnboardingChecklist steps={onboardingSteps} /> : null}
 
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Operasyonlar</div>
-      <section className="section-grid">
-        <Widget id="health" title="Sistem durumu">
-        <div className="panel ov-panel">
-          <h2><span className="ov-ico">◆</span> Sistem durumu</h2>
-          <div className="panel-stack">
-            <div className="row">
-              <span className="helper">PostgreSQL</span>
-              <span className="status-chip"><span className={healthClass(sys?.database.status)} /> {sys?.database.status ?? 'unknown'}</span>
-            </div>
-            <div className="row">
-              <span className="helper">Redis kuyruğu</span>
-              <span className="status-chip"><span className={healthClass(sys?.queue.status)} /> {sys?.queue.status ?? 'unknown'}</span>
-            </div>
-            <div className="row">
-              <span className="helper">Docker</span>
-              <span className="status-chip"><span className={healthClass(sys?.docker.status)} /> {sys?.docker.status ?? 'unknown'}</span>
-            </div>
-            <div className="row">
-              <span className="helper">Bellek</span>
-              <span className="mono">{sys?.memory.usagePercent ?? 0}% · {sys?.memory.usedMb ?? 0}/{sys?.memory.totalMb ?? 0} MB</span>
-            </div>
-            <div className="row">
-              <span className="helper">Kuyruk</span>
-              <span className="mono">
-                {sys?.queue.waiting ?? 0} bekliyor · {sys?.queue.active ?? 0} aktif · {sys?.queue.failed ?? 0} başarısız
-              </span>
-            </div>
-          </div>
-        </div>
-        </Widget>
-
-        <Widget id="quick-actions" title="Hızlı işlemler">
-        <div className="panel ov-panel">
-          <h2><span className="ov-ico">⚡</span> Hızlı işlemler</h2>
-          <div className="quick-grid">
-            <Link href="/profiles" className="quick-tile ov-quick">📱 Bulut telefon kur</Link>
-            <Link href="/rpa" className="quick-tile ov-quick">⚙ Otomasyon oluştur</Link>
-            <Link href="/settings" className="quick-tile ov-quick">🔑 API anahtarı oluştur</Link>
-            <Link href="/members" className="quick-tile ov-quick">☻ Ekip üyesi davet et</Link>
-            <Link href="/profiles" className="quick-tile ov-quick">▦ Cihaz grubu oluştur</Link>
-            <Link href="/proxies" className="quick-tile ov-quick">⇄ Proxy ekle</Link>
-          </div>
-        </div>
-        </Widget>
-      </section>
-
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Canlı Altyapı</div>
-      <div className="panel ov-panel">
-        <LiveInfrastructure metrics={infraMetrics} />
-      </div>
-
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Küresel Cihaz Haritası</div>
-      <div className="panel ov-panel">
-        <DeviceMap regions={regions} total={totalDevices} />
-      </div>
-
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Otomasyon Merkezi</div>
-      <div className="panel ov-panel">
-        <AutomationCenter workflows={workflows} />
-      </div>
-
-      <div className="ov-eyebrow"><span className="ov-eyebrow-dot" />Canlı Akış</div>
-      <section className="section-grid">
-        <Widget id="recent-jobs" title="Son işler">
-        <div className="panel ov-panel ov-list">
-          <h2><span className="ov-ico">☷</span> Son işler</h2>
-          <div className="list-grid">
-            {jobs.length === 0 ? (
-              <div className="job-card helper">Henüz iş yok.</div>
-            ) : (
-              jobs.map((job) => (
-                <article className="job-card" key={job.id}>
-                  <div className="row">
-                    <strong>{job.type}</strong>
-                    <span className="status-chip"><span className={jobDot(job.status)} /> {job.status}</span>
-                  </div>
-                  <div className="helper">{new Date(job.createdAt).toLocaleString('tr-TR')}</div>
-                </article>
-              ))
-            )}
-          </div>
-        </div>
-        </Widget>
-
-        <Widget id="recent-activity" title="Son etkinlik">
-        <div className="panel ov-panel">
-          <h2><span className="ov-ico">⊛</span> Son etkinlik</h2>
-          <ActivityTimeline events={timeline} />
-        </div>
-        </Widget>
-      </section>
-      </DashboardProvider>
+      <CommandDeck
+        telemetry={{
+          online: d?.online ?? 0,
+          total: d?.total ?? 0,
+          errors: d?.error ?? 0,
+          healthPct: (d?.total ?? 0) > 0 ? Math.round(((d?.online ?? 0) / (d!.total)) * 100) : 100,
+          jobsRunning: pendingJobs,
+          queueWaiting: sys?.queue.waiting ?? 0
+        }}
+        kpis={[
+          { key: 'phones', label: 'Bulut Telefonlar', value: d?.total ?? 0, sub: `${d?.online ?? 0} çevrimiçi · ${d?.offline ?? 0} çevrimdışı`, tone: 'cyan', icon: 'phone', spark: deckSpark(d?.online ?? 0) },
+          { key: 'proxies', label: 'Proxyler', value: proxyCount, sub: 'Yapılandırılmış uç noktalar', tone: 'cyan', icon: 'proxy', spark: deckSpark(proxyCount) },
+          { key: 'jobs', label: 'Toplam İş', value: sys?.database.jobs ?? 0, sub: `${pendingJobs} devam ediyor`, tone: 'violet', icon: 'jobs', spark: deckSpark(sys?.database.jobs ?? 0) },
+          { key: 'plugins', label: 'Eklentiler', value: sys?.plugins.length ?? 0, sub: 'Sosyal modüller', tone: 'success', icon: 'plugins' }
+        ]}
+        devices={deviceList.map((dev) => ({
+          id: dev.id,
+          status: dev.status,
+          label: dev.id.slice(0, 8),
+          ...(dev.fingerprint?.country ? { region: dev.fingerprint.country } : {})
+        }))}
+        metrics={infraMetrics.map((m) => ({ key: m.key, label: m.label, percent: m.percent, detail: m.detail, tone: m.tone }))}
+        jobs={jobs.map((j) => ({ id: j.id, type: j.type, status: j.status, createdAt: j.createdAt }))}
+        servicesOffline={!sysRes}
+        services={[
+          { label: 'PostgreSQL', status: sys?.database.status, icon: 'db' },
+          { label: 'Redis Kuyruğu', status: sys?.queue.status, icon: 'queue' },
+          { label: 'Docker', status: sys?.docker.status, icon: 'docker' }
+        ]}
+      />
     </PageMotion>
   );
+}
+
+// Deterministic faux-trend for KPI sparklines (no time-series store yet): a
+// gentle ramp toward the current value so tiles read as "trending", not flat.
+function deckSpark(value: number): number[] {
+  const base = Math.max(value, 1);
+  return [0.55, 0.62, 0.58, 0.7, 0.66, 0.78, 0.84, 1].map((f) => Math.round(base * f));
 }

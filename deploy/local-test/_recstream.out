@@ -1,0 +1,18 @@
+=== ensure uinput/evdev loaded ===
+crw------- 1 root root 10, 223 Jun 25 18:21 /dev/uinput
+=== recreate phone-01 ===
+=== restore route (try candidates) ===
+  route OK via 172.28.6.1
+  host internet: OK
+=== wait boot ===
+  booted (try 6)
+=== /dev/input now ===
+total 0
+drwxr-xr-x  2 root root       60 2026-06-25 15:42 .
+drwxr-xr-x 27 root root     3620 2026-06-25 15:42 ..
+crw-rw----  1 root input 13,  64 2026-06-25 15:42 event0
+=== getevent device list ===
+add device 1: /dev/input/event0
+  name:     "redroid vinput"
+=== phone-01 internet ===
+  phone-01 WA: FAIL

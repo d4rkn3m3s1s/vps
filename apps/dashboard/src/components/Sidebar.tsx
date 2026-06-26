@@ -10,7 +10,7 @@ import {
   Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
   BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings, UserPlus
+  Settings, UserPlus, TrendingUp, DollarSign
 } from 'lucide-react';
 import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -48,6 +48,8 @@ const NAV: NavGroup[] = [
     items: [
       { href: '/', tkey: 'nav.overview', icon: Gauge },
       { href: '/analytics', tkey: 'nav.analytics', icon: LineChart },
+      { href: '/trends', tkey: 'nav.trends', icon: TrendingUp },
+      { href: '/costs', tkey: 'nav.costs', icon: DollarSign },
       { href: '/health', tkey: 'nav.health', icon: HeartPulse },
       { href: '/reports', tkey: 'nav.reports', icon: FileText },
       { href: '/farm', tkey: 'nav.farm', icon: Sprout },

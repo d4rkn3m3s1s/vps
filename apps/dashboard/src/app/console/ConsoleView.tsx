@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Terminal, Power, RotateCcw, Play, Square, Package, Trash2, ChevronRight } from 'lucide-react';
-import { PageHeader } from '../../components/PageHeader';
+import { Terminal, RotateCcw, Play, Square, Package, Trash2, ChevronRight, Cpu, Activity, Zap, ListTree } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 
 type Device = { id: string; name: string; status?: string };
 type Line = { kind: 'cmd' | 'out' | 'err' | 'info'; text: string };
@@ -153,13 +153,17 @@ export function ConsoleView() {
     }
   }
 
+  // Derived summary metrics (no new fetches — read from existing state only).
+  const onlineCount = devices.filter((d) => (d.status ?? '').toUpperCase() === 'ONLINE').length;
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="KOMUT KONSOLU"
         title="Cihaz konsolu"
         subtitle="Tek bir bulut telefon için canlı shell ve uzaktan kontrol — gerçek ADB köprüsü üzerinden."
         actions={
-          <select className="field-input" value={selected ?? ''} onChange={(e) => setSelected(e.target.value)}>
+          <select className="field-input mono" value={selected ?? ''} onChange={(e) => setSelected(e.target.value)}>
             {devices.length === 0 ? <option value="">Cihaz yok</option> : null}
             {devices.map((d) => (
               <option key={d.id} value={d.id}>
@@ -171,33 +175,73 @@ export function ConsoleView() {
         }
       />
 
-      {/* Action toolbar */}
-      <div className="console-toolbar">
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_START', 'Başlatma')}>
-          <Play size={14} /> Başlat
-        </button>
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_STOP', 'Durdurma')}>
-          <Square size={14} /> Durdur
-        </button>
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={reboot}>
-          <RotateCcw size={14} /> Yeniden başlat
-        </button>
-        <button type="button" className="btn-ghost" disabled={busy || !selected} onClick={installApk}>
-          <Package size={14} /> APK yükle
-        </button>
-        <span className="console-spacer" />
-        <button type="button" className="btn-ghost" disabled={!lines.length} onClick={() => setLines([])}>
-          <Trash2 size={14} /> Temizle
-        </button>
+      {/* Summary stat deck (derived from current state) */}
+      <div className="holo-stats-grid">
+        <HoloStat
+          label="Aktif hedef"
+          value={<span className="mono">{activeDevice?.name ?? '—'}</span>}
+          sub={activeDevice?.status ? activeDevice.status.toLowerCase() : 'seçim bekleniyor'}
+          tone="info"
+          icon={<Cpu size={16} />}
+        />
+        <HoloStat
+          label="Çevrimiçi cihaz"
+          value={<span className="mono">{onlineCount}/{devices.length}</span>}
+          sub="filo bağlantı durumu"
+          tone="cyan"
+          icon={<Activity size={16} />}
+        />
+        <HoloStat
+          label="Köprü durumu"
+          value={<span className="mono">{busy ? 'MEŞGUL' : 'HAZIR'}</span>}
+          sub={selected ? 'ADB köprüsü canlı' : 'cihaz seçilmedi'}
+          tone={busy ? 'warning' : 'success'}
+          icon={<Zap size={16} />}
+        />
+        <HoloStat
+          label="Konsol satırı"
+          value={<span className="mono">{lines.length}</span>}
+          sub="oturum çıktısı"
+          tone="violet"
+          icon={<ListTree size={16} />}
+        />
       </div>
 
-      <div className="section-grid console-grid">
+      {/* Action toolbar */}
+      <HoloPanel title="Komut güvertesi" icon={<Zap size={16} />} scan={false}>
+        <div className="console-toolbar">
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_START', 'Başlatma')}>
+            <Play size={14} /> Başlat
+          </button>
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_STOP', 'Durdurma')}>
+            <Square size={14} /> Durdur
+          </button>
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={reboot}>
+            <RotateCcw size={14} /> Yeniden başlat
+          </button>
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={installApk}>
+            <Package size={14} /> APK yükle
+          </button>
+          <span className="console-spacer" />
+          <button type="button" className="btn-ghost btn-xs" disabled={!lines.length} onClick={() => setLines([])}>
+            <Trash2 size={14} /> Temizle
+          </button>
+        </div>
+      </HoloPanel>
+
+      <div className="holo-grid-2 console-grid">
         {/* Terminal */}
-        <div className="panel console-panel">
-          <h2>
-            <Terminal size={16} style={{ marginRight: 6, verticalAlign: 'middle' }} /> Shell
-            {activeDevice ? <span className="console-target"> · {activeDevice.name}</span> : null}
-          </h2>
+        <HoloPanel
+          title={
+            <>
+              Shell
+              {activeDevice ? <span className="console-target mono"> · {activeDevice.name}</span> : null}
+            </>
+          }
+          icon={<Terminal size={16} />}
+          className="console-panel"
+          actions={<span className={`status-chip ${busy ? 'is-busy' : ''}`}><span className={`dot ${selected ? (busy ? 'dot-error' : 'dot-online') : 'dot-offline'}`} />{busy ? 'çalışıyor' : selected ? 'bağlı' : 'boşta'}</span>}
+        >
           <div className="console-term mono" ref={termRef}>
             {lines.map((l, i) => (
               <div key={i} className={`console-line console-${l.kind}`}>
@@ -223,26 +267,27 @@ export function ConsoleView() {
             Cihaz köprüsü üzerinden canlı <span className="mono">adb shell</span>. Geçmiş için ↑/↓. Başlat/Durdur/Yükle
             işlemleri sunucu aracısı görev kuyruğu üzerinden çalışır.
           </p>
-        </div>
+        </HoloPanel>
 
         {/* Quick commands */}
-        <div className="panel">
-          <h2>Hızlı komutlar</h2>
-          <div className="console-quick">
+        <HoloPanel title="Hızlı komutlar" icon={<ListTree size={16} />}>
+          <div className="holo-grid-auto console-quick">
             {QUICK_CMDS.map((q) => (
-              <button
-                key={q.cmd}
-                type="button"
-                className="console-quick-btn"
-                disabled={busy || !selected}
-                onClick={() => runShell(q.cmd)}
-                title={q.cmd}
-              >
-                {q.label}
-              </button>
+              <Holo3D key={q.cmd} className="console-quick-card" max={6}>
+                <button
+                  type="button"
+                  className="console-quick-btn"
+                  disabled={busy || !selected}
+                  onClick={() => runShell(q.cmd)}
+                  title={q.cmd}
+                >
+                  <span className="console-quick-label">{q.label}</span>
+                  <span className="console-quick-cmd mono">{q.cmd}</span>
+                </button>
+              </Holo3D>
             ))}
           </div>
-        </div>
+        </HoloPanel>
       </div>
     </PageMotion>
   );

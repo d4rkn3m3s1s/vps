@@ -2,8 +2,9 @@
 
 import { Fragment, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { PageHeader } from '../../components/PageHeader';
+import { Webhook as WebhookIcon, Plus, Radio, Lock, Activity, AlertTriangle, History, Send, Pause, Play, Trash2, RefreshCw, X } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
+import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
 
 export type Webhook = {
   id: string;
@@ -145,139 +146,158 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
     router.refresh();
   }
 
+  const total = webhooks.length;
+  const activeCount = webhooks.filter((h) => h.active).length;
+  const signedCount = webhooks.filter((h) => h.hasSecret).length;
+  const failingCount = webhooks.filter((h) => h.failCount > 0).length;
+
   return (
     <PageMotion className="page">
-      <PageHeader
+      <HoloHeader
+        eyebrow="WEBHOOK MERKEZİ"
         title="Webhook'lar"
         subtitle="Görevler, cihazlar, kota veya uyarılar değiştiğinde kendi sunucunuzda bildirim alın. İmzalı, yeniden denenir ve teslimat geçmişi tutulur."
         actions={
           <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
-            + Yeni webhook
+            <Plus size={15} /> Yeni webhook
           </button>
         }
       />
 
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
 
-      <div className="profile-table-wrap">
-        <table className="profile-table">
-          <thead>
-            <tr>
-              <th>Etiket</th>
-              <th>URL</th>
-              <th>Olay</th>
-              <th>İmzalı</th>
-              <th>Son tetiklenme</th>
-              <th>Durum</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {webhooks.length === 0 ? (
-              <tr>
-                <td colSpan={7}>
-                  <div className="table-empty">
-                    <div className="empty-art">⇲</div>
-                    <span>Henüz webhook yok</span>
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              webhooks.map((h) => (
-                <Fragment key={h.id}>
+      <Reveal>
+        <div className="holo-stats-grid">
+          <HoloStat label="Toplam kanca" value={<span className="mono">{total}</span>} tone="cyan" icon={<WebhookIcon size={16} />} />
+          <HoloStat label="Etkin" value={<span className="mono">{activeCount}</span>} sub={`${total} kancadan`} tone="success" icon={<Radio size={16} />} />
+          <HoloStat label="İmzalı (HMAC)" value={<span className="mono">{signedCount}</span>} tone="violet" icon={<Lock size={16} />} />
+          <HoloStat label="Hatalı teslimat" value={<span className="mono">{failingCount}</span>} tone={failingCount > 0 ? 'error' : 'accent'} icon={<AlertTriangle size={16} />} />
+        </div>
+      </Reveal>
+
+      <Reveal delay={0.05}>
+        <HoloPanel title="Kayıtlı uç noktalar" icon={<Activity size={16} />}>
+          <div className="profile-table-wrap">
+            <table className="profile-table">
+              <thead>
+                <tr>
+                  <th>Etiket</th>
+                  <th>URL</th>
+                  <th>Olay</th>
+                  <th>İmzalı</th>
+                  <th>Son tetiklenme</th>
+                  <th>Durum</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {webhooks.length === 0 ? (
                   <tr>
-                    <td>
-                      <strong>{h.label}</strong>
-                    </td>
-                    <td className="mono helper">{h.url}</td>
-                    <td>{h.event}</td>
-                    <td>{h.hasSecret ? '🔒 HMAC' : '—'}</td>
-                    <td className="mono helper">{h.lastFiredAt ? new Date(h.lastFiredAt).toLocaleString('tr-TR') : 'hiç'}</td>
-                    <td>
-                      <span className="status-chip">
-                        <span className={h.active ? 'dot dot-online' : 'dot dot-offline'} />
-                        {h.active ? 'Etkin' : 'Duraklatıldı'}
-                        {h.failCount > 0 ? <span className="helper"> · {h.failCount} başarısız</span> : null}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <button type="button" className="action-btn" onClick={() => toggleHistory(h.id)}>
-                          {expanded === h.id ? 'Gizle' : 'Geçmiş'}
-                        </button>
-                        <button type="button" className="action-btn" disabled={busy} onClick={() => sendTest(h)}>
-                          Test
-                        </button>
-                        <button type="button" className="action-btn" onClick={() => toggle(h)}>
-                          {h.active ? 'Duraklat' : 'Sürdür'}
-                        </button>
-                        <button type="button" className="action-btn action-danger" onClick={() => remove(h)}>
-                          Sil
-                        </button>
+                    <td colSpan={7}>
+                      <div className="table-empty">
+                        <div className="empty-art">⇲</div>
+                        <span>Henüz webhook yok</span>
                       </div>
                     </td>
                   </tr>
-                  {expanded === h.id ? (
-                    <tr className="delivery-row">
-                      <td colSpan={7}>
-                        <div className="delivery-panel">
-                          <h4>Son teslimatlar</h4>
-                          {loadingDeliveries ? (
-                            <p className="helper">Yükleniyor…</p>
-                          ) : deliveries.length === 0 ? (
-                            <p className="helper">Henüz teslimat yok. Bir tane göndermek için “Test” seçeneğini kullanın.</p>
-                          ) : (
-                            <table className="delivery-table">
-                              <thead>
-                                <tr>
-                                  <th>Olay</th>
-                                  <th>Durum</th>
-                                  <th>Deneme</th>
-                                  <th>Kod</th>
-                                  <th>Zaman</th>
-                                  <th />
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {deliveries.map((d) => (
-                                  <tr key={d.id}>
-                                    <td className="mono">{d.event}</td>
-                                    <td>
-                                      <span className={`delivery-badge delivery-${d.status.toLowerCase()}`}>{d.status}</span>
-                                    </td>
-                                    <td>{d.attempts}</td>
-                                    <td className="mono">{d.responseCode ?? (d.error ? '✕' : '—')}</td>
-                                    <td className="mono helper">{new Date(d.createdAt).toLocaleString('tr-TR')}</td>
-                                    <td>
-                                      {d.status === 'FAILED' ? (
-                                        <button type="button" className="action-btn" onClick={() => redeliver(h.id, d.id)}>
-                                          Yeniden teslim et
-                                        </button>
-                                      ) : null}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+                ) : (
+                  webhooks.map((h) => (
+                    <Fragment key={h.id}>
+                      <tr>
+                        <td>
+                          <strong>{h.label}</strong>
+                        </td>
+                        <td className="mono helper">{h.url}</td>
+                        <td>{h.event}</td>
+                        <td>{h.hasSecret ? <span className="status-chip"><Lock size={12} /> HMAC</span> : '—'}</td>
+                        <td className="mono helper">{h.lastFiredAt ? new Date(h.lastFiredAt).toLocaleString('tr-TR') : 'hiç'}</td>
+                        <td>
+                          <span className="status-chip">
+                            <span className={h.active ? 'dot dot-online' : 'dot dot-offline'} />
+                            {h.active ? 'Etkin' : 'Duraklatıldı'}
+                            {h.failCount > 0 ? <span className="helper"> · {h.failCount} başarısız</span> : null}
+                          </span>
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <button type="button" className="action-btn" onClick={() => toggleHistory(h.id)}>
+                              <History size={13} /> {expanded === h.id ? 'Gizle' : 'Geçmiş'}
+                            </button>
+                            <button type="button" className="action-btn" disabled={busy} onClick={() => sendTest(h)}>
+                              <Send size={13} /> Test
+                            </button>
+                            <button type="button" className="action-btn" onClick={() => toggle(h)}>
+                              {h.active ? <><Pause size={13} /> Duraklat</> : <><Play size={13} /> Sürdür</>}
+                            </button>
+                            <button type="button" className="action-btn action-danger" onClick={() => remove(h)}>
+                              <Trash2 size={13} /> Sil
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {expanded === h.id ? (
+                        <tr className="delivery-row">
+                          <td colSpan={7}>
+                            <div className="delivery-panel">
+                              <h4><Activity size={14} /> Son teslimatlar</h4>
+                              {loadingDeliveries ? (
+                                <p className="helper">Yükleniyor…</p>
+                              ) : deliveries.length === 0 ? (
+                                <p className="helper">Henüz teslimat yok. Bir tane göndermek için “Test” seçeneğini kullanın.</p>
+                              ) : (
+                                <table className="delivery-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Olay</th>
+                                      <th>Durum</th>
+                                      <th>Deneme</th>
+                                      <th>Kod</th>
+                                      <th>Zaman</th>
+                                      <th />
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {deliveries.map((d) => (
+                                      <tr key={d.id}>
+                                        <td className="mono">{d.event}</td>
+                                        <td>
+                                          <span className={`delivery-badge delivery-${d.status.toLowerCase()}`}>{d.status}</span>
+                                        </td>
+                                        <td className="mono">{d.attempts}</td>
+                                        <td className="mono">{d.responseCode ?? (d.error ? '✕' : '—')}</td>
+                                        <td className="mono helper">{new Date(d.createdAt).toLocaleString('tr-TR')}</td>
+                                        <td>
+                                          {d.status === 'FAILED' ? (
+                                            <button type="button" className="action-btn" onClick={() => redeliver(h.id, d.id)}>
+                                              <RefreshCw size={13} /> Yeniden teslim et
+                                            </button>
+                                          ) : null}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </HoloPanel>
+      </Reveal>
 
       {open ? (
         <div className="modal-overlay" onClick={() => !busy && setOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <header className="modal-head">
-              <h2>Yeni webhook</h2>
+              <h2><WebhookIcon size={16} /> Yeni webhook</h2>
               <button type="button" className="modal-close" onClick={() => !busy && setOpen(false)}>
-                ✕
+                <X size={16} />
               </button>
             </header>
             <label className="field">

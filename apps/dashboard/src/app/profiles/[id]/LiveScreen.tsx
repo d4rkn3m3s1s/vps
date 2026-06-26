@@ -192,7 +192,13 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
           onKeyDown={onKeyDown}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img ref={imgRef} alt="Canlı cihaz ekranı" className="live-screen-img" draggable={false} />
+          <img
+            ref={imgRef}
+            alt=""
+            className="live-screen-img"
+            draggable={false}
+            style={{ display: live ? 'block' : 'none' }}
+          />
           {!live ? (
             <div className="live-screen-placeholder">
               {state === 'connecting' ? (

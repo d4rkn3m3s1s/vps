@@ -1,7 +1,7 @@
-import { HeroLanding } from '../../components/HeroLanding';
+import { FleetLanding } from '../../components/FleetLanding';
 
-export const metadata = { title: 'VPS Fleet · Cloud Phone Platform' };
+export const metadata = { title: 'VPS Fleet · Bulut Telefon Platformu' };
 
 export default function WelcomePage() {
-  return <HeroLanding />;
+  return <FleetLanding />;
 }

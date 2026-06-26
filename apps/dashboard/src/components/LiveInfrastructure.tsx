@@ -8,7 +8,7 @@ export type InfraMetric = {
   label: string;
   percent: number;
   detail: string;
-  tone: 'accent' | 'success' | 'warning' | 'error';
+  tone: 'accent' | 'info' | 'success' | 'warning' | 'error';
 };
 
 const ICONS: Record<string, typeof Cpu> = {
@@ -26,8 +26,13 @@ function toneColor(tone: InfraMetric['tone']): string {
       return '#F59E0B';
     case 'error':
       return '#EF4444';
+    case 'info':
+      return '#38bdf8';
+    case 'accent':
+      return '#ef233c';
     default:
-      return '#4F7CFF';
+      // Moderate/unknown load reads as neutral info-blue, not a brand-red alarm.
+      return '#38bdf8';
   }
 }
 

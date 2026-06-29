@@ -3,6 +3,16 @@
 @tailwind utilities;
 
 :root {
+  /* ── Font stacks — SYSTEM fonts, no network dependency ─────────────────────
+     The dev server runs offline (WSL, no internet) so Google Fonts can't load.
+     These modern OS font stacks render natively everywhere (Segoe UI on Windows,
+     SF on macOS, etc.) with crisp quality and zero load time. CSS rules that name
+     'Inter'/'Manrope' fall through to --font-sans automatically. */
+  --font-sans: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system,
+    'Helvetica Neue', 'Roboto', 'Inter', Arial, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', 'SFMono-Regular',
+    'Consolas', 'Liberation Mono', 'Menlo', monospace;
+
   /* ── "RED NOIR" — blood-red on absolute black operator identity ───────────
      Brand metaphor: a fleet of cloud phones under one command signal. The canvas
      is true black with a faint crimson ember bleeding from the top; the signature
@@ -518,6 +528,15 @@ main {
    ONCE on hover (defined in the canonical .brand-mark::after block below). */
 .brand:hover .brand-mark { transform: scale(1.06) rotate(-3deg); box-shadow: 0 10px 30px rgba(239, 35, 60, 0.55); }
 
+/* When the mark holds the SVG logo (which carries its own gradient tile), drop
+   the CSS gradient/padding so the artwork isn't double-tiled. */
+.brand-mark-svg {
+  background: none !important;
+  box-shadow: 0 8px 24px rgba(239, 35, 60, 0.35);
+  padding: 0;
+}
+.brand-mark-svg svg { display: block; width: 100%; height: 100%; }
+
 .brand-text {
   display: flex;
   flex-direction: column;
@@ -915,18 +934,44 @@ main {
 }
 
 .create-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.7rem;
   min-height: 260px;
   border-radius: 16px;
   border: 1px dashed rgba(239, 35, 60, 0.4);
   background: linear-gradient(160deg, rgba(239, 35, 60, 0.1), rgba(239, 35, 60, 0.05));
   color: var(--text);
+  overflow: hidden;
+}
+
+/* The actual clickable content lives in the inner button — make IT fill and
+   center the card so the icon/label/CTA stack cleanly (the outer div is just
+   the dashed frame). Without this rule the button rendered as an unstyled block
+   and the art/CTA overlapped. */
+.create-card-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  width: 100%;
+  height: 100%;
+  min-height: 260px;
+  padding: 1.5rem;
+  background: transparent;
+  border: none;
+  color: inherit;
   cursor: pointer;
   font: inherit;
+  text-align: center;
+  transition: background 0.15s ease;
+}
+
+.create-card-btn:hover {
+  background: rgba(239, 35, 60, 0.06);
+}
+
+.create-card-btn strong {
+  font-size: 0.95rem;
+  font-weight: 600;
 }
 
 .create-art {
@@ -973,6 +1018,22 @@ main {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+/* Brand-initial avatar badge (replaces the empty grey box). */
+.card-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent-2);
+  background: rgba(239, 35, 60, 0.14);
+  border: 1px solid rgba(239, 35, 60, 0.25);
 }
 
 .card-title {
@@ -1629,8 +1690,12 @@ main {
 
 /* ===================== Fleet AI page ===================== */
 
+/* NOTE: do NOT set `align-items: center` here. .page is a flex column whose
+   children must stay `stretch` (full-width) — centering the cross-axis collapses
+   every panel + the stat grid into a narrow content-width column. The hero text
+   is centered internally via .ai-hero, which is the only thing that needs it. */
 .ai-page {
-  align-items: center;
+  align-items: stretch;
 }
 
 .ai-hero {
@@ -1752,6 +1817,57 @@ main {
 .ai-row:hover {
   border-color: rgba(239, 35, 60, 0.5);
 }
+
+/* Holo3D wrapper around each İçerik Asistanı card. Holo3D applies ONLY an
+   inline 3D transform + a glare overlay — no layout/size of its own — so the
+   wrapper must be a full-height block and the .ai-card button inside must
+   stretch to fill it, otherwise the card collapses inside holo-grid-auto and
+   the glare leaks. (Same reason .holo-card-3d exists for the automation grid.) */
+.ai-card-3d,
+.holo-card-3d {
+  position: relative;
+  display: flex;
+  height: 100%;
+  border-radius: 12px;
+}
+
+.ai-card-3d > .ai-card {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 150px;
+}
+
+/* Inline notice banner (e.g. "AI not configured") shown inside a console panel. */
+.ai-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+.ai-notice-warn {
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  background: rgba(245, 158, 11, 0.10);
+  color: var(--text);
+}
+.ai-notice-warn svg { color: rgba(245, 158, 11, 0.9); }
+
+/* ===================== Device health charts ===================== */
+.metric-stack { display: flex; flex-direction: column; gap: 0.9rem; }
+.metric-row { display: flex; flex-direction: column; gap: 0.3rem; }
+.metric-row-head { display: flex; align-items: center; justify-content: space-between; }
+.metric-row-label { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+.metric-row-val { font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric-spark { width: 100%; height: 30px; display: block; }
+
+/* Compact segmented range toggle (1s / 6s / 24s) */
+.seg-mini { display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; background: rgba(255,255,255,0.04); border: 1px solid var(--panel-border); }
+.seg-mini-btn { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 0.72rem; padding: 0.2rem 0.55rem; border-radius: 6px; cursor: pointer; transition: background 0.15s, color 0.15s; }
+.seg-mini-btn:hover { color: var(--text); }
+.seg-mini-btn.active { background: rgba(239,35,60,0.18); color: var(--text); }
 
 .ai-row {
   display: flex;
@@ -3893,17 +4009,28 @@ input[type='date'] {
    replacing the old mix of .section-grid (2-col), bare fragments, .panel-stack. */
 .admin-stack { display: grid; gap: 1.25rem; }
 
-/* Selection checkbox: real checkbox semantics, but a ≥36px hit area + focus ring. */
+/* Selection checkbox: a clean 18px checkbox. (The old rule inflated it to a
+   36px content-box which rendered as a big grey square on Windows.) The ≥36px
+   hit area comes from the wrapping .card-check label's padding instead. */
 .select-check {
-  width: 18px; height: 18px;
-  min-width: 36px; min-height: 36px;
-  margin: -9px; padding: 9px;
-  box-sizing: content-box;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin: 0;
   cursor: pointer;
   accent-color: var(--accent);
-  background-clip: content-box;
 }
 .select-check:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Wrapping label gives the comfortable tap target without resizing the box. */
+.card-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  margin: -6px;
+  cursor: pointer;
+}
 
 /* Toggle switch (was a raw OS checkbox with no styling). */
 .admin-switch {
@@ -4533,6 +4660,54 @@ input[type='date'] {
 .wall-cell-nav { display: inline-flex; align-items: center; gap: 0.2rem; margin-left: auto; }
 .wall-cell-nav .live-nav-btn { width: 26px; height: 26px; }
 
+/* ── Wall: drag handle + expand + drop target ── */
+/* The draggable wrapper carries drop feedback; the Holo3D cell tilts inside it. */
+.wall-cell-drag { display: flex; border-radius: 12px; transition: box-shadow 0.15s, transform 0.15s; }
+.wall-cell-drag > .wall-cell { flex: 1; }
+.wall-cell-grip { display: inline-flex; align-items: center; color: var(--muted); opacity: 0.5; cursor: grab; flex-shrink: 0; }
+.wall-cell-grip:active { cursor: grabbing; }
+.wall-cell-drag:hover .wall-cell-grip { opacity: 0.85; }
+.wall-cell-expand { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--muted); cursor: pointer; flex-shrink: 0; transition: color 0.15s, border-color 0.15s, background 0.15s; }
+.wall-cell-expand:hover { color: var(--accent); border-color: var(--border-accent); background: var(--fill-accent-soft, rgba(239,35,60,0.08)); }
+.wall-cell-head .wall-cell-name { flex: 1; }
+.wall-cell-dragover { box-shadow: 0 0 0 2px var(--border-accent), 0 0 22px rgba(239,35,60,0.22); transform: scale(1.02); }
+
+/* ── Focus overlay (tekli açma / odak): one device blown up, keyboard-driven ── */
+.focus-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; align-items: center; justify-content: center;
+  padding: 2.5vh 2vw;
+  background: rgba(4, 2, 4, 0.82);
+  backdrop-filter: blur(10px) saturate(1.1);
+  animation: focusFade 0.18s ease-out;
+}
+@keyframes focusFade { from { opacity: 0; } to { opacity: 1; } }
+.focus-shell {
+  display: flex; flex-direction: column;
+  width: min(560px, 96vw); max-height: 95vh;
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 18px; overflow: hidden;
+  box-shadow: 0 30px 90px -20px rgba(0,0,0,0.8), 0 0 0 1px var(--border-accent);
+  animation: focusPop 0.22s var(--ease-spring, cubic-bezier(0.22,1,0.36,1));
+}
+@keyframes focusPop { from { transform: scale(0.94); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.focus-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.7rem 0.9rem; border-bottom: 1px solid var(--panel-border); }
+.focus-title { display: inline-flex; align-items: center; gap: 0.55rem; font-size: 0.92rem; min-width: 0; }
+.focus-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-hint { display: inline-flex; align-items: center; gap: 4px; font-size: 0.66rem; color: var(--success, #34d399); opacity: 0.85; }
+.focus-surface {
+  position: relative; flex: 1; min-height: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: #060507; touch-action: none; outline: none;
+}
+.focus-surface.is-interactive { cursor: crosshair; }
+.focus-surface:focus-visible { box-shadow: inset 0 0 0 2px var(--border-accent); }
+.focus-canvas { max-width: 100%; max-height: 86vh; height: auto; width: auto; object-fit: contain; user-select: none; -webkit-user-drag: none; aspect-ratio: 9 / 19.5; }
+.focus-placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.focus-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.55rem 0.9rem; border-top: 1px solid var(--panel-border); }
+.focus-nav { display: inline-flex; align-items: center; gap: 0.4rem; }
+.focus-nav .live-nav-btn { width: 34px; height: 34px; }
+
 /* ── Usage meter (pay-as-you-go) ── */
 .meter-stats { display: flex; flex-wrap: wrap; gap: 1.4rem; margin-bottom: 1rem; }
 .meter-stat { display: flex; flex-direction: column; gap: 0.2rem; }
@@ -5006,6 +5181,14 @@ textarea:focus-visible {
   animation: brandShift 3.5s ease-in-out infinite, prePop 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 @keyframes prePop { from { transform: scale(0.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+/* SVG logo variant in the preloader: keep the pop-in but drop the CSS gradient
+   tile (the artwork has its own), and don't run the background-shift loop. */
+.preloader-mark-svg {
+  background: none !important;
+  animation: prePop 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  box-shadow: 0 10px 30px rgba(239, 35, 60, 0.45);
+}
+.preloader-mark-svg svg { display: block; width: 100%; height: 100%; }
 
 .preloader-brand {
   display: flex;
@@ -7207,3 +7390,143 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .ai-msg-ico  { flex-shrink: 0; margin-top: 2px; opacity: 0.7; }
 .ai-msg-body { flex: 1; min-width: 0; }
 .ai-card-ico, .ai-row-ico { display: grid; place-items: center; flex-shrink: 0; color: var(--muted); width: 26px; height: 26px; }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   MISSING-CLASS FIXES — classes referenced in JSX that had NO definition, so
+   the elements rendered as unstyled gray boxes (FleetHub cards, RPA/Farm modal
+   bodies, Farm page wrapper, stage labels). Defined here, last in the cascade.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* FleetHub marketplace card (.holo-card + parts) — a glass card with a header
+   row (icon + category chip), a body (title + description), a meta row, and a
+   full-width CTA. Mirrors the holo glass look used elsewhere. */
+.holo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 1rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.12)),
+    var(--panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 0.2s var(--ease-out, ease), transform 0.2s var(--ease-out, ease), box-shadow 0.2s var(--ease-out, ease);
+}
+.holo-card:hover {
+  border-color: var(--panel-border-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 40px -20px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border-accent);
+}
+.holo-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.holo-card-ico {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  font-size: 1.4rem;
+  line-height: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--panel-border);
+  flex-shrink: 0;
+}
+.holo-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  flex: 1;
+  min-width: 0;
+}
+.holo-card-title {
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.holo-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+/* The CTA fills the card width and sits at the bottom. */
+.holo-card > .btn-primary { width: 100%; justify-content: center; margin-top: 0.2rem; }
+
+/* Modal content body — vertical padded stack used by RPA + Farm modals. */
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.2rem 0 0.1rem;
+}
+
+/* Farm page wrapper (.holo-page) — same page rhythm as the shared .page. */
+.holo-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Farm warmup-stage distribution label. */
+.farm-dist-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Synchronizer live leader stage. */
+.sync-stage { display: flex; flex-direction: column; gap: 0.4rem; }
+.sync-stage .focus-surface { position: relative; background: #060507; touch-action: none; outline: none; border: 1px solid var(--panel-border); }
+.sync-stage .focus-surface:focus-visible { box-shadow: inset 0 0 0 2px var(--border-accent); }
+.sync-stage-foot { display: flex; align-items: center; justify-content: center; gap: 0.8rem; padding-top: 0.4rem; }
+
+/* RPA quick-start templates — clickable tiles that seed the editor. */
+.rpa-template-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.7rem;
+}
+.rpa-template {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  text-align: left;
+  padding: 0.8rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+}
+.rpa-template:hover {
+  border-color: var(--panel-border-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--border-accent);
+}
+.rpa-template-ico {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--panel-border);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.rpa-template-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.rpa-template-body strong { font-size: 0.88rem; font-weight: 600; }
+.rpa-template-meta { font-size: 0.66rem; color: var(--muted); margin-top: 0.2rem; }
+

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Smartphone, Mail, UserRound, RefreshCw, Phone, Copy, Check, Loader2, XCircle, Activity, PackageOpen, SlidersHorizontal, SignalHigh } from 'lucide-react';
+import { Smartphone, Mail, UserRound, RefreshCw, Phone, Copy, Check, Loader2, XCircle, Activity, PackageOpen, SlidersHorizontal, SignalHigh, Inbox, ArrowLeft, KeyRound, ExternalLink } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat } from '../../components/hud';
 import { BatchPanel } from './BatchPanel';
 
@@ -21,6 +21,8 @@ type SmsCountry = { id: number | string; title: string; code: string };
 type SmsProject = { id: number | string; title: string; code: string };
 type RentedNumber = { requestId: string; number: string };
 type OtpResult = { status: 'waiting' | 'received' | 'cancelled' | 'expired'; code?: string };
+type MailSummary = { id: string; from: string; subject: string; date: string };
+type MailMessage = MailSummary & { to: string[]; text: string; html: string; code: string | null; link: string | null };
 
 // Friendly platform → matched against the provider's project list by title.
 const PLATFORMS = ['WhatsApp', 'Instagram', 'Facebook', 'Telegram'];
@@ -72,9 +74,16 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
   const [otp, setOtp] = useState<OtpResult | null>(null);
   const [polling, setPolling] = useState(false);
 
+  // Inbox viewer: messages that have arrived at the created disposable address.
+  const [messages, setMessages] = useState<MailSummary[]>([]);
+  const [openMsg, setOpenMsg] = useState<MailMessage | null>(null);
+  const [inboxBusy, setInboxBusy] = useState(false);
+  const [inboxErr, setInboxErr] = useState<string | null>(null);
+
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inboxPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refreshStatus = useCallback(async () => {
     setRefreshing(true);
@@ -138,10 +147,56 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
       });
       const j = await r.json();
       if (!r.ok || !j.data?.address) throw new Error('E-posta oluşturulamadı');
-      setInbox(j.data.address as string);
+      const addr = j.data.address as string;
+      setInbox(addr);
+      // Reset the viewer and pull whatever is already there.
+      setMessages([]); setOpenMsg(null); setInboxErr(null);
+      void loadInbox(addr);
     } catch (e) { setErr(e instanceof Error ? e.message : 'E-posta hatası'); }
     finally { setBusy(null); }
   }
+
+  // List messages currently in the disposable inbox (newest first).
+  const loadInbox = useCallback(async (address?: string) => {
+    const addr = address ?? inbox;
+    if (!addr) return;
+    setInboxBusy(true); setInboxErr(null);
+    try {
+      const r = await fetch(`/api/accounts/mail/messages?address=${encodeURIComponent(addr)}`, { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok) throw new Error('Gelen kutusu okunamadı');
+      setMessages(Array.isArray(j.data) ? (j.data as MailSummary[]) : []);
+    } catch (e) {
+      setInboxErr(e instanceof Error ? e.message : 'Gelen kutusu hatası');
+    } finally { setInboxBusy(false); }
+  }, [inbox]);
+
+  // Open one message in full (body + extracted OTP code / verification link).
+  async function openMessage(id: string) {
+    if (!inbox) return;
+    setInboxBusy(true); setInboxErr(null);
+    try {
+      const r = await fetch(`/api/accounts/mail/message/${encodeURIComponent(id)}?address=${encodeURIComponent(inbox)}`, { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok || !j.data) throw new Error('Mesaj açılamadı');
+      setOpenMsg(j.data as MailMessage);
+    } catch (e) {
+      setInboxErr(e instanceof Error ? e.message : 'Mesaj hatası');
+    } finally { setInboxBusy(false); }
+  }
+
+  // Auto-poll the inbox every 5s while an address exists and no message is open,
+  // so a freshly arrived verification mail appears without manual refresh.
+  useEffect(() => {
+    if (inboxPollRef.current) { clearInterval(inboxPollRef.current); inboxPollRef.current = null; }
+    if (!inbox) return;
+    inboxPollRef.current = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (openMsg) return; // don't churn the list while reading a message
+      void loadInbox();
+    }, 5000);
+    return () => { if (inboxPollRef.current) clearInterval(inboxPollRef.current); };
+  }, [inbox, openMsg, loadInbox]);
 
   async function rentNumber() {
     const projectId = projectIdFor(platform);
@@ -317,6 +372,72 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
           </div>
         </HoloPanel>
       </section>
+
+      {/* Inbox viewer — listen to / read mail arriving at the disposable address */}
+      {inbox ? (
+        <HoloPanel
+          title="Gelen Kutusu"
+          icon={<Inbox size={16} />}
+          scan
+          actions={
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <span className="mono helper" style={{ fontSize: '0.72rem' }}>{inbox}</span>
+              <button type="button" className="btn-secondary btn-xs" disabled={inboxBusy} onClick={() => void loadInbox()}>
+                {inboxBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />} Yenile
+              </button>
+            </span>
+          }
+        >
+          {inboxErr ? <p className="field-error">{inboxErr}</p> : null}
+
+          {openMsg ? (
+            // Single message view
+            <div className="ai-stack" style={{ gap: '0.6rem' }}>
+              <button type="button" className="btn-ghost btn-xs" style={{ alignSelf: 'flex-start' }} onClick={() => setOpenMsg(null)}>
+                <ArrowLeft size={12} /> Listeye dön
+              </button>
+              <div className="row"><span>Kimden</span><span className="helper mono">{openMsg.from || '—'}</span></div>
+              <div className="row"><span>Konu</span><span className="helper">{openMsg.subject || '(konu yok)'}</span></div>
+              <div className="row"><span>Tarih</span><span className="helper mono">{openMsg.date || '—'}</span></div>
+              {openMsg.code ? (
+                <div className="row">
+                  <span><KeyRound size={13} /> Doğrulama kodu</span>
+                  <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: '1.05rem', letterSpacing: '0.1em', color: 'var(--accent)' }}>
+                    {openMsg.code} <CopyBtn value={openMsg.code} />
+                  </span>
+                </div>
+              ) : null}
+              {openMsg.link ? (
+                <div className="row">
+                  <span><ExternalLink size={13} /> Doğrulama linki</span>
+                  <a className="mono helper" href={openMsg.link} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all', maxWidth: '60%' }}>{openMsg.link}</a>
+                </div>
+              ) : null}
+              <pre className="mono" style={{ fontSize: '0.72rem', whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto', opacity: 0.85, margin: '0.3rem 0 0', padding: '0.6rem', background: 'rgba(0,0,0,0.25)', borderRadius: 8 }}>
+                {openMsg.text || '(düz metin gövde yok)'}
+              </pre>
+            </div>
+          ) : messages.length === 0 ? (
+            <p className="helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              {inboxBusy ? <><Loader2 size={13} className="spin" /> Kontrol ediliyor…</> : 'Henüz mesaj yok. Bu adrese mail gelince burada otomatik görünür (5 sn\'de bir kontrol edilir).'}
+            </p>
+          ) : (
+            // Message list
+            <div className="ai-stack" style={{ gap: '0.4rem' }}>
+              {messages.map((m) => (
+                <button key={m.id} type="button" className="ai-row" style={{ width: '100%' }} onClick={() => void openMessage(m.id)}>
+                  <span className="ai-row-ico" aria-hidden><Mail size={14} /></span>
+                  <span style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                    <strong style={{ display: 'block', fontSize: '0.85rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.subject || '(konu yok)'}</strong>
+                    <span className="helper" style={{ fontSize: '0.72rem' }}>{m.from || '—'}</span>
+                  </span>
+                  <span className="helper mono" style={{ fontSize: '0.65rem', flex: '0 0 auto' }}>{(m.date || '').slice(0, 16).replace('T', ' ')}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </HoloPanel>
+      ) : null}
 
       {/* Batch farm */}
       <HoloPanel title="Toplu üretim" icon={<Activity size={16} />} className="holo-batch" scan>

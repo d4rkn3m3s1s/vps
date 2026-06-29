@@ -1,0 +1,5 @@
+2026-06-29 05:25:06 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-06-29 05:25:06 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-06-29 05:25:06 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-06-29 05:25:31 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
+2026-06-29 05:27:33 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}

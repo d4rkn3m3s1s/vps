@@ -214,6 +214,15 @@ export async function getDeviceHandler(req: Request, res: Response): Promise<voi
   res.json({ data });
 }
 
+// Per-device CPU/mem/disk timeseries for the health charts. ?hours=N (1..168).
+export async function getDeviceMetricsHandler(req: Request, res: Response): Promise<void> {
+  const id = requireDeviceId(req);
+  if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'view');
+  const hours = Math.min(Math.max(1, Number(req.query.hours) || 6), 168);
+  const data = await deviceService.getMetrics(id, hours, getWorkspaceId(req));
+  res.json({ data });
+}
+
 export async function updateDeviceHandler(req: Request, res: Response): Promise<void> {
   const input = deviceUpdateSchema.parse(req.body);
   const id = requireDeviceId(req);

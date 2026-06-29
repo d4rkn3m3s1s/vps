@@ -131,12 +131,23 @@ export const snapshotService = {
     if (!snap) throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
     if (snap.status !== 'READY') throw new AppError('Snapshot is not ready', 400, 'SNAPSHOT_NOT_READY');
 
+    // Resolve the host the clone should land on. The snapshot artifact is a
+    // host-LOCAL tar, so the restore can only run on a host that holds it —
+    // normally the source device's host. Honor an explicit hostId, else fall back
+    // to the source device's host. Without ANY host the clone is just a blank row
+    // (no restore can run), so surface that honestly via restoreDispatched=false.
+    let hostId = input.hostId;
+    if (!hostId && snap.sourceDeviceId) {
+      const src = await prisma.device.findUnique({ where: { id: snap.sourceDeviceId }, select: { hostId: true } });
+      if (src?.hostId) hostId = src.hostId;
+    }
+
     const device = await prisma.device.create({
       data: {
         name: input.name.trim() || `${snap.name} kopyası`,
         ...(snap.androidVersion ? { androidVersion: snap.androidVersion } : {}),
         ...(input.groupId ? { group: { connect: { id: input.groupId } } } : {}),
-        ...(input.hostId ? { host: { connect: { id: input.hostId } } } : {}),
+        ...(hostId ? { host: { connect: { id: hostId } } } : {}),
         ...(ctx.workspaceId ? { workspace: { connect: { id: ctx.workspaceId } } } : {}),
         fingerprint: { create: generateFingerprintData() }
       },
@@ -152,7 +163,7 @@ export const snapshotService = {
       );
     }
     await prisma.deviceSnapshot.update({ where: { id: snapshotId }, data: { installs: { increment: 1 } } });
-    return { deviceId: device.id, restoreDispatched: Boolean(device.hostId) };
+    return { deviceId: device.id, hostId: device.hostId, restoreDispatched: Boolean(device.hostId) };
   },
 
   // ── Library + market ────────────────────────────────────────────────────────

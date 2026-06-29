@@ -78,8 +78,17 @@ export function ImagesView({ snapshots, market, devices, groups }: { snapshots: 
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: cloneName.trim(), groupId: cloneGroup || undefined })
       });
+      const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error('Kopyalama başarısız');
-      flash('Yeni cihaz imajdan oluşturuldu.', 'ok');
+      // Be honest: the snapshot artifact is host-local, so the image only applies
+      // when the clone lands on a host (the source device's host). Without one the
+      // device row is created but its contents are NOT restored.
+      const restored = (json.data as { restoreDispatched?: boolean } | undefined)?.restoreDispatched;
+      if (restored === false) {
+        flash('Cihaz oluşturuldu ANCAK imaj içeriği uygulanmadı (kaynak cihazın host’u yok). Bir host atayıp geri yüklemeyi tekrar çalıştırın.', 'err');
+      } else {
+        flash('Yeni cihaz imajdan oluşturuldu, geri yükleme başlatıldı.', 'ok');
+      }
       setCloneFor(null);
       setCloneName('');
       setCloneGroup('');

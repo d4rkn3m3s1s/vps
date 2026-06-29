@@ -4,8 +4,8 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "dev:worker": "tsx watch src/worker.ts",
+    "dev": "CHOKIDAR_USEPOLLING=true CHOKIDAR_INTERVAL=800 tsx watch src/index.ts",
+    "dev:worker": "CHOKIDAR_USEPOLLING=true tsx watch src/worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",

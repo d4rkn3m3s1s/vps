@@ -45,6 +45,18 @@ enum JobType {
   REGISTER_WHATSAPP
   WHATSAPP_SEND
   WHATSAPP_READ
+  APP_EXPLORE
+  AGENT_RUN
+  APPLY_FINGERPRINT
+  PROVISION_INTEGRITY
+}
+
+// Lifecycle of an AI Device Agent run (Claude autonomously driving a phone).
+enum AgentRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
 }
 
 enum HostStatus {
@@ -93,6 +105,42 @@ enum DeviceStatus {
   ERROR
   UPDATING
   REBOOTING
+}
+
+// Which kind of backend a cloud phone runs on. SELF = our own KVM/host-agent
+// fleet (the original architecture). The rest are external cloud-phone vendors
+// reached over their HTTP API via a provider adapter — so the panel can resell
+// rented ARM phones without owning hardware. One workspace can mix providers.
+enum CloudProviderKind {
+  SELF
+  GEELARK
+  VMOS
+  DUOPLUS
+  UGPHONE
+}
+
+// A configured external cloud-phone vendor account. Credentials are AES-256-GCM
+// encrypted at rest (apiKeyEnc/apiSecretEnc) and never returned to clients. The
+// provider adapter (modules/cloud-providers) uses these to create/start/stop and
+// control rented phones, which then appear as normal Device rows (provider!=SELF).
+model CloudPhoneProvider {
+  id           String            @id @default(cuid())
+  name         String            // operator-facing label
+  kind         CloudProviderKind
+  baseUrl      String?           // override the vendor's default API base
+  apiKeyEnc    String?           // AES-GCM encrypted
+  apiSecretEnc String?           // AES-GCM encrypted (vendors that sign requests)
+  enabled      Boolean           @default(true)
+  // Last connectivity check result, for the providers admin page.
+  lastCheckAt  DateTime?
+  lastCheckOk  Boolean?
+  lastCheckMsg String?
+  workspaceId  String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  workspace    Workspace?        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 enum SocialProvider {
@@ -188,6 +236,9 @@ model Workspace {
   settings      WorkspaceSettings?
   metricSnapshots MetricSnapshot[]
   notificationChannels NotificationChannel[]
+  agentRuns     AgentRun[]
+  appMaps       AppMap[]
+  cloudProviders CloudPhoneProvider[]
 }
 
 // Daily time-series rollup of fleet metrics — one row per workspace per UTC day.
@@ -404,6 +455,13 @@ model Device {
   groupId        String?
   hostId         String?
   workspaceId    String?
+  // Cloud-phone backend. null/"SELF" = our own KVM host-agent fleet. Otherwise the
+  // device is a rented phone from an external vendor: `cloudProvider` names the
+  // vendor kind, `cloudProviderId` links the CloudPhoneProvider credential row,
+  // and `externalId` is the vendor-side phone id used to control it via the API.
+  cloudProvider   String?
+  cloudProviderId String?
+  externalId      String?
   // External ADB access (TCP bridge). When exposed, the host agent forwards the
   // device's ADB to a public host:port, optionally restricted to an IP allowlist.
   adbExposed     Boolean       @default(false)
@@ -423,8 +481,86 @@ model Device {
   snapshots      DeviceSnapshot[] @relation("DeviceSnapshotSource")
   grants         DeviceGrant[]    @relation("DeviceGrants")
   usage          DeviceUsage[]
+  agentRuns      AgentRun[]
+  appMaps        AppMap[]
+  metricPoints   DeviceMetricPoint[]
 
   @@index([workspaceId])
+}
+
+// Lightweight per-device resource timeseries (CPU/mem/disk %), appended each time
+// the host agent reports metrics. Powers the per-device health charts. Kept small
+// via a retention prune (see metricsService) so the table never grows unbounded.
+model DeviceMetricPoint {
+  id          String   @id @default(cuid())
+  deviceId    String
+  cpuUsage    Float    @default(0)
+  memoryUsage Float    @default(0)
+  diskUsage   Float    @default(0)
+  capturedAt  DateTime @default(now())
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId, capturedAt])
+}
+
+// One autonomous run of the AI Device Agent: Claude reads the screen and drives
+// the phone toward a natural-language goal over a perceive→decide→act loop. The
+// per-turn detail lives in AgentRunStep so the dashboard can replay the run.
+model AgentRun {
+  id          String         @id @default(cuid())
+  goal        String
+  deviceId    String
+  workspaceId String?
+  userId      String?
+  status      AgentRunStatus @default(RUNNING)
+  stealth     Boolean        @default(false)
+  useVision   Boolean        @default(false)
+  maxTurns    Int            @default(15)
+  turnsUsed   Int            @default(0)
+  success     Boolean?
+  summary     String?
+  error       String?
+  createdAt   DateTime       @default(now())
+  finishedAt  DateTime?
+  device      Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  steps       AgentRunStep[]
+
+  @@index([workspaceId])
+  @@index([deviceId])
+}
+
+// A single turn of an AgentRun: the screen the model saw, the tool call(s) it
+// chose, and the outcome.
+model AgentRunStep {
+  id         String   @id @default(cuid())
+  runId      String
+  index      Int
+  screenTree String
+  screenshot String?
+  toolCalls  Json
+  result     Json?
+  createdAt  DateTime @default(now())
+  run        AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+}
+
+// A screen-graph of an app, produced by the BFS APP_EXPLORE crawl. The graph is
+// stored whole (screens + edges) for visualization; one row per crawl.
+model AppMap {
+  id          String     @id @default(cuid())
+  deviceId    String
+  workspaceId String?
+  packageName String
+  graph       Json
+  screenCount Int        @default(0)
+  createdAt   DateTime   @default(now())
+  device      Device     @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([deviceId])
 }
 
 // Per-device, per-day online-minute rollup for usage metering / pay-as-you-go
@@ -498,6 +634,12 @@ model Job {
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
+  // The host agent polls for claimable work (status=PENDING, claimedByHostId=null,
+  // oldest first) every ~2s; this composite index turns that hot path from a full
+  // table scan into an index seek as the job history grows.
+  @@index([status, claimedByHostId, createdAt])
+  // Newest-jobs-per-workspace list query (orderBy createdAt desc).
+  @@index([workspaceId, createdAt])
 }
 
 model AuditLog {
@@ -596,6 +738,12 @@ model Proxy {
   // a US exit to a US-fingerprinted phone). Set on import or detected on check.
   countryCode String?
   status      ProxyStatus  @default(UNKNOWN)
+  // Rolling health: 0-100 score (decays on failure, recovers on success),
+  // consecutive failCount, and when the next periodic re-check is due. autoAssign
+  // prefers higher-scored proxies; the revalidation ticker re-checks checksDue ones.
+  score       Int          @default(50)
+  failCount   Int          @default(0)
+  checksDue   DateTime?
   lastCheckedAt DateTime?
   workspaceId String?
   createdAt   DateTime     @default(now())
@@ -603,6 +751,7 @@ model Proxy {
   workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
+  @@index([checksDue])
 }
 
 enum ScheduleStatus {

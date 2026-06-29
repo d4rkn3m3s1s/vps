@@ -119,7 +119,16 @@ export default function MembersPage() {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.message ?? 'Davet başarısız oldu');
-      flash(`${email.trim()} ${inviteRole} olarak eklendi`);
+      const addr = email.trim();
+      // Be honest about whether the invite email actually went out. Without SMTP
+      // configured the member IS added but no email is sent — say so instead of
+      // implying they were notified.
+      const delivered = (json.data as { emailDelivered?: boolean } | undefined)?.emailDelivered;
+      if (delivered === false) {
+        flash(`${addr} ${inviteRole} olarak eklendi — ANCAK e-posta gönderilemedi (SMTP yapılandırılmadı). Davet bilgisini elle iletin.`, 'err');
+      } else {
+        flash(`${addr} ${inviteRole} olarak eklendi ve e-posta ile bilgilendirildi`);
+      }
       setEmail('');
       await loadMembers(workspace.id);
     } catch (e) {

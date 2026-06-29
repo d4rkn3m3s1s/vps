@@ -1,6 +1,7 @@
 import { PageMotion } from '../../components/Motion';
 import { TwoFactorPanel } from '../../components/TwoFactorPanel';
 import { WorkspaceMembers } from '../../components/WorkspaceMembers';
+import { DangerZone } from '../../components/DangerZone';
 import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
 import { apiCall } from '../../lib/apiClient';
 import {
@@ -214,18 +215,7 @@ export default async function SettingsPage() {
 
       <Reveal delay={0.15}>
         <HoloPanel title="Tehlikeli bölge" icon={<AlertTriangle size={16} />} className="danger-panel" scan={false}>
-          <p className="helper">Bu işlemler geri alınamaz. Dikkatli ilerleyin.</p>
-          <div className="quick-grid">
-            <button type="button" className="btn-ghost danger-btn" disabled>
-              Çalışma alanı verilerini sıfırla
-            </button>
-            <button type="button" className="btn-ghost danger-btn" disabled>
-              Hesabı sil
-            </button>
-          </div>
-          <p className="helper" style={{ marginTop: '12px' }}>
-            Yıkıcı işlemler bu sürümde devre dışıdır. Bir yedekleme politikası yapılandırıldığında bunları etkinleştirin.
-          </p>
+          <DangerZone />
         </HoloPanel>
       </Reveal>
     </PageMotion>

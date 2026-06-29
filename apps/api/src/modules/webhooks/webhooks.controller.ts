@@ -53,7 +53,7 @@ export async function createWebhookHandler(req: Request, res: Response): Promise
 
 export async function updateWebhookHandler(req: Request, res: Response): Promise<void> {
   const input = updateSchema.parse(req.body);
-  res.json({ data: await webhooksService.update(requireId(req), input) });
+  res.json({ data: await webhooksService.update(requireId(req), input, getWorkspaceId(req)) });
 }
 
 export async function listDeliveriesHandler(req: Request, res: Response): Promise<void> {
@@ -84,7 +84,7 @@ export async function redeliverHandler(req: Request, res: Response): Promise<voi
 
 export async function deleteWebhookHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await webhooksService.remove(id);
+  await webhooksService.remove(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'webhook.delete',

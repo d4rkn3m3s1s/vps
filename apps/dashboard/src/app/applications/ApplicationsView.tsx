@@ -51,34 +51,69 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
   const [category, setCategory] = useState('All');
   const [query, setQuery] = useState('');
   const [installApp, setInstallApp] = useState<AppItem | null>(null);
+  // Custom "upload APK" flow (header buttons): operator types a package + APK URL.
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customPkg, setCustomPkg] = useState('');
+  const [apkUrl, setApkUrl] = useState('');
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
   function flash(t: string) {
     setToast(t);
-    setTimeout(() => setToast(null), 3000);
+    setTimeout(() => setToast(null), 3500);
   }
 
   function openInstall(app: AppItem) {
     setInstallApp(app);
+    setApkUrl('');
+    setPicked(new Set());
+  }
+
+  function openCustom() {
+    setCustomOpen(true);
+    setCustomPkg('');
+    setApkUrl('');
     setPicked(new Set());
   }
 
   async function confirmInstall() {
     if (!installApp || picked.size === 0) return;
+    // Catalog items have no bundled APK, so an APK download URL is required.
+    if (!apkUrl.trim()) { flash('Bir APK indirme URL\'si girin (Play paketi doğrudan kurulamaz).'); return; }
     setBusy(true);
     try {
       const res = await fetch('/api/catalog/apps/install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ packageName: installApp.packageName, deviceIds: Array.from(picked) })
+        body: JSON.stringify({ packageName: installApp.packageName, deviceIds: Array.from(picked), apkUrl: apkUrl.trim() })
       });
-      if (!res.ok) throw new Error();
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.data?.message ?? json?.message ?? 'Kurulum başarısız');
       flash(`${installApp.name} ${picked.size} telefonda kuyruğa alındı`);
       setInstallApp(null);
-    } catch {
-      flash(`${installApp.name} kuyruğa alınamadı`);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : `${installApp.name} kuyruğa alınamadı`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmCustom() {
+    if (!customPkg.trim() || !apkUrl.trim() || picked.size === 0) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/catalog/apps/install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ packageName: customPkg.trim(), deviceIds: Array.from(picked), apkUrl: apkUrl.trim() })
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.data?.message ?? json?.message ?? 'Kurulum başarısız');
+      flash(`APK ${picked.size} telefonda kuyruğa alındı`);
+      setCustomOpen(false);
+    } catch (e) {
+      flash(e instanceof Error ? e.message : 'APK kuyruğa alınamadı');
     } finally {
       setBusy(false);
     }
@@ -104,7 +139,7 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
         title="Uygulamalar"
         subtitle="Gerçek APK kataloğu — seçili bulut telefonlara tek tıkla kurun."
         actions={
-          <button type="button" className="btn-primary">
+          <button type="button" className="btn-primary" onClick={openCustom}>
             <Upload size={15} /> APK Yükle
           </button>
         }
@@ -148,7 +183,7 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
             <div className="empty-art"><LayoutGrid size={40} /></div>
             <h3>Henüz ekip uygulaması yok</h3>
             <p>Ekibinizin bulut telefonlarında paylaşmak için bir APK yükleyin.</p>
-            <button type="button" className="btn-primary">
+            <button type="button" className="btn-primary" onClick={openCustom}>
               <Upload size={15} /> APK Yükle
             </button>
           </div>
@@ -194,6 +229,13 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
             </header>
             <p className="helper mono">{installApp.packageName} · v{installApp.version}</p>
             <div className="modal-section">
+              <label className="field">
+                <span>APK indirme URL'si</span>
+                <input className="field-input mono" value={apkUrl} onChange={(e) => setApkUrl(e.target.value)} placeholder="https://.../app.apk" />
+                <span className="helper">Play Store paketleri doğrudan kurulamaz; doğrudan bir APK bağlantısı gerekir.</span>
+              </label>
+            </div>
+            <div className="modal-section">
               <h3>Hedef telefonları seçin</h3>
               <div className="run-devices">
                 {devices.length === 0 ? (
@@ -222,6 +264,52 @@ export function ApplicationsView({ apps, devices }: { apps: AppItem[]; devices: 
             <footer className="modal-foot">
               <span className="helper mono">{picked.size} seçili</span>
               <button type="button" className="btn-primary" disabled={busy || picked.size === 0} onClick={confirmInstall}>
+                {busy ? 'Kuruluyor…' : `${picked.size} telefona kur`}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {customOpen ? (
+        <div className="modal-overlay" onClick={() => !busy && setCustomOpen(false)}>
+          <div className="modal holo-panel" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2><Upload size={18} /> APK Yükle</h2>
+              <button type="button" className="modal-close" onClick={() => !busy && setCustomOpen(false)}><X size={16} /></button>
+            </header>
+            <div className="modal-section">
+              <label className="field">
+                <span>Paket adı</span>
+                <input className="field-input mono" value={customPkg} onChange={(e) => setCustomPkg(e.target.value)} placeholder="com.example.app" />
+              </label>
+              <label className="field">
+                <span>APK indirme URL'si</span>
+                <input className="field-input mono" value={apkUrl} onChange={(e) => setApkUrl(e.target.value)} placeholder="https://.../app.apk" />
+              </label>
+            </div>
+            <div className="modal-section">
+              <h3>Hedef telefonları seçin</h3>
+              <div className="run-devices">
+                {devices.length === 0 ? (
+                  <span className="helper">Kullanılabilir bulut telefon yok — önce bir tane oluşturun.</span>
+                ) : (
+                  devices.map((d) => (
+                    <label className="field-check" key={d.id}>
+                      <input
+                        type="checkbox"
+                        checked={picked.has(d.id)}
+                        onChange={(e) => setPicked((prev) => { const next = new Set(prev); if (e.target.checked) next.add(d.id); else next.delete(d.id); return next; })}
+                      />
+                      <span><Smartphone size={13} className="mono" /> {d.name}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </div>
+            <footer className="modal-foot">
+              <span className="helper mono">{picked.size} seçili</span>
+              <button type="button" className="btn-primary" disabled={busy || !customPkg.trim() || !apkUrl.trim() || picked.size === 0} onClick={confirmCustom}>
                 {busy ? 'Kuruluyor…' : `${picked.size} telefona kur`}
               </button>
             </footer>

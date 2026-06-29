@@ -124,18 +124,29 @@ export const calendarService = {
               post.workspaceId ?? undefined
             );
           }
-          // Then the posting flow (caption available to steps via payload).
+          // Then the posting flow (caption available to steps via payload). Tag
+          // the job with scheduledPostId so job-completion (agent.complete) can
+          // advance this post POSTING → POSTED (or FAILED) for real.
           if (flow) {
             await createJobRecord(
               'RPA_RUN',
-              { deviceId, flowId: flow.id, steps: flow.steps, caption: post.caption } as unknown as JobPayload,
+              { deviceId, flowId: flow.id, steps: flow.steps, caption: post.caption, scheduledPostId: post.id } as unknown as JobPayload,
               undefined,
               post.workspaceId ?? undefined
             );
           }
         }
 
-        await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'POSTED', postedAt: now } });
+        // HONEST status: when a posting flow is attached, the RPA jobs are only
+        // QUEUED on the device(s) now — the agent runs them afterwards and may
+        // still fail. So this is "POSTING" (in progress), NOT a confirmed "POSTED".
+        // Without a flow there is nothing to execute on-device, so the dispatch
+        // itself is the terminal action → a real POSTED.
+        if (flow) {
+          await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'POSTING' } });
+        } else {
+          await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'POSTED', postedAt: now } });
+        }
         dispatched += 1;
       } catch (e) {
         await prisma.scheduledPost
@@ -144,5 +155,23 @@ export const calendarService = {
       }
     }
     return { dispatched };
+  },
+
+  // Called from agent.complete when a posting RPA_RUN job (tagged with
+  // scheduledPostId) finishes. Advances the post from POSTING to its real terminal
+  // state: the first COMPLETED job marks it POSTED; a FAILED job marks it FAILED.
+  // Only acts while the post is still POSTING so we never override a settled state
+  // or re-fire on a second device's job.
+  async resolvePosting(postId: string, ok: boolean, error?: string): Promise<void> {
+    const post = await prisma.scheduledPost.findUnique({ where: { id: postId } });
+    if (!post || post.status !== 'POSTING') return;
+    if (ok) {
+      await prisma.scheduledPost.update({ where: { id: postId }, data: { status: 'POSTED', postedAt: new Date() } });
+    } else {
+      await prisma.scheduledPost.update({
+        where: { id: postId },
+        data: { status: 'FAILED', error: error || 'Gönderi akışı cihazda başarısız oldu' }
+      });
+    }
   }
 };

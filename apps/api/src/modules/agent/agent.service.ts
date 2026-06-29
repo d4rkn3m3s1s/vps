@@ -6,6 +6,8 @@ import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
+import { usageService } from '../usage/usage.service';
+import { calendarService } from '../calendar/calendar.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -118,6 +120,17 @@ export class AgentService {
       }
     }
 
+    // Scheduled-post RPA jobs carry scheduledPostId; advance the post from
+    // POSTING to its real terminal state once the device actually ran the flow.
+    if (updated.type === 'RPA_RUN') {
+      const scheduledPostId = (updated.payload as { scheduledPostId?: string } | null)?.scheduledPostId;
+      if (scheduledPostId) {
+        void calendarService
+          .resolvePosting(scheduledPostId, outcome.status === 'COMPLETED', outcome.error)
+          .catch(() => undefined);
+      }
+    }
+
     // Evaluate alert rules on job failure.
     if (outcome.status === 'FAILED') {
       void alertsService.evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', {
@@ -129,7 +142,10 @@ export class AgentService {
     return { id: updated.id, status: updated.status };
   }
 
-  async heartbeat(host: Host, input: { runningPhones?: number | undefined; capacity?: number | undefined }) {
+  async heartbeat(
+    host: Host,
+    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined }
+  ) {
     const updated = await prisma.host.update({
       where: { id: host.id },
       data: {
@@ -140,23 +156,50 @@ export class AgentService {
       }
     });
 
-    // A live agent heartbeat means this host's bound phones are reachable over
-    // ADB, so reflect them as ONLINE on the dashboard. We don't override devices
-    // mid-transition (STARTING/STOPPING/REBOOTING/UPDATING) or in an ERROR state.
     const now = new Date();
-    // Capture which devices were OFFLINE before this heartbeat so we can fire a
-    // DEVICE_ONLINE webhook only on the actual OFFLINE -> ONLINE transition (not
-    // on every heartbeat of an already-online device).
-    const justCameOnline = await prisma.device.findMany({
-      where: { hostId: host.id, status: 'OFFLINE' },
-      select: { id: true, name: true, workspaceId: true }
+    // When the agent reports the exact set of ADB-reachable serials, we trust it
+    // as ground truth: a phone is ONLINE iff its serial is in that set, OFFLINE
+    // otherwise. This also clears transitional states (REBOOTING/STARTING/…) once
+    // the phone reappears, and demotes phones whose emulator was shut down but
+    // whose row was left ONLINE. Without serials (older agent) we fall back to the
+    // legacy behavior: a live heartbeat means all bound phones are reachable.
+    const hasSerials = Array.isArray(input.serials);
+    const reachable = new Set((input.serials ?? []).map((s) => s.trim()).filter(Boolean));
+
+    // Read each affected device's PREVIOUS lastSeen BEFORE we overwrite it, so we
+    // can accrue the online minutes elapsed since the last heartbeat (pay-as-you-
+    // go metering). We can't do this with a bulk updateMany because that would
+    // discard the prior lastSeen we need to measure the gap. With serials we also
+    // consider transitional states so they can resolve; without, only OFFLINE/ONLINE.
+    const affected = await prisma.device.findMany({
+      where: {
+        hostId: host.id,
+        status: hasSerials
+          ? { in: ['OFFLINE', 'ONLINE', 'STARTING', 'STOPPING', 'REBOOTING', 'UPDATING'] }
+          : { in: ['OFFLINE', 'ONLINE'] }
+      },
+      select: { id: true, name: true, status: true, lastSeen: true, workspaceId: true, ipAddress: true, adbPort: true }
     });
-    await prisma.device.updateMany({
-      where: { hostId: host.id, status: { in: ['OFFLINE', 'ONLINE'] } },
-      data: { status: 'ONLINE', lastSeen: now }
-    });
-    for (const d of justCameOnline) {
-      void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
+    for (const d of affected) {
+      const serial = d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null;
+      const isUp = hasSerials ? Boolean(serial && reachable.has(serial)) : true;
+
+      if (isUp) {
+        // Credit online time only for devices that were already ONLINE (a freshly
+        // promoted device has no measurable online slice yet).
+        if (d.status === 'ONLINE') {
+          await usageService.accrue(d.id, d.lastSeen, now, d.workspaceId ?? undefined);
+        }
+        await prisma.device.update({ where: { id: d.id }, data: { status: 'ONLINE', lastSeen: now } }).catch(() => undefined);
+        // Fire DEVICE_ONLINE only on a real transition into ONLINE.
+        if (d.status !== 'ONLINE') {
+          void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
+        }
+      } else if (d.status !== 'OFFLINE') {
+        // Serial not reachable → the phone is down. Demote to OFFLINE (also clears
+        // a stuck REBOOTING/STARTING). Don't touch lastSeen so "last seen" stays meaningful.
+        await prisma.device.update({ where: { id: d.id }, data: { status: 'OFFLINE' } }).catch(() => undefined);
+      }
     }
 
     return updated;
@@ -194,10 +237,27 @@ export class AgentService {
             ...(typeof m.diskUsage === 'number' ? { diskUsage: m.diskUsage } : {})
           }
         });
+        // Append a timeseries point so the device-health charts have history.
+        // Best-effort: a failed insert must not break the metrics update.
+        await prisma.deviceMetricPoint.create({
+          data: {
+            deviceId,
+            cpuUsage: typeof m.cpuUsage === 'number' ? m.cpuUsage : 0,
+            memoryUsage: typeof m.memoryUsage === 'number' ? m.memoryUsage : 0,
+            diskUsage: typeof m.diskUsage === 'number' ? m.diskUsage : 0,
+            capturedAt: now
+          }
+        }).catch(() => undefined);
         updated += 1;
       } catch {
         /* device may have been deleted between heartbeats — skip */
       }
+    }
+    // Opportunistically prune very old points so the table stays bounded (keep
+    // ~7 days). Runs at most a fraction of the time to avoid a delete every tick.
+    if (updated > 0 && Math.floor(now.getTime() / 1000) % 20 === 0) {
+      const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      await prisma.deviceMetricPoint.deleteMany({ where: { capturedAt: { lt: cutoff } } }).catch(() => undefined);
     }
     return { updated };
   }

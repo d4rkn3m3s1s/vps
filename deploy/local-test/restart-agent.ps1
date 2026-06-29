@@ -11,6 +11,10 @@ $envs = @{
   FLEET_API_KEY  = "f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9"
   FLEET_HOST_KEY = "host_6bbbbfe1fd292aa80f2aa1b7ab1a0326"
   FLEET_ADB      = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+  # ffmpeg → MJPEG path: reliable <img> rendering at ~20-25fps. This is the
+  # DEFAULT because it just works everywhere. (The raw-H.264/WebCodecs path,
+  # FLEET_STREAM_H264_RAW=1, is lower-latency but fragile re: codec profile /
+  # keyframe sync — only enable it once that path is proven on the target ROM.)
   FLEET_FFMPEG   = "C:\scrcpy\ffmpeg.exe"
   FLEET_STREAM_W = "540"
   FLEET_POLL_MS  = "2000"

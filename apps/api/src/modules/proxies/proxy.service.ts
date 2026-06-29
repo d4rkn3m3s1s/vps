@@ -194,7 +194,8 @@ export class ProxyService {
 
     const pool = await prisma.proxy.findMany({
       where: { ...(workspaceId ? { workspaceId } : {}), status: { not: 'FAILED' } },
-      orderBy: { lastCheckedAt: 'asc' }
+      // Prefer the healthiest proxy (highest score); tie-break on least-recently used.
+      orderBy: [{ score: 'desc' }, { lastCheckedAt: 'asc' }]
     });
     if (pool.length === 0) return { assigned: false };
 
@@ -266,12 +267,52 @@ export class ProxyService {
       }
     }
 
+    // Rolling health score: reward success, penalize failure, leave UNKNOWN flat.
+    // Next check is scheduled sooner for unhealthy proxies, later for healthy ones.
+    const now = new Date();
+    let score = proxy.score;
+    let failCount = proxy.failCount;
+    if (status === 'OK') {
+      score = Math.min(100, score + 15);
+      failCount = 0;
+    } else if (status === 'FAILED') {
+      score = Math.max(0, score - 25);
+      failCount = failCount + 1;
+    }
+    const nextMs = status === 'OK' && score >= 60 ? 6 * 60 * 60 * 1000 : 20 * 60 * 1000;
+    const checksDue = new Date(now.getTime() + nextMs);
+
     const updated = await prisma.proxy.update({
       where: { id },
       // On a failed/unknown check don't keep a stale exportIp around.
-      data: { status, exportIp: status === 'OK' ? exportIp : null, lastCheckedAt: new Date() }
+      data: { status, exportIp: status === 'OK' ? exportIp : null, lastCheckedAt: now, score, failCount, checksDue }
     });
     return toPublic(updated);
+  }
+
+  // Periodic revalidation: re-check proxies whose checksDue has passed (or was
+  // never set). Called by the background ticker in index.ts. Bounded per run so a
+  // huge pool doesn't stall the loop. Returns counts for logging.
+  async revalidateDue(limit = 25): Promise<{ checked: number; ok: number; failed: number }> {
+    const now = new Date();
+    const due = await prisma.proxy.findMany({
+      where: { OR: [{ checksDue: null }, { checksDue: { lte: now } }] },
+      orderBy: [{ checksDue: { sort: 'asc', nulls: 'first' } }],
+      take: limit,
+      select: { id: true, workspaceId: true }
+    });
+    let ok = 0;
+    let failed = 0;
+    for (const p of due) {
+      try {
+        const r = await this.check(p.id, p.workspaceId ?? undefined);
+        if (r.status === 'OK') ok++;
+        else if (r.status === 'FAILED') failed++;
+      } catch {
+        failed++;
+      }
+    }
+    return { checked: due.length, ok, failed };
   }
 
   private async assertExists(id: string): Promise<void> {

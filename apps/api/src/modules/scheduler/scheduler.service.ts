@@ -3,6 +3,7 @@ import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
+import { deviceAgentService } from '../device-agent/device-agent.service';
 
 export type ScheduleCreateInput = {
   name: string;
@@ -85,7 +86,27 @@ export class SchedulerService {
       // Job.emulatorId is a FK to the Emulator table, not Device — so we carry
       // the target device id inside the payload instead of as the FK.
       const payload = { ...(task.payload as JobPayload), deviceId: task.deviceId ?? undefined };
-      await createJobRecord(task.jobType, payload);
+
+      // AGENT_RUN is an API-side AI loop (over WS), not a host-agent job — start
+      // it directly instead of enqueuing a Job. Failures (e.g. agent offline) are
+      // swallowed so they don't block other due tasks; startRun records the error.
+      if (task.jobType === 'AGENT_RUN') {
+        const p = task.payload as { goal?: unknown; stealth?: unknown; useVision?: unknown; maxTurns?: unknown };
+        if (task.deviceId && typeof p.goal === 'string' && p.goal.trim()) {
+          await deviceAgentService
+            .startRun({
+              deviceId: task.deviceId,
+              goal: p.goal,
+              ...(task.workspaceId ? { workspaceId: task.workspaceId } : {}),
+              ...(typeof p.stealth === 'boolean' ? { stealth: p.stealth } : {}),
+              ...(typeof p.useVision === 'boolean' ? { useVision: p.useVision } : {}),
+              ...(typeof p.maxTurns === 'number' ? { maxTurns: p.maxTurns } : {})
+            })
+            .catch(() => undefined);
+        }
+      } else {
+        await createJobRecord(task.jobType, payload);
+      }
 
       if (task.repeat === 'ONCE') {
         await prisma.scheduledTask.update({

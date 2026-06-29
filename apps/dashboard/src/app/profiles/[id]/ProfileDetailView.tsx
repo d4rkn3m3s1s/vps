@@ -30,6 +30,8 @@ import { AdbAccessPanel } from './AdbAccessPanel';
 import { LiveScreen } from './LiveScreen';
 import { SnapshotPanel } from './SnapshotPanel';
 import { DeviceAccessPanel } from './DeviceAccessPanel';
+import { CloudPhoneControlPanel } from './CloudPhoneControlPanel';
+import { DeviceMetricsPanel } from './DeviceMetricsPanel';
 import { FileClipboardPanel } from './FileClipboardPanel';
 
 export type DetailFingerprint = {
@@ -72,6 +74,9 @@ export type DetailDevice = {
   group?: { id: string; name: string } | null;
   host?: { id: string; name: string } | null;
   fingerprint?: DetailFingerprint | null;
+  // Set when this device is a rented phone from an external cloud-phone vendor.
+  cloudProvider?: string | null;
+  externalId?: string | null;
 };
 
 export type DetailJob = {
@@ -394,6 +399,16 @@ export function ProfileDetailView({
           </div>
         </HoloPanel>
       </Reveal>
+
+      <Reveal delay={0.105} className="holo-stack-1">
+        <DeviceMetricsPanel deviceId={device.id} />
+      </Reveal>
+
+      {device.cloudProvider && device.cloudProvider !== 'SELF' ? (
+        <Reveal delay={0.11} className="holo-stack-1">
+          <CloudPhoneControlPanel deviceId={device.id} provider={device.cloudProvider} />
+        </Reveal>
+      ) : null}
 
       <Reveal delay={0.12} className="holo-stack-1">
         <SnapshotPanel deviceId={device.id} />

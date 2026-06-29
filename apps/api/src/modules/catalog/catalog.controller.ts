@@ -6,7 +6,10 @@ import { catalogService } from './catalog.service';
 
 const installAppSchema = z.object({
   packageName: z.string().min(1),
-  deviceIds: z.array(z.string()).min(1)
+  deviceIds: z.array(z.string()).min(1),
+  // Optional operator-supplied APK download URL — required when the catalog item
+  // has no bundled apkUrl (Play Store package names can't be installed directly).
+  apkUrl: z.string().url().optional()
 });
 
 const useTemplateSchema = z.object({
@@ -25,7 +28,7 @@ export async function listAppsHandler(_req: Request, res: Response): Promise<voi
 
 export async function installAppHandler(req: Request, res: Response): Promise<void> {
   const input = installAppSchema.parse(req.body);
-  const result = await catalogService.installApp(input.packageName, input.deviceIds);
+  const result = await catalogService.installApp(input.packageName, input.deviceIds, input.apkUrl);
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'app.install',

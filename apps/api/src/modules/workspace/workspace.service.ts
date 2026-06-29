@@ -121,6 +121,45 @@ export class WorkspaceService {
     await prisma.workspaceMember.delete({ where: { id: memberId } });
   }
 
+  // Wipes the workspace's OPERATIONAL data (devices, proxies, farm, jobs, RPA,
+  // snapshots, schedules, alerts, generated accounts, …) while KEEPING the
+  // workspace, its members, settings and subscription. Irreversible — the caller
+  // must confirm. Runs in a transaction so it's all-or-nothing. Most child tables
+  // are onDelete:Cascade from Device/Workspace, but we explicitly clear the
+  // workspace-scoped tables to be thorough and deterministic.
+  async resetWorkspace(workspaceId: string): Promise<{ ok: true }> {
+    const ws = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } });
+    if (!ws) throw new AppError('Workspace not found', 404, 'WORKSPACE_NOT_FOUND');
+    const w = { workspaceId };
+    await prisma.$transaction([
+      // Devices cascade to fingerprints/usage/snapshots/grants/agentRuns/appMaps/farmAccount.
+      prisma.device.deleteMany({ where: w }),
+      prisma.deviceGroup.deleteMany({ where: w }),
+      prisma.proxy.deleteMany({ where: w }),
+      prisma.farmCampaign.deleteMany({ where: w }),
+      prisma.generatedAccount.deleteMany({ where: w }),
+      prisma.rpaFlow.deleteMany({ where: w }),
+      prisma.scheduledTask.deleteMany({ where: w }),
+      prisma.scheduledPost.deleteMany({ where: w }),
+      prisma.job.deleteMany({ where: w }),
+      prisma.alertEvent.deleteMany({ where: w }),
+      prisma.alertRule.deleteMany({ where: w }),
+      prisma.webhook.deleteMany({ where: w }),
+      prisma.libraryAsset.deleteMany({ where: w }),
+      prisma.metricSnapshot.deleteMany({ where: w })
+    ]);
+    return { ok: true };
+  }
+
+  // Permanently deletes the workspace and everything under it (cascades). The
+  // last workspace of the platform's bootstrap is protected by the controller.
+  async deleteWorkspace(workspaceId: string): Promise<{ ok: true }> {
+    const ws = await prisma.workspace.findUnique({ where: { id: workspaceId }, select: { id: true } });
+    if (!ws) throw new AppError('Workspace not found', 404, 'WORKSPACE_NOT_FOUND');
+    await prisma.workspace.delete({ where: { id: workspaceId } });
+    return { ok: true };
+  }
+
   // Returns the workspace's settings row, creating defaults on first read.
   async getSettings(workspaceId: string) {
     return prisma.workspaceSettings.upsert({

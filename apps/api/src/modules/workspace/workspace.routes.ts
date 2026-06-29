@@ -4,11 +4,13 @@ import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import {
   createWorkspaceHandler,
+  deleteWorkspaceHandler,
   getSettingsHandler,
   inviteMemberHandler,
   listMembersHandler,
   listWorkspacesHandler,
   removeMemberHandler,
+  resetWorkspaceHandler,
   switchWorkspaceHandler,
   updateMemberHandler,
   updateSettingsHandler,
@@ -29,3 +31,5 @@ workspaceRouter.get('/:id/members', asyncHandler(listMembersHandler));
 workspaceRouter.post('/:id/members', asyncHandler(inviteMemberHandler));
 workspaceRouter.put('/:id/members/:memberId', asyncHandler(updateMemberHandler));
 workspaceRouter.delete('/:id/members/:memberId', asyncHandler(removeMemberHandler));
+workspaceRouter.post('/:id/reset', asyncHandler(resetWorkspaceHandler));
+workspaceRouter.delete('/:id', asyncHandler(deleteWorkspaceHandler));

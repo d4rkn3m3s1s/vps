@@ -11,9 +11,16 @@ import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import { useRef, type ReactNode, type PointerEvent } from 'react';
 
 /* ── 3D pointer-tilt wrapper (spring-damped, glare) ── */
+// Forwards a double-click handler so callers can act on it (e.g. focus a wall
+// cell). Native HTML drag is NOT forwarded here — framer-motion overloads
+// onDragStart/onDragEnd with its own pan-gesture signature, so draggable cards
+// must wrap Holo3D in a plain element that owns the drag/drop handlers.
 export function Holo3D({
-  children, className, max = 6, glare = true
-}: { children: ReactNode; className?: string; max?: number; glare?: boolean }) {
+  children, className, max = 6, glare = true, onDoubleClick
+}: {
+  children: ReactNode; className?: string; max?: number; glare?: boolean;
+  onDoubleClick?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const px = useMotionValue(0.5);
   const py = useMotionValue(0.5);
@@ -39,6 +46,7 @@ export function Holo3D({
       onPointerLeave={leave}
       className={className}
       style={{ rotateX: rotX, rotateY: rotY, transformPerspective: 1100, transformStyle: 'preserve-3d' }}
+      {...(onDoubleClick ? { onDoubleClick } : {})}
     >
       {children}
       {glare ? <motion.span aria-hidden className="holo-glare" style={{ background: glow }} /> : null}

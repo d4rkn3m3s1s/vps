@@ -6,6 +6,7 @@ import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat } from '../../components/hud';
 import { downloadCsv } from '../../lib/csv';
 import { useFleetEvents } from '../../lib/live';
+import { usePolling } from '../../lib/usePolling';
 
 export type Job = {
   id: string;
@@ -57,21 +58,17 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
   const [live, setLive] = useState(true);
   const [selected, setSelected] = useState<Job | null>(null);
 
-  // Live polling: refresh the job list every 4s while enabled.
-  useEffect(() => {
-    if (!live) return undefined;
-    const tick = async () => {
-      try {
-        const res = await fetch('/api/jobs', { cache: 'no-store' });
-        const json = await res.json();
-        if (Array.isArray(json.data)) setJobs(json.data);
-      } catch {
-        /* ignore transient errors */
-      }
-    };
-    const id = setInterval(tick, 4000);
-    return () => clearInterval(id);
-  }, [live]);
+  // Live polling: refresh the job list every 4s while enabled (skips ticks when
+  // the tab is hidden, so background tabs don't keep hitting the API).
+  usePolling(async () => {
+    try {
+      const res = await fetch('/api/jobs', { cache: 'no-store' });
+      const json = await res.json();
+      if (Array.isArray(json.data)) setJobs(json.data);
+    } catch {
+      /* ignore transient errors */
+    }
+  }, 4000, live);
 
   // Real-time: refresh immediately when a job is created or changes status.
   useFleetEvents(['job.created', 'job.updated'], () => {

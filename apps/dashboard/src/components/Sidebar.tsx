@@ -10,10 +10,11 @@ import {
   Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
   BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings, UserPlus, TrendingUp, DollarSign
+  Settings, UserPlus, TrendingUp, DollarSign, Bot, Cloud
 } from 'lucide-react';
 import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { BrandLogo } from './BrandLogo';
 
 type NavItem = {
   href: string;
@@ -40,6 +41,7 @@ const NAV: NavGroup[] = [
       { href: '/applications', tkey: 'nav.applications', icon: AppWindow },
       { href: '/images', tkey: 'nav.images', icon: Layers },
       { href: '/ai', tkey: 'nav.ai', icon: Sparkles },
+      { href: '/ai-agent', tkey: 'nav.aiAgent', icon: Bot },
       { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus }
     ]
   },
@@ -68,6 +70,7 @@ const NAV: NavGroup[] = [
     tkey: 'group.team',
     items: [
       { href: '/hosts', tkey: 'nav.hosts', icon: Server },
+      { href: '/cloud-providers', tkey: 'nav.cloudProviders', icon: Cloud },
       { href: '/alerts', tkey: 'nav.alerts', icon: Bell },
       { href: '/billing', tkey: 'nav.billing', icon: CreditCard },
       { href: '/members', tkey: 'nav.members', icon: Users },
@@ -130,7 +133,7 @@ export function Sidebar({ activeWorkspaceId }: { activeWorkspaceId?: string | un
       {mobileOpen ? <div className="sidebar-backdrop" onClick={() => setMobileOpen(false)} /> : null}
       <aside className={`app-sidebar${mobileOpen ? ' app-sidebar-open' : ''}`}>
       <div className="brand">
-        <span className="brand-mark">V</span>
+        <span className="brand-mark brand-mark-svg"><BrandLogo size={38} /></span>
         <div className="brand-text">
           <strong>VPS Fleet</strong>
           <span className="brand-sub">Cloud Phones</span>

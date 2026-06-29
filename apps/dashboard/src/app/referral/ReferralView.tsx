@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Gift, Link2, Users, UserCheck, Wallet, Hourglass, Copy, Check, ListChecks, Sparkles, Share2, Coins } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
@@ -35,7 +35,12 @@ const STATUS_DOT: Record<string, string> = {
 export function ReferralView({ data }: { data: ReferralData | null }) {
   const [copied, setCopied] = useState(false);
   const code = data?.code ?? '—';
-  const link = `https://app.vpsfleet.io/r/${code}`;
+  // Use the live dashboard origin so the link points at the real /r/<code> route
+  // (which captures the code into a cookie and redirects to login). Falls back to
+  // a relative path during SSR before the origin is known.
+  const [origin, setOrigin] = useState('');
+  useEffect(() => { if (typeof window !== 'undefined') setOrigin(window.location.origin); }, []);
+  const link = code === '—' ? '—' : `${origin}/r/${code}`;
   const rewardPct = Math.round((data?.rewardRate ?? 0.2) * 100);
 
   async function copy() {

@@ -49,13 +49,21 @@ export async function createHostHandler(req: Request, res: Response): Promise<vo
 
 export async function heartbeatHostHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
+  // requireHostAgent authenticated this call by the per-host agent key. A host may
+  // only heartbeat itself — reject if the URL id doesn't match the authenticated host.
+  const agentHost = req.hostAgent;
+  if (!agentHost || agentHost.id !== id) {
+    throw new AppError('Host mismatch', 403, 'HOST_FORBIDDEN');
+  }
   const input = heartbeatSchema.parse(req.body);
   res.json({ data: await hostsService.heartbeat(id, input) });
 }
 
 export async function deleteHostHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await hostsService.remove(id);
+  // Scope deletion to the caller's workspace so an admin can't delete another
+  // tenant's host by id (IDOR).
+  await hostsService.remove(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'host.delete',

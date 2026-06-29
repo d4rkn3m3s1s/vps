@@ -4,6 +4,7 @@ import { trendsRouter } from '../modules/trends/trends.routes';
 import { costsRouter } from '../modules/costs/costs.routes';
 import { notificationsRouter } from '../modules/notifications/notifications.routes';
 import { agentRouter } from '../modules/agent/agent.routes';
+import { deviceAgentRouter } from '../modules/device-agent/device-agent.routes';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { alertsRouter } from '../modules/alerts/alerts.routes';
 import { analyticsRouter } from '../modules/analytics/analytics.routes';
@@ -15,6 +16,7 @@ import { bulkRouter } from '../modules/bulk/bulk.routes';
 import { calendarRouter } from '../modules/calendar/calendar.routes';
 import { catalogRouter } from '../modules/catalog/catalog.routes';
 import { hostsRouter } from '../modules/hosts/hosts.routes';
+import { cloudProvidersRouter } from '../modules/cloud-providers/cloud-providers.routes';
 import { emulatorRouter } from '../modules/emulators/emulator.routes';
 import { deviceRouter } from '../modules/devices/device.routes';
 import { farmRouter } from '../modules/farm/farm.routes';
@@ -67,6 +69,7 @@ export function registerRoutes(app: Express): void {
   app.use('/webhooks', webhooksRouter);
   app.use('/catalog', catalogRouter);
   app.use('/hosts', hostsRouter);
+  app.use('/cloud-providers', cloudProvidersRouter);
   app.use('/agent', agentRouter);
   app.use('/workspaces', workspaceRouter);
   app.use('/billing', billingRouter);
@@ -86,5 +89,6 @@ export function registerRoutes(app: Express): void {
   app.use('/accounts', accountsRouter);
   app.use('/trends', trendsRouter);
   app.use('/costs', costsRouter);
+  app.use('/device-agent', deviceAgentRouter);
   app.use('/notifications', notificationsRouter);
 }

@@ -52,9 +52,10 @@ export class WebhooksService {
       event?: WebhookEvent | undefined;
       secret?: string | undefined;
       active?: boolean | undefined;
-    }
+    },
+    workspaceId?: string
   ) {
-    await this.assertExists(id);
+    await this.assertExists(id, workspaceId);
     const hook = await prisma.webhook.update({
       where: { id },
       data: {
@@ -69,8 +70,8 @@ export class WebhooksService {
     return { ...rest, hasSecret: Boolean(secret) };
   }
 
-  async remove(id: string) {
-    await this.assertExists(id);
+  async remove(id: string, workspaceId?: string) {
+    await this.assertExists(id, workspaceId);
     return prisma.webhook.delete({ where: { id } });
   }
 
@@ -164,8 +165,12 @@ export class WebhooksService {
     });
   }
 
-  private async assertExists(id: string): Promise<void> {
-    const hook = await prisma.webhook.findUnique({ where: { id } });
+  // Workspace-scoped existence check: a webhook in another tenant is "not found"
+  // rather than mutable cross-tenant.
+  private async assertExists(id: string, workspaceId?: string): Promise<void> {
+    const hook = await prisma.webhook.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) }
+    });
     if (!hook) throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
   }
 }

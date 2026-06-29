@@ -90,7 +90,7 @@ export type GeneratedFlow = { name: string; description: string; steps: RpaStep[
 // Calls the Messages API forcing a single tool and returns the parsed tool input.
 // Same wire format / error handling as generateFlow above (no temperature, no
 // budget_tokens — Opus 4.8 rejects them; 60s AbortController).
-async function callForcedTool(
+export async function callForcedTool(
   system: string,
   userContent: string,
   tool: { name: string; description: string; input_schema: unknown },
@@ -138,6 +138,97 @@ async function callForcedTool(
     throw new AppError('AI geçerli bir yanıt üretemedi', 502, 'AI_BAD_OUTPUT');
   }
   return toolUse.input as Record<string, unknown>;
+}
+
+// ── Multi-tool ReAct caller (AI Device Agent) ───────────────────────────────
+// Unlike callForcedTool (single forced tool, one-shot), this lets the model pick
+// AMONG several tools each turn and accepts the full conversation so far, so the
+// caller can drive a perceive→decide→act loop and feed tool_result blocks back.
+// Same wire pattern: no temperature/budget_tokens (Opus 4.8 rejects them), 60s
+// AbortController, x-api-key header.
+export type AnthropicToolDef = { name: string; description: string; input_schema: unknown };
+export type AnthropicMessage = { role: 'user' | 'assistant'; content: unknown };
+export type ToolTurnResult = {
+  stopReason: string; // 'tool_use' | 'end_turn' | 'max_tokens' | ...
+  text: string; // any assistant prose (the model's reasoning)
+  toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+  rawAssistantContent: unknown; // echo back verbatim as the assistant turn
+};
+
+// Attach a cache breakpoint to the LAST tool so the system+tools prefix is
+// cached as one block (Anthropic caches everything up to the marked block).
+function cacheLastTool(tools: AnthropicToolDef[]): unknown[] {
+  return tools.map((t, i) =>
+    i === tools.length - 1 ? { ...t, cache_control: { type: 'ephemeral' } } : t
+  );
+}
+
+export async function callToolLoop(
+  system: string,
+  messages: AnthropicMessage[],
+  tools: AnthropicToolDef[],
+  maxTokens = 1024
+): Promise<ToolTurnResult> {
+  if (!env.anthropicApiKey) {
+    throw new AppError('AI yapılandırılmamış: ANTHROPIC_API_KEY eksik', 503, 'AI_NOT_CONFIGURED');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': env.anthropicApiKey,
+        'anthropic-version': ANTHROPIC_VERSION
+      },
+      body: JSON.stringify({
+        model: env.anthropicModel,
+        max_tokens: maxTokens,
+        // Mark the static prefix (system prompt + tool defs) as a cache breakpoint
+        // so repeated turns of a ReAct loop reuse it instead of re-billing it.
+        system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+        tools: cacheLastTool(tools),
+        tool_choice: { type: 'auto' },
+        messages
+      })
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof Error && e.name === 'AbortError') throw new AppError('AI isteği zaman aşımına uğradı', 504, 'AI_TIMEOUT');
+    throw new AppError('AI servisine ulaşılamadı', 502, 'AI_UNREACHABLE');
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new AppError(`AI hatası (${res.status})`, 502, 'AI_ERROR', detail.slice(0, 300));
+  }
+
+  const body = (await res.json()) as {
+    stop_reason?: string;
+    content?: Array<{ type: string; name?: string; id?: string; input?: unknown; text?: string }>;
+  };
+  const content = body.content ?? [];
+  const toolCalls = content
+    .filter((b) => b.type === 'tool_use' && typeof b.name === 'string')
+    .map((b) => ({
+      id: typeof b.id === 'string' ? b.id : '',
+      name: String(b.name),
+      input: b.input && typeof b.input === 'object' ? (b.input as Record<string, unknown>) : {}
+    }));
+  const text = content
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => String(b.text))
+    .join('\n');
+  return {
+    stopReason: typeof body.stop_reason === 'string' ? body.stop_reason : 'end_turn',
+    text,
+    toolCalls,
+    rawAssistantContent: content
+  };
 }
 
 // ── AI Insights types ───────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { BrandLogo } from './BrandLogo';
 
 // Branded splash on the first load of a session. Mounts above the whole app,
 // plays a logo-reveal + an orbiting-rings animation, and steps through a short
@@ -89,7 +90,7 @@ export function Preloader() {
           <span className="preloader-orbit preloader-orbit-1"><i /></span>
           <span className="preloader-orbit preloader-orbit-2"><i /></span>
           <span className="preloader-orbit preloader-orbit-3"><i /></span>
-          <span className="preloader-mark">V</span>
+          <span className="preloader-mark preloader-mark-svg"><BrandLogo size={44} /></span>
         </div>
         <div className="preloader-brand">
           <strong>VPS&nbsp;FLEET</strong>

@@ -42,6 +42,30 @@ export class DeviceService {
     });
   }
 
+  // Recent CPU/mem/disk timeseries for one device (workspace-scoped). `hours`
+  // bounds the window; points come back oldest-first ready to plot. Returns []
+  // for an unknown/foreign device rather than leaking existence.
+  async getMetrics(id: string, hours = 6, workspaceId?: string) {
+    const device = await prisma.device.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true }
+    });
+    if (!device) return [];
+    const since = new Date(Date.now() - Math.min(Math.max(1, hours), 168) * 60 * 60 * 1000);
+    const points = await prisma.deviceMetricPoint.findMany({
+      where: { deviceId: id, capturedAt: { gte: since } },
+      orderBy: { capturedAt: 'asc' },
+      take: 2000,
+      select: { cpuUsage: true, memoryUsage: true, diskUsage: true, capturedAt: true }
+    });
+    return points.map((p) => ({
+      t: p.capturedAt.toISOString(),
+      cpu: Math.round(p.cpuUsage * 10) / 10,
+      mem: Math.round(p.memoryUsage * 10) / 10,
+      disk: Math.round(p.diskUsage * 10) / 10
+    }));
+  }
+
   async createDevice(input: DeviceCreateInput, workspaceId?: string) {
     if (input.groupId) {
       await this.assertGroupExists(input.groupId);

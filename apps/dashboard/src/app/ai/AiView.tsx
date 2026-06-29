@@ -21,10 +21,13 @@ import {
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 
+// İçerik asistanı kısayolları. NOT: Bunlar medya ÜRETMEZ — sohbet kutusunu
+// hazır bir komutla doldurur ve AI (Claude) sana senaryo/plan/komut metni verir.
+// Başlıklar bunu dürüstçe yansıtır (gerçek video/görsel üretimi yok).
 const AIGC = [
-  { title: 'Görüntüden Videoya', desc: 'Tek bir görselden kısa videolar oluşturun.', prompt: 'Görüntüden videoya bir üretim planlamama yardım et: bir ürün görselini bulut telefonlarım için kısa bir tanıtım videosuna dönüştürmek için hangi araçları ve adımları kullanmalıyım?' },
-  { title: 'Metinden Videoya', desc: 'Bir komutu yayına hazır videoya dönüştürün.', prompt: 'Metinden videoya bir reklam için kısa, etkili bir senaryo ve çekim listesi yaz. Konu: ' },
-  { title: 'Görsel Oluştur', desc: 'Gönderileriniz için markaya uygun görseller oluşturun.', prompt: 'Şunun için sosyal medya grafikleri üretmek üzere kullanabileceğim markaya uygun görsel komutları (stil, renkler, kompozisyon ile) öner: ' }
+  { title: 'Video senaryosu planla', desc: 'AI sana görselden videoya bir üretim planı + adımlar versin.', prompt: 'Görüntüden videoya bir üretim planlamama yardım et: bir ürün görselini bulut telefonlarım için kısa bir tanıtım videosuna dönüştürmek için hangi araçları ve adımları kullanmalıyım?' },
+  { title: 'Reklam senaryosu yaz', desc: 'AI metinden bir reklam senaryosu + çekim listesi yazsın.', prompt: 'Metinden videoya bir reklam için kısa, etkili bir senaryo ve çekim listesi yaz. Konu: ' },
+  { title: 'Görsel komutu öner', desc: 'AI markaya uygun görsel üretim komutları (stil/renk) önersin.', prompt: 'Şunun için sosyal medya grafikleri üretmek üzere kullanabileceğim markaya uygun görsel komutları (stil, renkler, kompozisyon ile) öner: ' }
 ];
 
 const AUTOMATION = [
@@ -165,7 +168,8 @@ export function AiView() {
       const res = await fetch('/api/ai', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: text, model })
+        // Send the prior turns so Fleet AI has conversation context (memory).
+        body: JSON.stringify({ prompt: text, model, history: messages })
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? 'AI isteği başarısız oldu.');
@@ -379,7 +383,7 @@ export function AiView() {
         <HoloStat
           label="Hazır Şablon"
           value={<span className="mono">{templateCount}</span>}
-          sub="AIGC · Otomasyon · Soru"
+          sub="İçerik · Otomasyon · Soru"
           tone="violet"
           icon={<Layers size={16} />}
         />
@@ -451,7 +455,7 @@ export function AiView() {
       </HoloPanel>
 
       <div className="holo-grid-3">
-        <HoloPanel title="AIGC" icon={<Wand2 size={18} />}>
+        <HoloPanel title="İçerik Asistanı" icon={<Wand2 size={18} />}>
           <div className="holo-grid-auto">
             {AIGC.map((item) => (
               <Holo3D key={item.title} className="ai-card-3d">

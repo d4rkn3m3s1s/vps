@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Activity, Cpu, MemoryStick, HardDrive, RefreshCw, ServerCog, Wifi, AlertTriangle, Gauge } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
+import { usePolling } from '../../lib/usePolling';
 
 type Device = {
   id: string;
@@ -88,12 +89,10 @@ export function HealthView() {
     }
   }
 
-  useEffect(() => {
-    void load();
-    // Auto-refresh every 15s for a live feel.
-    const t = setInterval(() => void load(true), 15000);
-    return () => clearInterval(t);
-  }, []);
+  // Initial load on mount.
+  useEffect(() => { void load(); }, []);
+  // Auto-refresh every 15s for a live feel (skips while the tab is hidden).
+  usePolling(() => void load(true), 15000);
 
   const stats = useMemo(() => {
     const total = devices.length;

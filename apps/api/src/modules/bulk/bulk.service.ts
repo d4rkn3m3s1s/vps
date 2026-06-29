@@ -15,9 +15,16 @@ export type BulkProxyInput = {
   proxyId: string;
 };
 
-async function assertDevices(deviceIds: string[]): Promise<void> {
+// Verifies every id is a device the CALLER's workspace owns. Scoping by
+// workspaceId here closes a cross-tenant control hole: without it, any id could be
+// targeted by bulk start/stop/install/proxy. Devices outside the workspace read as
+// "unknown" (404) rather than being silently actionable.
+async function assertDevices(deviceIds: string[], workspaceId?: string): Promise<void> {
   if (deviceIds.length === 0) throw new AppError('At least one device is required', 400, 'NO_DEVICES');
-  const devices = await prisma.device.findMany({ where: { id: { in: deviceIds } }, select: { id: true } });
+  const devices = await prisma.device.findMany({
+    where: { id: { in: deviceIds }, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true }
+  });
   const known = new Set(devices.map((d) => d.id));
   const missing = deviceIds.filter((id) => !known.has(id));
   if (missing.length > 0) throw new AppError(`Unknown device(s): ${missing.join(', ')}`, 404, 'DEVICE_NOT_FOUND');
@@ -26,7 +33,7 @@ async function assertDevices(deviceIds: string[]): Promise<void> {
 export class BulkService {
   // Fans out one job per device for a single action (start/stop/install/etc.).
   async runJob(input: BulkJobInput, workspaceId?: string) {
-    await assertDevices(input.deviceIds);
+    await assertDevices(input.deviceIds, workspaceId);
     const jobs = await Promise.all(
       input.deviceIds.map((deviceId) =>
         createJobRecord(input.jobType, { ...(input.payload ?? {}), deviceId } as JobPayload, undefined, workspaceId)
@@ -38,8 +45,12 @@ export class BulkService {
   // Assigns the same proxy to many devices: updates each device's connection
   // info and records a SET_PROXY job so the change is applied on the phone.
   async setProxy(input: BulkProxyInput, workspaceId?: string) {
-    await assertDevices(input.deviceIds);
-    const proxy = await prisma.proxy.findUnique({ where: { id: input.proxyId } });
+    await assertDevices(input.deviceIds, workspaceId);
+    // Scope the proxy to the caller's workspace too, so one tenant can't apply
+    // another tenant's proxy (which would also leak that proxy's host/port).
+    const proxy = await prisma.proxy.findFirst({
+      where: { id: input.proxyId, ...(workspaceId ? { workspaceId } : {}) }
+    });
     if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
 
     // NOTE: do not overwrite the device's ipAddress/adbPort here — those are the

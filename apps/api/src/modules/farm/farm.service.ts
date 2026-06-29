@@ -106,6 +106,29 @@ function randInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// Human-cadence dispatch probability for a warmup tick. Real users don't act on a
+// fixed clock — they burst and rest, do more mid-day, and slow as they tire. We
+// fold three factors into a 0..1 chance of dispatching THIS tick:
+//   - fatigue: as actionsToday approaches the cap, the urge drops (1 - used^1.5).
+//   - time-of-day: a bell over the active window (peak mid-window, quiet at edges).
+//   - floor: always keep a small baseline so a campaign never fully stalls.
+function humanDispatchChance(
+  actionsToday: number,
+  cap: number,
+  hour: number,
+  fromHour: number,
+  toHour: number
+): number {
+  const used = cap > 0 ? Math.min(1, actionsToday / cap) : 1;
+  const fatigue = 1 - Math.pow(used, 1.5); // 1 when fresh → 0 at the cap
+  // Position within the active window (handles windows that wrap past midnight).
+  const span = (toHour - fromHour + 24) % 24 || 24;
+  const pos = (((hour - fromHour) + 24) % 24) / span; // 0..1 across the window
+  // Bell: sin(pi*pos) peaks at the middle of the window, ~0 at the edges.
+  const todFactor = 0.35 + 0.65 * Math.sin(Math.PI * Math.min(1, Math.max(0, pos)));
+  return Math.max(0.08, fatigue * todFactor);
+}
+
 export const farmService = {
   // ── Campaigns ──────────────────────────────────────────────────────────
   async listCampaigns(workspaceId?: string) {
@@ -120,13 +143,17 @@ export const farmService = {
         group: { select: { id: true, name: true } }
       }
     });
-    // Attach device count per campaign group for the UI.
-    return Promise.all(
-      rows.map(async (c) => ({
-        ...c,
-        deviceCount: c.groupId ? await prisma.device.count({ where: { groupId: c.groupId } }) : 0
-      }))
-    );
+    // Attach device count per campaign group for the UI. Resolve ALL counts in a
+    // single groupBy (instead of one count() per campaign — an N+1) and map back.
+    const groupIds = [...new Set(rows.map((c) => c.groupId).filter((g): g is string => Boolean(g)))];
+    const counts = groupIds.length
+      ? await prisma.device.groupBy({ by: ['groupId'], where: { groupId: { in: groupIds } }, _count: { _all: true } })
+      : [];
+    const countByGroup = new Map(counts.map((row) => [row.groupId, row._count._all]));
+    return rows.map((c) => ({
+      ...c,
+      deviceCount: c.groupId ? (countByGroup.get(c.groupId) ?? 0) : 0
+    }));
   },
 
   async createCampaign(input: CampaignInput, workspaceId?: string) {
@@ -405,7 +432,7 @@ export const farmService = {
       // auto-paused by ban defense, and online (offline => can't farm safely).
       // We carry each candidate's warmup stage so stage-aware flow selection can
       // pick the right behavior (gentle for new accounts, richer for mature).
-      const candidates: { deviceId: string; stage: number }[] = [];
+      const candidates: { deviceId: string; stage: number; actionsToday: number; cap: number }[] = [];
       for (const d of devices) {
         const acct = await this.ensureAccount(d.id, c.workspaceId ?? undefined);
         const fresh = this.rollDayIfNeeded(acct, now);
@@ -423,7 +450,7 @@ export const farmService = {
         if (d.status === 'OFFLINE' || d.status === 'ERROR') continue;
         const stageCap = STAGE_DAILY_CAP[Math.min(fresh.warmupStage, STAGE_DAILY_CAP.length - 1)] ?? 20;
         const cap = Math.min(c.maxActionsPerDay, stageCap);
-        if (fresh.actionsToday < cap) candidates.push({ deviceId: d.id, stage: fresh.warmupStage });
+        if (fresh.actionsToday < cap) candidates.push({ deviceId: d.id, stage: fresh.warmupStage, actionsToday: fresh.actionsToday, cap });
       }
       if (candidates.length === 0) {
         await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
@@ -433,6 +460,23 @@ export const farmService = {
       // Humanized device selection: random eligible device.
       const pick = candidates[randInt(0, candidates.length - 1)]!;
       const deviceId = pick.deviceId;
+
+      // Human cadence: not every eligible tick fires. Roll a time-of-day/fatigue
+      // weighted chance — quiet at window edges, calmer as the device tires. On a
+      // skip, reschedule the campaign SOONER so it gets another chance shortly.
+      const chance = humanDispatchChance(pick.actionsToday, pick.cap, hour, c.activeFromHour, c.activeToHour);
+      if (Math.random() > chance) {
+        await this.logAction({ deviceId, campaignId: c.id, kind: 'cadence_skip', detail: `İnsan-kadansı atlaması (şans ${(chance * 100) | 0}%)`, warmupStage: pick.stage, workspaceId: c.workspaceId ?? undefined });
+        const soonMin = Math.max(1, Math.round(c.minIntervalMin / 2));
+        await this.scheduleNext(c.id, soonMin, Math.max(soonMin, Math.round(c.maxIntervalMin / 2)), c.jitterPct, now);
+        continue;
+      }
+
+      // Shadow-ban self-check: occasionally (~1 in 12 dispatches) probe the account
+      // health and flag a likely shadow-ban (healthy score but stalled velocity).
+      if (Math.random() < 0.08) {
+        await this.shadowBanProbe(deviceId, c.id, c.workspaceId ?? undefined, now).catch(() => undefined);
+      }
 
       // Stage-aware warmup: pick the flow that matches this device's maturity.
       const flowId = this.flowForStage(c, pick.stage);
@@ -784,6 +828,44 @@ export const farmService = {
       });
     }
     return verdict;
+  },
+
+  // Shadow-ban self-check. A shadow-ban is silent: the account looks healthy (no
+  // errors, decent score) but its reach is throttled. We can't see reach without
+  // the app, but a strong PROXY signature is: lots of cumulative activity + a
+  // long run of clean dispatches with NO organic progression (stuck warmup stage
+  // despite high totalActions). When that pattern shows, flag it so the operator
+  // rests the account instead of pushing it into a hard ban.
+  async shadowBanProbe(deviceId: string, campaignId: string | undefined, workspaceId: string | undefined, now: Date) {
+    const acct = await prisma.farmAccount.findUnique({
+      where: { deviceId },
+      include: { device: { select: { name: true } } }
+    });
+    if (!acct) return;
+    // "Healthy-looking": no recent failures and a normal health score.
+    const healthyLooking = acct.consecutiveErrors === 0 && acct.healthScore >= 60;
+    // "Over-worked but stalled": lots of lifetime actions yet still an early stage,
+    // or hammering today's quota every day without maturing.
+    const overworkedStalled = acct.totalActions >= 120 && acct.warmupStage <= 3;
+    if (!healthyLooking || !overworkedStalled) return;
+
+    const name = acct.device?.name ?? deviceId.slice(0, 10);
+    await this.logAction({
+      deviceId,
+      ...(campaignId ? { campaignId } : {}),
+      kind: 'shadowban_suspect',
+      detail: `Olası shadow-ban: sağlıklı görünüyor (${acct.healthScore}) ama ${acct.totalActions} aksiyona rağmen aşama ${acct.warmupStage}'da takılı`,
+      warmupStage: acct.warmupStage,
+      healthAfter: acct.healthScore,
+      ...(workspaceId ? { workspaceId } : {})
+    });
+    await alertsService
+      .evaluate(workspaceId, 'FARM_BAN_RISK', {
+        title: `Olası shadow-ban: ${name}`,
+        detail: `Hesap sağlıklı görünüyor ama ${acct.totalActions} aksiyon sonrası ilerleme yok — dinlendirin.`,
+        value: 50
+      })
+      .catch(() => undefined);
   },
 
   // ── CSV import: create devices (and warmup rows) in bulk ───────────────

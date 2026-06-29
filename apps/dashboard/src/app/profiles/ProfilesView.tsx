@@ -133,7 +133,7 @@ const BULK_ICONS: Record<string, ReactNode> = {
 };
 
 export function ProfilesView({
-  devices,
+  devices: initialDevices,
   groups,
   countries = [],
   proxies = [],
@@ -146,6 +146,26 @@ export function ProfilesView({
   apps?: AppOption[];
 }) {
   const router = useRouter();
+  // Live device list: seeded from the server render, then refreshed every 5s so
+  // status (ONLINE/OFFLINE) + KPI counts track the fleet without a full reload.
+  const [devices, setDevices] = useState<DeviceProfile[]>(initialDevices);
+  useEffect(() => { setDevices(initialDevices); }, [initialDevices]);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      // Skip polling while the tab is hidden — no point refreshing an unseen list.
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await fetch('/api/devices', { cache: 'no-store' });
+        if (!res.ok) return;
+        const json = await res.json();
+        const next = (json?.data ?? null) as DeviceProfile[] | null;
+        if (alive && Array.isArray(next)) setDevices(next);
+      } catch { /* keep last good list */ }
+    };
+    const id = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
   const [query, setQuery] = useState('');
   const [groupId, setGroupId] = useState<string>('all');
   const [mode, setMode] = useState<ViewMode>('card');
@@ -163,6 +183,7 @@ export function ProfilesView({
   const [fpDevice, setFpDevice] = useState<DeviceProfile | null>(null);
   const [gpsForm, setGpsForm] = useState({ gpsEnabled: false, latitude: '', longitude: '', countryCode: '' });
   const [fpBusy, setFpBusy] = useState(false);
+  const [fpApplyMsg, setFpApplyMsg] = useState<string | null>(null);
   // Bulk file push modal.
   const [pushOpen, setPushOpen] = useState(false);
   const [pushForm, setPushForm] = useState({ url: '', fileName: '', destination: 'gallery' });
@@ -259,6 +280,7 @@ export function ProfilesView({
 
   function openFingerprint(device: DeviceProfile) {
     setFpDevice(device);
+    setFpApplyMsg(null);
     const fp = device.fingerprint;
     setGpsForm({
       gpsEnabled: fp?.gpsEnabled ?? false,
@@ -301,6 +323,25 @@ export function ProfilesView({
       if (!res.ok) throw new Error(`GPS güncellemesi başarısız (${res.status})`);
       setFpDevice(null);
       router.refresh();
+    } finally {
+      setFpBusy(false);
+    }
+  }
+
+  // Push the stored fingerprint onto the physical device (setprop over ADB).
+  // The agent reports which props applied vs were rejected (read-only without
+  // root) — we surface that honestly instead of claiming blanket success.
+  async function applyFingerprintToDevice() {
+    if (!fpDevice) return;
+    setFpBusy(true);
+    setFpApplyMsg(null);
+    try {
+      const res = await fetch(`/api/fingerprints/${fpDevice.id}/apply`, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((json?.data?.error ?? json?.data?.message) || `Uygulama başarısız (${res.status})`);
+      setFpApplyMsg(`İş kuyruğa alındı (job ${String(json?.data?.jobId ?? '').slice(0, 8)}). Cihaz birkaç saniye içinde güncellenir.`);
+    } catch (e) {
+      setFpApplyMsg(e instanceof Error ? e.message : 'Uygulama başarısız');
     } finally {
       setFpBusy(false);
     }
@@ -655,6 +696,9 @@ export function ProfilesView({
                     <label className="card-check">
                       <input type="checkbox" className="select-check" checked={isSelected} onChange={() => toggle(device.id)} aria-label={`${device.name} seç`} />
                     </label>
+                    <span className="card-avatar" aria-hidden title={device.fingerprint?.manufacturer ?? device.name}>
+                      {(device.fingerprint?.manufacturer ?? device.name ?? '?').trim().charAt(0).toUpperCase()}
+                    </span>
                     <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
                       {device.name}
                     </Link>
@@ -976,10 +1020,16 @@ export function ProfilesView({
               </label>
             </div>
 
+            {fpApplyMsg ? <p className="helper" style={{ padding: '0 1.25rem', color: 'var(--accent-info, #38bdf8)' }}>{fpApplyMsg}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" disabled={fpBusy} onClick={regenerateFingerprint}>
                 {fpBusy ? '…' : <><RefreshCw size={13} /> Parmak izini yeniden üret</>}
               </button>
+              {fpDevice.fingerprint ? (
+                <button type="button" className="btn-ghost" disabled={fpBusy} onClick={applyFingerprintToDevice} title="Parmak izini cihaza setprop ile uygula (kök gerektiren alanlar atlanır)">
+                  {fpBusy ? '…' : <><Fingerprint size={13} /> Cihaza uygula</>}
+                </button>
+              ) : null}
               <button type="button" className="btn-primary" disabled={fpBusy} onClick={saveGps}>
                 {fpBusy ? 'Kaydediliyor…' : 'GPS kaydet'}
               </button>

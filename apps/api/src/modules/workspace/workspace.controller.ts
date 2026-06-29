@@ -88,9 +88,12 @@ export async function inviteMemberHandler(req: Request, res: Response): Promise<
   const { email, role: memberRole } = inviteSchema.parse(req.body);
   const member = await workspaceService.inviteMember(workspaceId, email, memberRole);
 
-  // Notify the new member by email (best-effort; never blocks the invite).
+  // Notify the new member by email (best-effort; never blocks the invite). We
+  // await the result so the response can honestly report whether the email was
+  // actually delivered — without SMTP it only logs to the console, so the UI
+  // must NOT claim the invitee was emailed.
   const ws = await workspaceService.getById(workspaceId);
-  void sendMail(
+  const mail = await sendMail(
     inviteEmail({
       to: email,
       workspaceName: ws?.name ?? 'your workspace',
@@ -106,10 +109,10 @@ export async function inviteMemberHandler(req: Request, res: Response): Promise<
     resourceId: member.id,
     requestId: req.requestId,
     ip: req.ip,
-    metadata: { email, role: memberRole },
+    metadata: { email, role: memberRole, emailDelivered: mail.delivered },
     workspaceId
   });
-  res.status(201).json({ data: member });
+  res.status(201).json({ data: { ...member, emailDelivered: mail.delivered, emailVia: mail.via } });
 }
 
 export async function updateMemberHandler(req: Request, res: Response): Promise<void> {
@@ -131,6 +134,48 @@ export async function updateMemberHandler(req: Request, res: Response): Promise<
     workspaceId
   });
   res.json({ data: member });
+}
+
+// Wipe operational data. Admin-only + requires the caller to echo the workspace
+// slug in {confirm} so it can't fire accidentally.
+export async function resetWorkspaceHandler(req: Request, res: Response): Promise<void> {
+  const userId = requireUser(req);
+  const workspaceId = req.params.id as string;
+  const role = await workspaceService.assertMember(workspaceId, userId);
+  if (role !== 'admin') throw new AppError('Only workspace admins can reset the workspace', 403, 'FORBIDDEN');
+  const ws = await workspaceService.getById(workspaceId);
+  const { confirm } = z.object({ confirm: z.string() }).parse(req.body);
+  if (!ws || confirm.trim().toLowerCase() !== ws.slug.toLowerCase()) {
+    throw new AppError('Onay metni çalışma alanı adıyla eşleşmiyor', 400, 'CONFIRM_MISMATCH');
+  }
+  const result = await workspaceService.resetWorkspace(workspaceId);
+  await writeAuditLog({
+    userId, action: 'workspace.reset', resourceType: 'workspace', resourceId: workspaceId,
+    requestId: req.requestId, ip: req.ip, workspaceId
+  });
+  res.json({ data: result });
+}
+
+// Permanently delete the workspace. Admin-only + slug confirmation. Refuses to
+// delete the user's last workspace (so they're never locked out).
+export async function deleteWorkspaceHandler(req: Request, res: Response): Promise<void> {
+  const userId = requireUser(req);
+  const workspaceId = req.params.id as string;
+  const role = await workspaceService.assertMember(workspaceId, userId);
+  if (role !== 'admin') throw new AppError('Only workspace admins can delete the workspace', 403, 'FORBIDDEN');
+  const ws = await workspaceService.getById(workspaceId);
+  const { confirm } = z.object({ confirm: z.string() }).parse(req.body);
+  if (!ws || confirm.trim().toLowerCase() !== ws.slug.toLowerCase()) {
+    throw new AppError('Onay metni çalışma alanı adıyla eşleşmiyor', 400, 'CONFIRM_MISMATCH');
+  }
+  const mine = await workspaceService.listForUser(userId);
+  if (mine.length <= 1) throw new AppError('Son çalışma alanınızı silemezsiniz', 409, 'LAST_WORKSPACE');
+  const result = await workspaceService.deleteWorkspace(workspaceId);
+  await writeAuditLog({
+    userId, action: 'workspace.delete', resourceType: 'workspace', resourceId: workspaceId,
+    requestId: req.requestId, ip: req.ip
+  });
+  res.json({ data: result });
 }
 
 export async function getSettingsHandler(req: Request, res: Response): Promise<void> {

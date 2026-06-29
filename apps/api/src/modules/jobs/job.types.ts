@@ -21,7 +21,11 @@ export const JobTypes = [
   'REGISTER_INSTAGRAM',
   'REGISTER_WHATSAPP',
   'WHATSAPP_SEND',
-  'WHATSAPP_READ'
+  'WHATSAPP_READ',
+  'APP_EXPLORE',
+  'AGENT_RUN',
+  'APPLY_FINGERPRINT',
+  'PROVISION_INTEGRITY'
 ] as const;
 
 export type JobStatus = (typeof JobStatuses)[number];

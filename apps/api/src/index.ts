@@ -11,6 +11,7 @@ import { schedulerService } from './modules/scheduler/scheduler.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
+import { ProxyService } from './modules/proxies/proxy.service';
 import { tickTrendsRollup } from './modules/trends/trends.service';
 import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
@@ -85,6 +86,17 @@ async function main(): Promise<void> {
       logger.error('Trends rollup failed', { error: error instanceof Error ? error.message : String(error) });
     });
   }, 300_000).unref();
+
+  // Proxy revalidation: periodically re-check proxies whose health check is due,
+  // updating their rolling score so autoAssign always prefers healthy exits.
+  const proxyService = new ProxyService();
+  setInterval(() => {
+    proxyService.revalidateDue().then((r) => {
+      if (r.checked > 0) logger.info('Proxy revalidation', r);
+    }).catch((error) => {
+      logger.error('Proxy revalidation failed', { error: error instanceof Error ? error.message : String(error) });
+    });
+  }, 600_000).unref();
 
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
   // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without

@@ -11,6 +11,7 @@ import {
   Workflow,
   Play,
   Pencil,
+  Copy,
   Trash2,
   ArrowUp,
   ArrowDown,
@@ -49,6 +50,43 @@ export type RpaFlow = {
 };
 
 const STEP_TYPES: RpaStep['type'][] = ['tap', 'type', 'wait', 'swipe', 'openApp', 'shell', 'keyevent'];
+
+// One-click starting points so operators don't build common flows from scratch.
+const TEMPLATES: Array<{ name: string; description: string; steps: RpaStep[] }> = [
+  {
+    name: 'Instagram ısınma',
+    description: 'Uygulamayı aç, akışı kaydır, bekle',
+    steps: [
+      { type: 'openApp', packageName: 'com.instagram.android' },
+      { type: 'wait', ms: 4000 },
+      { type: 'swipe', x: 540, y: 1500, x2: 540, y2: 500 },
+      { type: 'wait', ms: 2500 },
+      { type: 'swipe', x: 540, y: 1500, x2: 540, y2: 500 },
+      { type: 'wait', ms: 2500 }
+    ]
+  },
+  {
+    name: 'TikTok izleme',
+    description: 'Uygulamayı aç, videoları geç',
+    steps: [
+      { type: 'openApp', packageName: 'com.zhiliaoapp.musically' },
+      { type: 'wait', ms: 5000 },
+      { type: 'swipe', x: 540, y: 1600, x2: 540, y2: 400 },
+      { type: 'wait', ms: 6000 },
+      { type: 'swipe', x: 540, y: 1600, x2: 540, y2: 400 },
+      { type: 'wait', ms: 6000 }
+    ]
+  },
+  {
+    name: 'Uygulama başlat + ana ekran',
+    description: 'Bir uygulamayı aç, bekle, ana ekrana dön',
+    steps: [
+      { type: 'openApp', packageName: 'com.android.chrome' },
+      { type: 'wait', ms: 3000 },
+      { type: 'keyevent', keycode: 3 }
+    ]
+  }
+];
 
 const STEP_ICON: Record<RpaStep['type'], string> = {
   tap: '⊙',
@@ -138,6 +176,22 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
     setName(flow.name);
     setDescription(flow.description ?? '');
     setSteps(withStepIds(flow.steps));
+  }
+
+  // Seed the editor from a template (still requires Save — operator can tweak first).
+  function openTemplate(t: (typeof TEMPLATES)[number]) {
+    setEditing({ id: '', name: '', description: null, steps: [], runCount: 0, lastRunAt: null });
+    setName(t.name);
+    setDescription(t.description);
+    setSteps(withStepIds(t.steps.map((s) => ({ ...s }))));
+  }
+
+  // Clone an existing flow into a new draft.
+  function duplicate(flow: RpaFlow) {
+    setEditing({ id: '', name: '', description: null, steps: [], runCount: 0, lastRunAt: null });
+    setName(`${flow.name} (kopya)`);
+    setDescription(flow.description ?? '');
+    setSteps(withStepIds(flow.steps.map(({ _id, ...rest }) => ({ ...rest }))));
   }
 
   function addStep(type: RpaStep['type']) {
@@ -318,6 +372,24 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
 
       {toast && <div className={`toast toast-${toast.kind}`}>{toast.text}</div>}
 
+      <Reveal delay={0.04}>
+        <HoloPanel title="Hızlı şablonlar" icon={<Sparkles size={16} />}>
+          <p className="helper" style={{ marginBottom: 12 }}>Hazır bir akışla başlayın — editörde açılır, düzenleyip kaydedin.</p>
+          <div className="rpa-template-row">
+            {TEMPLATES.map((t) => (
+              <button key={t.name} type="button" className="rpa-template" onClick={() => openTemplate(t)}>
+                <span className="rpa-template-ico"><Workflow size={16} /></span>
+                <span className="rpa-template-body">
+                  <strong>{t.name}</strong>
+                  <span className="helper">{t.description}</span>
+                  <span className="rpa-template-meta mono">{t.steps.length} adım</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </HoloPanel>
+      </Reveal>
+
       {flows.length === 0 ? (
         <Reveal>
           <HoloPanel title="Otomasyon akışları" icon={<Workflow size={16} />}>
@@ -353,6 +425,9 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
                   </button>
                   <button type="button" className="btn-primary btn-xs" onClick={() => setRunFlow(flow)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     <Play size={13} /> Çalıştır
+                  </button>
+                  <button type="button" className="btn-ghost btn-xs" onClick={() => duplicate(flow)} title="Çoğalt" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <Copy size={13} /> Çoğalt
                   </button>
                   <button type="button" className="btn-ghost btn-xs action-danger" onClick={() => remove(flow)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                     <Trash2 size={13} /> Sil

@@ -27,8 +27,9 @@ function requireJobId(req: Request): string {
 
 export async function getJobsHandler(req: Request, res: Response): Promise<void> {
   const { limit } = jobQuerySchema.parse(req.query);
-  const jobs = await listJobs(getWorkspaceId(req));
-  res.json({ data: jobs.slice(0, limit) });
+  // Limit is applied in the DB query (take), not by slicing a full fetch.
+  const jobs = await listJobs(getWorkspaceId(req), limit);
+  res.json({ data: jobs });
 }
 
 export async function getJobHandler(req: Request, res: Response): Promise<void> {

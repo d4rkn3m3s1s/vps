@@ -1,17 +1,23 @@
-// Temporary email provider — catchmail.io.
+// Temporary email provider — catchmail.io (SaaS) OR a self-hosted Inbucket.
 //
-// Provides a disposable inbox for account email verification. Any address at
-// @catchmail.io works without pre-creation, so "creating" an address is just
+// Provides a disposable inbox for account email verification. Any address at the
+// configured domain works without pre-creation, so "creating" an address is just
 // minting a random local part locally; we then poll the mailbox for the
 // verification email and extract a code/link from its body.
 //
-// Verified against https://catchmail.io/docs:
-//   Base URL : https://api.catchmail.io
-//   Auth     : none for public endpoints (1 req/s/IP)
-//   Mailbox  : GET /api/v1/mailbox?address=<addr>
-//   Message  : GET /api/v1/message/{id}?mailbox=<addr>
+// Two backends, selected by `provider`:
+//   catchmail (default, SaaS):
+//     Mailbox  : GET /api/v1/mailbox?address=<addr>
+//     Message  : GET /api/v1/message/{id}?mailbox=<addr>
+//   inbucket (self-hosted — https://github.com/inbucket/inbucket):
+//     Mailbox  : GET /api/v1/mailbox/{name}            (name = local part)
+//     Message  : GET /api/v1/mailbox/{name}/{id}
+//   Run your own catch-all MX domain behind Inbucket → no SaaS rate limit, you
+//   own the verification domain.
 //
 // Configure via env:
+//   CATCHMAIL_PROVIDER  'catchmail' | 'inbucket'  (default catchmail; auto-set
+//                       to inbucket when MAIL_PROVIDER=inbucket)
 //   CATCHMAIL_BASE_URL  override base (default https://api.catchmail.io)
 //   CATCHMAIL_DOMAIN    inbox domain (default catchmail.io)
 //   CATCHMAIL_API_KEY   optional, for higher rate limits (sent as token)
@@ -19,11 +25,19 @@
 const DEFAULT_BASE = 'https://api.catchmail.io';
 const DEFAULT_DOMAIN = 'catchmail.io';
 
+export type MailProvider = 'catchmail' | 'inbucket';
+
 export type MailProviderConfig = {
+  provider?: MailProvider | undefined;
   baseUrl?: string | undefined;
   domain?: string | undefined;
   apiKey?: string | undefined;
 };
+
+// The local part of an address (inbucket addresses inboxes by name, not full addr).
+function localPart(address: string): string {
+  return address.split('@')[0] || address;
+}
 
 export type MailSummary = {
   id: string;
@@ -58,15 +72,30 @@ async function api<T>(cfg: MailProviderConfig, path: string): Promise<T> {
       ...(cfg.apiKey ? { headers: { authorization: `Bearer ${cfg.apiKey}` } } : {})
     });
     const text = await res.text();
-    if (!res.ok) throw new Error(`catchmail ${path} -> ${res.status} ${text.slice(0, 200)}`);
+    if (!res.ok) throw new Error(`mail ${path} -> ${res.status} ${text.slice(0, 200)}`);
     return (text ? JSON.parse(text) : {}) as T;
   } finally {
     clearTimeout(timer);
   }
 }
 
-// List messages currently in an inbox (newest-first by date).
+// List messages currently in an inbox (newest-first by date). Branches on the
+// configured provider's endpoint shape.
 export async function listMessages(cfg: MailProviderConfig, address: string): Promise<MailSummary[]> {
+  if (cfg.provider === 'inbucket') {
+    // Inbucket returns a bare array of {id, from, subject, date, ...}.
+    const arr = await api<Array<{ id: string; from?: string; subject?: string; date?: string }>>(
+      cfg,
+      `/api/v1/mailbox/${encodeURIComponent(localPart(address))}`
+    );
+    const messages = (Array.isArray(arr) ? arr : []).map((m) => ({
+      id: m.id,
+      from: m.from ?? '',
+      subject: m.subject ?? '',
+      date: m.date ?? ''
+    }));
+    return messages.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  }
   const data = await api<{ messages?: MailSummary[] }>(
     cfg,
     `/api/v1/mailbox?address=${encodeURIComponent(address)}`
@@ -77,6 +106,22 @@ export async function listMessages(cfg: MailProviderConfig, address: string): Pr
 
 // Read one message in full (headers + text/html body).
 export async function getMessage(cfg: MailProviderConfig, address: string, id: string): Promise<MailMessage> {
+  if (cfg.provider === 'inbucket') {
+    // Inbucket: GET /api/v1/mailbox/{name}/{id} → {from, subject, date, to[], body:{text,html}}.
+    const data = await api<{
+      from?: string; subject?: string; date?: string; to?: string[];
+      body?: { text?: string; html?: string };
+    }>(cfg, `/api/v1/mailbox/${encodeURIComponent(localPart(address))}/${encodeURIComponent(id)}`);
+    return {
+      id,
+      from: data.from ?? '',
+      subject: data.subject ?? '',
+      date: data.date ?? '',
+      to: Array.isArray(data.to) ? data.to : [],
+      text: data.body?.text ?? '',
+      html: data.body?.html ?? ''
+    };
+  }
   const data = await api<{
     id: string; from: string; subject: string; date: string; to?: string[];
     body?: { text?: string; html?: string };

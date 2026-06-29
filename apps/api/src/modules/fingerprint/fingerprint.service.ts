@@ -2,6 +2,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { createJobRecord } from '../jobs/jobs.service';
 import { DEVICE_MODELS, LOCALES, type Locale } from './fingerprint.data';
 
 function pick<T>(arr: T[]): T {
@@ -138,6 +139,38 @@ export class FingerprintService {
 
   listCountries() {
     return LOCALES.map((l) => ({ countryCode: l.countryCode, country: l.country, timezone: l.timezone }));
+  }
+
+  // Push the stored fingerprint DOWN to the physical device: dispatches an
+  // APPLY_FINGERPRINT job the host agent runs as setprop over ADB. Only the
+  // identifier surface (model/build/serial/android_id) — secrets stay server-side.
+  async applyToDevice(deviceId: string, workspaceId?: string) {
+    const fp = await this.get(deviceId);
+    if (!fp) throw new AppError('Fingerprint not found', 404, 'FINGERPRINT_NOT_FOUND');
+    const fingerprint = {
+      model: fp.model,
+      manufacturer: fp.manufacturer,
+      brand: fp.brand,
+      osVersion: fp.osVersion,
+      buildNumber: fp.buildNumber,
+      serialNo: fp.serialNo,
+      androidId: fp.androidId,
+      // Root-less applicable extras (wm size/density, timezone).
+      resolution: fp.resolution,
+      dpi: fp.dpi,
+      timezone: fp.timezone
+    };
+    const job = await createJobRecord('APPLY_FINGERPRINT', { deviceId, fingerprint } as never, undefined, workspaceId);
+    return { jobId: job.id };
+  }
+
+  // Best-effort Play/device-integrity provisioning (BASIC props over ADB). STRONG
+  // hardware attestation needs a real device / Magisk module — the agent reports
+  // back whether that's possible. ToS/legal: only on your own consented fleet.
+  async provisionIntegrity(deviceId: string, workspaceId?: string) {
+    await this.assertDevice(deviceId);
+    const job = await createJobRecord('PROVISION_INTEGRITY', { deviceId } as never, undefined, workspaceId);
+    return { jobId: job.id };
   }
 
   private async assertDevice(deviceId: string): Promise<void> {

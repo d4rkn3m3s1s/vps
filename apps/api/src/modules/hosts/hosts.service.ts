@@ -54,7 +54,8 @@ export class HostsService {
   }
 
   async heartbeat(id: string, input: HostHeartbeatInput) {
-    await this.assertExists(id);
+    // The caller is already authenticated as this host (per-host agent key), so we
+    // can update directly; a missing row throws via Prisma's record-not-found.
     const host = await prisma.host.update({
       where: { id },
       data: {
@@ -67,14 +68,14 @@ export class HostsService {
     return toPublic(host);
   }
 
-  async remove(id: string) {
-    await this.assertExists(id);
-    return prisma.host.delete({ where: { id } });
-  }
-
-  private async assertExists(id: string): Promise<void> {
-    const host = await prisma.host.findUnique({ where: { id } });
+  async remove(id: string, workspaceId?: string) {
+    // Scope the lookup to the caller's workspace: a host in another tenant is
+    // simply "not found" rather than deletable cross-tenant.
+    const host = await prisma.host.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) }
+    });
     if (!host) throw new AppError('Host not found', 404, 'HOST_NOT_FOUND');
+    return prisma.host.delete({ where: { id } });
   }
 }
 

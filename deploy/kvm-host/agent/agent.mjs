@@ -244,6 +244,15 @@ async function runJob(job) {
     case 'WHATSAPP_READ':
       return whatsappRead(serial, payload);
 
+    case 'APP_EXPLORE':
+      return exploreApp(serial, payload);
+
+    case 'APPLY_FINGERPRINT':
+      return applyFingerprint(serial, payload);
+
+    case 'PROVISION_INTEGRITY':
+      return provisionIntegrity(serial, payload);
+
     default:
       throw new Error(`Unsupported job type: ${type}`);
   }
@@ -742,23 +751,42 @@ async function whatsappRead(serial, payload) {
   return { status: 'OK', count: messages.length, messages: messages.slice(-50) };
 }
 
-// Poll a catchmail inbox for the latest 4-8 digit verification code.
+// Poll a disposable inbox for the latest 4-8 digit verification code. Supports
+// both catchmail (SaaS) and a self-hosted Inbucket, selected by FLEET_MAIL_PROVIDER.
+//   catchmail: GET /api/v1/mailbox?address=<email>, GET /api/v1/message/{id}?mailbox=<email>
+//   inbucket:  GET /api/v1/mailbox/{name},          GET /api/v1/mailbox/{name}/{id}
 async function fetchEmailCode(email, timeoutMs) {
-  const base = process.env.FLEET_CATCHMAIL_BASE || 'https://api.catchmail.io';
+  const provider = (process.env.FLEET_MAIL_PROVIDER || '').toLowerCase();
+  const isInbucket = provider === 'inbucket';
+  const base = (process.env.FLEET_CATCHMAIL_BASE || (isInbucket ? 'http://localhost:9000' : 'https://api.catchmail.io')).replace(/\/+$/, '');
+  const name = String(email).split('@')[0] || email;
   const start = Date.now();
+  const codeFrom = (s) => { const m = String(s || '').match(/\b(\d{4,8})\b/); return m ? m[1] : null; };
   while (Date.now() - start < timeoutMs) {
     try {
-      const list = await (await fetch(`${base}/api/v1/mailbox?address=${encodeURIComponent(email)}`)).json();
-      const msgs = Array.isArray(list.messages) ? list.messages : [];
-      if (msgs.length > 0) {
-        // Subject often contains the code ("637598 is your Instagram code").
-        const subj = String(msgs[0].subject || '');
-        const fromSubj = subj.match(/\b(\d{4,8})\b/);
-        if (fromSubj) return fromSubj[1];
-        const full = await (await fetch(`${base}/api/v1/message/${encodeURIComponent(msgs[0].id)}?mailbox=${encodeURIComponent(email)}`)).json();
-        const body = (full.body && (full.body.text || full.body.html)) || '';
-        const m = String(body).match(/\b(\d{4,8})\b/);
-        if (m) return m[1];
+      if (isInbucket) {
+        const list = await (await fetch(`${base}/api/v1/mailbox/${encodeURIComponent(name)}`)).json();
+        const msgs = Array.isArray(list) ? list : [];
+        if (msgs.length > 0) {
+          const fromSubj = codeFrom(msgs[0].subject);
+          if (fromSubj) return fromSubj;
+          const full = await (await fetch(`${base}/api/v1/mailbox/${encodeURIComponent(name)}/${encodeURIComponent(msgs[0].id)}`)).json();
+          const body = (full.body && (full.body.text || full.body.html)) || '';
+          const m = codeFrom(body);
+          if (m) return m;
+        }
+      } else {
+        const list = await (await fetch(`${base}/api/v1/mailbox?address=${encodeURIComponent(email)}`)).json();
+        const msgs = Array.isArray(list.messages) ? list.messages : [];
+        if (msgs.length > 0) {
+          // Subject often contains the code ("637598 is your Instagram code").
+          const fromSubj = codeFrom(msgs[0].subject);
+          if (fromSubj) return fromSubj;
+          const full = await (await fetch(`${base}/api/v1/message/${encodeURIComponent(msgs[0].id)}?mailbox=${encodeURIComponent(email)}`)).json();
+          const body = (full.body && (full.body.text || full.body.html)) || '';
+          const m = codeFrom(body);
+          if (m) return m;
+        }
       }
     } catch { /* retry */ }
     await new Promise((r) => setTimeout(r, 4000));
@@ -821,10 +849,12 @@ function parseUiNodes(xml) {
     if (!bm) continue;
     const x1 = +bm[1], y1 = +bm[2], x2 = +bm[3], y2 = +bm[4];
     nodes.push({
+      cls: attr(a, 'class'),
       text: attr(a, 'text'),
       desc: attr(a, 'content-desc'),
       resId: attr(a, 'resource-id'),
       clickable: attr(a, 'clickable') === 'true',
+      scrollable: attr(a, 'scrollable') === 'true',
       bounds: [x1, y1, x2, y2],
       cx: Math.round((x1 + x2) / 2),
       cy: Math.round((y1 + y2) / 2)
@@ -844,6 +874,379 @@ function findNode(nodes, query, field = 'any') {
     if (field === 'id') return hit(n.resId);
     return hit(n.text) || hit(n.desc) || hit(n.resId);
   }) || null;
+}
+
+// ── AI Device Agent perception/action helpers (zero-dep) ────────────────────
+//
+// These power the AI Device Agent loop (Claude drives the phone over the WS
+// channel) and the BFS app-explorer. The control plane holds the Anthropic key
+// and drives the loop; the agent only perceives (buildScreenTree) and acts
+// (execAgentAction) on request — keeping secrets server-side.
+
+// Layout containers that carry no semantic meaning on their own. Dropped from
+// the compact screen tree unless they have a label or are clickable.
+const LAYOUT_CLASS_RE = /(FrameLayout|LinearLayout|RelativeLayout|ViewGroup|ScrollView|RecyclerView|ListView|GridView|ConstraintLayout|TableLayout|TableRow)$/;
+const INTERACTIVE_CLASS_RE = /(EditText|Button|Image|Switch|CheckBox|RadioButton|Spinner|SeekBar|TextView)$/;
+
+// The pure filter that decides which nodes appear in the screen tree. MUST be
+// identical between dump and action so a `tap_element(idx)` resolves to the same
+// node the model saw (the idx is the contract).
+function meaningfulNodes(nodes) {
+  return nodes.filter((n) =>
+    n.text || n.desc || n.clickable || (n.cls && INTERACTIVE_CLASS_RE.test(n.cls))
+  );
+}
+
+// Build a compact, LLM-friendly screen tree:
+//   [idx] Class "label" [clickable] [x1,y1,x2,y2]
+// Drops pure layout containers, caps node count, and appends a swipe hint when
+// the screen is scrollable. The idx is the handle for tap_element(idx).
+function buildScreenTree(nodes, cap = 40) {
+  const capped = meaningfulNodes(nodes).slice(0, cap);
+  const lines = capped.map((n, idx) => {
+    const label = (n.text || n.desc || (n.resId ? n.resId.split('/').pop() : '') || '').slice(0, 48);
+    const cls = (n.cls ? n.cls.split('.').pop() : 'View') || 'View';
+    const flags = n.clickable ? ' [clickable]' : '';
+    return `[${idx}] ${cls} "${label}"${flags} [${n.bounds.join(',')}]`;
+  });
+  const scrollHint = nodes.some((n) => n.scrollable) ? '\n(scrollable — swipe up to see more)' : '';
+  if (lines.length === 0) {
+    // No semantic elements (game/canvas/WebView). Offer a grid so the model can
+    // tap by cell instead of hallucinating raw coordinates.
+    return '(empty screen — no inspectable elements)\nUse tap_grid with a 3x3 cell (row 0-2, col 0-2) to tap blindly.' + scrollHint;
+  }
+  return lines.join('\n') + scrollHint;
+}
+
+// Resolve a target node via a fallback chain: content-desc → text → resource-id
+// → class → absolute coords. Returns a node-like {cx,cy} or null. Used by RPA
+// element steps and the AI agent's tap actions for resilience to RID drift.
+function resolveTarget(nodes, locator) {
+  const tryFind = (q, field) => (q ? findNode(nodes, q, field) : null);
+  return (
+    tryFind(locator.desc, 'desc') ||
+    tryFind(locator.text, 'text') ||
+    tryFind(locator.resId, 'id') ||
+    (locator.cls ? nodes.find((n) => n.cls && n.cls.includes(locator.cls)) || null : null) ||
+    (typeof locator.x === 'number' && typeof locator.y === 'number' ? { cx: locator.x, cy: locator.y } : null)
+  );
+}
+
+// ── Stealth primitives (human-like input to dodge anti-automation) ───────────
+const rnd = (a, b) => a + Math.random() * (b - a);
+// Box-Muller normal sample around mean with std-dev sd.
+const gauss = (mean, sd) => {
+  const u = 1 - Math.random();
+  const v = Math.random();
+  return mean + sd * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+};
+async function stealthTap(serial, x, y) {
+  const jx = Math.round(gauss(x, 8));
+  const jy = Math.round(gauss(y, 8));
+  await adb(serial, ['shell', 'input', 'tap', String(jx), String(jy)]);
+}
+async function stealthSwipe(serial, x, y, x2, y2) {
+  const dur = Math.round(rnd(180, 520));
+  await adb(serial, ['shell', 'input', 'swipe',
+    String(Math.round(gauss(x, 6))), String(Math.round(gauss(y, 6))),
+    String(Math.round(gauss(x2, 6))), String(Math.round(gauss(y2, 6))), String(dur)]);
+}
+async function stealthType(serial, text) {
+  for (const ch of String(text)) {
+    await adb(serial, ['shell', 'input', 'text', ch === ' ' ? '%s' : ch]);
+    await new Promise((r) => setTimeout(r, rnd(50, 200)));
+  }
+}
+
+// Cached device screen size (wm size) so dumps can report width/height cheaply.
+const screenSizes = new Map();
+async function screenSize(serial) {
+  if (screenSizes.has(serial)) return screenSizes.get(serial);
+  let wh = { width: 1080, height: 1920 };
+  try {
+    const out = await adb(serial, ['shell', 'wm', 'size']);
+    const m = out.match(/(\d+)x(\d+)/);
+    if (m) wh = { width: Number(m[1]), height: Number(m[2]) };
+  } catch { /* default */ }
+  screenSizes.set(serial, wh);
+  return wh;
+}
+
+// Execute ONE agent action (from the Claude tool call) over ADB. `stealth` routes
+// taps/swipes/typing through the human-like primitives.
+async function execAgentAction(serial, action, stealth) {
+  const name = String(action && action.name);
+  const a = (action && action.input) || {};
+  const { width, height } = await screenSize(serial);
+  switch (name) {
+    case 'tap_element': {
+      // Re-dump and rebuild the SAME filtered list so idx matches what the model saw.
+      const nodes = meaningfulNodes(parseUiNodes(await uiDumpXml(serial)));
+      const idx = Number(a.idx);
+      const node = nodes[idx];
+      if (!node) throw new Error(`tap_element: idx ${a.idx} out of range (${nodes.length} nodes)`);
+      if (stealth) await stealthTap(serial, node.cx, node.cy);
+      else await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]);
+      return;
+    }
+    case 'tap': {
+      const x = Number(a.x);
+      const y = Number(a.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('tap: x,y required');
+      if (stealth) await stealthTap(serial, x, y);
+      else await adb(serial, ['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]);
+      return;
+    }
+    case 'tap_grid': {
+      // Blind tap by grid cell on screens with no inspectable elements (game/
+      // canvas/WebView). Default 3x3; tap the center of the (row,col) cell.
+      const rows = Math.max(1, Math.min(8, Number(a.rows) || 3));
+      const cols = Math.max(1, Math.min(8, Number(a.cols) || 3));
+      const row = Math.max(0, Math.min(rows - 1, Number(a.row) || 0));
+      const col = Math.max(0, Math.min(cols - 1, Number(a.col) || 0));
+      const x = Math.round((col + 0.5) * (width / cols));
+      const y = Math.round((row + 0.5) * (height / rows));
+      if (stealth) await stealthTap(serial, x, y);
+      else await adb(serial, ['shell', 'input', 'tap', String(x), String(y)]);
+      return;
+    }
+    case 'swipe': {
+      let x = Number(a.x); let y = Number(a.y); let x2 = Number(a.x2); let y2 = Number(a.y2);
+      const dir = a.direction ? String(a.direction) : '';
+      if (dir) {
+        const cx = Math.round(width / 2);
+        const cy = Math.round(height / 2);
+        if (dir === 'up') { x = cx; y = Math.round(height * 0.7); x2 = cx; y2 = Math.round(height * 0.3); }
+        else if (dir === 'down') { x = cx; y = Math.round(height * 0.3); x2 = cx; y2 = Math.round(height * 0.7); }
+        else if (dir === 'left') { x = Math.round(width * 0.7); y = cy; x2 = Math.round(width * 0.3); y2 = cy; }
+        else if (dir === 'right') { x = Math.round(width * 0.3); y = cy; x2 = Math.round(width * 0.7); y2 = cy; }
+      }
+      if (![x, y, x2, y2].every(Number.isFinite)) throw new Error('swipe: direction or x,y,x2,y2 required');
+      if (stealth) await stealthSwipe(serial, x, y, x2, y2);
+      else await adb(serial, ['shell', 'input', 'swipe', String(x), String(y), String(x2), String(y2), '200']);
+      return;
+    }
+    case 'type_text': {
+      const text = String(a.text ?? '');
+      if (stealth) await stealthType(serial, text);
+      else await adb(serial, ['shell', 'input', 'text', text.replace(/ /g, '%s')]);
+      return;
+    }
+    case 'press_key':
+      await adb(serial, ['shell', 'input', 'keyevent', String(Number(a.keycode) || 4)]);
+      return;
+    case 'launch_app': {
+      const pkg = String(a.packageName ?? '');
+      if (!pkg) throw new Error('launch_app: packageName required');
+      await launchApp(serial, pkg, null);
+      return;
+    }
+    case 'wait':
+      await new Promise((r) => setTimeout(r, Math.min(10000, Math.max(0, Number(a.ms) || 1000))));
+      return;
+    default:
+      throw new Error(`Unknown agent action: ${name}`);
+  }
+}
+
+// Structural hash of a screen: class + resource-id skeleton (text dropped) so the
+// same screen with different content dedups to one node. Zero-dep FNV-1a.
+function structuralHash(nodes) {
+  const sig = nodes
+    .filter((n) => n.clickable || (n.cls && INTERACTIVE_CLASS_RE.test(n.cls)))
+    .map((n) => `${n.cls ? n.cls.split('.').pop() : 'V'}#${n.resId ? n.resId.split('/').pop() : ''}`)
+    .sort()
+    .join('|');
+  let h = 0x811c9dc5;
+  for (let i = 0; i < sig.length; i++) {
+    h ^= sig.charCodeAt(i);
+    h = (h * 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+// ── BFS app explorer (APP_EXPLORE job) ──────────────────────────────────────
+//
+// Force-stops + launches an app, then breadth-first taps clickable elements,
+// deduping screens by structuralHash and recording transitions. Each path is
+// replayed from the app root (force-stop + relaunch + re-tap the path) so the
+// crawl is deterministic-ish. Bounded by maxScreens + a wall-clock budget.
+async function exploreApp(serial, payload) {
+  const pkg = String(p(payload, 'packageName', ''));
+  if (!pkg) throw new Error('packageName gerekli');
+  const maxScreens = Math.min(60, Math.max(1, Number(p(payload, 'maxScreens', 25))));
+  const deadline = Date.now() + 150_000; // ~2.5 min wall-clock cap
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const relaunch = async () => {
+    await adb(serial, ['shell', 'am', 'force-stop', pkg]).catch(() => undefined);
+    await launchApp(serial, pkg, null);
+    await sleep(3500);
+  };
+  // Replay a path of tap indices from a fresh app start.
+  const replayPath = async (path) => {
+    await relaunch();
+    for (const idx of path) {
+      const nodes = meaningfulNodes(parseUiNodes(await uiDumpXml(serial)));
+      const node = nodes[idx];
+      if (!node) return false;
+      await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]);
+      await sleep(1500);
+    }
+    return true;
+  };
+
+  const seen = new Set();
+  const screens = []; // { hash, label, nodeCount }
+  const edges = []; // { from, to, viaLabel }
+  const queue = []; // { path:[idx...], hash }
+
+  await relaunch();
+  let rootNodes = parseUiNodes(await uiDumpXml(serial));
+  let rootHash = structuralHash(rootNodes);
+  const labelOf = (nodes) => {
+    const t = nodes.find((n) => n.text && n.text.length > 1);
+    return (t ? t.text : pkg).slice(0, 40);
+  };
+  seen.add(rootHash);
+  screens.push({ hash: rootHash, label: labelOf(rootNodes), nodeCount: rootNodes.length });
+  // Enqueue each clickable element on the root.
+  const rootMeaningful = meaningfulNodes(rootNodes);
+  rootMeaningful.forEach((n, idx) => { if (n.clickable) queue.push({ path: [idx], hash: rootHash, label: (n.text || n.desc || '').slice(0, 30) }); });
+
+  while (queue.length > 0 && screens.length < maxScreens && Date.now() < deadline) {
+    const item = queue.shift();
+    const ok = await replayPath(item.path);
+    if (!ok) continue;
+    const nodes = parseUiNodes(await uiDumpXml(serial));
+    const hash = structuralHash(nodes);
+    edges.push({ from: item.hash, to: hash, viaLabel: item.label || '' });
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    screens.push({ hash, label: labelOf(nodes), nodeCount: nodes.length });
+    // Enqueue children one level deeper.
+    const meaningful = meaningfulNodes(nodes);
+    meaningful.forEach((n, idx) => {
+      if (n.clickable && screens.length + queue.length < maxScreens * 2) {
+        queue.push({ path: [...item.path, idx], hash, label: (n.text || n.desc || '').slice(0, 30) });
+      }
+    });
+  }
+
+  await adb(serial, ['shell', 'am', 'force-stop', pkg]).catch(() => undefined);
+  return { packageName: pkg, graph: { screens, edges }, screenCount: screens.length };
+}
+
+// ── Apply device fingerprint via setprop (anti-detection) ────────────────────
+//
+// The control plane generates a fingerprint (IMEI/model/etc) and stores it in
+// Postgres; this brings it DOWN to the device by setting the matching system
+// properties. setprop on most build props needs root (works on rootable AVD/
+// redroid; a non-root device will reject some keys — we apply best-effort and
+// report which succeeded). NOTE: persistent identifier spoofing typically needs
+// a reboot and/or a hooking layer (Xposed/Magisk) to fully stick; setprop covers
+// the readable build.* surface that most app checks read.
+//
+// payload: { fingerprint: { model, manufacturer, brand, osVersion, buildNumber,
+//            serialNo, androidId, ... } }
+async function applyFingerprint(serial, payload) {
+  const fp = (payload && payload.fingerprint) || {};
+  // Map fingerprint fields → Android system properties. Only set the ones present.
+  const pairs = [
+    ['ro.product.model', fp.model],
+    ['ro.product.manufacturer', fp.manufacturer],
+    ['ro.product.brand', fp.brand],
+    ['ro.product.name', fp.model],
+    ['ro.product.device', fp.model],
+    ['ro.build.product', fp.model],
+    ['ro.build.fingerprint', fp.buildNumber],
+    ['ro.build.display.id', fp.buildNumber],
+    ['ro.serialno', fp.serialNo],
+    ['ro.boot.serialno', fp.serialNo],
+    ['ro.build.version.release', fp.osVersion]
+  ].filter(([, v]) => v !== undefined && v !== null && String(v) !== '');
+
+  const applied = [];
+  const failed = [];
+  for (const [key, val] of pairs) {
+    try {
+      await adb(serial, ['shell', 'setprop', String(key), String(val)]);
+      applied.push(key);
+    } catch (e) {
+      failed.push({ key, error: e.message });
+    }
+  }
+  // android_id lives in settings, not a prop.
+  if (fp.androidId) {
+    try {
+      await adb(serial, ['shell', 'settings', 'put', 'secure', 'android_id', String(fp.androidId)]);
+      applied.push('settings.secure.android_id');
+    } catch (e) {
+      failed.push({ key: 'android_id', error: e.message });
+    }
+  }
+
+  // Root-less applicable extras: screen resolution + density + timezone. These
+  // take effect WITHOUT root (wm/settings are user-accessible) so they actually
+  // change what apps see, unlike most ro.* build props.
+  if (fp.resolution && /^\d+x\d+$/.test(String(fp.resolution))) {
+    try { await adb(serial, ['shell', 'wm', 'size', String(fp.resolution)]); applied.push('wm.size'); }
+    catch (e) { failed.push({ key: 'wm.size', error: e.message }); }
+  }
+  if (fp.dpi && Number(fp.dpi) > 0) {
+    try { await adb(serial, ['shell', 'wm', 'density', String(Number(fp.dpi))]); applied.push('wm.density'); }
+    catch (e) { failed.push({ key: 'wm.density', error: e.message }); }
+  }
+  if (fp.timezone) {
+    try { await adb(serial, ['shell', 'service', 'call', 'alarm', '3', 's16', String(fp.timezone)]); applied.push('timezone'); }
+    catch (e) { failed.push({ key: 'timezone', error: e.message }); }
+  }
+
+  return { applied: applied.length, appliedKeys: applied, failed, note: failed.length ? 'bazı prop\'lar reddedildi (root/reboot gerekebilir)' : 'tüm props uygulandı' };
+}
+
+// ── Provision Play Integrity / device-integrity bypass (best-effort) ─────────
+//
+// x86 emulators fail Google/Play device-integrity (and apps like WhatsApp). A
+// real fix needs a Magisk+Zygisk module (e.g. PlayIntegrityFix) flashed into a
+// rootable image — that's an image-provisioning step done out of band, not over
+// plain ADB. Here we do the ADB-reachable part: spoof the build props that the
+// BASIC integrity check reads, and report whether a deeper module is required.
+// payload: { fingerprintProps?: {key:value}, securityPatch? }
+async function provisionIntegrity(serial, payload) {
+  const props = (payload && payload.fingerprintProps) || {
+    'ro.boot.verifiedbootstate': 'green',
+    'ro.boot.flash.locked': '1',
+    'ro.boot.veritymode': 'enforcing',
+    'ro.debuggable': '0',
+    'ro.secure': '1'
+  };
+  const applied = [];
+  const failed = [];
+  for (const [key, val] of Object.entries(props)) {
+    try {
+      await adb(serial, ['shell', 'setprop', String(key), String(val)]);
+      applied.push(key);
+    } catch (e) {
+      failed.push({ key, error: e.message });
+    }
+  }
+  // Detect whether a hardware-backed attestation is even possible (it isn't on a
+  // plain emulator) so the operator knows STRONG integrity needs a real device.
+  let hasKeystore = false;
+  try {
+    const feats = await adb(serial, ['shell', 'pm', 'list', 'features']);
+    hasKeystore = /hardware_keystore|strongbox/i.test(feats);
+  } catch { /* ignore */ }
+  return {
+    applied: applied.length,
+    appliedKeys: applied,
+    failed,
+    strongIntegrityPossible: hasKeystore,
+    note: hasKeystore
+      ? 'BASIC props uygulandı; STRONG donanım onayı mevcut olabilir'
+      : 'BASIC props uygulandı; STRONG integrity emülatörde mümkün değil — gerçek cihaz veya Magisk+PlayIntegrityFix modülü gerekir'
+  };
 }
 
 async function runRpaStep(serial, step) {
@@ -879,11 +1282,15 @@ async function runRpaStep(serial, step) {
     case 'tapDesc':
     case 'tapId': {
       // Tap an element BY content (text / content-desc / resource-id) — finds its
-      // centre from the UIAutomator bounds and taps there.
+      // centre from the UIAutomator bounds and taps there. When a `locator` object
+      // is supplied, use the fallback chain (desc→text→id→class→coords) for
+      // resilience to resource-id/text drift across app versions.
       const field = type === 'tapText' ? 'text' : type === 'tapDesc' ? 'desc' : 'id';
       const query = String(step.query ?? step.text ?? '');
-      const xml = await uiDumpXml(serial);
-      const node = findNode(parseUiNodes(xml), query, field);
+      const nodes = parseUiNodes(await uiDumpXml(serial));
+      const node = step.locator
+        ? resolveTarget(nodes, step.locator)
+        : findNode(nodes, query, field);
       if (!node) throw new Error(`tap target not found by ${field}: "${query}"`);
       await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]);
       return { tapped: { query, field, at: [node.cx, node.cy] } };
@@ -962,16 +1369,21 @@ async function reportComplete(jobId, status, payload) {
   await api(`/agent/jobs/${jobId}/complete`, { method: 'POST', body: JSON.stringify({ status, ...payload }) });
 }
 
-async function runningPhoneCount() {
-  // Count adb devices that report "device" (not offline/unauthorized).
+// The ADB serials currently reporting "device" (reachable — not offline/
+// unauthorized/missing). The API uses this exact set to mark only the phones
+// that are truly up as ONLINE, instead of assuming every bound device is live.
+async function reachableSerials() {
   try {
     const out = await adb(null, ['devices']);
     return out
       .split('\n')
       .slice(1)
-      .filter((l) => /\tdevice\s*$/.test(l.trim() ? `${l.trim()}` : l) || /\sdevice$/.test(l)).length;
+      .map((l) => l.trim())
+      .filter((l) => /\sdevice$/.test(l))
+      .map((l) => l.split(/\s+/)[0])
+      .filter(Boolean);
   } catch {
-    return 0;
+    return [];
   }
 }
 
@@ -1056,8 +1468,10 @@ async function sampleCpu(serial) {
 
 async function heartbeat() {
   try {
-    const runningPhones = await runningPhoneCount();
-    await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones }) });
+    const serials = await reachableSerials();
+    // Send both the count (host capacity gauge) and the exact reachable serials
+    // so the API marks only live phones ONLINE and the rest OFFLINE.
+    await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones: serials.length, serials }) });
     // Per-device metrics are best-effort and reported separately so a slow
     // collection never delays/blocks the host heartbeat itself.
     const devices = await collectDeviceMetrics();
@@ -1162,6 +1576,64 @@ function startCaptureH264(ws, deviceId, serial) {
 
 const SOI = Buffer.from([0xff, 0xd8]); // JPEG start-of-image
 const EOI = Buffer.from([0xff, 0xd9]); // JPEG end-of-image
+
+// Raw H.264 fast path (no ffmpeg transcode). The agent ships the live Annex-B
+// elementary stream straight to the browser, which decodes it with WebCodecs —
+// removing the host-side ffmpeg→MJPEG re-encode and lifting the old ~3fps PNG
+// cap. Frames are framed "H264:" + deviceId(36) + 1 keyframe-flag byte + bytes.
+// The hub caches the config (SPS/PPS) chunk so late-joining viewers can start.
+const H264_PREFIX = Buffer.from('H264');
+const STREAM_H264_RAW = process.env.FLEET_STREAM_H264_RAW === '1';
+
+// Split an Annex-B buffer into NAL units (each starting at a 00 00 01 / 00 00 00 01
+// start code) and report whether the chunk carries config (SPS=7/PPS=8) or an
+// IDR keyframe (5). We don't need a full parser — just the nal_unit_type nibble.
+function classifyH264Chunk(buf) {
+  let hasConfig = false;
+  let hasIdr = false;
+  for (let i = 0; i + 3 < buf.length; i++) {
+    // start code: 00 00 01 (3) or 00 00 00 01 (4)
+    if (buf[i] === 0 && buf[i + 1] === 0 && buf[i + 2] === 1) {
+      const t = buf[i + 3] & 0x1f;
+      if (t === 7 || t === 8) hasConfig = true;
+      else if (t === 5) hasIdr = true;
+      i += 2;
+    }
+  }
+  return { hasConfig, hasIdr };
+}
+
+// Raw H.264 capture: screenrecord → stdout → frame to the browser unchanged.
+function startCaptureH264Raw(ws, deviceId, serial) {
+  void ensureConnected(serial);
+  const prefix = Buffer.concat([H264_PREFIX, Buffer.from(frameDeviceId(deviceId))]);
+  const MAX_BUFFERED = 4_000_000;
+  const state = { serial, h264raw: true, rec: null, stopped: false };
+
+  const spawnRec = () => {
+    if (state.stopped) return;
+    const rec = spawn(ADB, ['-s', serial, 'exec-out',
+      `screenrecord --output-format=h264 --size ${STREAM_W}x${Math.round(STREAM_W * 20 / 9)} --bit-rate ${bitrateBps(STREAM_BITRATE)} --time-limit=170 -`
+    ], { windowsHide: true });
+    state.rec = rec;
+    rec.stdout.on('data', (chunk) => {
+      if (ws.readyState !== 1 || ws.bufferedAmount > MAX_BUFFERED) return;
+      const { hasConfig, hasIdr } = classifyH264Chunk(chunk);
+      // flag byte: bit0 = keyframe/IDR, bit1 = carries SPS/PPS config.
+      const flag = Buffer.from([(hasIdr ? 1 : 0) | (hasConfig ? 2 : 0)]);
+      try { ws.send(Buffer.concat([prefix, flag, chunk])); } catch { /* gone */ }
+    });
+    rec.on('error', (e) => log(`[screenrecord-raw] ${e.message}`));
+    // 170s hard limit → respawn for a continuous stream. A fresh screenrecord
+    // re-emits SPS/PPS + an IDR, so the decoder re-syncs automatically.
+    rec.on('close', () => { if (!state.stopped) setTimeout(spawnRec, 150); });
+  };
+
+  spawnRec();
+  captures.set(deviceId, state);
+  log(`stream start ${deviceId} via RAW H.264 (${STREAM_W}px, WebCodecs)`);
+}
+
 function bitrateBps(s) {
   const m = String(s).trim().match(/^(\d+(?:\.\d+)?)\s*([mMkK]?)$/);
   if (!m) return 4_000_000;
@@ -1173,7 +1645,9 @@ function bitrateBps(s) {
 function startCapture(ws, deviceId, serial, fps) {
   stopCapture(deviceId);
   if (!serial) return;
-  // Prefer the H.264 fast path when ffmpeg is configured.
+  // Fastest path: raw H.264 to the browser's WebCodecs decoder (no host transcode).
+  if (STREAM_H264_RAW) { startCaptureH264Raw(ws, deviceId, serial); return; }
+  // Next: H.264 → MJPEG via ffmpeg when ffmpeg is configured.
   if (FFMPEG) { startCaptureH264(ws, deviceId, serial); return; }
   // Cap at 30fps; capture frames are raw PNG (large), so the real limiter is how
   // fast a frame serializes over the socket, not the timer.
@@ -1225,19 +1699,93 @@ async function handleControl(msg) {
       stopCapture(msg.deviceId);
       return;
     case 'input.tap':
-      if (serial) await adb(serial, ['shell', 'input', 'tap', String(msg.x), String(msg.y)]);
+      if (serial) {
+        if (msg.stealth) await stealthTap(serial, msg.x, msg.y);
+        else await adb(serial, ['shell', 'input', 'tap', String(msg.x), String(msg.y)]);
+      }
       return;
     case 'input.swipe':
-      if (serial) await adb(serial, ['shell', 'input', 'swipe', String(msg.x), String(msg.y), String(msg.x2), String(msg.y2), String(msg.ms || 120)]);
+      if (serial) {
+        if (msg.stealth) await stealthSwipe(serial, msg.x, msg.y, msg.x2, msg.y2);
+        else await adb(serial, ['shell', 'input', 'swipe', String(msg.x), String(msg.y), String(msg.x2), String(msg.y2), String(msg.ms || 120)]);
+      }
       return;
     case 'input.key':
       if (serial) await adb(serial, ['shell', 'input', 'keyevent', String(msg.keycode)]);
       return;
     case 'input.text':
-      if (serial) await adb(serial, ['shell', 'input', 'text', String(msg.text || '').replace(/ /g, '%s')]);
+      if (serial) {
+        if (msg.stealth) await stealthType(serial, String(msg.text || ''));
+        else await adb(serial, ['shell', 'input', 'text', String(msg.text || '').replace(/ /g, '%s')]);
+      }
       return;
     default:
       return;
+  }
+}
+
+// AI Device Agent WS request/response. The control plane (which holds the
+// Anthropic key + drives the loop) asks us to (a) dump the screen as a compact
+// tree, or (b) execute one action and re-dump. We reply with the same reqId so
+// the API can correlate. After an action we ALWAYS re-dump and attach the fresh
+// tree so the model sees the consequence in the same tool_result (auto-append).
+// Capture a PNG screenshot as base64 for vision. When ffmpeg is configured we
+// downscale to ~720px wide PNG (smaller payload, faster Claude vision); without
+// ffmpeg we send the raw screencap PNG. Returns '' on failure (vision optional).
+async function captureShot(serial) {
+  try {
+    const png = await captureFrame(serial); // raw PNG buffer
+    if (FFMPEG) {
+      try {
+        const scaled = await new Promise((resolve, reject) => {
+          const ff = spawn(FFMPEG, ['-loglevel', 'error', '-i', 'pipe:0', '-vf', 'scale=720:-1', '-f', 'apng', 'pipe:1'], { windowsHide: true });
+          const chunks = [];
+          ff.stdout.on('data', (d) => chunks.push(d));
+          ff.on('error', reject);
+          ff.on('close', () => resolve(Buffer.concat(chunks)));
+          ff.stdin.on('error', () => undefined);
+          ff.stdin.write(png);
+          ff.stdin.end();
+        });
+        if (scaled && scaled.length > 0) return scaled.toString('base64');
+      } catch { /* fall back to raw png */ }
+    }
+    return png.toString('base64');
+  } catch {
+    return '';
+  }
+}
+
+async function handleAgentRequest(stream, msg) {
+  const serial = msg.serial;
+  const send = (obj) => { try { if (stream.readyState === 1) stream.send(JSON.stringify(obj)); } catch { /* gone */ } };
+  if (!serial) {
+    send({ type: `${msg.type}.result`, reqId: msg.reqId, ok: false, error: 'no ADB serial for device', tree: '' });
+    return;
+  }
+  await ensureConnected(serial);
+  if (msg.type === 'agent.dump') {
+    try {
+      const nodes = parseUiNodes(await uiDumpXml(serial));
+      const wh = await screenSize(serial);
+      const shot = msg.wantShot ? await captureShot(serial) : '';
+      send({ type: 'agent.dump.result', reqId: msg.reqId, ok: true, tree: buildScreenTree(nodes, Number(msg.cap) || 40), nodeCount: nodes.length, width: wh.width, height: wh.height, ...(shot ? { shot } : {}) });
+    } catch (e) {
+      send({ type: 'agent.dump.result', reqId: msg.reqId, ok: false, error: e.message, tree: '' });
+    }
+    return;
+  }
+  // agent.action
+  try {
+    await execAgentAction(serial, msg.action, Boolean(msg.stealth));
+    await new Promise((r) => setTimeout(r, 600)); // let the UI settle
+    const nodes = parseUiNodes(await uiDumpXml(serial));
+    const shot = msg.wantShot ? await captureShot(serial) : '';
+    send({ type: 'agent.action.result', reqId: msg.reqId, ok: true, tree: buildScreenTree(nodes, 40), ...(shot ? { shot } : {}) });
+  } catch (e) {
+    let tree = '';
+    try { tree = buildScreenTree(parseUiNodes(await uiDumpXml(serial)), 40); } catch { /* ignore */ }
+    send({ type: 'agent.action.result', reqId: msg.reqId, ok: false, error: e.message, tree });
   }
 }
 
@@ -1265,6 +1813,7 @@ function startStreamClient() {
         return;
       }
       if (msg.type === 'stream.start') startCapture(stream, msg.deviceId, msg.serial, msg.fps);
+      else if (msg.type === 'agent.dump' || msg.type === 'agent.action') await handleAgentRequest(stream, msg).catch(() => undefined);
       else await handleControl(msg).catch(() => undefined);
     };
     stream.onclose = () => {

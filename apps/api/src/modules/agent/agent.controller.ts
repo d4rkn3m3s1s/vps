@@ -11,7 +11,10 @@ const completeSchema = z.object({
 
 const heartbeatSchema = z.object({
   runningPhones: z.coerce.number().int().nonnegative().optional(),
-  capacity: z.coerce.number().int().nonnegative().optional()
+  capacity: z.coerce.number().int().nonnegative().optional(),
+  // ADB serials currently reachable on the host (ip:port). When present, only
+  // these phones are marked ONLINE and the rest OFFLINE.
+  serials: z.array(z.string()).optional()
 });
 
 const deviceMetricsSchema = z.object({

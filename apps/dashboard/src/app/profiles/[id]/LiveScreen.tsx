@@ -16,23 +16,100 @@ type ConnState = 'idle' | 'connecting' | 'live' | 'offline' | 'error';
 export function LiveScreen({ deviceId, online }: { deviceId: string; online: boolean }) {
   const [state, setState] = useState<ConnState>('idle');
   const [fps, setFps] = useState(0);
-  const imgRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const objUrlRef = useRef<string | null>(null);
+  // WebCodecs H.264 decoder state (raw-stream fast path).
+  const decoderRef = useRef<VideoDecoder | null>(null);
+  const decoderError = useRef(false);
+  const gotKeyframe = useRef(false);
   // Pointer-down position (in device coords) to distinguish tap from swipe.
   const downRef = useRef<{ x: number; y: number; t: number } | null>(null);
   // Natural frame size, learned from the first decoded frame.
   const frameSize = useRef<{ w: number; h: number }>({ w: 1080, h: 1920 });
   const frameCount = useRef(0);
+  // Single-frame decode pump for the JPEG path (keep only the newest frame).
+  const jpegDecoding = useRef(false);
+  const jpegPending = useRef<ArrayBuffer | null>(null);
 
   const cleanup = useCallback(() => {
     wsRef.current?.close();
     wsRef.current = null;
-    if (objUrlRef.current) {
-      URL.revokeObjectURL(objUrlRef.current);
-      objUrlRef.current = null;
+    if (decoderRef.current) {
+      try { decoderRef.current.close(); } catch { /* already closed */ }
+      decoderRef.current = null;
     }
+    gotKeyframe.current = false;
+    jpegPending.current = null;
+    jpegDecoding.current = false;
   }, []);
+
+  // Paint any decoded source (ImageBitmap or VideoFrame) onto the ONE canvas.
+  // Drawing to a canvas is atomic — the surface never blanks between frames, so
+  // there's no black flicker on tap/motion (the old <img>.src swap blanked).
+  const paint = useCallback((src: CanvasImageSource, w: number, h: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) { if (typeof (src as ImageBitmap).close === 'function') (src as ImageBitmap).close(); return; }
+    if (w && h && (canvas.width !== w || canvas.height !== h)) {
+      canvas.width = w; canvas.height = h;
+      frameSize.current = { w, h };
+    }
+    const ctx = canvas.getContext('2d');
+    if (ctx) ctx.drawImage(src, 0, 0);
+    if (typeof (src as ImageBitmap).close === 'function') (src as ImageBitmap).close();
+    frameCount.current += 1;
+    setState((s) => (s === 'live' ? s : 'live'));
+  }, []);
+
+  // JPEG/PNG pump: decode the latest frame off-thread (createImageBitmap), then
+  // draw it. Stale frames are dropped so we never lag behind on motion.
+  const pumpJpeg = useCallback(async () => {
+    if (jpegDecoding.current) return;
+    const buf = jpegPending.current;
+    if (!buf) return;
+    jpegPending.current = null;
+    jpegDecoding.current = true;
+    try {
+      const bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }));
+      paint(bmp, bmp.width, bmp.height);
+    } catch {
+      /* dropped frame; next repaints */
+    } finally {
+      jpegDecoding.current = false;
+      if (jpegPending.current) void pumpJpeg();
+    }
+  }, [paint]);
+
+  // Feed one raw-H.264 access unit (flag byte + Annex-B bytes) into WebCodecs,
+  // painting decoded frames to the same canvas. Drops deltas until the first key.
+  const handleH264 = useCallback((payload: Uint8Array) => {
+    if (decoderError.current) return;
+    if (typeof VideoDecoder === 'undefined') { decoderError.current = true; return; }
+    const flag = payload[0] ?? 0;
+    const data = payload.subarray(1);
+    const isKey = (flag & 1) === 1;
+    if (!decoderRef.current) {
+      try {
+        const dec = new VideoDecoder({
+          output: (frame) => paint(frame, frame.displayWidth, frame.displayHeight),
+          error: () => { decoderError.current = true; }
+        });
+        dec.configure({ codec: 'avc1.42E01F', optimizeForLatency: true } as VideoDecoderConfig);
+        decoderRef.current = dec;
+      } catch {
+        decoderError.current = true;
+        return;
+      }
+    }
+    const dec = decoderRef.current;
+    if (!dec) return;
+    if (isKey) gotKeyframe.current = true;
+    if (!gotKeyframe.current) return;
+    try {
+      dec.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: performance.now() * 1000, data }));
+    } catch {
+      decoderError.current = true;
+    }
+  }, [paint]);
 
   const connect = useCallback(async () => {
     setState('connecting');
@@ -60,30 +137,29 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
           }
           return;
         }
-        // Binary frame → render. Reuse one object URL to avoid GC churn.
-        const blob = new Blob([ev.data as ArrayBuffer], { type: 'image/png' });
-        const next = URL.createObjectURL(blob);
-        const img = imgRef.current;
-        if (img) {
-          const prev = objUrlRef.current;
-          img.onload = () => {
-            if (img.naturalWidth) frameSize.current = { w: img.naturalWidth, h: img.naturalHeight };
-            if (prev) URL.revokeObjectURL(prev);
-          };
-          img.src = next;
-          objUrlRef.current = next;
-        } else {
-          URL.revokeObjectURL(next);
+        // Binary frame. Both formats paint to the SAME canvas:
+        //   - raw H.264: flag byte (0-3) + Annex-B start code → WebCodecs.
+        //   - JPEG/PNG: anything else → createImageBitmap.
+        const bytes = new Uint8Array(ev.data as ArrayBuffer);
+        const isH264 =
+          bytes.length > 5 &&
+          bytes[0]! <= 3 &&
+          ((bytes[1] === 0 && bytes[2] === 0 && bytes[3] === 0 && bytes[4] === 1) ||
+            (bytes[1] === 0 && bytes[2] === 0 && bytes[3] === 1));
+        if (isH264 && typeof VideoDecoder !== 'undefined' && !decoderError.current) {
+          handleH264(bytes);
+          return;
         }
-        frameCount.current += 1;
-        if (state !== 'live') setState('live');
+        // JPEG/PNG → keep only the latest frame; the pump decodes + draws it.
+        jpegPending.current = ev.data as ArrayBuffer;
+        void pumpJpeg();
       };
       ws.onclose = () => setState((s) => (s === 'live' || s === 'connecting' ? 'idle' : s));
       ws.onerror = () => setState('error');
     } catch {
       setState('error');
     }
-  }, [deviceId, state]);
+  }, [deviceId, pumpJpeg, handleH264]);
 
   // FPS meter.
   useEffect(() => {
@@ -112,11 +188,11 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
-  // Map a browser pointer position to device coordinates.
+  // Map a browser pointer position to device coordinates (read from the canvas).
   function toDevice(e: React.PointerEvent): { x: number; y: number } {
-    const img = imgRef.current;
-    if (!img) return { x: 0, y: 0 };
-    const rect = img.getBoundingClientRect();
+    const surface = canvasRef.current;
+    if (!surface) return { x: 0, y: 0 };
+    const rect = surface.getBoundingClientRect();
     const fx = (e.clientX - rect.left) / rect.width;
     const fy = (e.clientY - rect.top) / rect.height;
     return {
@@ -191,12 +267,9 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
           onPointerUp={onPointerUp}
           onKeyDown={onKeyDown}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            ref={imgRef}
-            alt=""
+          <canvas
+            ref={canvasRef}
             className="live-screen-img"
-            draggable={false}
             style={{ display: live ? 'block' : 'none' }}
           />
           {!live ? (

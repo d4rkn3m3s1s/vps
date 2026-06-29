@@ -1,5 +1,6 @@
 import type { JobType, ListingCategory, Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
+import { AppError } from '../../lib/errors';
 import { createJobRecord } from '../jobs/jobs.service';
 import { APP_CATALOG, AUTOMATION_TEMPLATES, MARKETPLACE_LISTINGS } from './catalog.seed';
 
@@ -16,15 +17,26 @@ export class CatalogService {
   }
 
   // Installs an app onto each device: records an INSTALL_APK job + bumps counter.
-  async installApp(packageName: string, deviceIds: string[]) {
+  // The agent's installApk requires a real apkPath/apkUrl, so we resolve one from
+  // (in priority) the caller-supplied apkUrl, else the catalog item's apkUrl. If
+  // neither exists we throw a clear error instead of dispatching a job that would
+  // fail at the agent with "apkPath is required".
+  async installApp(packageName: string, deviceIds: string[], apkUrl?: string) {
     const app = await prisma.appCatalogItem.findUnique({ where: { packageName } });
+    const resolvedApk = apkUrl || app?.apkUrl || null;
+    if (!resolvedApk) {
+      throw new AppError(
+        `"${packageName}" için APK bağlantısı yok. Lütfen bir APK indirme URL'si girin (Play Store paketleri doğrudan kurulamaz).`,
+        422,
+        'APK_URL_REQUIRED'
+      );
+    }
+    if (deviceIds.length === 0) {
+      throw new AppError('En az bir cihaz seçin.', 422, 'NO_DEVICES');
+    }
     const jobs = await Promise.all(
       deviceIds.map((deviceId) =>
-        createJobRecord('EMULATOR_INSTALL_APK', {
-          deviceId,
-          packageName,
-          apkPath: app?.apkUrl ?? undefined
-        })
+        createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath: resolvedApk })
       )
     );
     if (app) {
@@ -99,11 +111,14 @@ export class CatalogService {
     const listing = await prisma.marketplaceListing.findUnique({ where: { id } });
     if (!listing) return null;
     if (!listing.apkUrl || !listing.packageName || deviceIds.length === 0) {
+      // Template/integration listings (no bundled APK) aren't device installs —
+      // record interest via the counter and report honestly that nothing was
+      // pushed to a phone (installed:0), so the UI can message it correctly.
       const updated = await prisma.marketplaceListing.update({
         where: { id },
         data: { installs: { increment: 1 } }
       });
-      return { ...updated, installed: 0, jobIds: [] as string[] };
+      return { ...updated, installed: 0, jobIds: [] as string[], noApk: true };
     }
     const apkPath = listing.apkUrl;
     const packageName = listing.packageName;

@@ -19,7 +19,10 @@ function smsCfg(): sms.SmsProviderConfig {
 }
 
 function mailCfg(): mail.MailProviderConfig {
+  // Provider: 'inbucket' for a self-hosted catch-all, else default catchmail SaaS.
+  const provider = (process.env.MAIL_PROVIDER ?? process.env.CATCHMAIL_PROVIDER ?? '').toLowerCase();
   return {
+    ...(provider === 'inbucket' ? { provider: 'inbucket' as const } : {}),
     ...(process.env.CATCHMAIL_BASE_URL ? { baseUrl: process.env.CATCHMAIL_BASE_URL } : {}),
     ...(process.env.CATCHMAIL_DOMAIN ? { domain: process.env.CATCHMAIL_DOMAIN } : {}),
     ...(process.env.CATCHMAIL_API_KEY ? { apiKey: process.env.CATCHMAIL_API_KEY } : {})
@@ -50,10 +53,15 @@ export class AccountsService {
       .then(() => ({ ok: true, detail: 'erişilebilir' }))
       .catch((e: Error) => ({ ok: false, detail: e.message }));
 
+    // Identity is offline-first (local generator) so it is always available;
+    // the detail notes whether a network source is also configured.
     const idStatus = await identity
       .generateIdentity(identityCfg())
-      .then(() => ({ ok: true, detail: 'erişilebilir' }))
-      .catch((e: Error) => ({ ok: false, detail: e.message }));
+      .then((id) => ({
+        ok: true,
+        detail: id.source === 'network' ? 'çevrimiçi kaynak' : 'yerel üretici (çevrimdışı)'
+      }))
+      .catch(() => ({ ok: true, detail: 'yerel üretici (çevrimdışı)' }));
 
     return { sms: smsStatus, mail: mailStatus, identity: idStatus };
   }

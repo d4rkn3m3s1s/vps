@@ -20,7 +20,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const body = (await request.json().catch(() => ({}))) as { prompt?: string; model?: string };
+  const body = (await request.json().catch(() => ({}))) as {
+    prompt?: string;
+    model?: string;
+    history?: Array<{ role?: string; text?: string }>;
+  };
   const prompt = (body.prompt ?? '').trim();
   if (!prompt) {
     return NextResponse.json({ error: 'Prompt is required.' }, { status: 400 });
@@ -29,12 +33,21 @@ export async function POST(request: Request) {
   const model = MODEL_MAP[body.model ?? ''] ?? 'claude-opus-4-8';
   const client = new Anthropic({ apiKey });
 
+  // Carry prior turns so the assistant has conversation context. We sanitize the
+  // client-supplied history (only user/assistant text turns) and cap it to the
+  // last 20 turns to bound token cost. The current prompt is appended last.
+  const history: Anthropic.MessageParam[] = (Array.isArray(body.history) ? body.history : [])
+    .filter((m): m is { role: 'user' | 'assistant'; text: string } =>
+      (m?.role === 'user' || m?.role === 'assistant') && typeof m?.text === 'string' && m.text.trim().length > 0)
+    .slice(-20)
+    .map((m) => ({ role: m.role, content: m.text }));
+
   try {
     const message = await client.messages.create({
       model,
       max_tokens: 2048,
       system: SYSTEM,
-      messages: [{ role: 'user', content: prompt }]
+      messages: [...history, { role: 'user', content: prompt }]
     });
 
     const text = message.content

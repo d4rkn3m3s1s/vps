@@ -36,6 +36,12 @@ type ViewerSocket = WebSocket & {
   mirror?: MirrorTarget[];
 };
 
+// One action the AI Device Agent can ask the host agent to perform on a device.
+export type AgentAction = {
+  name: 'tap_element' | 'tap' | 'tap_grid' | 'swipe' | 'type_text' | 'press_key' | 'launch_app' | 'wait';
+  input: Record<string, unknown>;
+};
+
 // A control message the API sends down to a host agent.
 type AgentControl =
   | { type: 'stream.start'; deviceId: string; serial: string | null; fps?: number; quality?: number }
@@ -43,9 +49,24 @@ type AgentControl =
   | { type: 'input.tap'; deviceId: string; serial: string | null; x: number; y: number }
   | { type: 'input.swipe'; deviceId: string; serial: string | null; x: number; y: number; x2: number; y2: number; ms?: number }
   | { type: 'input.key'; deviceId: string; serial: string | null; keycode: number }
-  | { type: 'input.text'; deviceId: string; serial: string | null; text: string };
+  | { type: 'input.text'; deviceId: string; serial: string | null; text: string }
+  // AI Device Agent request/response (correlated by reqId).
+  | { type: 'agent.dump'; deviceId: string; serial: string | null; reqId: string; cap?: number; wantShot?: boolean }
+  | { type: 'agent.action'; deviceId: string; serial: string | null; reqId: string; action: AgentAction; stealth?: boolean; wantShot?: boolean };
+
+// The reply a host agent sends back for an agent.dump / agent.action request.
+export type AgentReply = {
+  ok: boolean;
+  tree: string;
+  error?: string;
+  nodeCount?: number;
+  width?: number;
+  height?: number;
+  shot?: string; // base64 PNG screenshot (only when wantShot was requested)
+};
 
 const FRAME_PREFIX = Buffer.from('FRM:'); // binary frame framing: "FRM:" + <36-char deviceId> + jpeg bytes
+const H264_PREFIX = Buffer.from('H264'); // raw H.264: "H264" + <36-char deviceId> + flag(1) + Annex-B bytes
 
 export class StreamHub {
   private agentWss?: WebSocketServer;
@@ -54,6 +75,11 @@ export class StreamHub {
   private readonly agents = new Map<string, AgentSocket>();
   // deviceId -> set of viewer sockets watching it
   private readonly viewers = new Map<string, Set<ViewerSocket>>();
+  // reqId -> pending AI-agent request (resolve + timeout timer)
+  private readonly pending = new Map<string, { resolve: (v: AgentReply) => void; timer: NodeJS.Timeout }>();
+  private reqSeq = 0;
+  // deviceId -> last H.264 config chunk (SPS/PPS), replayed to late-joining viewers
+  private readonly h264Config = new Map<string, Buffer>();
 
   attach(server: HttpServer): void {
     if (this.agentWss || this.viewerWss) return;
@@ -111,13 +137,63 @@ export class StreamHub {
         if (this.agents.get(host.id) === a) this.agents.delete(host.id);
       });
       a.on('error', () => undefined);
+      // The agent may (re)connect AFTER viewers are already watching — e.g. the
+      // host agent was restarted. Those viewers' stream.start was lost (or never
+      // sent because no agent was connected yet), so they'd sit on a black
+      // screen forever. Re-issue stream.start for every device on THIS host that
+      // currently has at least one viewer, so frames resume immediately.
+      void this.resumeStreamsForHost(host.id);
     });
   }
 
   // Agent frames arrive as binary: "FRM:" + deviceId(36) + jpeg. We slice the
   // device id and fan the JPEG bytes out to that device's viewers untouched.
   private onAgentMessage(_agent: AgentSocket, data: Buffer, isBinary: boolean): void {
-    if (!isBinary || data.length < FRAME_PREFIX.length + 36) return;
+    // Non-binary messages are AI-agent replies (dump/action) correlated by reqId.
+    if (!isBinary) {
+      let msg: { type?: string; reqId?: string; ok?: boolean; tree?: string; error?: string; nodeCount?: number; width?: number; height?: number; shot?: string };
+      try {
+        msg = JSON.parse(data.toString('utf8'));
+      } catch {
+        return;
+      }
+      if (msg.reqId && this.pending.has(msg.reqId)) {
+        const entry = this.pending.get(msg.reqId)!;
+        clearTimeout(entry.timer);
+        this.pending.delete(msg.reqId);
+        entry.resolve({
+          ok: Boolean(msg.ok),
+          tree: typeof msg.tree === 'string' ? msg.tree : '',
+          ...(typeof msg.error === 'string' ? { error: msg.error } : {}),
+          ...(typeof msg.nodeCount === 'number' ? { nodeCount: msg.nodeCount } : {}),
+          ...(typeof msg.width === 'number' ? { width: msg.width } : {}),
+          ...(typeof msg.height === 'number' ? { height: msg.height } : {}),
+          ...(typeof msg.shot === 'string' ? { shot: msg.shot } : {})
+        });
+      }
+      return;
+    }
+    if (data.length < FRAME_PREFIX.length + 36) return;
+
+    // Raw H.264 path: "H264" + deviceId(36) + flag(1) + Annex-B bytes. We forward
+    // flag+bytes (the browser's WebCodecs decoder needs the keyframe flag) and
+    // cache the config chunk (SPS/PPS, flag bit1) so a late-joining viewer can
+    // start decoding without waiting for the next screenrecord respawn.
+    if (data.subarray(0, H264_PREFIX.length).equals(H264_PREFIX)) {
+      const deviceId = data.subarray(H264_PREFIX.length, H264_PREFIX.length + 36).toString('utf8').trim();
+      const payload = data.subarray(H264_PREFIX.length + 36); // flag(1) + bytes
+      const flag = payload.length > 0 ? payload[0]! : 0;
+      if (flag & 2) this.h264Config.set(deviceId, Buffer.from(payload)); // cache config-bearing chunk
+      const set = this.viewers.get(deviceId);
+      if (!set || set.size === 0) return;
+      for (const v of set) {
+        if (v.readyState === WebSocket.OPEN && v.bufferedAmount < 6_000_000) {
+          v.send(payload, { binary: true });
+        }
+      }
+      return;
+    }
+
     if (!data.subarray(0, FRAME_PREFIX.length).equals(FRAME_PREFIX)) return;
     // The agent right-pads the device id to a fixed 36 chars (cuids are ~25), so
     // trim it back before looking up viewers — otherwise the padded id never
@@ -176,17 +252,22 @@ export class StreamHub {
       this.addViewer(deviceId, v);
 
       const serial = device.ipAddress && device.adbPort ? `${device.ipAddress}:${device.adbPort}` : null;
-      // First viewer for this device → tell the host to start capturing.
-      if ((this.viewers.get(deviceId)?.size ?? 0) === 1) {
-        // Ask for 20fps; the agent caps at 30 and drops frames under backpressure,
-        // so requesting more here lifts the whole pipeline off the old 12fps pin.
-        this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
-      }
+      // Tell the host to (re)start capturing. We send on EVERY viewer join, not
+      // just the first: stale viewers that never closed (e.g. a crashed tab, or
+      // the agent connecting after viewers were already waiting) would otherwise
+      // make size !== 1 and the new viewer would sit on a black screen forever.
+      // The agent's startCapture does stopCapture→start, so this is idempotent.
+      // Ask for 20fps; the agent caps at 30 and drops frames under backpressure.
+      this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
 
       v.on('message', (raw) => this.onViewerMessage(v, raw as Buffer, device.hostId, serial));
       v.on('close', () => this.removeViewer(deviceId, v, device.hostId, serial));
       v.on('error', () => undefined);
       v.send(JSON.stringify({ type: 'stream.connected', deviceId, hasHost: Boolean(device.hostId) }));
+      // If we have a cached H.264 config (SPS/PPS) for this device, replay it so a
+      // late-joining viewer's decoder can sync before the next keyframe arrives.
+      const cfg = this.h264Config.get(deviceId);
+      if (cfg && v.readyState === WebSocket.OPEN) v.send(cfg, { binary: true });
     });
   }
 
@@ -274,6 +355,8 @@ export class StreamHub {
     set.delete(v);
     if (set.size === 0) {
       this.viewers.delete(deviceId);
+      // Drop the cached H.264 config — the next capture session re-emits a fresh one.
+      this.h264Config.delete(deviceId);
       // Last viewer left → tell the host to stop capturing (saves CPU).
       this.toAgent(hostId, { type: 'stream.stop', deviceId, serial });
     }
@@ -283,6 +366,68 @@ export class StreamHub {
     if (!hostId) return;
     const a = this.agents.get(hostId);
     if (a && a.readyState === WebSocket.OPEN) a.send(JSON.stringify(control));
+  }
+
+  // When an agent (re)connects, restart capture for every device on that host
+  // that already has viewers — otherwise those viewers stay black until they
+  // reconnect. Looks up each watched device's serial from the DB. Safe to call
+  // repeatedly: the agent does stopCapture→startCapture, so it's idempotent.
+  private async resumeStreamsForHost(hostId: string): Promise<void> {
+    const watched = [...this.viewers.entries()].filter(([, set]) => set.size > 0).map(([id]) => id);
+    if (watched.length === 0) return;
+    const devices = await prisma.device
+      .findMany({ where: { id: { in: watched }, hostId }, select: { id: true, ipAddress: true, adbPort: true } })
+      .catch(() => [] as Array<{ id: string; ipAddress: string | null; adbPort: number | null }>);
+    for (const d of devices) {
+      const serial = d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null;
+      this.toAgent(hostId, { type: 'stream.start', deviceId: d.id, serial, fps: 20, quality: 60 });
+      logger.info('[stream] resumed capture after agent connect', { deviceId: d.id });
+    }
+  }
+
+  // Whether a host agent is currently connected (used to fail fast before a run).
+  isAgentConnected(hostId: string | null): boolean {
+    if (!hostId) return false;
+    const a = this.agents.get(hostId);
+    return Boolean(a && a.readyState === WebSocket.OPEN);
+  }
+
+  // ── AI Device Agent request/response ────────────────────────────────────────
+  // Send a dump/action request to a host agent and await its correlated reply.
+  // Rejects immediately if the agent isn't connected, or after `timeoutMs` if no
+  // reply arrives (cleaning up the pending entry so it never leaks).
+  requestFromAgent(
+    hostId: string | null,
+    req:
+      | { type: 'agent.dump'; deviceId: string; serial: string | null; cap?: number; wantShot?: boolean }
+      | { type: 'agent.action'; deviceId: string; serial: string | null; action: AgentAction; stealth?: boolean; wantShot?: boolean },
+    timeoutMs = 20000
+  ): Promise<AgentReply> {
+    return new Promise<AgentReply>((resolve, reject) => {
+      if (!hostId) {
+        reject(new Error('AGENT_OFFLINE'));
+        return;
+      }
+      const a = this.agents.get(hostId);
+      if (!a || a.readyState !== WebSocket.OPEN) {
+        reject(new Error('AGENT_OFFLINE'));
+        return;
+      }
+      const reqId = `r${Date.now()}_${this.reqSeq++}`;
+      const timer = setTimeout(() => {
+        this.pending.delete(reqId);
+        reject(new Error('AGENT_TIMEOUT'));
+      }, timeoutMs);
+      this.pending.set(reqId, { resolve, timer });
+      const control: AgentControl = { ...req, reqId };
+      try {
+        a.send(JSON.stringify(control));
+      } catch {
+        clearTimeout(timer);
+        this.pending.delete(reqId);
+        reject(new Error('AGENT_SEND_FAILED'));
+      }
+    });
   }
 
   // Live counts for the system/health UI.

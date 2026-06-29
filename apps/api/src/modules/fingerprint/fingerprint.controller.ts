@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { fingerprintService } from './fingerprint.service';
 
@@ -54,4 +55,38 @@ export async function updateGpsHandler(req: Request, res: Response): Promise<voi
 
 export async function listCountriesHandler(_req: Request, res: Response): Promise<void> {
   res.json({ data: fingerprintService.listCountries() });
+}
+
+// Push the stored fingerprint to the physical device (setprop over ADB).
+export async function applyFingerprintHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  const data = await fingerprintService.applyToDevice(deviceId, workspaceId);
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'fingerprint.apply',
+    resourceType: 'device',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { jobId: data.jobId }
+  });
+  res.status(201).json({ data });
+}
+
+// Provision device/Play integrity (BASIC props over ADB; STRONG needs real device).
+export async function provisionIntegrityHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  const data = await fingerprintService.provisionIntegrity(deviceId, workspaceId);
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'fingerprint.provisionIntegrity',
+    resourceType: 'device',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { jobId: data.jobId }
+  });
+  res.status(201).json({ data });
 }

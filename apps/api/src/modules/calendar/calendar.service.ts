@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 
@@ -32,6 +33,8 @@ export const calendarService = {
     }
     const when = toDate(input.scheduledFor);
     if (Number.isNaN(when.getTime())) throw new AppError('Geçersiz zaman', 400, 'INVALID_TIME');
+    // SSRF guard: the host agent fetches mediaUrl server-side, so reject internal targets.
+    if (input.mediaUrl) await assertSafePublicUrl(input.mediaUrl);
 
     const data: Prisma.ScheduledPostCreateInput = {
       caption: input.caption?.trim() ?? '',
@@ -62,9 +65,12 @@ export const calendarService = {
     },
     workspaceId?: string
   ) {
-    const post = await prisma.scheduledPost.findUnique({ where: { id } });
+    // Workspace-scoped lookup: a foreign post resolves to "not found" rather than
+    // relying on a post-hoc check that short-circuits when workspaceId is undefined.
+    const post = await prisma.scheduledPost.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!post) throw new AppError('Gönderi bulunamadı', 404, 'POST_NOT_FOUND');
-    if (workspaceId && post.workspaceId && post.workspaceId !== workspaceId) throw new AppError('Forbidden', 403, 'FORBIDDEN');
+    // SSRF guard on any newly-supplied mediaUrl (agent fetches it server-side).
+    if (input.mediaUrl) await assertSafePublicUrl(input.mediaUrl);
     const data: Prisma.ScheduledPostUpdateInput = {};
     if (input.caption !== undefined) data.caption = input.caption.trim();
     if (input.platform !== undefined) data.platform = input.platform;
@@ -78,10 +84,11 @@ export const calendarService = {
   },
 
   async remove(id: string, workspaceId?: string) {
-    const post = await prisma.scheduledPost.findUnique({ where: { id } });
+    // Workspace-scoped delete: atomic deleteMany so a foreign id deletes nothing
+    // (no TOCTOU window, no short-circuit when workspaceId is undefined).
+    const post = await prisma.scheduledPost.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!post) throw new AppError('Gönderi bulunamadı', 404, 'POST_NOT_FOUND');
-    if (workspaceId && post.workspaceId && post.workspaceId !== workspaceId) throw new AppError('Forbidden', 403, 'FORBIDDEN');
-    await prisma.scheduledPost.delete({ where: { id } });
+    await prisma.scheduledPost.deleteMany({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     return { deleted: true };
   },
 
@@ -116,7 +123,10 @@ export const calendarService = {
         for (const deviceId of deviceIds) {
           // Push media first so the posting flow can pick it from the gallery.
           if (post.mediaUrl) {
-            const fileName = post.mediaUrl.split('/').pop() || 'media';
+            // Sanitize the derived filename — it ends up in a device-side path, so
+            // strip anything that isn't a safe filename char (no traversal).
+            const rawName = post.mediaUrl.split('/').pop() || 'media';
+            const fileName = rawName.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128) || 'media';
             await createJobRecord(
               'EMULATOR_PUSH_FILE',
               { deviceId, url: post.mediaUrl, fileName, destination: 'gallery' } as unknown as JobPayload,

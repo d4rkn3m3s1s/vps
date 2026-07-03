@@ -15,7 +15,7 @@ import {
 export const rpaRouter = Router();
 
 rpaRouter.get('/', requireApiKey, optionalJwt, asyncHandler(listFlowsHandler));
-rpaRouter.get('/:id', requireApiKey, asyncHandler(getFlowHandler));
+rpaRouter.get('/:id', requireApiKey, authenticateJwt, asyncHandler(getFlowHandler));
 rpaRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createFlowHandler));
 rpaRouter.post('/:id/run', requireApiKey, authenticateJwt, asyncHandler(runFlowHandler));
 rpaRouter.put('/:id', requireApiKey, authenticateJwt, asyncHandler(updateFlowHandler));

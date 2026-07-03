@@ -1,5 +1,6 @@
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { createJobRecord } from '../jobs/jobs.service';
 
 export type PushFileInput = {
@@ -14,7 +15,7 @@ export type PushFileInput = {
 
 export class FilesService {
   // Pushes a file to each selected cloud phone by recording one job per device.
-  async push(input: PushFileInput) {
+  async push(input: PushFileInput, workspaceId?: string) {
     if (input.deviceIds.length === 0) {
       throw new AppError('At least one device is required', 400, 'NO_DEVICES');
     }
@@ -23,16 +24,26 @@ export class FilesService {
     let fileName = input.fileName;
 
     if (input.libraryAssetId) {
-      const asset = await prisma.libraryAsset.findUnique({ where: { id: input.libraryAssetId } });
+      // Workspace-scoped: cannot pull another tenant's library asset by id.
+      const asset = await prisma.libraryAsset.findFirst({
+        where: { id: input.libraryAssetId, ...(workspaceId ? { workspaceId } : {}) }
+      });
       if (!asset) throw new AppError('Library asset not found', 404, 'ASSET_NOT_FOUND');
       url = asset.url ?? url;
       fileName = fileName ?? asset.name;
     }
 
     if (!url) throw new AppError('A file URL or library asset is required', 400, 'NO_SOURCE');
+    // SSRF guard: the host agent fetches this URL server-side. Skip the check for
+    // library-asset URLs (those are operator-curated, not arbitrary user input).
+    if (input.url && !input.libraryAssetId) await assertSafePublicUrl(input.url);
 
-    // Validate devices exist.
-    const devices = await prisma.device.findMany({ where: { id: { in: input.deviceIds } }, select: { id: true } });
+    // Validate devices exist AND belong to the caller's workspace (prevents
+    // pushing files onto another tenant's devices).
+    const devices = await prisma.device.findMany({
+      where: { id: { in: input.deviceIds }, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true }
+    });
     const known = new Set(devices.map((d) => d.id));
     const missing = input.deviceIds.filter((id) => !known.has(id));
     if (missing.length > 0) {
@@ -42,12 +53,17 @@ export class FilesService {
     const destination = input.destination ?? 'gallery';
     const jobs = await Promise.all(
       input.deviceIds.map((deviceId) =>
-        createJobRecord('EMULATOR_PUSH_FILE', {
-          deviceId,
-          url,
-          fileName: fileName ?? 'file',
-          destination
-        })
+        createJobRecord(
+          'EMULATOR_PUSH_FILE',
+          {
+            deviceId,
+            url,
+            fileName: fileName ?? 'file',
+            destination
+          },
+          undefined,
+          workspaceId
+        )
       )
     );
 

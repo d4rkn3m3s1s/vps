@@ -1,100 +1,31 @@
- ⚠ Webpack is configured while Turbopack is not, which may cause problems.
- ⚠ See instructions if you need to configure Turbopack:
-  https://nextjs.org/docs/app/api-reference/next-config-js/turbopack
-
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+ ⚠ Fast Refresh had to perform a full reload. Read more: https://nextjs.org/docs/messages/fast-refresh-reload
+ ⨯ ReferenceError: MessageCircle is not defined
+    at eval (src\components\Sidebar.tsx:46:56)
+    at (ssr)/./src/components/Sidebar.tsx (C:\Yeni klasör\vps\apps\dashboard\.next\server\app\profiles\[id]\page.js:432:1)
+    at eval (webpack-internal:///(ssr)/./src/components/AppChrome.tsx:8:66)
+    at (ssr)/./src/components/AppChrome.tsx (C:\Yeni klasör\vps\apps\dashboard\.next\server\app\profiles\[id]\page.js:344:1)
+  44 |       { href: '/ai-agent', tkey: 'nav.aiAgent', icon: Bot },
+  45 |       { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus },
+> 46 |       { href: '/whatsapp', tkey: 'nav.whatsapp', icon: MessageCircle }
+     |                                                        ^
+  47 |     ]
+  48 |   },
+  49 |   { {
+  digest: '1188463282'
 }
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
+ ⨯ ReferenceError: MessageCircle is not defined
+    at eval (src\components\Sidebar.tsx:46:56)
+    at (ssr)/./src/components/Sidebar.tsx (C:\Yeni klasör\vps\apps\dashboard\.next\server\app\page.js:432:1)
+    at eval (webpack-internal:///(ssr)/./src/components/AppChrome.tsx:8:66)
+    at (ssr)/./src/components/AppChrome.tsx (C:\Yeni klasör\vps\apps\dashboard\.next\server\app\page.js:300:1)
+  44 |       { href: '/ai-agent', tkey: 'nav.aiAgent', icon: Bot },
+  45 |       { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus },
+> 46 |       { href: '/whatsapp', tkey: 'nav.whatsapp', icon: MessageCircle }
+     |                                                        ^
+  47 |     ]
+  48 |   },
+  49 |   { {
+  digest: '1188463282'
 }
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async POST (src\app\api\devices\[id]\stream-token\route.ts:8:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
-TypeError: fetch failed
-    at async apiCall (src\lib\apiClient.ts:90:15)
-    at async GET (src\app\api\jobs\route.ts:5:15)
-  88 |   }
-  89 |
-> 90 |   const res = await fetch(`${BASE_URL}${path}`, {
-     |               ^
-  91 |     method: opts.method ?? 'GET',
-  92 |     cache: 'no-store',
-  93 |     headers, {
-  [cause]: [AggregateError: ] { code: 'ECONNREFUSED' }
-}
+ ⚠ Fast Refresh had to perform a full reload due to a runtime error.
+ ⚠ Fast Refresh had to perform a full reload. Read more: https://nextjs.org/docs/messages/fast-refresh-reload

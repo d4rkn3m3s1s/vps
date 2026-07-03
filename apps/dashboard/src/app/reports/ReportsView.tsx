@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { Download, FileJson, BarChart3, Activity, Cpu, BellRing, Gauge, Layers } from 'lucide-react';
+import { Download, FileJson, FileText, BarChart3, Activity, Cpu, BellRing, Gauge, Layers } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 import { downloadCsv } from '../../lib/csv';
@@ -76,6 +76,56 @@ export function ReportsView() {
     URL.revokeObjectURL(url);
   }
 
+  // PDF export via the browser's native print-to-PDF (no dependency, no server).
+  // Opens a clean, print-styled report window and triggers the print dialog where
+  // the operator picks "Save as PDF".
+  async function exportPdf() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/reports?${rangeQs()}`);
+      const json = await res.json();
+      const d = json.data as Summary | null;
+      if (!d) return;
+      const esc = (v: unknown) => String(v ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+      const now = new Date().toLocaleString('tr-TR');
+      const rows = (d.jobsByType ?? []).map((j) => `<tr><td>${esc(j.type)}</td><td style="text-align:right">${esc(j.count)}</td></tr>`).join('');
+      const html = `<!doctype html><html lang="tr"><head><meta charset="utf-8"><title>Filo Raporu ${days} gün</title>
+<style>
+  *{box-sizing:border-box} body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:40px;line-height:1.5}
+  h1{font-size:22px;margin:0 0 4px} .sub{color:#666;font-size:12px;margin-bottom:24px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:18px 0}
+  .kpi{border:1px solid #ddd;border-radius:10px;padding:12px 14px} .kpi .l{font-size:11px;color:#666;text-transform:uppercase;letter-spacing:.04em}
+  .kpi .v{font-size:24px;font-weight:700;margin-top:4px}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px} th,td{border-bottom:1px solid #eee;padding:7px 6px;text-align:left}
+  th{color:#666;font-size:11px;text-transform:uppercase} h2{font-size:14px;margin:24px 0 4px}
+  .foot{margin-top:32px;color:#999;font-size:11px;border-top:1px solid #eee;padding-top:8px}
+  @media print{body{margin:16mm}}
+</style></head><body>
+  <h1>VPS Fleet — Operasyonel Rapor</h1>
+  <div class="sub">${esc(d.range.from?.slice(0,10))} → ${esc(d.range.to?.slice(0,10))} · ${days} gün · oluşturma: ${esc(now)}</div>
+  <div class="grid">
+    <div class="kpi"><div class="l">Toplam cihaz</div><div class="v">${esc(d.devices.total)}</div></div>
+    <div class="kpi"><div class="l">Çevrimiçi</div><div class="v">${esc(d.devices.online)}</div></div>
+    <div class="kpi"><div class="l">Aralıktaki görev</div><div class="v">${esc(d.jobs.inRange)}</div></div>
+    <div class="kpi"><div class="l">Başarı oranı</div><div class="v">${esc(d.jobs.successRate)}%</div></div>
+    <div class="kpi"><div class="l">Başarısız görev</div><div class="v">${esc(d.jobs.failed)}</div></div>
+    <div class="kpi"><div class="l">Proxy / Üye / Uyarı</div><div class="v">${esc(d.proxies)} / ${esc(d.members)} / ${esc(d.alertEvents)}</div></div>
+  </div>
+  <h2>Görev türüne göre dağılım</h2>
+  <table><thead><tr><th>Tür</th><th style="text-align:right">Adet</th></tr></thead><tbody>${rows || '<tr><td colspan="2">Kayıt yok</td></tr>'}</tbody></table>
+  <div class="foot">VPS Fleet · Bulut Telefon Filosu · bu rapor tarayıcıdan PDF olarak kaydedilmiştir.</div>
+</body></html>`;
+      const w = window.open('', '_blank', 'width=900,height=1000');
+      if (!w) return;
+      w.document.write(html);
+      w.document.close();
+      // Give the new window a tick to render before invoking print.
+      w.onload = () => { w.focus(); w.print(); };
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const s = summary;
 
   return (
@@ -96,6 +146,9 @@ export function ReportsView() {
             </button>
             <button type="button" className="btn-ghost" onClick={exportJson}>
               <FileJson size={15} /> JSON
+            </button>
+            <button type="button" className="btn-ghost" disabled={busy} onClick={exportPdf}>
+              <FileText size={15} /> PDF
             </button>
           </>
         }

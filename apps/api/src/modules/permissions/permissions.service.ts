@@ -19,15 +19,17 @@ export class PermissionsService {
     return prisma.profilePermission.findMany({ orderBy: { createdAt: 'desc' } });
   }
 
-  async grant(input: PermissionInput) {
+  async grant(input: PermissionInput, workspaceId?: string) {
     const user = await prisma.user.findUnique({ where: { id: input.userId } });
     if (!user) throw new AppError('User not found', 404, 'USER_NOT_FOUND');
+    // Scope group/device to the granting admin's workspace so a grant can't bind
+    // to another tenant's group/device by id.
     if (input.groupId) {
-      const group = await prisma.deviceGroup.findUnique({ where: { id: input.groupId } });
+      const group = await prisma.deviceGroup.findFirst({ where: { id: input.groupId, ...(workspaceId ? { workspaceId } : {}) } });
       if (!group) throw new AppError('Group not found', 404, 'GROUP_NOT_FOUND');
     }
     if (input.deviceId) {
-      const device = await prisma.device.findUnique({ where: { id: input.deviceId } });
+      const device = await prisma.device.findFirst({ where: { id: input.deviceId, ...(workspaceId ? { workspaceId } : {}) } });
       if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     }
 

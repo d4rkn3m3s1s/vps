@@ -27,6 +27,7 @@ export type DeviceUpdateInput = {
   hostId?: string | null | undefined;
   metadata?: unknown;
   lastSeen?: string | Date | undefined;
+  tags?: string[] | undefined;
 };
 
 export type DeviceHeartbeatInput = {

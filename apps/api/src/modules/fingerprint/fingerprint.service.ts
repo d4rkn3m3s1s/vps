@@ -93,13 +93,19 @@ export function generateFingerprintData(opts: GenerateOptions = {}): Fingerprint
 }
 
 export class FingerprintService {
-  async get(deviceId: string) {
+  async get(deviceId: string, workspaceId?: string) {
+    // Scope via the owning device's workspace when a workspace is in context, so a
+    // fingerprint can't be read across tenants.
+    if (workspaceId) {
+      const device = await prisma.device.findFirst({ where: { id: deviceId, workspaceId }, select: { id: true } });
+      if (!device) return null;
+    }
     return prisma.deviceFingerprint.findUnique({ where: { deviceId } });
   }
 
   // Create-or-replace: ensures every device has exactly one fingerprint.
-  async ensure(deviceId: string, opts: GenerateOptions = {}) {
-    await this.assertDevice(deviceId);
+  async ensure(deviceId: string, opts: GenerateOptions = {}, workspaceId?: string) {
+    await this.assertDevice(deviceId, workspaceId);
     const data = generateFingerprintData(opts);
     return prisma.deviceFingerprint.upsert({
       where: { deviceId },
@@ -108,11 +114,12 @@ export class FingerprintService {
     });
   }
 
-  async regenerate(deviceId: string, opts: GenerateOptions = {}) {
-    return this.ensure(deviceId, opts);
+  async regenerate(deviceId: string, opts: GenerateOptions = {}, workspaceId?: string) {
+    return this.ensure(deviceId, opts, workspaceId);
   }
 
-  async updateGps(deviceId: string, input: { latitude?: number | undefined; longitude?: number | undefined; gpsEnabled?: boolean | undefined; countryCode?: string | undefined }) {
+  async updateGps(deviceId: string, input: { latitude?: number | undefined; longitude?: number | undefined; gpsEnabled?: boolean | undefined; countryCode?: string | undefined }, workspaceId?: string) {
+    await this.assertDevice(deviceId, workspaceId);
     const existing = await this.get(deviceId);
     if (!existing) throw new AppError('Fingerprint not found', 404, 'FINGERPRINT_NOT_FOUND');
 
@@ -145,6 +152,7 @@ export class FingerprintService {
   // APPLY_FINGERPRINT job the host agent runs as setprop over ADB. Only the
   // identifier surface (model/build/serial/android_id) — secrets stay server-side.
   async applyToDevice(deviceId: string, workspaceId?: string) {
+    await this.assertDevice(deviceId, workspaceId);
     const fp = await this.get(deviceId);
     if (!fp) throw new AppError('Fingerprint not found', 404, 'FINGERPRINT_NOT_FOUND');
     const fingerprint = {
@@ -168,13 +176,15 @@ export class FingerprintService {
   // hardware attestation needs a real device / Magisk module — the agent reports
   // back whether that's possible. ToS/legal: only on your own consented fleet.
   async provisionIntegrity(deviceId: string, workspaceId?: string) {
-    await this.assertDevice(deviceId);
+    await this.assertDevice(deviceId, workspaceId);
     const job = await createJobRecord('PROVISION_INTEGRITY', { deviceId } as never, undefined, workspaceId);
     return { jobId: job.id };
   }
 
-  private async assertDevice(deviceId: string): Promise<void> {
-    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  // Workspace-scoped device existence check: a device in another tenant reads as
+  // "not found" so fingerprint reads/writes can't cross tenants.
+  private async assertDevice(deviceId: string, workspaceId?: string): Promise<void> {
+    const device = await prisma.device.findFirst({ where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) } });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
   }
 }

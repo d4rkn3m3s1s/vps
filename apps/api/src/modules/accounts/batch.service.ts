@@ -283,6 +283,50 @@ export class BatchService {
     return { job };
   }
 
+  // Send a WhatsApp message directly from a DEVICE (no account row needed) — the
+  // WhatsApp page picks a device, not an account. Verifies the device belongs to
+  // the workspace, then dispatches WHATSAPP_SEND (agent uses vtouch + wa.me).
+  async sendFromDevice(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to: string; message: string }
+  ) {
+    const device = await prisma.device.findFirst({
+      where: { id: input.deviceId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true }
+    });
+    if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    const to = input.to.replace(/[^\d]/g, '');
+    if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
+    const payload = { deviceId: input.deviceId, to, message: input.message } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_SEND', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // List stored WhatsApp messages (inbound captured by the agent's notification
+  // poll + outbound we sent) for a device, newest first. Workspace-scoped so a
+  // key can only read its own devices' messages.
+  async listMessages(
+    workspaceId: string | undefined,
+    input: { deviceId: string; limit?: number | undefined; direction?: 'IN' | 'OUT' | undefined }
+  ) {
+    // Verify the device belongs to this workspace (closes cross-tenant read).
+    const device = await prisma.device.findFirst({
+      where: { id: input.deviceId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true }
+    });
+    if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    const take = Math.min(Math.max(input.limit ?? 100, 1), 500);
+    const messages = await prisma.whatsappMessage.findMany({
+      where: {
+        deviceId: input.deviceId,
+        ...(input.direction ? { direction: input.direction } : {})
+      },
+      orderBy: { createdAt: 'desc' },
+      take
+    });
+    return { messages };
+  }
+
   // Read recent WhatsApp messages from a chat on the account's device.
   // Dispatches WHATSAPP_READ; the result lands on the Job row when the agent
   // completes (poll the job to get the messages).

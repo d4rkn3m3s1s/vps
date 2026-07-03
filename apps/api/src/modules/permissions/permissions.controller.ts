@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { permissionsService } from './permissions.service';
 
@@ -29,7 +30,7 @@ export async function listPermissionsHandler(req: Request, res: Response): Promi
 
 export async function grantPermissionHandler(req: Request, res: Response): Promise<void> {
   const input = grantSchema.parse(req.body);
-  const perm = await permissionsService.grant(input);
+  const perm = await permissionsService.grant(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'permission.grant',

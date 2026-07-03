@@ -30,6 +30,13 @@ const deviceMetricsSchema = z.object({
     .default([])
 });
 
+const whatsappInboundSchema = z.object({
+  serial: z.string().min(1),
+  from: z.string().min(1),
+  text: z.string().min(1),
+  ts: z.coerce.number().int().nonnegative().optional()
+});
+
 function requireHost(req: Request) {
   if (!req.hostAgent) throw new AppError('Host agent not authenticated', 401, 'UNAUTHORIZED');
   return req.hostAgent;
@@ -62,4 +69,12 @@ export async function updateDeviceMetricsHandler(req: Request, res: Response): P
   const host = requireHost(req);
   const input = deviceMetricsSchema.parse(req.body);
   res.json({ data: await agentService.updateDeviceMetrics(host, input) });
+}
+
+// Agent pushes an inbound WhatsApp message (captured from device notifications);
+// we persist it and fan out to WS / webhook / notification channels.
+export async function whatsappInboundHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = whatsappInboundSchema.parse(req.body);
+  res.json({ data: await agentService.inboundWhatsapp(host, input) });
 }

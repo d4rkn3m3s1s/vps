@@ -60,7 +60,10 @@ export function useDeviceStream(deviceId: string, canvasRef: React.RefObject<HTM
     pending.current = null;
     decoding.current = true;
     try {
-      const bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }));
+      // No MIME hint — the agent's PNG-path frames and the H264 path's MJPEG
+      // frames both arrive here; createImageBitmap sniffs the real format from
+      // the bytes. A hard-coded 'image/jpeg' made Chrome drop the PNG frames.
+      const bmp = await createImageBitmap(new Blob([buf]));
       paintBitmap(bmp, bmp.width, bmp.height);
     } catch {
       /* a dropped frame is fine; the next one repaints */
@@ -156,11 +159,21 @@ export function useDeviceStream(deviceId: string, canvasRef: React.RefObject<HTM
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const fx = (clientX - rect.left) / rect.width;
-    const fy = (clientY - rect.top) / rect.height;
+    const fw = frameSize.current.w;
+    const fh = frameSize.current.h;
+    if (!fw || !fh || !rect.width || !rect.height) return { x: 0, y: 0 };
+    // Canvas uses object-fit: contain — account for the letterbox bars so taps
+    // map to the actually-painted area, not the raw CSS box (else they drift).
+    const scale = Math.min(rect.width / fw, rect.height / fh);
+    const drawnW = fw * scale;
+    const drawnH = fh * scale;
+    const padX = (rect.width - drawnW) / 2;
+    const padY = (rect.height - drawnH) / 2;
+    const fx = (clientX - rect.left - padX) / drawnW;
+    const fy = (clientY - rect.top - padY) / drawnH;
     return {
-      x: Math.round(Math.min(1, Math.max(0, fx)) * frameSize.current.w),
-      y: Math.round(Math.min(1, Math.max(0, fy)) * frameSize.current.h)
+      x: Math.round(Math.min(1, Math.max(0, fx)) * fw),
+      y: Math.round(Math.min(1, Math.max(0, fy)) * fh)
     };
   }, [canvasRef]);
 

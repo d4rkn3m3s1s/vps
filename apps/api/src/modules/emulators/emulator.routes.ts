@@ -17,7 +17,7 @@ import {
 
 export const emulatorRouter = Router();
 
-emulatorRouter.get('/', requireApiKey, asyncHandler(listEmulatorsHandler));
+emulatorRouter.get('/', requireApiKey, authenticateJwt, asyncHandler(listEmulatorsHandler));
 emulatorRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createEmulatorHandler));
 emulatorRouter.post('/:id/start', requireApiKey, authenticateJwt, asyncHandler(startEmulatorHandler));
 emulatorRouter.post('/:id/stop', requireApiKey, authenticateJwt, asyncHandler(stopEmulatorHandler));

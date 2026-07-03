@@ -8,6 +8,7 @@ import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
 import { usageService } from '../usage/usage.service';
 import { calendarService } from '../calendar/calendar.service';
+import { notificationsService } from '../notifications/notifications.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -117,6 +118,26 @@ export class AgentService {
       if (snapshotId) {
         const r = (outcome.result as { artifactRef?: string; sizeBytes?: number } | undefined) ?? null;
         void snapshotService.onCaptureResult(snapshotId, r, outcome.status === 'COMPLETED').catch(() => undefined);
+      }
+    }
+
+    // Outbound WhatsApp: record the sent message for the conversation history so
+    // the messages API shows both sides. Only on a real SENT outcome.
+    if (updated.type === 'WHATSAPP_SEND' && outcome.status === 'COMPLETED') {
+      const pl = (updated.payload as { deviceId?: string; to?: string; message?: string } | null) ?? {};
+      const res = (outcome.result as { status?: string } | undefined) ?? {};
+      if (pl.deviceId && pl.to && pl.message && res.status === 'SENT') {
+        void prisma.whatsappMessage
+          .create({
+            data: {
+              deviceId: pl.deviceId,
+              workspaceId: updated.workspaceId ?? null,
+              direction: 'OUT',
+              peer: String(pl.to).slice(0, 256),
+              body: String(pl.message).slice(0, 4096)
+            }
+          })
+          .catch(() => undefined);
       }
     }
 
@@ -260,6 +281,67 @@ export class AgentService {
       await prisma.deviceMetricPoint.deleteMany({ where: { capturedAt: { lt: cutoff } } }).catch(() => undefined);
     }
     return { updated };
+  }
+
+  // Record an inbound WhatsApp message the agent captured from a device's
+  // notifications. The agent identifies the device by ADB serial; we map it back
+  // to the workspace-scoped device id (same as updateDeviceMetrics). Then we
+  // persist the message and fan out: live WS event, webhook, and Telegram/
+  // Slack/Discord notification ("bize bildirim"). Best-effort on the fan-out so
+  // a channel failure never drops the message.
+  async inboundWhatsapp(
+    host: Host,
+    input: { serial: string; from: string; text: string; ts?: number | undefined }
+  ): Promise<{ stored: boolean; id?: string }> {
+    // Resolve the device by exact ADB serial among this host's devices.
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true, name: true }
+    });
+    const device = devices.find(
+      (d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial
+    );
+    if (!device) return { stored: false };
+
+    const waTimestamp = input.ts && input.ts > 0 ? new Date(input.ts) : new Date();
+    const msg = await prisma.whatsappMessage.create({
+      data: {
+        deviceId: device.id,
+        workspaceId: device.workspaceId ?? null,
+        direction: 'IN',
+        peer: input.from.slice(0, 256),
+        body: input.text.slice(0, 4096),
+        waTimestamp
+      }
+    });
+
+    // Live push to dashboards.
+    deviceHub.broadcast({
+      type: 'whatsapp.message',
+      deviceId: device.id,
+      payload: { id: msg.id, direction: 'IN', peer: msg.peer, body: msg.body, waTimestamp: msg.waTimestamp.toISOString() },
+      timestamp: new Date().toISOString(),
+      workspaceId: device.workspaceId ?? undefined
+    });
+
+    // Webhook fan-out for external integrations.
+    void webhooksService.dispatch(
+      'WHATSAPP_MESSAGE',
+      { deviceId: device.id, deviceName: device.name, from: msg.peer, text: msg.body, ts: msg.waTimestamp.toISOString() },
+      device.workspaceId ?? undefined
+    );
+
+    // Push to the operator's notification channels (Telegram/Slack/Discord) with
+    // a rich, at-a-glance summary: who wrote, which device, and the message.
+    const when = msg.waTimestamp.toLocaleString('tr-TR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+    void notificationsService
+      .dispatch(device.workspaceId ?? '', {
+        title: `📩 WhatsApp — ${msg.peer}`,
+        detail: `💬 ${msg.body}\n\n📱 Cihaz: ${device.name}\n👤 Gönderen: ${msg.peer}\n🕒 ${when}`.slice(0, 900)
+      })
+      .catch(() => undefined);
+
+    return { stored: true, id: msg.id };
   }
 
   // Decrypt any secret fields so the agent receives ready-to-use values. The

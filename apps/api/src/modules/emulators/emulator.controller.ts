@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { EmulatorService } from './emulator.service';
 
@@ -50,8 +51,8 @@ export async function createEmulatorHandler(req: Request, res: Response): Promis
   res.status(202).json({ data: result });
 }
 
-export async function listEmulatorsHandler(_req: Request, res: Response): Promise<void> {
-  const data = await emulatorService.list();
+export async function listEmulatorsHandler(req: Request, res: Response): Promise<void> {
+  const data = await emulatorService.list(getWorkspaceId(req));
   res.json({ data });
 }
 

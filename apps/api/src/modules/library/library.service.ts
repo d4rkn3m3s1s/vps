@@ -31,8 +31,9 @@ export async function createAsset(
 export async function deleteAsset(workspaceId: string, id: string) {
   // Scope the lookup to the caller's workspace so one tenant can't delete
   // another's asset by guessing its id.
-  const asset = await prisma.libraryAsset.findFirst({ where: { id, workspaceId } });
-  if (!asset) throw new AppError('Asset not found', 404, 'ASSET_NOT_FOUND');
-  await prisma.libraryAsset.delete({ where: { id } });
+  // Atomic, workspace-scoped delete: deleteMany with the workspace filter means a
+  // row outside the caller's workspace is simply never matched (no TOCTOU window).
+  const { count } = await prisma.libraryAsset.deleteMany({ where: { id, workspaceId } });
+  if (count === 0) throw new AppError('Asset not found', 404, 'ASSET_NOT_FOUND');
   return { id };
 }

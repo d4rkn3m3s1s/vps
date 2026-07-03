@@ -16,6 +16,9 @@ type ConnState = 'idle' | 'connecting' | 'live' | 'offline' | 'error';
 export function LiveScreen({ deviceId, online }: { deviceId: string; online: boolean }) {
   const [state, setState] = useState<ConnState>('idle');
   const [fps, setFps] = useState(0);
+  // Fullscreen ("büyüt") mode — enlarges the mirror to a centered overlay so
+  // the operator can see + tap precisely. Esc or the close button exits.
+  const [zoom, setZoom] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   // WebCodecs H.264 decoder state (raw-stream fast path).
@@ -69,7 +72,11 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
     jpegPending.current = null;
     jpegDecoding.current = true;
     try {
-      const bmp = await createImageBitmap(new Blob([buf], { type: 'image/jpeg' }));
+      // No MIME hint: the agent's PNG-path frames (screencap -p) and the H264
+      // path's MJPEG frames both flow here — createImageBitmap sniffs the real
+      // format from the bytes. A hard-coded 'image/jpeg' made Chrome fail to
+      // decode the PNG frames, so the canvas stayed black.
+      const bmp = await createImageBitmap(new Blob([buf]));
       paint(bmp, bmp.width, bmp.height);
     } catch {
       /* dropped frame; next repaints */
@@ -172,6 +179,14 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
 
   useEffect(() => () => cleanup(), [cleanup]);
 
+  // Esc exits fullscreen ("büyüt") mode.
+  useEffect(() => {
+    if (!zoom) return;
+    const onEsc = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoom(false); };
+    window.addEventListener('keydown', onEsc);
+    return () => window.removeEventListener('keydown', onEsc);
+  }, [zoom]);
+
   // Auto-start the stream once on mount when the device is online, so opening a
   // device goes straight to a live view. The user can still Stop/Start manually.
   const autoStarted = useRef(false);
@@ -189,15 +204,31 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
   }
 
   // Map a browser pointer position to device coordinates (read from the canvas).
+  // The canvas uses `object-fit: contain`, so the drawn frame is letterboxed
+  // inside the element's CSS box when their aspect ratios differ. We must map
+  // against the ACTUAL painted area, not the raw CSS box, or taps drift on the
+  // axis that has letterbox bars.
   function toDevice(e: React.PointerEvent): { x: number; y: number } {
     const surface = canvasRef.current;
     if (!surface) return { x: 0, y: 0 };
     const rect = surface.getBoundingClientRect();
-    const fx = (e.clientX - rect.left) / rect.width;
-    const fy = (e.clientY - rect.top) / rect.height;
+    const fw = frameSize.current.w;
+    const fh = frameSize.current.h;
+    if (!fw || !fh || !rect.width || !rect.height) return { x: 0, y: 0 };
+
+    // Size of the frame as actually drawn inside the box under object-fit:contain.
+    const scale = Math.min(rect.width / fw, rect.height / fh);
+    const drawnW = fw * scale;
+    const drawnH = fh * scale;
+    // Letterbox offsets (centered) inside the CSS box.
+    const padX = (rect.width - drawnW) / 2;
+    const padY = (rect.height - drawnH) / 2;
+
+    const fx = (e.clientX - rect.left - padX) / drawnW;
+    const fy = (e.clientY - rect.top - padY) / drawnH;
     return {
-      x: Math.round(Math.min(1, Math.max(0, fx)) * frameSize.current.w),
-      y: Math.round(Math.min(1, Math.max(0, fy)) * frameSize.current.h)
+      x: Math.round(Math.min(1, Math.max(0, fx)) * fw),
+      y: Math.round(Math.min(1, Math.max(0, fy)) * fh)
     };
   }
 
@@ -256,7 +287,18 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
         </div>
       </div>
 
-      <div className="live-screen-stage">
+      <div className={`live-screen-stage ${zoom ? 'is-zoom' : ''}`}>
+        {live ? (
+          <button
+            type="button"
+            className="live-zoom-btn"
+            onClick={() => setZoom((z) => !z)}
+            title={zoom ? 'Küçült' : 'Büyüt'}
+            aria-label={zoom ? 'Küçült' : 'Büyüt'}
+          >
+            <Maximize2 size={16} />
+          </button>
+        ) : null}
         <div className="live-phone-frame">
         <div
           className={`live-screen-frame ${live ? 'is-live' : ''}`}

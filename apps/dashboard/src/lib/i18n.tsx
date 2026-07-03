@@ -25,6 +25,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.ai': { en: 'Fleet AI', tr: 'Fleet AI' },
   'nav.aiAgent': { en: 'AI Device Agent', tr: 'AI Cihaz Ajanı' },
   'nav.accounts': { en: 'Account creator', tr: 'Hesap Üretici' },
+  'nav.whatsapp': { en: 'WhatsApp', tr: 'WhatsApp' },
   'nav.overview': { en: 'Overview', tr: 'Genel Bakış' },
   'nav.analytics': { en: 'Analytics', tr: 'Analitik' },
   'nav.trends': { en: 'Trends', tr: 'Trendler' },

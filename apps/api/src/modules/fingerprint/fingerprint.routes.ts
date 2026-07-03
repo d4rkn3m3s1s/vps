@@ -15,7 +15,7 @@ export const fingerprintRouter = Router();
 
 // Country catalog for GPS/SIM selection.
 fingerprintRouter.get('/countries', requireApiKey, asyncHandler(listCountriesHandler));
-fingerprintRouter.get('/:deviceId', requireApiKey, asyncHandler(getFingerprintHandler));
+fingerprintRouter.get('/:deviceId', requireApiKey, authenticateJwt, asyncHandler(getFingerprintHandler));
 fingerprintRouter.post('/:deviceId/regenerate', requireApiKey, authenticateJwt, asyncHandler(regenerateFingerprintHandler));
 fingerprintRouter.put('/:deviceId/gps', requireApiKey, authenticateJwt, asyncHandler(updateGpsHandler));
 // Apply the stored fingerprint to the device + provision integrity (over ADB).

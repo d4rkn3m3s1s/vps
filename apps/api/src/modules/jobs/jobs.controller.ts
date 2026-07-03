@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
@@ -50,11 +51,20 @@ export async function enqueueDemoJobHandler(req: Request, res: Response): Promis
 
 export async function createJobHandler(req: Request, res: Response): Promise<void> {
   const input = createJobSchema.parse(req.body);
+  const workspaceId = getWorkspaceId(req);
   // Dashboard sends a Device id (or none). Job.emulatorId is a FK to the
   // Emulator table, so we carry the target id in the payload instead of as the
   // FK to avoid a foreign-key violation.
   const payload = { ...(input.payload ?? {}), ...(input.emulatorId ? { deviceId: input.emulatorId } : {}) };
-  const job = await createJobRecord(input.type, payload);
+  // Cross-tenant guard: a job targeting a device id (or carrying a deviceId in
+  // its payload) must target a device in the CALLER's workspace — otherwise an
+  // attacker could run arbitrary shell/RPA on another tenant's phone via POST /jobs.
+  const targetDeviceId = input.emulatorId ?? (typeof (input.payload as { deviceId?: unknown })?.deviceId === 'string' ? (input.payload as { deviceId: string }).deviceId : undefined);
+  if (targetDeviceId && workspaceId) {
+    const owned = await prisma.device.findFirst({ where: { id: targetDeviceId, workspaceId }, select: { id: true } });
+    if (!owned) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+  }
+  const job = await createJobRecord(input.type, payload, undefined, workspaceId);
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'job.create',

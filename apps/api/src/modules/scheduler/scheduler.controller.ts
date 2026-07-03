@@ -51,12 +51,12 @@ export async function createScheduleHandler(req: Request, res: Response): Promis
 export async function updateScheduleHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
   const input = updateSchema.parse(req.body);
-  res.json({ data: await schedulerService.update(id, input) });
+  res.json({ data: await schedulerService.update(id, input, getWorkspaceId(req)) });
 }
 
 export async function deleteScheduleHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await schedulerService.remove(id);
+  await schedulerService.remove(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'schedule.delete',

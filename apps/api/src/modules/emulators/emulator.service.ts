@@ -29,8 +29,11 @@ export class EmulatorService {
     return { emulatorId: emulator.id, jobId: job.id };
   }
 
-  async list() {
-    const emulators = await prisma.emulator.findMany({ orderBy: { createdAt: 'desc' } });
+  async list(workspaceId?: string) {
+    // Workspace-scoped: an API key from one tenant must not enumerate another
+    // tenant's emulators. Service identity (no workspaceId) still sees all.
+    const where: Prisma.EmulatorWhereInput = workspaceId ? { workspaceId } : {};
+    const emulators = await prisma.emulator.findMany({ where, orderBy: { createdAt: 'desc' } });
     return emulators;
   }
 

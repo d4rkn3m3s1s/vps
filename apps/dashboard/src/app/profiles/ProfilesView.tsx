@@ -80,6 +80,7 @@ export type DeviceProfile = {
   group?: { id: string; name: string } | null;
   metadata?: Record<string, unknown> | null;
   fingerprint?: DeviceFingerprint | null;
+  tags?: string[];
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
@@ -168,6 +169,7 @@ export function ProfilesView({
   }, []);
   const [query, setQuery] = useState('');
   const [groupId, setGroupId] = useState<string>('all');
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [mode, setMode] = useState<ViewMode>('card');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -194,15 +196,25 @@ export function ProfilesView({
   const [appOpen, setAppOpen] = useState(false);
   const [appChoice, setAppChoice] = useState('');
 
+  // All distinct tags across the fleet, for the quick-filter chip row.
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of devices) for (const t of d.tags ?? []) set.add(t);
+    return [...set].sort();
+  }, [devices]);
+
   const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
     return devices.filter((device) => {
       const matchesGroup =
         groupId === 'all' ||
         (groupId === 'ungrouped' ? !device.group : device.group?.id === groupId);
-      const matchesQuery = device.name.toLowerCase().includes(query.trim().toLowerCase());
-      return matchesGroup && matchesQuery;
+      // Search matches name OR any tag.
+      const matchesQuery = !q || device.name.toLowerCase().includes(q) || (device.tags ?? []).some((t) => t.includes(q));
+      const matchesTag = !tagFilter || (device.tags ?? []).includes(tagFilter);
+      return matchesGroup && matchesQuery && matchesTag;
     });
-  }, [devices, groupId, query]);
+  }, [devices, groupId, query, tagFilter]);
 
   const allSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.id));
 
@@ -325,6 +337,26 @@ export function ProfilesView({
       router.refresh();
     } finally {
       setFpBusy(false);
+    }
+  }
+
+  // Quick tag editor: comma-separated. Persists to the device and updates the
+  // local list immediately (optimistic) so the chips reflect the change at once.
+  async function editTags(device: DeviceProfile) {
+    const current = (device.tags ?? []).join(', ');
+    const next = typeof window !== 'undefined' ? window.prompt('Etiketler (virgülle ayırın):', current) : null;
+    if (next === null) return;
+    const tags = [...new Set(next.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+    try {
+      const res = await fetch(`/api/devices/${device.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags })
+      });
+      if (!res.ok) throw new Error('Etiketler kaydedilemedi');
+      setDevices((list) => list.map((d) => (d.id === device.id ? { ...d, tags } : d)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Etiketler kaydedilemedi');
     }
   }
 
@@ -635,6 +667,23 @@ export function ProfilesView({
               />
             </label>
           </div>
+          {allTags.length > 0 ? (
+            <div className="tag-filter-row">
+              <button
+                type="button"
+                className={tagFilter === null ? 'tag-chip active' : 'tag-chip'}
+                onClick={() => setTagFilter(null)}
+              >Tümü</button>
+              {allTags.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={tagFilter === t ? 'tag-chip active' : 'tag-chip'}
+                  onClick={() => setTagFilter(tagFilter === t ? null : t)}
+                >#{t}</button>
+              ))}
+            </div>
+          ) : null}
         </HoloPanel>
       </Reveal>
 
@@ -733,6 +782,12 @@ export function ProfilesView({
                       {device.group?.name ?? 'Grupsuz'}
                     </li>
                   </ul>
+                  <div className="card-tags">
+                    {(device.tags ?? []).map((t) => (
+                      <button key={t} type="button" className="tag-chip tag-chip-sm" onClick={() => setTagFilter(t)} title={`#${t} ile filtrele`}>#{t}</button>
+                    ))}
+                    <button type="button" className="tag-chip tag-chip-add" onClick={() => editTags(device)} title="Etiketleri düzenle">+ etiket</button>
+                  </div>
                   <div className="card-foot">
                     <span className="status-chip">
                       <span className={statusClass(device.status)} />

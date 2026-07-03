@@ -161,7 +161,11 @@ export class ProxyService {
     opts: { type?: ProxyType | undefined; group?: string | undefined } = {},
     workspaceId?: string
   ): Promise<{ created: number; skipped: number }> {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    // Bound the input so a giant paste can't stall the import loop (DoS guard).
+    if (text.length > 500_000) {
+      throw new AppError('Liste çok büyük (en fazla ~500 KB).', 400, 'IMPORT_TOO_LARGE');
+    }
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 5000);
     let created = 0;
     let skipped = 0;
     for (const line of lines) {

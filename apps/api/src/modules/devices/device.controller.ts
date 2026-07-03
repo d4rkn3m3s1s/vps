@@ -36,7 +36,8 @@ const deviceUpdateSchema = deviceCreateSchema.partial().extend({
   diskUsage: z.coerce.number().min(0).max(100).optional(),
   groupId: z.string().nullable().optional(),
   hostId: z.string().nullable().optional(),
-  lastSeen: z.string().datetime().optional()
+  lastSeen: z.string().datetime().optional(),
+  tags: z.array(z.string().max(32)).max(20).optional()
 });
 
 const deviceHeartbeatSchema = z.object({
@@ -81,7 +82,8 @@ function toAuditMetadata(value: unknown): Prisma.JsonValue | undefined {
 }
 
 export async function listDevicesHandler(req: Request, res: Response): Promise<void> {
-  const data = await deviceService.listDevices(getWorkspaceId(req));
+  const tag = typeof req.query.tag === 'string' ? req.query.tag : undefined;
+  const data = await deviceService.listDevices(getWorkspaceId(req), tag);
   // Granular RBAC: a restricted (non-admin, has-grants) user only sees the
   // devices/groups they were granted. Service identity (no JWT) is unrestricted.
   if (req.auth) {
@@ -245,7 +247,7 @@ export async function updateDeviceHandler(req: Request, res: Response): Promise<
 export async function deleteDeviceHandler(req: Request, res: Response): Promise<void> {
   const id = requireDeviceId(req);
   if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'delete');
-  const data = await deviceService.deleteDevice(id);
+  const data = await deviceService.deleteDevice(id, getWorkspaceId(req));
   deviceHub.broadcast({ type: 'device.deleted', deviceId: id, payload: data, timestamp: new Date().toISOString() });
   await writeAuditLog({
     userId: req.auth?.userId,

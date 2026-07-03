@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { filesService } from './files.service';
 
@@ -15,7 +16,7 @@ const pushSchema = z
 
 export async function pushFileHandler(req: Request, res: Response): Promise<void> {
   const input = pushSchema.parse(req.body);
-  const result = await filesService.push(input);
+  const result = await filesService.push(input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'file.push',

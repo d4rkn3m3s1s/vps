@@ -419,9 +419,12 @@ model Emulator {
   adbPort       Int?
   metadata      Json?
   createdById   String?
+  workspaceId   String?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
   jobs          Job[]
+
+  @@index([workspaceId])
 }
 
 model DeviceGroup {
@@ -452,6 +455,8 @@ model Device {
   diskUsage      Float         @default(0)
   lastSeen       DateTime?
   metadata       Json?
+  // Free-form operator labels for smart filtering (e.g. "warmup", "us-geo", "vip").
+  tags           String[]      @default([])
   groupId        String?
   hostId         String?
   workspaceId    String?
@@ -484,6 +489,7 @@ model Device {
   agentRuns      AgentRun[]
   appMaps        AppMap[]
   metricPoints   DeviceMetricPoint[]
+  whatsappMessages WhatsappMessage[]
 
   @@index([workspaceId])
 }
@@ -999,6 +1005,28 @@ model FarmActionLog {
   @@index([workspaceId])
 }
 
+// Inbound + outbound WhatsApp messages for a device/account. Inbound rows are
+// written by the host agent's notification poll (POST /agent/whatsapp/inbound);
+// outbound rows are written when a WHATSAPP_SEND job completes. Surfaced via the
+// messages API, a live WS event, a webhook, and a Telegram/Slack/Discord ping.
+model WhatsappMessage {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  deviceId    String
+  // IN (received) | OUT (sent by us)
+  direction   String   @default("IN")
+  // The other party — phone number (E.164-ish) or contact/sender display name.
+  peer        String
+  body        String
+  // WhatsApp's own timestamp (ms epoch) when known; else server receive time.
+  waTimestamp DateTime @default(now())
+  createdAt   DateTime @default(now())
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, deviceId, createdAt])
+  @@index([deviceId, createdAt])
+}
+
 enum WebhookEvent {
   JOB_COMPLETED
   JOB_FAILED
@@ -1006,6 +1034,7 @@ enum WebhookEvent {
   DEVICE_OFFLINE
   QUOTA_HIGH
   ALERT_FIRED
+  WHATSAPP_MESSAGE
   ALL
 }
 

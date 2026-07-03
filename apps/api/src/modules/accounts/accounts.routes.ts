@@ -24,7 +24,9 @@ import {
   provisionBatchHandler,
   registerAccountHandler,
   sendWhatsAppHandler,
+  sendWhatsAppFromDeviceHandler,
   readWhatsAppHandler,
+  listWhatsAppMessagesHandler,
   cancelAccountHandler,
   deleteAccountHandler,
   autoRegisterWhatsAppHandler
@@ -53,6 +55,13 @@ accountsRouter.post('/identity', requireApiKey, authenticateJwt, asyncHandler(ge
 
 // Fully automatic WhatsApp registration (rent number → register → OTP → finish).
 accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, asyncHandler(autoRegisterWhatsAppHandler));
+
+// Stored WhatsApp messages (inbound captured by the agent + outbound we sent),
+// device-scoped. ?deviceId=&limit=&direction=IN|OUT
+accountsRouter.get('/whatsapp/messages', requireApiKey, authenticateJwt, asyncHandler(listWhatsAppMessagesHandler));
+
+// Send a WhatsApp message directly from a device (WhatsApp page).
+accountsRouter.post('/whatsapp/send', requireApiKey, authenticateJwt, asyncHandler(sendWhatsAppFromDeviceHandler));
 
 // Batch account farm (GeneratedAccount lifecycle)
 accountsRouter.get('/batch/accounts', requireApiKey, authenticateJwt, asyncHandler(listAccountsHandler));

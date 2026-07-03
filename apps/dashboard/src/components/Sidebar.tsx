@@ -10,7 +10,7 @@ import {
   Library, AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Zap, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone, Boxes,
   BookOpen, Gift, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings, UserPlus, TrendingUp, DollarSign, Bot, Cloud
+  Settings, UserPlus, TrendingUp, DollarSign, Bot, Cloud, MessageCircle
 } from 'lucide-react';
 import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -42,7 +42,8 @@ const NAV: NavGroup[] = [
       { href: '/images', tkey: 'nav.images', icon: Layers },
       { href: '/ai', tkey: 'nav.ai', icon: Sparkles },
       { href: '/ai-agent', tkey: 'nav.aiAgent', icon: Bot },
-      { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus }
+      { href: '/accounts', tkey: 'nav.accounts', icon: UserPlus },
+      { href: '/whatsapp', tkey: 'nav.whatsapp', icon: MessageCircle }
     ]
   },
   {

@@ -40,7 +40,7 @@ export async function grantHandler(req: Request, res: Response): Promise<void> {
 
 export async function revokeGrantHandler(req: Request, res: Response): Promise<void> {
   const id = String(req.params.id);
-  const data = await grantService.revoke(id);
+  const data = await grantService.revoke(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.grant.revoke',
@@ -57,7 +57,7 @@ const transferSchema = z.object({ workspace: z.string().min(1) });
 export async function transferHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
   const { workspace } = transferSchema.parse(req.body);
-  const data = await grantService.transfer(deviceId, workspace);
+  const data = await grantService.transfer(deviceId, workspace, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.transfer',

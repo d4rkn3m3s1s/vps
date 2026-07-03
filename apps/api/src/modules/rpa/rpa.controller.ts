@@ -46,7 +46,7 @@ export async function listFlowsHandler(req: Request, res: Response): Promise<voi
 }
 
 export async function getFlowHandler(req: Request, res: Response): Promise<void> {
-  res.json({ data: await rpaService.get(requireId(req)) });
+  res.json({ data: await rpaService.get(requireId(req), getWorkspaceId(req)) });
 }
 
 export async function createFlowHandler(req: Request, res: Response): Promise<void> {
@@ -67,12 +67,12 @@ export async function createFlowHandler(req: Request, res: Response): Promise<vo
 
 export async function updateFlowHandler(req: Request, res: Response): Promise<void> {
   const input = updateSchema.parse(req.body);
-  res.json({ data: await rpaService.update(requireId(req), input) });
+  res.json({ data: await rpaService.update(requireId(req), input, getWorkspaceId(req)) });
 }
 
 export async function deleteFlowHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await rpaService.remove(id);
+  await rpaService.remove(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'rpa.delete',
@@ -88,7 +88,7 @@ export async function deleteFlowHandler(req: Request, res: Response): Promise<vo
 export async function runFlowHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
   const { deviceIds } = runSchema.parse(req.body);
-  const result = await rpaService.run(id, deviceIds);
+  const result = await rpaService.run(id, deviceIds, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'rpa.run',

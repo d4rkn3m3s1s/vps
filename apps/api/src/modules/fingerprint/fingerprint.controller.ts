@@ -25,14 +25,16 @@ function requireDeviceId(req: Request): string {
 
 export async function getFingerprintHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
-  const fp = await fingerprintService.get(deviceId);
+  // Scope the read to the caller's workspace so a fingerprint can't be read across
+  // tenants by guessing a device id.
+  const fp = await fingerprintService.get(deviceId, getWorkspaceId(req));
   res.json({ data: fp });
 }
 
 export async function regenerateFingerprintHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
   const input = generateSchema.parse(req.body ?? {});
-  const fp = await fingerprintService.regenerate(deviceId, input);
+  const fp = await fingerprintService.regenerate(deviceId, input, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'fingerprint.regenerate',
@@ -49,7 +51,7 @@ export async function regenerateFingerprintHandler(req: Request, res: Response):
 export async function updateGpsHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
   const input = gpsSchema.parse(req.body ?? {});
-  const fp = await fingerprintService.updateGps(deviceId, input);
+  const fp = await fingerprintService.updateGps(deviceId, input, getWorkspaceId(req));
   res.json({ data: fp });
 }
 

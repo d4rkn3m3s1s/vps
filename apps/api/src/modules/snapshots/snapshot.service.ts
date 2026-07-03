@@ -81,8 +81,23 @@ export const snapshotService = {
       prisma.device.findUnique({ where: { id: deviceId } })
     ]);
     if (!snap) throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
+    // A snapshot may be restored only if it belongs to the caller's workspace OR
+    // it is publicly/workspace shared via the image market. Otherwise restoring a
+    // foreign PRIVATE snapshot by id is a cross-tenant IDOR.
+    if (
+      ctx.workspaceId &&
+      snap.workspaceId &&
+      snap.workspaceId !== ctx.workspaceId &&
+      snap.visibility === 'PRIVATE'
+    ) {
+      throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
+    }
     if (snap.status !== 'READY') throw new AppError('Snapshot is not ready', 400, 'SNAPSHOT_NOT_READY');
-    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    // The target device MUST belong to the caller's workspace — you can only
+    // restore onto your own device.
+    if (!device || (ctx.workspaceId && device.workspaceId && device.workspaceId !== ctx.workspaceId)) {
+      throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    }
     if (!device.hostId) throw new AppError('Device has no host', 400, 'DEVICE_NO_HOST');
 
     await createJobRecord(
@@ -129,6 +144,16 @@ export const snapshotService = {
   ) {
     const snap = await prisma.deviceSnapshot.findUnique({ where: { id: snapshotId } });
     if (!snap) throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
+    // Same cross-tenant guard as restore: a foreign PRIVATE snapshot cannot be
+    // cloned by id. Public/workspace-shared market images are allowed.
+    if (
+      ctx.workspaceId &&
+      snap.workspaceId &&
+      snap.workspaceId !== ctx.workspaceId &&
+      snap.visibility === 'PRIVATE'
+    ) {
+      throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
+    }
     if (snap.status !== 'READY') throw new AppError('Snapshot is not ready', 400, 'SNAPSHOT_NOT_READY');
 
     // Resolve the host the clone should land on. The snapshot artifact is a

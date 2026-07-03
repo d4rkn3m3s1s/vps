@@ -7,6 +7,6 @@ import { createUserHandler, deleteUserHandler, listUsersHandler } from './users.
 
 export const usersRouter = Router();
 
-usersRouter.get('/', requireApiKey, asyncHandler(listUsersHandler));
+usersRouter.get('/', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(listUsersHandler));
 usersRouter.post('/', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(createUserHandler));
 usersRouter.delete('/:id', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(deleteUserHandler));

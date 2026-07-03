@@ -1,5 +1,211 @@
-2026-06-29 05:25:06 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
-2026-06-29 05:25:06 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
-2026-06-29 05:25:06 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
-2026-06-29 05:25:31 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmqqskm1i000hj5d0w5efjgw6"}
-2026-06-29 05:27:33 [32minfo[39m: [stream] viewer accepted for device cmqlrf4ni000gj50fjimgvk4u (host=cmqqskm1i000hj5d0w5efjgw6) {"service":"VPS Emulator Platform"}
+2026-07-03 01:40:12 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 01:40:12 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 01:40:12 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 01:41:12 [32minfo[39m: Offline detection {"service":"VPS Emulator Platform","devices":2,"hosts":1}
+2026-07-03 01:50:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 01:50:56 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 01:53:07 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 01:55:17 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 01:56:46 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 02:01:03 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 0204:58:25 [tsx] unlink in ./..\..\node_modules\.prisma\client\default.js Rerunning...
+c2026-07-03 04:58:27 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:27 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:27 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:30 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+04:58:35 [tsx] unlink in ./..\..\node_modules\.prisma\client\default.js Restarting...
+c2026-07-03 04:58:37 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:37 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+04:59:51 [tsx] unlink in ./..\..\node_modules\.prisma\client\index.js Rerunning...
+c2026-07-03 04:59:53 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:59:53 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 04:59:53 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 04:59:56 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:00:40 [tsx] change in ./src\modules\devices\device.hub.ts Restarting...
+c2026-07-03 05:00:42 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:42 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:00:48 [tsx] change in ./src\modules\agent\agent.service.ts Rerunning...
+c2026-07-03 05:00:50 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:50 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:06 [tsx] change in ./src\modules\agent\agent.service.ts Rerunning...
+c2026-07-03 05:01:08 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:08 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:19 [tsx] change in ./src\modules\agent\agent.service.ts Rerunning...
+c2026-07-03 05:01:21 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:21 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:21 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:25 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:28 [tsx] change in ./src\modules\agent\agent.controller.ts Restarting...
+c2026-07-03 05:01:30 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:30 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:30 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:33 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:35 [tsx] change in ./src\modules\agent\agent.controller.ts Restarting...
+c2026-07-03 05:01:37 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:37 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:41 [tsx] change in ./src\modules\agent\agent.routes.ts Rerunning...
+c2026-07-03 05:01:43 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:43 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:47 [tsx] change in ./src\modules\agent\agent.routes.ts Rerunning...
+c2026-07-03 05:01:49 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:49 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:02:13 [tsx] change in ./src\modules\accounts\batch.service.ts Rerunning...
+c2026-07-03 05:02:15 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:15 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:02:36 [tsx] change in ./src\modules\accounts\batch.controller.ts Rerunning...
+c2026-07-03 05:02:38 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:38 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:02:48 [tsx] change in ./src\modules\accounts\accounts.routes.ts Rerunning...
+c2026-07-03 05:02:50 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:50 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:50 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:53 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:02:55 [tsx] change in ./src\modules\accounts\accounts.routes.ts Restarting...
+c2026-07-03 05:02:57 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:57 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:03:06 [tsx] change in ./src\modules\agent\agent.service.ts Rerunning...
+c2026-07-03 05:03:08 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:03:08 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:45:10 [tsx] change in ./src\modules\accounts\batch.service.ts Rerunning...
+c2026-07-03 05:45:11 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:45:11 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:45:11 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:45:15 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:48:05 [tsx] change in ./src\modules\accounts\batch.controller.ts Restarting...
+c2026-07-03 05:48:07 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:07 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:48:11 [tsx] change in ./src\modules\accounts\accounts.routes.ts Rerunning...
+c2026-07-03 05:48:13 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:13 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:13 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:15 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:48:23 [tsx] change in ./src\modules\accounts\accounts.routes.ts Restarting...
+c2026-07-03 05:48:25 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:25 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+06:44:19 [tsx] change in ./src\modules\agent\agent.service.ts Rerunning...
+c2026-07-03 06:44:23 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 06:44:23 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 06:44:23 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 06:44:29 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 06:55:11 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+ice":"VPS Emulator Platform"}
+2026-07-03 02:52:15 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 02:53:30 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:08:15 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:10:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 03:14:52 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:16:06 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:17:33 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:19:52 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:22:49 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 03:30:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 03:38:54 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 03:38:54 [32minfo[39m: [stream] resumed capture after agent connect {"service":"VPS Emulator Platform","deviceId":"cmr3r9l8s00dwj5rsh1zi8wml"}
+2026-07-03 03:41:04 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 03:41:04 [32minfo[39m: [stream] resumed capture after agent connect {"service":"VPS Emulator Platform","deviceId":"cmr3r9l8s00dwj5rsh1zi8wml"}
+2026-07-03 03:43:14 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 03:43:14 [32minfo[39m: [stream] resumed capture after agent connect {"service":"VPS Emulator Platform","deviceId":"cmr3r9l8s00dwj5rsh1zi8wml"}
+2026-07-03 03:50:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 03:52:59 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 04:10:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 04:30:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 04:50:12 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+04:58:25 [tsx] unlink in ./..\..\node_modules\.prisma\client\default.js Restarting...
+c2026-07-03 04:58:27 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:27 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+04:58:35 [tsx] unlink in ./..\..\node_modules\.prisma\client\default.js Rerunning...
+c2026-07-03 04:58:37 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:37 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:37 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 04:58:40 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+04:59:51 [tsx] unlink in ./..\..\node_modules\.prisma\client\index.js Restarting...
+c2026-07-03 04:59:53 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 04:59:53 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:00:40 [tsx] change in ./src\modules\devices\device.hub.ts Rerunning...
+c2026-07-03 05:00:42 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:42 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:42 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:45 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:00:48 [tsx] change in ./src\modules\agent\agent.service.ts Restarting...
+c2026-07-03 05:00:50 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:50 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:50 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:00:53 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:06 [tsx] change in ./src\modules\agent\agent.service.ts Restarting...
+c2026-07-03 05:01:08 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:08 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:08 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:11 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:19 [tsx] change in ./src\modules\agent\agent.service.ts Restarting...
+c2026-07-03 05:01:21 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:21 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:28 [tsx] change in ./src\modules\agent\agent.controller.ts Rerunning...
+c2026-07-03 05:01:30 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:30 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:01:35 [tsx] change in ./src\modules\agent\agent.controller.ts Rerunning...
+c2026-07-03 05:01:37 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:37 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:37 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:41 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:41 [tsx] change in ./src\modules\agent\agent.routes.ts Restarting...
+c2026-07-03 05:01:43 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:43 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:43 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:46 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:01:47 [tsx] change in ./src\modules\agent\agent.routes.ts Restarting...
+c2026-07-03 05:01:49 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:49 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:49 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:01:53 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:02:13 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-07-03 05:02:15 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:15 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:15 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:18 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:02:36 [tsx] change in ./src\modules\accounts\batch.controller.ts Restarting...
+c2026-07-03 05:02:38 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:38 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:38 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:41 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:02:48 [tsx] change in ./src\modules\accounts\accounts.routes.ts Restarting...
+c2026-07-03 05:02:50 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:50 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:02:55 [tsx] change in ./src\modules\accounts\accounts.routes.ts Rerunning...
+c2026-07-03 05:02:57 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:57 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:02:57 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:03:00 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+05:03:06 [tsx] change in ./src\modules\agent\agent.service.ts Restarting...
+c2026-07-03 05:03:08 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:03:08 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:03:08 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:03:11 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:05:21 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:07:32 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:09:42 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:11:03 [32minfo[39m: [stream] viewer accepted for device cmr3r9l8s00dwj5rsh1zi8wml (host=cmr3o4l24000fj5rsf2kjxvrd) {"service":"VPS Emulator Platform"}
+2026-07-03 05:13:08 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 05:14:30 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:14:30 [32minfo[39m: [stream] resumed capture after agent connect {"service":"VPS Emulator Platform","deviceId":"cmr3r9l8s00dwj5rsh1zi8wml"}
+2026-07-03 05:33:08 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+05:45:10 [tsx] change in ./src\modules\accounts\batch.service.ts Restarting...
+c2026-07-03 05:45:11 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:45:11 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:48:05 [tsx] change in ./src\modules\accounts\batch.controller.ts Rerunning...
+c2026-07-03 05:48:07 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:07 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:07 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+05:48:11 [tsx] change in ./src\modules\accounts\accounts.routes.ts Restarting...
+c2026-07-03 05:48:13 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:13 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+05:48:23 [tsx] change in ./src\modules\accounts\accounts.routes.ts Rerunning...
+c2026-07-03 05:48:25 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:25 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:25 [32minfo[39m: API server listening on port 4000 {"service":"VPS Emulator Platform"}
+2026-07-03 05:48:28 [32minfo[39m: Stream agent connected {"service":"VPS Emulator Platform","hostId":"cmr3o4l24000fj5rsf2kjxvrd"}
+2026-07-03 05:58:25 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 06:18:25 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+2026-07-03 06:38:25 [32minfo[39m: Proxy revalidation {"service":"VPS Emulator Platform","checked":1,"ok":0,"failed":1}
+06:44:19 [tsx] change in ./src\modules\agent\agent.service.ts Restarting...
+c2026-07-03 06:44:23 [32minfo[39m: Stream hub attached (/ws/agent-stream, /ws/stream, /ws/devices) {"service":"VPS Emulator Platform"}
+2026-07-03 06:44:23 [32minfo[39m: Webhook delivery worker started {"service":"VPS Emulator Platform"}

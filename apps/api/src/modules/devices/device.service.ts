@@ -27,9 +27,13 @@ export class DeviceService {
   // All reads/writes accept an optional workspaceId. When provided (every
   // interactive call), results are strictly scoped to that workspace so one
   // tenant can never see or touch another's devices.
-  async listDevices(workspaceId?: string) {
+  async listDevices(workspaceId?: string, tag?: string) {
+    const t = tag?.trim().toLowerCase();
     return prisma.device.findMany({
-      where: { ...(workspaceId ? { workspaceId } : {}) },
+      where: {
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(t ? { tags: { has: t } } : {})
+      },
       orderBy: { createdAt: 'desc' },
       include: { group: true, fingerprint: true, host: true }
     });
@@ -68,7 +72,7 @@ export class DeviceService {
 
   async createDevice(input: DeviceCreateInput, workspaceId?: string) {
     if (input.groupId) {
-      await this.assertGroupExists(input.groupId);
+      await this.assertGroupExists(input.groupId, workspaceId);
     }
 
     const data: Prisma.DeviceCreateInput = { name: input.name };
@@ -146,7 +150,7 @@ export class DeviceService {
     const dev = await prisma.device.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!dev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     if (input.groupId) {
-      await this.assertGroupExists(input.groupId);
+      await this.assertGroupExists(input.groupId, workspaceId);
     }
 
     const data: Prisma.DeviceUpdateInput = {};
@@ -166,11 +170,15 @@ export class DeviceService {
     if (input.hostId === null) {
       data.host = { disconnect: true };
     } else if (input.hostId) {
-      await this.assertHostExists(input.hostId);
+      await this.assertHostExists(input.hostId, workspaceId);
       data.host = { connect: { id: input.hostId } };
     }
     const metadata = buildJsonMetadata(input.metadata);
     if (metadata !== undefined) data.metadata = metadata;
+    if (input.tags !== undefined) {
+      // Normalize: trim, drop blanks, lowercase, dedupe, cap count + length.
+      data.tags = [...new Set(input.tags.map((t) => t.trim().toLowerCase()).filter(Boolean).map((t) => t.slice(0, 32)))].slice(0, 20);
+    }
     const lastSeen = toDate(input.lastSeen);
     if (lastSeen) data.lastSeen = lastSeen;
 
@@ -211,9 +219,12 @@ export class DeviceService {
     return updated;
   }
 
-  async deleteDevice(id: string) {
-    await this.assertDeviceExists(id);
-    return prisma.device.delete({ where: { id } });
+  async deleteDevice(id: string, workspaceId?: string) {
+    // Workspace-scoped, atomic delete: a device outside the caller's workspace is
+    // never matched (no cross-tenant delete, no TOCTOU window).
+    const { count } = await prisma.device.deleteMany({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+    if (count === 0) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    return { id };
   }
 
   async createGroup(input: DeviceGroupCreateInput, workspaceId?: string) {
@@ -270,18 +281,21 @@ export class DeviceService {
     });
   }
 
-  private async assertDeviceExists(id: string): Promise<void> {
-    const device = await prisma.device.findUnique({ where: { id } });
+  // Group/host existence checks are workspace-scoped so a device can't be attached
+  // to ANOTHER tenant's group or host by id. (assertDeviceExists is unused now that
+  // delete/update scope inline, but kept scoped for safety if reused.)
+  private async assertDeviceExists(id: string, workspaceId?: string): Promise<void> {
+    const device = await prisma.device.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
   }
 
-  private async assertGroupExists(id: string): Promise<void> {
-    const group = await prisma.deviceGroup.findUnique({ where: { id } });
+  private async assertGroupExists(id: string, workspaceId?: string): Promise<void> {
+    const group = await prisma.deviceGroup.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!group) throw new AppError('Device group not found', 404, 'DEVICE_GROUP_NOT_FOUND');
   }
 
-  private async assertHostExists(id: string): Promise<void> {
-    const host = await prisma.host.findUnique({ where: { id } });
+  private async assertHostExists(id: string, workspaceId?: string): Promise<void> {
+    const host = await prisma.host.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!host) throw new AppError('Host not found', 404, 'HOST_NOT_FOUND');
   }
 }

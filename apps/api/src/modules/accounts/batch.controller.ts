@@ -72,6 +72,30 @@ export async function readWhatsAppHandler(req: Request, res: Response): Promise<
   res.json({ data: await batchService.readWhatsApp(getWorkspaceId(req), id(req), input) });
 }
 
+// Send a WhatsApp message directly from a device (WhatsApp page — device-scoped,
+// no account id needed).
+const sendFromDeviceSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(5),
+  message: z.string().min(1).max(4096)
+});
+export async function sendWhatsAppFromDeviceHandler(req: Request, res: Response): Promise<void> {
+  const input = sendFromDeviceSchema.parse(req.body);
+  res.json({ data: await batchService.sendFromDevice(getWorkspaceId(req), input) });
+}
+
+// List stored WhatsApp messages (inbound + outbound) for a device. deviceId is a
+// query param so this works without an account id (any device the key owns).
+const listMessagesSchema = z.object({
+  deviceId: z.string().min(1),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+  direction: z.enum(['IN', 'OUT']).optional()
+});
+export async function listWhatsAppMessagesHandler(req: Request, res: Response): Promise<void> {
+  const input = listMessagesSchema.parse(req.query);
+  res.json({ data: await batchService.listMessages(getWorkspaceId(req), input) });
+}
+
 export async function cancelAccountHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.cancel(getWorkspaceId(req), id(req)) });
 }

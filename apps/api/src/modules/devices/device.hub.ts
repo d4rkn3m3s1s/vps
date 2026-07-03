@@ -11,7 +11,8 @@ export type DeviceHubEvent = {
     | 'device.heartbeat'
     | 'job.created'
     | 'job.updated'
-    | 'alert.fired';
+    | 'alert.fired'
+    | 'whatsapp.message';
   deviceId: string;
   payload: unknown;
   timestamp: string;

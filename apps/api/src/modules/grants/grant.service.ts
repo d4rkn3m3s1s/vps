@@ -58,7 +58,9 @@ export const grantService = {
     input: { email: string; access?: 'VIEW' | 'CONTROL' | undefined; expiresInHours?: number | undefined },
     ctx: { granterId: string; workspaceId?: string | undefined }
   ) {
-    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    // Scope the device to the granter's workspace so you can only lend devices you
+    // actually own.
+    const device = await prisma.device.findFirst({ where: { id: deviceId, ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}) } });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     const grantee = await prisma.user.findUnique({ where: { email: input.email.trim().toLowerCase() } });
     if (!grantee) throw new AppError('No user with that email', 404, 'USER_NOT_FOUND');
@@ -82,9 +84,10 @@ export const grantService = {
     return (await hydrate([grant]))[0];
   },
 
-  // Revoke (deauthorize) a grant immediately.
-  async revoke(grantId: string) {
-    const grant = await prisma.deviceGrant.findUnique({ where: { id: grantId } });
+  // Revoke (deauthorize) a grant immediately. Workspace-scoped so one tenant can't
+  // revoke another tenant's grant by id.
+  async revoke(grantId: string, workspaceId?: string) {
+    const grant = await prisma.deviceGrant.findFirst({ where: { id: grantId, ...(workspaceId ? { workspaceId } : {}) } });
     if (!grant) throw new AppError('Grant not found', 404, 'GRANT_NOT_FOUND');
     await prisma.deviceGrant.update({ where: { id: grantId }, data: { revokedAt: new Date() } });
     return { revoked: true };
@@ -93,8 +96,9 @@ export const grantService = {
   // Permanently transfer a device to another workspace (by slug or id). The
   // device's farm account / fingerprint travel with it; standing grants are
   // revoked since the prior workspace no longer owns it.
-  async transfer(deviceId: string, targetWorkspace: string) {
-    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+  async transfer(deviceId: string, targetWorkspace: string, workspaceId?: string) {
+    // You can only transfer a device your workspace currently owns.
+    const device = await prisma.device.findFirst({ where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) } });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     const ws = await prisma.workspace.findFirst({ where: { OR: [{ id: targetWorkspace }, { slug: targetWorkspace }] } });
     if (!ws) throw new AppError('Target workspace not found', 404, 'WORKSPACE_NOT_FOUND');

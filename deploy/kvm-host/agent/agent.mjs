@@ -21,6 +21,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +58,111 @@ async function adb(serial, args) {
   const full = serial ? ['-s', serial, ...args] : args;
   const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024 });
   return stdout;
+}
+
+// Run a shell command as root via Magisk su. Used by the inbound notification
+// poll (read-only dumpsys). Returns stdout ('' on failure).
+//
+// CAVEAT: any redirection (`>`) inside cmd is interpreted by the OUTER adb shell
+// (uid shell), not by root, so this is NOT safe for writing to root-owned files.
+// The vtouch FIFO write avoids this entirely by making the FIFO world-writable
+// (666) so no su is needed — see vtapReal.
+async function adbSu(serial, cmd) {
+  try {
+    return await adb(serial, ['shell', 'su', '-c', cmd]);
+  } catch {
+    return '';
+  }
+}
+
+// --- Real touch (uinput vtouch) layer ---------------------------------------
+//
+// WhatsApp (and other hardened apps) reject synthetic `input tap` events. On
+// Waydroid we inject a real hardware touchscreen via uinput (the `vtouch`
+// device, brought up by /data/adb/wa-bringup.sh) and write "X Y" lines to a
+// FIFO to emit genuine ABS_MT touch events. Coordinates from UIAutomator are in
+// the Android *logical* space (e.g. 720x1280); vtouch is created in a fixed
+// *physical* space (1080x2400), so every tap is rescaled. Devices without
+// vtouch fall back to plain `input tap` (backward compatible).
+const VT_FIFO = '/data/local/tmp/vt.fifo';
+const VT_BRINGUP = '/data/adb/wa-bringup.sh';
+// Per-serial cache: { has: bool, phys:{w,h}, logical:{w,h}, ts }
+const vtouchCache = new Map();
+const VT_CACHE_MS = 60000;
+
+// Detect whether a live vtouch touchscreen node exists and read the logical +
+// physical dimensions needed to rescale taps. Cached for VT_CACHE_MS.
+async function vtouchInfo(serial) {
+  const cached = vtouchCache.get(serial);
+  if (cached && Date.now() - cached.ts < VT_CACHE_MS) return cached;
+  const info = { has: false, phys: { w: 1080, h: 2400 }, logical: { w: 0, h: 0 }, ts: Date.now() };
+  try {
+    // vtouch present in EventHub? (getevent lists it as a device by name)
+    const ev = await adbSu(serial, 'getevent -pl 2>/dev/null | grep -c vtouch');
+    info.has = Number(String(ev).trim()) > 0;
+    if (info.has) {
+      // Physical range from the ABS_MT_POSITION_X/Y max lines.
+      const props = await adbSu(serial, "getevent -pl 2>/dev/null | grep -A40 vtouch");
+      const mx = /ABS_MT_POSITION_X[^\n]*max (\d+)/.exec(props);
+      const my = /ABS_MT_POSITION_Y[^\n]*max (\d+)/.exec(props);
+      if (mx) info.phys.w = Number(mx[1]) || info.phys.w;
+      if (my) info.phys.h = Number(my[1]) || info.phys.h;
+    }
+    // Android logical size. Prefer "Override size" (the space the UI lays out
+    // against) over "Physical size" — mixing them mis-scales taps.
+    const wm = await adb(serial, ['shell', 'wm', 'size']);
+    const ov = /Override size:\s*(\d+)x(\d+)/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x(\d+)/.exec(wm);
+    const m = ov || ph || /(\d+)x(\d+)/.exec(wm);
+    if (m) { info.logical.w = Number(m[1]); info.logical.h = Number(m[2]); }
+  } catch {
+    /* leave defaults; has stays false on error */
+  }
+  vtouchCache.set(serial, info);
+  return info;
+}
+
+// If the device supports root+vtouch but the node is currently missing (after a
+// reboot / `stop && start`), re-run the idempotent bring-up script to restore
+// the touchscreen + integrity spoof. Cheap no-op when already up.
+async function ensureVtouch(serial) {
+  const info = await vtouchInfo(serial);
+  if (info.has) return true;
+  // Only try to heal on rooted devices that actually have the bring-up script.
+  const hasScript = (await adbSu(serial, `[ -f ${VT_BRINGUP} ] && echo yes`)).includes('yes');
+  if (!hasScript) return false;
+  await adbSu(serial, `sh ${VT_BRINGUP}`);
+  vtouchCache.delete(serial);
+  const after = await vtouchInfo(serial);
+  return after.has;
+}
+
+// Emit a real touch at Android-logical (ax, ay) via vtouch, rescaling to the
+// physical uinput space. Returns true if the real-touch path was used.
+async function vtapReal(serial, ax, ay) {
+  const info = await vtouchInfo(serial);
+  if (!info.has) return false;
+  const lw = info.logical.w || 720, lh = info.logical.h || 1280;
+  const vx = Math.round((Number(ax) / lw) * info.phys.w);
+  const vy = Math.round((Number(ay) / lh) * info.phys.h);
+  // Write the coordinate to the vtouch FIFO. The FIFO is world-writable (666,
+  // set by wa-bringup.sh), so we write as the plain adb shell user — NOT via
+  // `su -c "... > fifo"`, whose redirect runs as uid shell and hits EACCES on the
+  // root-owned pipe. This bug made every real-touch tap a silent no-op.
+  try {
+    await adb(serial, ['shell', 'echo', String(vx), String(vy), '>', VT_FIFO]);
+  } catch {
+    // Fallback: FIFO not yet world-writable — fix perms via su, then retry once.
+    await adbSu(serial, `chmod 666 ${VT_FIFO}`);
+    await adb(serial, ['shell', 'echo', String(vx), String(vy), '>', VT_FIFO]).catch(() => undefined);
+  }
+  return true;
+}
+
+// Unified tap: real touch when vtouch is present, else synthetic input tap.
+async function tapReal(serial, ax, ay) {
+  if (await vtapReal(serial, ax, ay)) return;
+  await adb(serial, ['shell', 'input', 'tap', String(ax), String(ay)]);
 }
 
 async function ensureConnected(serial) {
@@ -368,7 +474,13 @@ async function registerInstagram(serial, payload) {
 function waHelpers(serial) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const dump = async () => parseUiNodes(await uiDumpXml(serial));
-  const tapNode = async (n) => { if (n) await adb(serial, ['shell', 'input', 'tap', String(n.cx), String(n.cy)]); };
+  // Real touch (uinput vtouch) when available, else synthetic input tap. This
+  // is the single tap primitive every WA flow (register/send/read) routes
+  // through, so all of them get genuine touch events on hardened apps.
+  const tapNode = async (n) => { if (n) await tapReal(serial, n.cx, n.cy); };
+  // Tap at raw Android-logical coordinates (for buttons found outside the node
+  // model, e.g. by screenshot inspection).
+  const tapXY = async (x, y) => tapReal(serial, x, y);
   const find = async (q, field = 'any') => findNode(await dump(), q, field);
   // Whether ADBKeyboard is the active IME (set by ensureAdbKeyboard). When true,
   // typeText/clearField inject via its broadcast instead of `input text`.
@@ -456,7 +568,9 @@ function waHelpers(serial) {
   };
   // Flatten all visible text on screen (for wall detection / debugging).
   const screenText = async () => (await dump()).map((n) => n.text).filter(Boolean).join(' | ');
-  return { sleep, dump, tapNode, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, waitFor, seen, screenText };
+  // Ensure the real-touch layer is up before a flow starts (heals after reboot).
+  const ensureTouch = async () => ensureVtouch(serial);
+  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText };
 }
 
 const WA_PKG = 'com.whatsapp';
@@ -686,6 +800,9 @@ async function whatsappSend(serial, payload) {
   if (!message) throw new Error('message gerekli');
 
   const h = waHelpers(serial);
+  // Guarantee real touch (heals vtouch after reboot) and a reliable IME.
+  await h.ensureTouch();
+  await h.ensureAdbKeyboard();
   const url = `https://wa.me/${to}?text=${encodeURIComponent(message)}`;
   await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, WA_PKG]);
   await h.sleep(5000);
@@ -697,18 +814,61 @@ async function whatsappSend(serial, payload) {
     return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: txt.slice(0, 300) };
   }
 
-  // The compose box is pre-filled by the deep link. Tap the Send button
-  // (content-desc "Send"). If the text wasn't pre-filled, type it ourselves.
-  if (!(await h.find('Send', 'desc'))) {
-    // No send button yet — focus the input and type the message.
+  // The compose box is pre-filled by the deep link. If it wasn't, type it.
+  // NOTE: with text in the compose box, `uiautomator dump` frequently FAILS to
+  // reach an idle state, so h.find('Send') returns null and the button never
+  // gets tapped — the message just sits there. So we do NOT rely on the dump to
+  // locate Send: WhatsApp's send button is always at the bottom-right corner, so
+  // we tap a fixed PROPORTIONAL point (≈95% width, ≈93% height). vtouch rescales
+  // it to the real touch surface. This is what makes sends reliable.
+  if (!(await h.find('Send', 'desc').catch(() => null))) {
     await h.typeInto('Type a message', message).catch(() => undefined);
-    await h.sleep(500);
+    await h.sleep(700);
   }
-  const sendBtn = await h.find('Send', 'desc');
-  if (!sendBtn) return { status: 'COMPOSE_FAILED', note: 'Gönder butonu bulunamadı', to, screenTexts: (await h.screenText()).slice(0, 300) };
-  await h.tapNode(sendBtn);
-  await h.sleep(1500);
 
+  // Read the logical screen size to place the proportional Send point. `wm size`
+  // prints BOTH "Physical size:" and (if set) "Override size:" — the Override is
+  // the one the UI actually lays out against (WhatsApp positions the send button
+  // in that space), so we must prefer it. Reading Physical put the tap ~30px
+  // above the (small) send button and every send silently missed.
+  let sw = 720, sh = 1280;
+  try {
+    const wm = await adb(serial, ['shell', 'wm', 'size']);
+    const ov = /Override size:\s*(\d+)x(\d+)/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x(\d+)/.exec(wm);
+    const m = ov || ph || /(\d+)x(\d+)/.exec(wm);
+    if (m) { sw = Number(m[1]) || sw; sh = Number(m[2]) || sh; }
+  } catch { /* keep defaults */ }
+  const sendX = Math.round(sw * 0.954);
+  const sendY = Math.round(sh * 0.932);
+
+  // Tap Send and confirm the outgoing bubble appears (the reliable signal — the
+  // compose-box dump lags). Retry the fixed-point tap a few times if needed.
+  const needle = message.trim();
+  const bubbleSent = async () => {
+    const nodes = await h.dump().catch(() => []);
+    return nodes.some((n) => n.text === needle && n.resId.includes('message_text'));
+  };
+
+  let sent = false;
+  for (let attempt = 0; attempt < 4 && !sent; attempt++) {
+    await h.tapXY(sendX, sendY);
+    for (let poll = 0; poll < 4; poll++) {
+      await h.sleep(900);
+      if (await bubbleSent()) { sent = true; break; }
+    }
+  }
+
+  if (!sent) {
+    // Last-chance: if the compose entry is now empty, the send almost certainly
+    // succeeded even though the bubble dump didn't confirm it.
+    const entry = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+    const t = entry?.text ?? '';
+    if (t && t.includes(needle.slice(0, 12))) {
+      return { status: 'COMPOSE_FAILED', note: 'Mesaj gönderilemedi (compose dolu kaldı)', to, screenTexts: (await h.screenText().catch(() => '')).slice(0, 300) };
+    }
+  }
+  await h.sleep(600);
   return { status: 'SENT', to, message };
 }
 
@@ -723,6 +883,8 @@ async function whatsappRead(serial, payload) {
   const from = String(p(payload, 'from', '')).trim();
   const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
   const h = waHelpers(serial);
+  await h.ensureTouch();
+  await h.ensureAdbKeyboard();
 
   // Make sure a chat is open.
   if (to) {
@@ -1466,6 +1628,169 @@ async function sampleCpu(serial) {
   return clampPct((1 - di / dt) * 100);
 }
 
+// --- WhatsApp inbound message capture (notification poll) -------------------
+//
+// Zero-dep, root-based inbound listener: every WA_INBOX_MS we read
+// `dumpsys notification` (as root) and parse WhatsApp NotificationRecord blocks
+// into {from,text}. New (deduped) messages are pushed to the control plane via
+// POST /agent/whatsapp/inbound, which persists them, fans out a webhook, a WS
+// event, and a Telegram/Slack/Discord notification. No APK / accessibility
+// service needed — works with the screen off.
+const WA_INBOX_MS = Number(process.env.FLEET_WA_INBOX_MS || 3000);
+const WA_INBOX_ENABLED = process.env.FLEET_WA_INBOX !== '0';
+// serial -> Set of recent message keys (sha256), capped to avoid unbounded growth.
+const waSeen = new Map();
+const WA_SEEN_MAX = 400;
+
+function waSeenSet(serial) {
+  let s = waSeen.get(serial);
+  if (!s) { s = new Set(); waSeen.set(serial, s); }
+  return s;
+}
+
+// Parse `dumpsys notification --noredact` for WhatsApp message notifications.
+// Returns [{ from, text, whenMs }]. WhatsApp uses android.title=sender name/number,
+// android.text=message body (or android.messages / android.bigText for multi-line).
+function parseWaNotifications(dump) {
+  const out = [];
+  // Split into per-notification blocks; keep only WhatsApp ones.
+  const blocks = String(dump).split(/NotificationRecord\(/).slice(1);
+  for (const b of blocks) {
+    const head = b.slice(0, 300);
+    if (!/pkg=com\.whatsapp\b/.test(head)) continue;
+    // Skip WhatsApp's own persistent/service notifications (calls, backup, etc.)
+    // We only want conversational message notifications: they carry a title+text.
+    const title = pickExtra(b, 'android.title');
+    let text = pickExtra(b, 'android.bigText') || pickExtra(b, 'android.text');
+    if (!title || !text) continue;
+    // Ignore summary/aggregate lines like "3 new messages" / "N messages from M chats".
+    if (/^\d+\s+new messages?$/i.test(text) || /messages? from .* chats?$/i.test(text)) continue;
+    // Ignore non-message notices (backup, storage, security).
+    if (/^(Backing up|Checking for new messages|WhatsApp web|Tap for more)/i.test(text)) continue;
+    const whenMs = Number(/when=(\d+)/.exec(b)?.[1] || 0);
+    out.push({ from: title.trim(), text: text.trim(), whenMs });
+  }
+  return out;
+}
+
+// Extract an android.* extra value from a NotificationRecord block. Android's
+// dumpsys prints extras as `android.title=TYPE (VALUE)` where TYPE is String /
+// SpannableString / CharSequence and VALUE is inside parentheses, e.g.
+//   android.title=SpannableString (Jane Doe)
+//   android.text=String (Hey are you there?)
+// We pull the parenthesized value; if the format ever differs we fall back to
+// the rest-of-line.
+function pickExtra(block, key) {
+  const line = new RegExp(key.replace(/\./g, '\\.') + '=([^\\n]*)').exec(block);
+  if (!line) return '';
+  const raw = line[1].trim();
+  // Typed form: "String (value)" / "SpannableString (value)".
+  const typed = /^(?:String|SpannableString|CharSequence|Spanned)\s*\((.*)\)\s*$/s.exec(raw);
+  if (typed) return typed[1].trim();
+  // Untyped fallback: strip a trailing "(String)" hint if any.
+  return raw.replace(/\s*\((String|CharSequence|SpannableString)\)\s*$/i, '');
+}
+
+// Scrape INCOMING message bubbles from an open WhatsApp Conversation. Incoming
+// bubbles sit on the LEFT half of the screen (outgoing are on the right), so we
+// use each message_text node's horizontal center to keep only received ones.
+// Returns [{from, text, whenMs}] shaped like parseWaNotifications for merging.
+async function scrapeIncomingBubbles(serial) {
+  const nodes = await parseUiNodes(await uiDumpXml(serial)).catch(() => []);
+  if (!nodes.length) return [];
+  // Screen width to split left/right.
+  let sw = 720;
+  try {
+    const wm = await adb(serial, ['shell', 'wm', 'size']);
+    const ov = /Override size:\s*(\d+)x/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x/.exec(wm);
+    const m = ov || ph; if (m) sw = Number(m[1]) || sw;
+  } catch { /* keep default */ }
+  // The chat title bar holds the peer name/number.
+  const peer = (nodes.find((n) => n.resId.includes('conversation_contact_name'))?.text
+    || nodes.find((n) => n.resId.includes('conversation_contact'))?.text
+    || 'WhatsApp').trim();
+  // Collect incoming (left-anchored) message_text bubbles, keeping their vertical
+  // position so we can take only the LAST (newest) one. Scraping every visible
+  // bubble would re-notify old messages on each poll.
+  const incoming = [];
+  for (const n of nodes) {
+    if (!n.text || !n.resId.includes('message_text')) continue;
+    if (typeof n.cx === 'number' && n.cx > sw * 0.5) continue; // outgoing → skip
+    incoming.push({ text: n.text.trim(), cy: typeof n.cy === 'number' ? n.cy : 0 });
+  }
+  if (!incoming.length) return [];
+  // Newest bubble = lowest on screen (largest cy). Dedup on text is handled by
+  // the caller's seen-set, so returning just the newest avoids re-emitting the
+  // whole visible history every tick.
+  incoming.sort((a, b) => a.cy - b.cy);
+  const newest = incoming[incoming.length - 1];
+  return [{ from: peer, text: newest.text, whenMs: 0 }];
+}
+
+async function pollWhatsappInbox(serial) {
+  const dump = await adbSu(serial, 'dumpsys notification --noredact 2>/dev/null');
+  let msgs = dump ? parseWaNotifications(dump) : [];
+
+  // WhatsApp suppresses notifications while a chat is OPEN in the foreground, so
+  // the notification poll would miss those messages. When WhatsApp's Conversation
+  // is on screen, also scrape incoming bubbles directly (message_text nodes that
+  // aren't ours). This makes inbound capture work whether the app is fore/back.
+  try {
+    const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);
+    if (/com\.whatsapp\/\S*Conversation/.test(top)) {
+      const scraped = await scrapeIncomingBubbles(serial);
+      if (scraped.length) msgs = msgs.concat(scraped);
+    }
+  } catch { /* best-effort */ }
+
+  if (msgs.length === 0) return;
+  const seen = waSeenSet(serial);
+  const fresh = [];
+  for (const m of msgs) {
+    const key = createHash('sha256').update(`${m.from}|${m.text}|${m.whenMs}`).digest('hex');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    fresh.push({ ...m, key });
+  }
+  // Cap the seen-set memory.
+  if (seen.size > WA_SEEN_MAX) {
+    const excess = seen.size - WA_SEEN_MAX;
+    let i = 0;
+    for (const k of seen) { if (i++ >= excess) break; seen.delete(k); }
+  }
+  if (fresh.length === 0) return;
+  for (const m of fresh) {
+    try {
+      // Push by ADB serial; the control plane maps it to the workspace-scoped
+      // deviceId (it owns the host↔device binding and agent auth).
+      await api('/agent/whatsapp/inbound', {
+        method: 'POST',
+        body: JSON.stringify({ serial, from: m.from, text: m.text, ts: m.whenMs || Date.now() }),
+      });
+      log(`wa inbound ${serial}: ${m.from} -> ${m.text.slice(0, 40)}`);
+    } catch (err) {
+      // Re-arm so a transient push failure retries next tick instead of dropping.
+      seen.delete(m.key);
+      log('wa inbound push failed:', err.message);
+    }
+  }
+}
+
+// Poll every reachable device for new WhatsApp notifications. Devices without
+// root / WhatsApp simply return nothing (adbSu → '' on failure).
+async function whatsappInboxTick() {
+  if (!WA_INBOX_ENABLED) return;
+  try {
+    const serials = await reachableSerials();
+    for (const serial of serials) {
+      await pollWhatsappInbox(serial).catch(() => undefined);
+    }
+  } catch (err) {
+    log('wa inbox tick failed:', err.message);
+  }
+}
+
 async function heartbeat() {
   try {
     const serials = await reachableSerials();
@@ -1659,23 +1984,36 @@ function startCapture(ws, deviceId, serial, fps) {
   // Connect once up front, not per frame — ensureConnected spawns an `adb connect`
   // child process, which we don't want on every tick at 20fps.
   void ensureConnected(serial);
-  const state = { serial, busy: false, timer: null, fps };
-  state.timer = setInterval(async () => {
-    if (state.busy || ws.readyState !== 1) return;
-    if (ws.bufferedAmount > MAX_BUFFERED) return; // backpressure: skip this tick
-    state.busy = true;
-    try {
-      const img = await captureFrame(serial);
-      const framed = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId)), img]);
-      if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) ws.send(framed);
-    } catch {
-      /* a dropped frame is fine; next tick retries */
-    } finally {
-      state.busy = false;
+  const state = { serial, busy: false, stopped: false, timer: null, fps };
+  const prefix = Buffer.concat([FRAME_PREFIX, Buffer.from(frameDeviceId(deviceId))]);
+  // Tight self-scheduling loop instead of setInterval. `screencap -p` on a
+  // software-rendered Waydroid takes ~200-250ms, which capped the old timer at
+  // ~4fps. We fire the NEXT screencap immediately after each frame completes
+  // (no fixed delay), so the pipeline runs as fast as the device can serialize
+  // frames rather than idling between ticks. Backpressure still drops frames
+  // when the socket is congested so latency stays bounded.
+  const loop = async () => {
+    while (!state.stopped) {
+      if (ws.readyState !== 1) break;
+      if (ws.bufferedAmount > MAX_BUFFERED) { await new Promise((r) => setTimeout(r, 15)); continue; }
+      try {
+        const img = await captureFrame(serial);
+        if (state.stopped) break;
+        if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) {
+          ws.send(Buffer.concat([prefix, img]));
+        }
+      } catch {
+        await new Promise((r) => setTimeout(r, 50)); // brief backoff on error
+      }
+      // Yield so we honor at most the requested fps (but never idle-throttle
+      // below the device's own capture rate).
+      const minGap = Math.max(0, interval - 5);
+      if (minGap) await new Promise((r) => setTimeout(r, minGap === interval ? 0 : 1));
     }
-  }, interval);
+  };
   captures.set(deviceId, state);
-  log(`stream start ${deviceId} @ ${Math.round(1000 / interval)}fps cap`);
+  void loop();
+  log(`stream start ${deviceId} @ ~${Math.round(1000 / interval)}fps target (pipelined)`);
 }
 
 function stopCapture(deviceId) {
@@ -1687,6 +2025,23 @@ function stopCapture(deviceId) {
     if (s.ff) { try { s.ff.kill(); } catch { /* ignore */ } }
     captures.delete(deviceId);
     log(`stream stop ${deviceId}`);
+  }
+}
+
+// Make ADBKeyboard the active IME for a serial (module-level, used by live
+// control). Cached per-serial so we don't re-run `ime set` on every keystroke.
+const adbKbReady = new Set();
+async function ensureAdbKeyboard(serial) {
+  if (adbKbReady.has(serial)) return true;
+  try {
+    const imes = await adb(serial, ['shell', 'ime', 'list', '-a', '-s']);
+    if (!imes.includes('adbkeyboard')) return false;
+    await adb(serial, ['shell', 'ime', 'enable', ADB_IME]);
+    await adb(serial, ['shell', 'ime', 'set', ADB_IME]);
+    adbKbReady.add(serial);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1715,8 +2070,17 @@ async function handleControl(msg) {
       return;
     case 'input.text':
       if (serial) {
-        if (msg.stealth) await stealthType(serial, String(msg.text || ''));
-        else await adb(serial, ['shell', 'input', 'text', String(msg.text || '').replace(/ /g, '%s')]);
+        const t = String(msg.text || '');
+        if (msg.stealth) await stealthType(serial, t);
+        // Prefer the ADBKeyboard IME broadcast: WhatsApp (and other hardened
+        // apps) drop plain `input text` into their EditTexts, but accept the
+        // IME-injected `ADB_INPUT_TEXT` broadcast. Fall back to `input text`
+        // when the ADB keyboard IME isn't the active one.
+        else if (await ensureAdbKeyboard(serial)) {
+          await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', t]);
+        } else {
+          await adb(serial, ['shell', 'input', 'text', t.replace(/ /g, '%s')]);
+        }
       }
       return;
     default:
@@ -1835,6 +2199,9 @@ async function loop() {
   log(`starting — polling ${API_URL} every ${POLL_MS}ms`);
   await heartbeat();
   const hb = setInterval(heartbeat, HEARTBEAT_MS);
+  // WhatsApp inbound-message poll (notification-based). Best-effort; failures
+  // are logged and never block the job loop.
+  const waInbox = WA_INBOX_ENABLED ? setInterval(() => { whatsappInboxTick().catch(() => undefined); }, WA_INBOX_MS) : null;
   startStreamClient();
 
   while (!stopping) {
@@ -1868,6 +2235,7 @@ async function loop() {
   }
 
   clearInterval(hb);
+  if (waInbox) clearInterval(waInbox);
   log('shutting down.');
 }
 

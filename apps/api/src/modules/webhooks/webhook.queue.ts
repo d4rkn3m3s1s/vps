@@ -4,7 +4,11 @@ import { env } from '../../config/env';
 import { prisma } from '../../db/prisma';
 import { logger } from '../../lib/logger';
 
-// Connection config mirrors the jobs queue so both share the same Redis.
+// Connection config mirrors the jobs queue so both share the same Redis. Redis is
+// OPTIONAL infrastructure: the primary job path is the host agent, and webhooks
+// degrade gracefully when Redis is down. So we never let a missing/unreachable
+// Redis crash the API — connect lazily, cap reconnect backoff, and swallow
+// connection errors with a warning instead of an unhandled throw.
 const redisUrl = new URL(env.redisUrl);
 const connection = {
   host: redisUrl.hostname,
@@ -13,7 +17,11 @@ const connection = {
   password: redisUrl.password || undefined,
   db: redisUrl.pathname && redisUrl.pathname !== '/' ? Number(redisUrl.pathname.replace('/', '')) : undefined,
   maxRetriesPerRequest: null,
-  enableReadyCheck: false
+  enableReadyCheck: false,
+  lazyConnect: true,
+  // Keep retrying with a capped backoff (max 10s) so it auto-recovers when Redis
+  // comes back, without a tight reconnect loop.
+  retryStrategy: (times: number) => Math.min(times * 500, 10_000)
 };
 
 const QUEUE_NAME = 'vps-webhooks';
@@ -27,18 +35,34 @@ export const webhookQueue = new Queue<WebhookJobData>(QUEUE_NAME, {
   prefix: env.redisQueuePrefix
 });
 
+let warnedNoRedis = false;
+// Without this handler, ioredis emits 'error' as an unhandled event → process crash.
+// We log once and keep going; deliveries simply wait until Redis is reachable.
+webhookQueue.on('error', (err) => {
+  if (!warnedNoRedis) {
+    logger.warn('Webhook queue Redis unavailable — webhook delivery paused until Redis is reachable', { error: err.message });
+    warnedNoRedis = true;
+  }
+});
+
 // Enqueue a delivery with exponential backoff. 5 attempts: ~0s, 10s, 40s, 90s, 160s.
+// Never throws to the caller: webhook delivery is best-effort, so a Redis outage
+// must not break the state-changing action that triggered the webhook.
 export async function enqueueDelivery(deliveryId: string): Promise<void> {
-  await webhookQueue.add(
-    'deliver',
-    { deliveryId },
-    {
-      attempts: 5,
-      backoff: { type: 'exponential', delay: 10_000 },
-      removeOnComplete: 1000,
-      removeOnFail: 5000
-    }
-  );
+  try {
+    await webhookQueue.add(
+      'deliver',
+      { deliveryId },
+      {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 10_000 },
+        removeOnComplete: 1000,
+        removeOnFail: 5000
+      }
+    );
+  } catch (err) {
+    logger.warn('Could not enqueue webhook delivery (Redis down?)', { deliveryId, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 // Performs one HTTP delivery attempt. Throws on failure so BullMQ retries; the
@@ -112,6 +136,15 @@ export function startWebhookWorker(): Worker<WebhookJobData> {
   const worker = new Worker<WebhookJobData>(QUEUE_NAME, async (job) => attemptDelivery(job), {
     connection,
     prefix: env.redisQueuePrefix
+  });
+
+  // Swallow Redis connection errors so a missing Redis can't crash the API.
+  let workerWarned = false;
+  worker.on('error', (err) => {
+    if (!workerWarned) {
+      logger.warn('Webhook worker Redis unavailable — will resume when Redis is back', { error: err.message });
+      workerWarned = true;
+    }
   });
 
   // When all retries are exhausted, mark the delivery terminally failed and bump

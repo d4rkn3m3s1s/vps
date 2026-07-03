@@ -43,7 +43,9 @@ export class SchedulerService {
 
   async create(input: ScheduleCreateInput, workspaceId?: string) {
     if (input.deviceId) {
-      const device = await prisma.device.findUnique({ where: { id: input.deviceId } });
+      // Scope the device to the caller's workspace so a schedule can't target
+      // another tenant's device.
+      const device = await prisma.device.findFirst({ where: { id: input.deviceId, ...(workspaceId ? { workspaceId } : {}) } });
       if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     }
 
@@ -60,8 +62,8 @@ export class SchedulerService {
     return prisma.scheduledTask.create({ data, include: { device: { select: { id: true, name: true } } } });
   }
 
-  async update(id: string, input: ScheduleUpdateInput) {
-    await this.assertExists(id);
+  async update(id: string, input: ScheduleUpdateInput, workspaceId?: string) {
+    await this.assertExists(id, workspaceId);
     const data: Prisma.ScheduledTaskUpdateInput = {};
     if (input.name) data.name = input.name;
     if (input.status) data.status = input.status;
@@ -70,8 +72,8 @@ export class SchedulerService {
     return prisma.scheduledTask.update({ where: { id }, data, include: { device: { select: { id: true, name: true } } } });
   }
 
-  async remove(id: string) {
-    await this.assertExists(id);
+  async remove(id: string, workspaceId?: string) {
+    await this.assertExists(id, workspaceId);
     return prisma.scheduledTask.delete({ where: { id } });
   }
 
@@ -125,8 +127,8 @@ export class SchedulerService {
     return due.length;
   }
 
-  private async assertExists(id: string): Promise<void> {
-    const task = await prisma.scheduledTask.findUnique({ where: { id } });
+  private async assertExists(id: string, workspaceId?: string): Promise<void> {
+    const task = await prisma.scheduledTask.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
     if (!task) throw new AppError('Scheduled task not found', 404, 'SCHEDULE_NOT_FOUND');
   }
 }

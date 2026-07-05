@@ -49,6 +49,7 @@ enum JobType {
   AGENT_RUN
   APPLY_FINGERPRINT
   PROVISION_INTEGRITY
+  PROVISION_DEVICE
 }
 
 // Lifecycle of an AI Device Agent run (Claude autonomously driving a phone).
@@ -239,6 +240,8 @@ model Workspace {
   agentRuns     AgentRun[]
   appMaps       AppMap[]
   cloudProviders CloudPhoneProvider[]
+  whatsappLabels WhatsappLabel[]
+  whatsappCannedReplies WhatsappCannedReply[]
 }
 
 // Daily time-series rollup of fleet metrics — one row per workspace per UTC day.
@@ -400,6 +403,11 @@ model ApiKey {
   keyHash     String   @unique
   name        String
   scopes      String[] @default([])
+  // AES-256-GCM encrypted plaintext of the key. Populated ONLY for the special
+  // per-workspace "API Dokümantasyonu" key, so the docs page can show a real,
+  // copy-pasteable key in its curl examples. Never set for user-created keys —
+  // those remain hash-only and are shown in plaintext exactly once at creation.
+  docPlaintext String?
   lastUsedAt  DateTime?
   revokedAt   DateTime?
   createdAt   DateTime @default(now())
@@ -490,8 +498,13 @@ model Device {
   appMaps        AppMap[]
   metricPoints   DeviceMetricPoint[]
   whatsappMessages WhatsappMessage[]
+  whatsappConversations WhatsappConversation[]
 
   @@index([workspaceId])
+  // Agent hot-path: claimNext/heartbeat/metrics/inbound all query by hostId every
+  // ~2s per host. farm.tick + calendar.resolveDevices query by groupId every 60s.
+  @@index([hostId])
+  @@index([groupId])
 }
 
 // Lightweight per-device resource timeseries (CPU/mem/disk %), appended each time
@@ -507,6 +520,8 @@ model DeviceMetricPoint {
   device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([deviceId, capturedAt])
+  // Retention prune deletes rows older than a cutoff across all devices.
+  @@index([capturedAt])
 }
 
 // One autonomous run of the AI Device Agent: Claude reads the screen and drives
@@ -663,6 +678,8 @@ model AuditLog {
   user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
+  // Audit list is workspace-scoped and ordered by createdAt desc.
+  @@index([workspaceId, createdAt])
 }
 
 model SocialAccount {
@@ -792,6 +809,8 @@ model ScheduledTask {
   workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
+  // scheduler.runDue scans ACTIVE tasks whose nextRunAt has passed every 60s.
+  @@index([status, nextRunAt])
 }
 
 // Per-account engagement metrics powering the AI Analytics dashboard.
@@ -936,6 +955,8 @@ model FarmCampaign {
   logs          FarmActionLog[]
 
   @@index([workspaceId])
+  // farm.tick scans ACTIVE campaigns whose nextRunAt has passed every 60s.
+  @@index([status, nextRunAt])
 }
 
 // Per-device warmup / account-maturity tracking. One row per cloud phone that
@@ -1018,6 +1039,17 @@ model WhatsappMessage {
   // The other party — phone number (E.164-ish) or contact/sender display name.
   peer        String
   body        String
+  // Inbound messages start unread; the operator marks a conversation read.
+  read        Boolean  @default(false)
+  // Outbound delivery state: QUEUED | SENT | DELIVERED | READ | FAILED.
+  // Inbound rows are always 'DELIVERED' (we received them). Set on job-complete.
+  status      String   @default("SENT")
+  statusAt    DateTime @default(now())
+  // Populated on FAILED: the agent's reason (INVALID_RECIPIENT, COMPOSE_FAILED…).
+  failReason  String?
+  // Idempotency key for inbound rows (sha256 of device+peer+body+ts). A duplicate
+  // agent push (retry/restart) hits the unique index instead of double-counting.
+  dedupeKey   String?  @unique
   // WhatsApp's own timestamp (ms epoch) when known; else server receive time.
   waTimestamp DateTime @default(now())
   createdAt   DateTime @default(now())
@@ -1025,6 +1057,108 @@ model WhatsappMessage {
 
   @@index([workspaceId, deviceId, createdAt])
   @@index([deviceId, createdAt])
+  // Fast per-conversation history (device + peer, newest first).
+  @@index([deviceId, peer, createdAt])
+  // Stats/analytics: direction + time windows per workspace.
+  @@index([workspaceId, direction, createdAt])
+}
+
+// One row per (device, peer) chat thread — the WhatsApp-Web-style conversation
+// list. Upserted every time a message is stored (in agent.service). Holds the
+// denormalised last-message preview + unread count so the 200+ chat list renders
+// without scanning WhatsappMessage. Labels/favourite/archive are operator state.
+model WhatsappConversation {
+  id             String   @id @default(cuid())
+  workspaceId    String?
+  deviceId       String
+  // The other party (same value as WhatsappMessage.peer).
+  peer           String
+  // Denormalised preview of the newest message in this thread.
+  lastMessageBody String  @default("")
+  // 'IN' | 'OUT' — direction of the last message (for the ✓ / arrow in the list).
+  lastDirection  String   @default("IN")
+  lastMessageAt  DateTime @default(now())
+  // Denormalised delivery state of the last OUTbound message (for the list tick).
+  lastStatus     String   @default("SENT")
+  // Unread inbound count; reset to 0 when the operator opens the thread.
+  unreadCount    Int      @default(0)
+  favorite       Boolean  @default(false)
+  archived       Boolean  @default(false)
+  // Pinned threads sort to the very top of the list (distinct from favourite).
+  pinned         Boolean  @default(false)
+  pinnedAt       DateTime?
+  // Operator-set contact info: a friendly name shown instead of the raw number,
+  // and free-text notes (a lightweight CRM). displayName is plaintext (shown in
+  // lists); notes are AES-256-GCM encrypted at rest like message bodies.
+  displayName    String?
+  notes          String?
+  // Operator-assigned label ids (see WhatsappLabel). Postgres text[].
+  labelIds       String[] @default([])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  device         Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, peer])
+  @@index([workspaceId, deviceId, lastMessageAt])
+  @@index([deviceId, lastMessageAt])
+  // Filtered-list hot paths (archived/pinned views over 200+ threads).
+  @@index([deviceId, archived, pinned, lastMessageAt])
+}
+
+// Workspace-scoped conversation label/category (name + colour). Assigned to
+// conversations by id (WhatsappConversation.labelIds). Deleting a label leaves
+// stale ids on conversations — the service filters them out on read.
+model WhatsappLabel {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  name        String
+  // A short colour token the UI maps to a chip style (e.g. "emerald", "rose").
+  color       String   @default("slate")
+  createdAt   DateTime @default(now())
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// Saved reply / message template. Operators insert these into the composer (or
+// send them straight from Telegram) with one tap. `shortcut` lets a "/fiyat"
+// style trigger expand to the body. Body is plaintext (not a secret).
+model WhatsappCannedReply {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  // Optional "/slug" trigger; unique-ish per workspace but not DB-enforced.
+  shortcut    String?
+  title       String
+  body        String
+  // Ordering hint for the picker (lower = higher).
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// A one-to-many broadcast: send the same message to many peers on one device,
+// throttled with jitter to blunt ban risk. Each send becomes a WHATSAPP_SEND job;
+// this row tracks aggregate progress for the UI.
+model WhatsappBroadcast {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  deviceId    String
+  message     String
+  // Snapshot of the recipient peers at launch time (Postgres text[]).
+  peers       String[] @default([])
+  total       Int      @default(0)
+  sentCount   Int      @default(0)
+  failCount   Int      @default(0)
+  // QUEUED | RUNNING | COMPLETED | CANCELLED
+  status      String   @default("QUEUED")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([deviceId])
 }
 
 enum WebhookEvent {
@@ -1035,6 +1169,8 @@ enum WebhookEvent {
   QUOTA_HIGH
   ALERT_FIRED
   WHATSAPP_MESSAGE
+  WHATSAPP_SENT
+  WHATSAPP_FAILED
   ALL
 }
 

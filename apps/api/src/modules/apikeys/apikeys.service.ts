@@ -1,6 +1,11 @@
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { createKeyPair } from '../../lib/crypto';
+import { createKeyPair, encryptString, decryptString } from '../../lib/crypto';
+
+// The single, stable name of the per-workspace key whose plaintext we keep
+// (encrypted) so the docs page can show a real, copy-pasteable key. Kept in one
+// place so create/lookup never drift.
+export const DOC_KEY_NAME = 'API Dokümantasyonu';
 
 // Scopes a key may hold. Coarse-grained for now; enforced by future scope checks.
 export const API_SCOPES = ['read', 'write', 'admin'] as const;
@@ -56,6 +61,45 @@ export class ApiKeysService {
       }
     });
     return { key: present(created), plaintext: plain };
+  }
+
+  // Returns (creating on first call) the plaintext of the workspace's dedicated
+  // documentation key. Unlike normal keys — which are hash-only and revealed
+  // once — this ONE key stores its plaintext AES-encrypted at rest so the docs
+  // page can render a ready-to-copy example. It carries read+write scope so all
+  // documented endpoints work, and is workspace-scoped like any other key.
+  async getOrCreateDocKey(workspaceId?: string): Promise<{ plaintext: string; maskedKey: string }> {
+    // Reuse an existing, non-revoked doc key for this workspace if present.
+    const existing = await prisma.apiKey.findFirst({
+      where: {
+        name: DOC_KEY_NAME,
+        revokedAt: null,
+        keyPrefix: { not: 'default' },
+        ...(workspaceId ? { workspaceId } : { workspaceId: null })
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+    if (existing?.docPlaintext) {
+      try {
+        return { plaintext: decryptString(existing.docPlaintext), maskedKey: present(existing).maskedKey };
+      } catch {
+        // Undecryptable (e.g. key rotated away) — fall through and mint a fresh
+        // one below rather than surfacing a broken example.
+      }
+    }
+
+    const { plain, prefix, hash } = createKeyPair('flk');
+    const created = await prisma.apiKey.create({
+      data: {
+        name: DOC_KEY_NAME,
+        keyPrefix: prefix,
+        keyHash: hash,
+        scopes: ['read', 'write'],
+        docPlaintext: encryptString(plain),
+        ...(workspaceId ? { workspaceId } : {})
+      }
+    });
+    return { plaintext: plain, maskedKey: present(created).maskedKey };
   }
 
   async revoke(id: string, workspaceId?: string) {

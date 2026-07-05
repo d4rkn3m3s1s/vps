@@ -14,6 +14,14 @@ export async function listApiKeysHandler(req: Request, res: Response): Promise<v
   res.json({ data: await apiKeysService.list(getWorkspaceId(req)) });
 }
 
+// Returns (minting on first use) the workspace's dedicated documentation key in
+// plaintext, so the docs page can render a copy-pasteable curl example.
+export async function docApiKeyHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = getWorkspaceId(req);
+  const result = await apiKeysService.getOrCreateDocKey(workspaceId);
+  res.json({ data: result });
+}
+
 export async function createApiKeyHandler(req: Request, res: Response): Promise<void> {
   const { name, scopes } = createSchema.parse(req.body);
   const workspaceId = getWorkspaceId(req);

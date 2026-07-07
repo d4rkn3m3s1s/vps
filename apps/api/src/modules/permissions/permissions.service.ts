@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 
@@ -11,12 +12,34 @@ export type PermissionInput = {
 };
 
 export class PermissionsService {
-  async listForUser(userId: string) {
-    return prisma.profilePermission.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+  // Build a workspace-scope filter for ProfilePermission. The row has no direct
+  // workspaceId, so a permission belongs to a workspace when its device OR group
+  // belongs to that workspace. Returns {} when no workspace context (unscoped).
+  private async workspaceScope(workspaceId?: string): Promise<Prisma.ProfilePermissionWhereInput> {
+    if (!workspaceId) return {};
+    const [devices, groups] = await Promise.all([
+      prisma.device.findMany({ where: { workspaceId }, select: { id: true } }),
+      prisma.deviceGroup.findMany({ where: { workspaceId }, select: { id: true } })
+    ]);
+    return {
+      OR: [
+        { deviceId: { in: devices.map((d) => d.id) } },
+        { groupId: { in: groups.map((g) => g.id) } }
+      ]
+    };
   }
 
-  async list() {
-    return prisma.profilePermission.findMany({ orderBy: { createdAt: 'desc' } });
+  async listForUser(userId: string, workspaceId?: string) {
+    const scope = await this.workspaceScope(workspaceId);
+    return prisma.profilePermission.findMany({
+      where: { userId, ...scope },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  async list(workspaceId?: string) {
+    const scope = await this.workspaceScope(workspaceId);
+    return prisma.profilePermission.findMany({ where: scope, orderBy: { createdAt: 'desc' } });
   }
 
   async grant(input: PermissionInput, workspaceId?: string) {
@@ -58,8 +81,11 @@ export class PermissionsService {
     });
   }
 
-  async revoke(id: string) {
-    const perm = await prisma.profilePermission.findUnique({ where: { id } });
+  async revoke(id: string, workspaceId?: string) {
+    // Workspace-scoped via the permission's device/group so a foreign tenant's
+    // grant can't be revoked by id.
+    const scope = await this.workspaceScope(workspaceId);
+    const perm = await prisma.profilePermission.findFirst({ where: { id, ...scope } });
     if (!perm) throw new AppError('Permission not found', 404, 'PERMISSION_NOT_FOUND');
     return prisma.profilePermission.delete({ where: { id } });
   }

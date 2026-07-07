@@ -11,6 +11,6 @@ import {
 
 export const permissionsRouter = Router();
 
-permissionsRouter.get('/', requireApiKey, authenticateJwt, asyncHandler(listPermissionsHandler));
+permissionsRouter.get('/', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(listPermissionsHandler));
 permissionsRouter.post('/', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(grantPermissionHandler));
 permissionsRouter.delete('/:id', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(revokePermissionHandler));

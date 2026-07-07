@@ -7,7 +7,7 @@ import { grantService } from './grant.service';
 
 export async function listDeviceGrantsHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
-  res.json({ data: await grantService.listForDevice(deviceId) });
+  res.json({ data: await grantService.listForDevice(deviceId, getWorkspaceId(req)) });
 }
 
 export async function listReceivedGrantsHandler(req: Request, res: Response): Promise<void> {

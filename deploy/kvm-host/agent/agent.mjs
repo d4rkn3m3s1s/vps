@@ -18,10 +18,11 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
+import { inflateSync, deflateSync, crc32 } from 'node:zlib';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,7 +45,9 @@ const STREAM_BITRATE = process.env.FLEET_STREAM_BITRATE || '4M';
 const STREAM_URL = API_URL.replace(/^http/, 'ws') + `/ws/agent-stream?key=${encodeURIComponent(HOST_KEY)}`;
 const STREAM_DEFAULT_FPS = Number(process.env.FLEET_STREAM_FPS || 12);
 
-if (!API_URL || !API_KEY || !HOST_KEY) {
+// Test mode (FLEET_TEST_JOB) runs a single job locally over ADB and never talks to
+// the API, so the API creds are not required there.
+if (!process.env.FLEET_TEST_JOB && (!API_URL || !API_KEY || !HOST_KEY)) {
   console.error('[agent] FLEET_API_URL, FLEET_API_KEY and FLEET_HOST_KEY are all required.');
   process.exit(1);
 }
@@ -57,6 +60,16 @@ const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 async function adb(serial, args) {
   const full = serial ? ['-s', serial, ...args] : args;
   const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024 });
+  return stdout;
+}
+
+// adb with a hard timeout. Some commands (notably `uiautomator dump` on the
+// WhatsApp Conversation screen under Waydroid) can HANG indefinitely instead of
+// erroring — a plain await never returns and no .catch() fires. This kills the
+// child after `ms` and rejects, so callers can fall back. Returns stdout.
+async function adbT(serial, args, ms = 12000) {
+  const full = serial ? ['-s', serial, ...args] : args;
+  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
   return stdout;
 }
 
@@ -73,6 +86,24 @@ async function adbSu(serial, cmd) {
   } catch {
     return '';
   }
+}
+
+// Wrap an arbitrary string so it survives the DEVICE-side /system/bin/sh re-parse.
+// `adb(serial, ['shell', 'input', 'text', s])` looks argv-safe on the host, but
+// adbd joins the args and re-parses them through the phone's sh — so a value like
+// `a;reboot`, `a$(id)` or `` a`id` `` would EXECUTE on the device. Single-quoting
+// (with the classic '\'' escape for embedded quotes) neutralises every shell
+// metacharacter; the sh strips the quotes and passes the literal to `input`.
+function shArg(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// Type free-form text via `input text`, safely. `input` maps %s→space itself, so
+// we keep the space→%s substitution, THEN single-quote the result for the device
+// shell. Use this everywhere user/remote-controlled text reaches `input text`.
+async function inputText(serial, text) {
+  const arg = String(text).replace(/ /g, '%s');
+  return adb(serial, ['shell', 'input', 'text', shArg(arg)]);
 }
 
 // --- Real touch (uinput vtouch) layer ---------------------------------------
@@ -95,18 +126,26 @@ const VT_CACHE_MS = 60000;
 async function vtouchInfo(serial) {
   const cached = vtouchCache.get(serial);
   if (cached && Date.now() - cached.ts < VT_CACHE_MS) return cached;
-  const info = { has: false, phys: { w: 1080, h: 2400 }, logical: { w: 0, h: 0 }, ts: Date.now() };
+  const info = { has: false, phys: { w: 1080, h: 2400 }, logical: { w: 0, h: 0 }, node: null, ts: Date.now() };
   try {
-    // vtouch present in EventHub? (getevent lists it as a device by name)
-    const ev = await adbSu(serial, 'getevent -pl 2>/dev/null | grep -c vtouch');
-    info.has = Number(String(ev).trim()) > 0;
+    // vtouch present in EventHub? Read the whole listing once so we can also learn
+    // WHICH /dev/input/eventN node it is (needed for sendevent long-press) and its
+    // physical axis ranges. `getevent -pl` prints "add device N: /dev/input/eventN"
+    // immediately followed by `  name: "vtouch"`.
+    const listing = await adbSu(serial, 'getevent -pl 2>/dev/null');
+    info.has = /name:\s*"vtouch"/.test(listing);
     if (info.has) {
-      // Physical range from the ABS_MT_POSITION_X/Y max lines.
-      const props = await adbSu(serial, "getevent -pl 2>/dev/null | grep -A40 vtouch");
-      const mx = /ABS_MT_POSITION_X[^\n]*max (\d+)/.exec(props);
-      const my = /ABS_MT_POSITION_Y[^\n]*max (\d+)/.exec(props);
-      if (mx) info.phys.w = Number(mx[1]) || info.phys.w;
-      if (my) info.phys.h = Number(my[1]) || info.phys.h;
+      // The node whose block contains name "vtouch". Split on "add device" blocks.
+      for (const block of String(listing).split(/add device \d+:/)) {
+        if (!/name:\s*"vtouch"/.test(block)) continue;
+        const dev = /(\/dev\/input\/event\d+)/.exec(block);
+        if (dev) info.node = dev[1];
+        const mx = /ABS_MT_POSITION_X[^\n]*max (\d+)/.exec(block);
+        const my = /ABS_MT_POSITION_Y[^\n]*max (\d+)/.exec(block);
+        if (mx) info.phys.w = Number(mx[1]) || info.phys.w;
+        if (my) info.phys.h = Number(my[1]) || info.phys.h;
+        break;
+      }
     }
     // Android logical size. Prefer "Override size" (the space the UI lays out
     // against) over "Physical size" — mixing them mis-scales taps.
@@ -165,6 +204,46 @@ async function tapReal(serial, ax, ay) {
   await adb(serial, ['shell', 'input', 'tap', String(ax), String(ay)]);
 }
 
+// Real LONG-PRESS at Android-logical (ax, ay). WhatsApp's message context menu
+// (Reply/Delete/Forward) only opens on a genuine long-press — `input swipe x y x y
+// 800` is NOT recognised on this Waydroid device (VERIFIED). We drive the vtouch
+// uinput node directly with a Multi-Touch-protocol-B down/hold/up sequence via
+// `sendevent`. TOUCH_MAJOR + PRESSURE are required — without them the press is
+// ignored (VERIFIED). Returns true if the real long-press path was used.
+//   Event codes: EV_ABS=3 (SLOT=47, TRACKING_ID=57, TOUCH_MAJOR=48, PRESSURE=58,
+//   POSITION_X=53, POSITION_Y=54), EV_KEY=1 (BTN_TOUCH=330), EV_SYN=0 (SYN_REPORT=0).
+async function longPressReal(serial, ax, ay, holdMs = 750) {
+  const info = await vtouchInfo(serial);
+  if (!info.has || !info.node) {
+    // Fallback: synthetic swipe with a long duration (best-effort on non-vtouch).
+    await adb(serial, ['shell', 'input', 'swipe', String(ax), String(ay), String(ax), String(ay), String(holdMs)]).catch(() => undefined);
+    return false;
+  }
+  const lw = info.logical.w || 1080, lh = info.logical.h || 2400;
+  const vx = Math.round((Number(ax) / lw) * info.phys.w);
+  const vy = Math.round((Number(ay) / lh) * info.phys.h);
+  const E = info.node;
+  const down = [
+    `sendevent ${E} 3 47 0`,     // ABS_MT_SLOT 0
+    `sendevent ${E} 3 57 700`,   // ABS_MT_TRACKING_ID
+    `sendevent ${E} 3 48 6`,     // ABS_MT_TOUCH_MAJOR
+    `sendevent ${E} 3 58 60`,    // ABS_MT_PRESSURE
+    `sendevent ${E} 3 53 ${vx}`, // ABS_MT_POSITION_X
+    `sendevent ${E} 3 54 ${vy}`, // ABS_MT_POSITION_Y
+    `sendevent ${E} 1 330 1`,    // BTN_TOUCH down
+    `sendevent ${E} 0 0 0`,      // SYN_REPORT
+  ].join('; ');
+  const up = [
+    `sendevent ${E} 3 57 4294967295`, // ABS_MT_TRACKING_ID = -1 (lift)
+    `sendevent ${E} 1 330 0`,         // BTN_TOUCH up
+    `sendevent ${E} 0 0 0`,           // SYN_REPORT
+  ].join('; ');
+  await adbSu(serial, down);
+  await new Promise((r) => setTimeout(r, holdMs));
+  await adbSu(serial, up);
+  return true;
+}
+
 async function ensureConnected(serial) {
   // redroid phones are reachable as host:port; connect is idempotent.
   if (serial.includes(':')) {
@@ -184,7 +263,10 @@ function p(payload, key, fallback) {
 // Mirrors apps/api processor.ts job handling, executed locally over ADB.
 async function runJob(job) {
   const { type, payload, serial } = job;
-  if (!serial && type !== 'NOOP') {
+  // PROVISION_DEVICE builds a BRAND-NEW instance, so it has no ADB serial yet —
+  // it derives its own serial from the provisioning script's output. Exempt it
+  // from the "must have an endpoint" guard.
+  if (!serial && type !== 'NOOP' && type !== 'PROVISION_DEVICE') {
     throw new Error('Job targets a device with no ADB endpoint on this host');
   }
   if (serial) await ensureConnected(serial);
@@ -312,7 +394,9 @@ async function runJob(job) {
       // Requires the clipper/automation helper or API 29+. We use the broadcast
       // approach supported by redroid's clipboard service.
       const text = String(p(payload, 'text', ''));
-      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'clipper.set', '-e', 'text', text.replace(/ /g, '%s')]);
+      // Single-quote for the device sh (the value is user-controlled) — %s keeps
+      // spaces as clipper expects them.
+      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'clipper.set', '-e', 'text', shArg(text.replace(/ /g, '%s'))]);
       return { set: true };
     }
 
@@ -350,6 +434,27 @@ async function runJob(job) {
     case 'WHATSAPP_READ':
       return whatsappRead(serial, payload);
 
+    case 'WHATSAPP_PROFILE':
+      return whatsappProfile(serial, payload);
+
+    case 'WHATSAPP_BLOCK':
+      return whatsappBlock(serial, payload);
+
+    case 'WHATSAPP_BLOCKLIST':
+      return whatsappBlocklist(serial, payload);
+
+    case 'WHATSAPP_MYNUMBER':
+      return whatsappMyNumber(serial, payload);
+
+    case 'WHATSAPP_SEND_MEDIA':
+      return whatsappSendMedia(serial, payload);
+
+    case 'WHATSAPP_DELETE_MSG':
+      return whatsappDeleteMsg(serial, payload);
+
+    case 'WHATSAPP_CLEAR_CHAT':
+      return whatsappClearChat(serial, payload);
+
     case 'APP_EXPLORE':
       return exploreApp(serial, payload);
 
@@ -358,6 +463,9 @@ async function runJob(job) {
 
     case 'PROVISION_INTEGRITY':
       return provisionIntegrity(serial, payload);
+
+    case 'PROVISION_DEVICE':
+      return provisionDevice(job);
 
     default:
       throw new Error(`Unsupported job type: ${type}`);
@@ -391,7 +499,7 @@ async function registerInstagram(serial, payload) {
     const n = findNode(await dump(), descQ, 'desc');
     if (!n) throw new Error(`alan yok: ${descQ}`);
     await tapNode(n); await sleep(800);
-    await adb(serial, ['shell', 'input', 'text', String(text).replace(/ /g, '%s')]);
+    await inputText(serial, text);
   };
   // Wait until a node matching q appears (timeout → throw).
   const waitFor = async (q, ms = 12000) => {
@@ -488,12 +596,18 @@ function waHelpers(serial) {
   // Make ADBKeyboard the default IME if it's installed (it injects text reliably
   // on redroid where `input text` is dropped). No-op if the IME isn't present.
   const ensureAdbKeyboard = async () => {
+    // Cache across calls (module-level adbKbReady, per serial): once ADBKeyboard
+    // is the default IME on a device it stays set, so re-running `ime list/enable/
+    // set` (3 slow ADB round-trips) on EVERY send/read was pure latency. Skip it
+    // when already established for this serial.
+    if (adbKbReady.has(serial)) { adbKeyboardActive = true; return true; }
     try {
       const imes = await adb(serial, ['shell', 'ime', 'list', '-a', '-s']);
       if (!imes.includes('adbkeyboard')) { adbKeyboardActive = false; return false; }
       await adb(serial, ['shell', 'ime', 'enable', ADB_IME]);
       await adb(serial, ['shell', 'ime', 'set', ADB_IME]);
       adbKeyboardActive = true;
+      adbKbReady.add(serial);
       return true;
     } catch { adbKeyboardActive = false; return false; }
   };
@@ -516,9 +630,9 @@ function waHelpers(serial) {
   const typeText = async (text) => {
     const s = String(text);
     if (adbKeyboardActive) {
-      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', s]);
+      await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', shArg(s)]);
     } else {
-      await adb(serial, ['shell', 'input', 'text', s.replace(/ /g, '%s')]);
+      await inputText(serial, s);
     }
   };
   const clearField = async () => {
@@ -548,12 +662,14 @@ function waHelpers(serial) {
     if (clear) await clearField();
     await typeText(text);
   };
-  // Wait until an element matching q appears (timeout → throw).
+  // Wait until an element matching q appears (timeout → throw). The dump itself
+  // takes ~1-2s, so a short inter-dump gap (500ms) keeps us responsive without
+  // hammering — the target is usually present on the FIRST dump anyway.
   const waitFor = async (q, ms = 15000, field = 'any') => {
     const start = Date.now();
     while (Date.now() - start < ms) {
       if (findNode(await dump(), q, field)) return true;
-      await sleep(1000);
+      await sleep(500);
     }
     throw new Error(`ekran gelmedi: ${q}`);
   };
@@ -562,7 +678,7 @@ function waHelpers(serial) {
     const start = Date.now();
     while (Date.now() - start < ms) {
       if (findNode(await dump(), q, field)) return true;
-      await sleep(800);
+      await sleep(400);
     }
     return false;
   };
@@ -570,7 +686,36 @@ function waHelpers(serial) {
   const screenText = async () => (await dump()).map((n) => n.text).filter(Boolean).join(' | ');
   // Ensure the real-touch layer is up before a flow starts (heals after reboot).
   const ensureTouch = async () => ensureVtouch(serial);
-  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText };
+  // Real long-press at logical coords (opens WhatsApp message context menu).
+  const longPress = async (x, y, ms = 750) => longPressReal(serial, x, y, ms);
+  // Long-press a node (its center).
+  const longPressNode = async (n, ms = 750) => { if (n) await longPressReal(serial, n.cx, n.cy, ms); };
+  // Synthetic `input tap` (NOT vtouch). WhatsApp's overflow PopupWindow and its
+  // Settings sub-screens open reliably with a synthetic tap but NOT with the vtouch
+  // FIFO tap — the vtouch press opens then instantly dismisses the popup (VERIFIED
+  // with screenshots: input tap → menu stays open; vtouch tap → menu never shows).
+  // Long-press still needs vtouch; taps on menus need synthetic. Keep them separate.
+  const tapSyn = async (x, y) => { await adb(serial, ['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]); };
+  // Tap a node's center with a synthetic tap. Returns whether the node was truthy.
+  const tapSynNode = async (n) => { if (!n) return false; await tapSyn(n.cx, n.cy); return true; };
+  // Synthetic-tap the first node matching q; returns whether it was found.
+  const tapSynIf = async (q, field = 'any') => {
+    const n = findNode(await dump(), q, field);
+    if (n) { await tapSyn(n.cx, n.cy); return true; }
+    return false;
+  };
+  // Poll until a node matching q appears, returning it (or null on timeout). Unlike
+  // waitFor/seen this RETURNS the node so callers can act on its live coordinates.
+  const pollNode = async (q, ms = 8000, field = 'any') => {
+    const start = Date.now();
+    for (;;) {
+      const n = findNode(await dump(), q, field);
+      if (n) return n;
+      if (Date.now() - start >= ms) return null;
+      await sleep(400); // short gap; the dump itself already costs ~1-2s
+    }
+  };
+  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText, longPress, longPressNode, pollNode, tapSyn, tapSynNode, tapSynIf };
 }
 
 const WA_PKG = 'com.whatsapp';
@@ -580,7 +725,7 @@ const ADB_IME = 'com.android.adbkeyboard/.AdbIME';
 // calling-code and the local part WhatsApp's two fields expect. We match the
 // longest known calling code prefix; unknown prefixes fall back to a 1–3 digit
 // best guess (most CCs are 1–3 digits).
-const CALLING_CODES = ['1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49', '51', '52', '53', '54', '55', '56', '57', '58', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '93', '94', '95', '98', '212', '213', '216', '218', '220', '233', '234', '254', '351', '352', '353', '354', '358', '359', '370', '371', '372', '373', '380', '420', '421', '852', '855', '880', '886', '961', '962', '963', '964', '965', '966', '971', '972', '973', '974', '977', '992', '994', '995', '998'];
+const CALLING_CODES = ['1', '7', '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49', '51', '52', '53', '54', '55', '56', '57', '58', '60', '61', '62', '63', '64', '65', '66', '81', '82', '84', '86', '90', '91', '92', '93', '94', '95', '98', '211', '212', '213', '216', '218', '220', '221', '223', '225', '226', '229', '233', '234', '237', '243', '244', '249', '250', '251', '254', '255', '256', '260', '263', '264', '297', '299', '350', '351', '352', '353', '354', '355', '356', '357', '358', '359', '370', '371', '372', '373', '374', '375', '376', '377', '378', '380', '381', '382', '383', '385', '386', '387', '389', '420', '421', '423', '501', '502', '503', '504', '505', '506', '507', '509', '591', '592', '593', '595', '598', '673', '852', '853', '855', '856', '870', '880', '886', '960', '961', '962', '963', '964', '965', '966', '967', '968', '970', '971', '972', '973', '974', '975', '976', '977', '992', '993', '994', '995', '996', '998'];
 function splitE164(raw) {
   const digits = String(raw).replace(/[^\d]/g, '');
   // Longest matching calling code wins (e.g. 90 before 9).
@@ -588,8 +733,16 @@ function splitE164(raw) {
     .filter((c) => digits.startsWith(c))
     .sort((a, b) => b.length - a.length)[0];
   if (match) return { cc: match, local: digits.slice(match.length) };
-  // Fallback: assume a 2-digit CC.
-  return { cc: digits.slice(0, 2), local: digits.slice(2) };
+  // Fallback for an unlisted prefix. Real calling codes are 1–3 digits and the
+  // ITU numbering ZONE is set by the leading digit: zones 1 (NANP) and 7 (Russia/
+  // Kazakhstan) are the only single-digit codes; every other zone (2–6, 8, 9) uses
+  // 2- or 3-digit codes, and since the list above already covers the common 2-digit
+  // ones, an unlisted prefix is far more likely a 3-digit code — so guess 3 there.
+  // (The old fixed 2-digit split silently mangled 3-digit-CC numbers.)
+  const lead = digits[0];
+  if (lead === '1' || lead === '7') return { cc: lead, local: digits.slice(1) };
+  const width = digits.length > 3 ? 3 : Math.min(2, digits.length);
+  return { cc: digits.slice(0, width), local: digits.slice(width) };
 }
 
 // ── WhatsApp account registration (UIAutomator, element-based) ───────────────
@@ -653,20 +806,47 @@ async function registerWhatsApp(serial, payload) {
   await h.sleep(8000);
 
   // 2) Custom-ROM / emulator alert ("...unsupported... OK"). Dismiss if shown.
-  if (await h.seen('custom ROM', 6000) || await h.seen('Alert', 1000)) {
-    await h.tapBy('OK').catch(() => undefined); await h.sleep(2000);
+  //    This is an AlertDialog — its buttons need a SYNTHETIC tap. A vtouch FIFO
+  //    tap opens-then-instantly-dismisses dialogs/popups (VERIFIED), so the OK
+  //    press was a silent no-op and the alert stayed up, blocking EULA (which
+  //    made registration_phone never appear). tapSynIf drives it correctly.
+  //    Loop a couple of times in case the alert re-renders after the first tap.
+  for (let i = 0; i < 3; i++) {
+    if (await h.seen('custom ROM', i === 0 ? 6000 : 800) || await h.seen('Alert', 600)) {
+      if (!(await h.tapSynIf('OK'))) await h.tapSynIf('OK', 'text');
+      await h.sleep(1500);
+    } else break;
   }
 
   // 3) EULA — the button is "AGREE AND CONTINUE" (caps). Try both casings.
-  if (await h.seen('AGREE AND CONTINUE', 12000)) { await h.tapBy('AGREE AND CONTINUE'); await h.sleep(4000); }
-  else if (await h.seen('Agree and continue', 2000)) { await h.tapBy('Agree and continue'); await h.sleep(4000); }
+  //    Not a dialog, but drive it with a synthetic tap too for consistency and
+  //    because the button sits on the same volatile first-run surface.
+  if (await h.seen('AGREE AND CONTINUE', 12000)) { await h.tapSynIf('AGREE AND CONTINUE') || await h.tapBy('AGREE AND CONTINUE'); await h.sleep(4000); }
+  else if (await h.seen('Agree and continue', 2000)) { await h.tapSynIf('Agree and continue') || await h.tapBy('Agree and continue'); await h.sleep(4000); }
 
   // 4) Modern WhatsApp opens the "Link as companion device" (QR) screen by
   //    default. New-number signup lives behind the overflow menu:
   //    ⋮ (More options) → "Register new account".
-  if (await h.seen('companion device', 8000) || await h.seen('Link a device', 2000)) {
-    await h.tapBy('More options', 'desc').catch(() => undefined); await h.sleep(1500);
-    await h.tapBy('Register new account').catch(() => undefined); await h.sleep(3000);
+  //    The ⋮ opens a PopupWindow and its items are menu entries — BOTH need a
+  //    SYNTHETIC tap (a vtouch FIFO tap opens-then-instantly-closes the popup,
+  //    VERIFIED). Retry the whole open→pick a few times: the popup sometimes
+  //    fails to render on the first tap on this Waydroid build.
+  if (await h.seen('companion device', 8000) || await h.seen('Link a device', 2000) || await h.seen('Link as companion', 1000)) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      // open the overflow menu (synthetic — vtouch dismisses popups)
+      if (!(await h.tapSynIf('More options', 'desc'))) {
+        // fall back to the top-right ⋮ position if the desc node isn't found
+        await h.tapSyn(688, 64).catch(() => undefined);
+      }
+      await h.sleep(1500);
+      // pick "Register new account" (menu item → synthetic). Match loosely.
+      const picked = (await h.tapSynIf('Register new account'))
+        || (await h.tapSynIf('Register', 'text'))
+        || (await h.tapSynIf('Use a different number'));
+      await h.sleep(3000);
+      // done once we've left the companion screen
+      if (picked && !(await h.seen('companion device', 1500) || await h.seen('Link as companion', 800))) break;
+    }
   }
 
   // 5) Phone-number screen. Fields by resource-id:
@@ -708,17 +888,59 @@ async function registerWhatsApp(serial, payload) {
     if (/PhoneNumberHint|assistedsignin/i.test(focus)) { await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined); await h.sleep(1000); }
   }
   const { cc, local } = splitE164(phoneNumber);
-  // Fill country code (clear first — it may be pre-filled from locale).
-  if (cc) await h.typeIntoId('com.whatsapp:id/registration_cc', cc, true).catch(() => undefined);
-  await h.sleep(400);
-  await h.typeIntoId('com.whatsapp:id/registration_phone', local, true);
+  const localDigits = local.replace(/\D/g, '');
+  // VERIFIED on this build: registration_cc and registration_phone are plain
+  // EditTexts. A synthetic `input tap` on the field centre + the stock IME's
+  // `input text` fills them reliably (vtouch / ADBKeyboard did NOT focus them).
+  // Typing the calling code into registration_cc auto-selects the country
+  // ("355" → Albania), so we DON'T need the country picker at all.
+  // Switch to the stock IME for `input text` (ADBKeyboard broadcast doesn't land
+  // in these fields on this build).
+  await adb(serial, ['shell', 'ime', 'set', 'com.android.inputmethod.latin/.LatinIME']).catch(() => undefined);
   await h.sleep(600);
+  const ccOf = async () => {
+    const n = await h.find('com.whatsapp:id/registration_cc', 'id');
+    return (n && n.text ? n.text : '').replace(/\D/g, '');
+  };
+  const phoneOf = async () => {
+    const n = await h.find('com.whatsapp:id/registration_phone', 'id');
+    return (n && n.text ? n.text : '').replace(/\D/g, '');
+  };
+  // Fill country code (auto-selects country) — synthetic tap + input text.
+  for (let attempt = 0; attempt < 3 && (await ccOf()) !== cc; attempt++) {
+    const n = await h.find('com.whatsapp:id/registration_cc', 'id');
+    if (n) await h.tapSyn(n.cx, n.cy);
+    await h.sleep(600);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END']).catch(() => undefined);
+    for (let i = 0; i < 6; i++) await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_DEL']).catch(() => undefined);
+    await adb(serial, ['shell', 'input', 'text', cc]).catch(() => undefined);
+    await h.sleep(1200);
+  }
+  // Fill phone number — synthetic tap + input text, verify digits land.
+  let numberEntered = false;
+  for (let attempt = 0; attempt < 4 && !numberEntered; attempt++) {
+    const n = await h.find('com.whatsapp:id/registration_phone', 'id');
+    if (n) await h.tapSyn(n.cx, n.cy);
+    await h.sleep(600);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END']).catch(() => undefined);
+    for (let i = 0; i < 15; i++) await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_DEL']).catch(() => undefined);
+    await adb(serial, ['shell', 'input', 'text', localDigits]).catch(() => undefined);
+    await h.sleep(1000);
+    const got = await phoneOf();
+    if (got && got.length >= Math.min(6, localDigits.length)) { numberEntered = true; break; }
+  }
+  if (!numberEntered) {
+    const ccNow = await ccOf();
+    return { status: 'NUMBER_ENTRY_FAILED', note: `Numara alani dolmadi (cc=${ccNow || '?'}, phone bos)`, phoneNumber };
+  }
+  await h.sleep(400);
   // Submit (registration_submit), with a text fallback.
-  await h.tapById('com.whatsapp:id/registration_submit').catch(async () => { await h.tapBy('NEXT'); });
+  await h.tapById('com.whatsapp:id/registration_submit').catch(async () => { await h.tapBy('NEXT').catch(() => undefined); });
   await h.sleep(2500);
 
   // 6) Confirmation dialog ("You entered the phone number ... Is this OK?").
-  if (await h.seen('OK', 6000)) { await h.tapBy('OK'); await h.sleep(5000); }
+  //    AlertDialog → synthetic tap (vtouch dismisses dialogs — see step 2).
+  if (await h.seen('OK', 6000)) { (await h.tapSynIf('OK')) || (await h.tapBy('OK').catch(() => undefined)); await h.sleep(5000); }
 
   // 7) Device-integrity / ban walls — bail with a clear status.
   const wall = await h.screenText();
@@ -726,9 +948,19 @@ async function registerWhatsApp(serial, payload) {
     return { status: 'DEVICE_WALL', note: 'WhatsApp cihazı/numarayı reddetti (emülatör/ban) — gerçek ARM cihaz gerekli', screenTexts: wall.slice(0, 400) };
   }
 
-  // 8) OTP. WhatsApp shows a 6-digit code entry. If we weren't given the code,
-  //    stop and let the control plane re-dispatch once the SMS provider has it.
-  await h.waitFor('digit code', 30000).catch(() => undefined);
+  // 8) OTP. WhatsApp shows a 6-digit code entry. VERIFY we actually reached the
+  //    verification screen before claiming OTP_WAIT — otherwise a stalled number
+  //    screen would falsely report "SMS sent" when WhatsApp never sent one.
+  const onOtp = (await h.seen('digit code', 30000))
+    || (await h.seen('Verifying your number', 1500))
+    || (await h.seen('Enter the 6-digit code', 1500))
+    || (await h.seen('Verify', 1500))
+    || (await h.find('com.whatsapp:id/verify_sms_code_input', 'id')) != null
+    || (await h.find('com.whatsapp:id/registration_verify', 'id')) != null;
+  if (!onOtp) {
+    const st = (await h.screenText()).slice(0, 400);
+    return { status: 'OTP_SCREEN_NOT_REACHED', note: 'Doğrulama ekranına ulaşılamadı — numara gönderimi başarısız olabilir', phoneNumber, screenTexts: st };
+  }
   if (!otpCode) {
     return { status: 'OTP_WAIT', note: 'SMS kodu bekleniyor — kod gelince otpCode ile tekrar gönderin', phoneNumber };
   }
@@ -800,37 +1032,65 @@ async function whatsappSend(serial, payload) {
   if (!message) throw new Error('message gerekli');
 
   const h = waHelpers(serial);
+  // TEMP timing instrumentation (FLEET_SEND_TIMING=1): prints per-step ms to stderr.
+  const T0 = Date.now();
+  const tlog = process.env.FLEET_SEND_TIMING === '1'
+    ? (label) => console.error(`  [send] ${label}: +${Date.now() - T0}ms`)
+    : () => {};
   // Guarantee real touch (heals vtouch after reboot) and a reliable IME.
   await h.ensureTouch();
+  tlog('ensureTouch');
   await h.ensureAdbKeyboard();
+  tlog('ensureAdbKeyboard');
   const url = `https://wa.me/${to}?text=${encodeURIComponent(message)}`;
-  await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', url, WA_PKG]);
-  await h.sleep(5000);
-  await dismissBlockingDialogs(serial, h);
-
-  // "X is not on WhatsApp" / invalid-number dialog → report, don't hang.
-  const txt = await h.screenText();
-  if (/not on whatsapp|invalid|isn.?t a valid/i.test(txt)) {
-    return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: txt.slice(0, 300) };
+  // adbd re-parses the joined args through the phone's /system/bin/sh, so a URL
+  // containing shell metacharacters (a ')' from an encoded ':)' smiley, '&', etc.)
+  // breaks the command ("syntax error: unexpected ')'"). Single-quote the -d value
+  // with shArg so sh passes it through literally.
+  await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(url), WA_PKG]);
+  // Wait for the chat to actually open instead of a flat 5s. Poll for the compose
+  // box (id/entry) to appear — usually ~1-2s — and bail early. Falls back to a
+  // 4.5s cap so a slow open still proceeds. Speeds up the common case a lot.
+  {
+    let opened = false;
+    for (let i = 0; i < 9 && !opened; i++) {
+      await h.sleep(500);
+      opened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+    }
   }
-
-  // The compose box is pre-filled by the deep link. If it wasn't, type it.
-  // NOTE: with text in the compose box, `uiautomator dump` frequently FAILS to
-  // reach an idle state, so h.find('Send') returns null and the button never
-  // gets tapped — the message just sits there. So we do NOT rely on the dump to
-  // locate Send: WhatsApp's send button is always at the bottom-right corner, so
-  // we tap a fixed PROPORTIONAL point (≈95% width, ≈93% height). vtouch rescales
-  // it to the real touch surface. This is what makes sends reliable.
-  if (!(await h.find('Send', 'desc').catch(() => null))) {
-    await h.typeInto('Type a message', message).catch(() => undefined);
-    await h.sleep(700);
+  tlog('chat opened (entry poll)');
+  // SPEED: take ONE dump and use it for BOTH the blocking-dialog sweep AND the
+  // invalid-recipient check, instead of dismissBlockingDialogs (its own dump) +
+  // a separate screenText() dump (~2.2s each). On the common path (no dialog,
+  // valid number) this is a single dump.
+  {
+    const nodes = await h.dump().catch(() => []);
+    const flat = nodes.map((n) => n.text).filter(Boolean).join(' | ');
+    // Blocking alert ("custom ROM… OK") → tap OK, then fall back to the full sweep.
+    if (/custom ROM|unsupported|Alert/i.test(flat)) {
+      const btn = nodes.find((n) => n.clickable && /^(OK|CONTINUE|GOT IT)$/i.test((n.text || '').trim()))
+        || nodes.find((n) => /^(OK|CONTINUE|GOT IT)$/i.test((n.text || '').trim()));
+      if (btn) { await h.tapNode(btn); await h.sleep(1000); }
+      await dismissBlockingDialogs(serial, h); // handle any further dialogs
+    }
+    // "X is not on WhatsApp" / invalid-number → report, don't hang.
+    if (/not on whatsapp|invalid|isn.?t a valid/i.test(flat)) {
+      return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: flat.slice(0, 300) };
+    }
   }
+  tlog('dialog+invalid check (1 dump)');
 
-  // Read the logical screen size to place the proportional Send point. `wm size`
-  // prints BOTH "Physical size:" and (if set) "Override size:" — the Override is
-  // the one the UI actually lays out against (WhatsApp positions the send button
-  // in that space), so we must prefer it. Reading Physical put the tap ~30px
-  // above the (small) send button and every send silently missed.
+  // ── CRITICAL: minimize `uiautomator dump` here. ──────────────────────────────
+  // With text in the compose box WhatsApp's view tree churns, and REPEATED dumps
+  // push it into an ANR ("WhatsApp isn't responding"), which then blocks the send
+  // entirely. So the send path below is DUMP-FREE: the deep link already filled
+  // the compose box, so we just tap the send button's known location and confirm
+  // via a single lightweight screencap-based check — never a dump loop.
+
+  // Send-button center. We know its exact on-device coordinates from the dump we
+  // captured once (id/send bounds ≈ [940,2134]-[1066,2260] on a 1080x2400 panel),
+  // i.e. ~93% width / ~91.5% height. Compute from the live logical size so it
+  // scales to other panels. vtouch rescales logical→physical.
   let sw = 720, sh = 1280;
   try {
     const wm = await adb(serial, ['shell', 'wm', 'size']);
@@ -839,36 +1099,80 @@ async function whatsappSend(serial, payload) {
     const m = ov || ph || /(\d+)x(\d+)/.exec(wm);
     if (m) { sw = Number(m[1]) || sw; sh = Number(m[2]) || sh; }
   } catch { /* keep defaults */ }
-  const sendX = Math.round(sw * 0.954);
-  const sendY = Math.round(sh * 0.932);
+  const sendX = Math.round(sw * 0.929); // button center ≈ (940+1066)/2 / 1080
+  const sendY = Math.round(sh * 0.916); // button center ≈ (2134+2260)/2 / 2400
 
-  // Tap Send and confirm the outgoing bubble appears (the reliable signal — the
-  // compose-box dump lags). Retry the fixed-point tap a few times if needed.
   const needle = message.trim();
-  const bubbleSent = async () => {
-    const nodes = await h.dump().catch(() => []);
-    return nodes.some((n) => n.text === needle && n.resId.includes('message_text'));
+  // Read the compose text via ONE guarded dump. One dump won't ANR (a LOOP does).
+  // Returns true = still full, false = cleared/sent, null = couldn't tell.
+  const composeStillFull = async () => {
+    const nodes = await h.dump().catch(() => null);
+    if (!nodes) return null;
+    const entry = nodes.find((n) => n.resId.includes('id/entry'));
+    if (!entry) return null;
+    return (entry.text ?? '').includes(needle.slice(0, 12));
   };
 
-  let sent = false;
-  for (let attempt = 0; attempt < 4 && !sent; attempt++) {
-    await h.tapXY(sendX, sendY);
-    for (let poll = 0; poll < 4; poll++) {
-      await h.sleep(900);
-      if (await bubbleSent()) { sent = true; break; }
+  // Tap the send button, then CHECK before tapping again. The message usually
+  // leaves on the 1st or 2nd tap; every extra tap lands on the now-empty compose's
+  // MIC button and pops "Can't set up the recorder". So: tap → wait → if the box
+  // cleared, STOP. At most 2 taps. One dump per iteration is safe (not a tight loop).
+  // Poll the compose box for up to capMs (in 350ms steps) instead of a flat 1400ms
+  // wait, so a fast send (the box clears in ~300-500ms) returns early without
+  // sacrificing the safety of confirming the box actually cleared.
+  const waitCleared = async (capMs) => {
+    const start = Date.now();
+    for (;;) {
+      const still = await composeStillFull();
+      if (still === false) return false;             // cleared → sent
+      if (Date.now() - start >= capMs) return still; // true (full) or null (unknown)
+      await h.sleep(350);
     }
+  };
+  // The send button responds to a SYNTHETIC `input tap` but consistently IGNORES the
+  // vtouch FIFO tap (VERIFIED: one synthetic tap clears the box; a vtouch tap leaves
+  // it full so the old vtouch-first code always burned attempt 0). Tap SYNTHETIC on
+  // BOTH attempts — attempt 0 usually sends, attempt 1 is a safety retry.
+  let sent = false;
+  for (let attempt = 0; attempt < 2 && !sent; attempt++) {
+    await adb(serial, ['shell', 'input', 'tap', String(sendX), String(sendY)]); // synthetic (the reliable path)
+    const still = await waitCleared(1500);
+    tlog(`send tap ${attempt} + verify (still=${still})`);
+    if (still === false) { sent = true; break; }  // cleared → sent
+    // still === true (definitely not sent) → loop and retry; null → also retry once
+  }
+
+  // Dismiss any "Can't set up the recorder" / recording dialog a stray tap raised,
+  // so it never blocks the next send. (Tap OK / press BACK.)
+  const scr = await h.screenText().catch(() => '');
+  let recordingHit = false;
+  if (/recorder|recording|kaydediliyor|slide to cancel/i.test(scr)) {
+    recordingHit = true;
+    await h.tapIf('OK').catch(() => undefined);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    await h.sleep(300);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  }
+
+  // Final confirmation if the loop couldn't confirm (null path): one more dump.
+  if (!sent) {
+    const still = await composeStillFull();
+    if (still === false) sent = true; // box cleared after all → sent
   }
 
   if (!sent) {
-    // Last-chance: if the compose entry is now empty, the send almost certainly
-    // succeeded even though the bubble dump didn't confirm it.
-    const entry = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
-    const t = entry?.text ?? '';
-    if (t && t.includes(needle.slice(0, 12))) {
-      return { status: 'COMPOSE_FAILED', note: 'Mesaj gönderilemedi (compose dolu kaldı)', to, screenTexts: (await h.screenText().catch(() => '')).slice(0, 300) };
-    }
+    // Genuine failure — the bubble never appeared. Report it honestly (do NOT
+    // claim SENT). The message is likely still in the compose box.
+    return {
+      status: 'COMPOSE_FAILED',
+      note: recordingHit
+        ? 'Gönderilemedi (yanlışlıkla ses kaydı tetiklendi, iptal edildi)'
+        : 'Mesaj gönderilemedi (giden balon görünmedi)',
+      to,
+      screenTexts: (await h.screenText().catch(() => '')).slice(0, 300)
+    };
   }
-  await h.sleep(600);
+  tlog('SENT');
   return { status: 'SENT', to, message };
 }
 
@@ -888,7 +1192,7 @@ async function whatsappRead(serial, payload) {
 
   // Make sure a chat is open.
   if (to) {
-    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', `https://wa.me/${to}`, WA_PKG]);
+    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(`https://wa.me/${to}`), WA_PKG]);
     await h.sleep(5000);
   } else if (from) {
     await launchApp(serial, WA_PKG, null);
@@ -896,7 +1200,7 @@ async function whatsappRead(serial, payload) {
     // Open search, type the contact, tap the first chat hit.
     if (await h.tapIf('Search', 'desc')) {
       await h.sleep(800);
-      await adb(serial, ['shell', 'input', 'text', from.replace(/ /g, '%s')]);
+      await inputText(serial, from);
       await h.sleep(1500);
       await h.tapBy(from, 'text').catch(() => undefined);
       await h.sleep(2500);
@@ -911,6 +1215,883 @@ async function whatsappRead(serial, payload) {
     .map((n) => n.text);
   const messages = bubbles.length > 0 ? bubbles : nodes.map((n) => n.text).filter(Boolean);
   return { status: 'OK', count: messages.length, messages: messages.slice(-50) };
+}
+
+// ── WhatsApp: shared chat navigation helpers ────────────────────────────────
+
+// Read the device's logical screen size (WhatsApp/Waydroid honour the Override
+// size). Cached per serial. Used for coordinate-based taps on screens where
+// `uiautomator dump` hangs (the Conversation screen).
+const wmSizeCache = new Map();
+async function wmSize(serial) {
+  if (wmSizeCache.has(serial)) return wmSizeCache.get(serial);
+  let sw = 1080, sh = 2400;
+  try {
+    const wm = await adbT(serial, ['shell', 'wm', 'size'], 6000);
+    const ov = /Override size:\s*(\d+)x(\d+)/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x(\d+)/.exec(wm);
+    const m = ov || ph || /(\d+)x(\d+)/.exec(wm);
+    if (m) { sw = Number(m[1]) || sw; sh = Number(m[2]) || sh; }
+  } catch { /* keep defaults */ }
+  const size = { sw, sh };
+  wmSizeCache.set(serial, size);
+  return size;
+}
+
+// Take a screencap and return its PNG buffer (null on a blank/failed grab). Used
+// both to detect screen state and to capture the avatar. screencap does NOT ANR
+// like uiautomator dump, so it's the reliable primitive on the chat screens.
+async function grabPng(serial, ms = 15000) {
+  try {
+    const { stdout } = await execFileAsync(ADB, ['-s', serial, 'exec-out', 'screencap', '-p'], {
+      encoding: 'buffer', maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL'
+    });
+    return stdout && stdout.length > 2048 ? stdout : null;
+  } catch { return null; }
+}
+
+// ── Zero-dependency PNG crop (node:zlib only) ───────────────────────────────
+//
+// The WhatsApp contact-info & full-screen photo screens block screencap on this
+// device (capture returns 0 bytes), so we can't grab the big avatar directly.
+// The CONVERSATION screen's screencap DOES work and shows the small toolbar
+// avatar top-left. So we screencap the chat and crop the avatar rectangle out of
+// it. Android screencap emits a 8-bit RGBA, non-interlaced PNG — we only need to
+// handle that one shape. Returns a cropped PNG Buffer, or null on any mismatch.
+function cropPng(png, rx, ry, rw, rh) {
+  try {
+    // Verify PNG signature.
+    const SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (!png || png.length < 8 || !png.subarray(0, 8).equals(SIG)) return null;
+    // Walk chunks: read IHDR, concat IDAT data, ignore the rest.
+    let off = 8, width = 0, height = 0, bitDepth = 0, colorType = 0;
+    const idat = [];
+    while (off + 8 <= png.length) {
+      const len = png.readUInt32BE(off);
+      const type = png.toString('ascii', off + 4, off + 8);
+      const data = png.subarray(off + 8, off + 8 + len);
+      if (type === 'IHDR') {
+        width = data.readUInt32BE(0); height = data.readUInt32BE(4);
+        bitDepth = data[8]; colorType = data[9];
+      } else if (type === 'IDAT') { idat.push(data); }
+      else if (type === 'IEND') break;
+      off += 12 + len; // len + type(4) + data + crc(4)
+    }
+    // Only handle 8-bit RGBA (colorType 6) — what Android screencap produces.
+    if (bitDepth !== 8 || colorType !== 6 || !width || !height) return null;
+    const channels = 4, stride = width * channels;
+    const raw = inflateSync(Buffer.concat(idat)); // filtered scanlines: 1 byte filter + stride
+    // Unfilter into a flat RGBA raster (PNG filter types 0-4).
+    const rowBytes = stride;
+    const out = Buffer.alloc(height * rowBytes);
+    let pos = 0;
+    for (let y = 0; y < height; y++) {
+      const filter = raw[pos++];
+      const cur = out.subarray(y * rowBytes, y * rowBytes + rowBytes);
+      raw.copy(cur, 0, pos, pos + rowBytes); pos += rowBytes;
+      const prev = y > 0 ? out.subarray((y - 1) * rowBytes, (y - 1) * rowBytes + rowBytes) : null;
+      for (let i = 0; i < rowBytes; i++) {
+        const a = i >= channels ? cur[i - channels] : 0;
+        const b = prev ? prev[i] : 0;
+        const c = (prev && i >= channels) ? prev[i - channels] : 0;
+        let v = cur[i];
+        if (filter === 1) v = (v + a) & 0xff;
+        else if (filter === 2) v = (v + b) & 0xff;
+        else if (filter === 3) v = (v + ((a + b) >> 1)) & 0xff;
+        else if (filter === 4) {
+          const pp = a + b - c, pa = Math.abs(pp - a), pb = Math.abs(pp - b), pc = Math.abs(pp - c);
+          const pr = (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+          v = (v + pr) & 0xff;
+        }
+        cur[i] = v;
+      }
+    }
+    // Clamp the crop rect to the image.
+    const cx = Math.max(0, Math.min(rx, width - 1));
+    const cy = Math.max(0, Math.min(ry, height - 1));
+    const cw = Math.max(1, Math.min(rw, width - cx));
+    const ch = Math.max(1, Math.min(rh, height - cy));
+    // Build cropped filtered data (filter type 0 for every row).
+    const cropStride = cw * channels;
+    const filtered = Buffer.alloc(ch * (cropStride + 1));
+    for (let y = 0; y < ch; y++) {
+      filtered[y * (cropStride + 1)] = 0; // no filter
+      const src = (cy + y) * rowBytes + cx * channels;
+      out.copy(filtered, y * (cropStride + 1) + 1, src, src + cropStride);
+    }
+    const compressed = deflateSync(filtered);
+    // Re-assemble a minimal PNG.
+    const chunk = (type, data) => {
+      const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+      const typeBuf = Buffer.from(type, 'ascii');
+      const body = Buffer.concat([typeBuf, data]);
+      const crcBuf = Buffer.alloc(4); crcBuf.writeUInt32BE(crc32(body) >>> 0, 0);
+      return Buffer.concat([len, body, crcBuf]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(cw, 0); ihdr.writeUInt32BE(ch, 4);
+    ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    return Buffer.concat([SIG, chunk('IHDR', ihdr), chunk('IDAT', compressed), chunk('IEND', Buffer.alloc(0))]);
+  } catch { return null; }
+}
+
+// Open a chat with a peer. Prefer the wa.me deep link (works without a saved
+// contact); if only a `from` name is given, open the app and search for it.
+// DUMP-FREE for the `to` path: the Conversation screen ANRs uiautomator dump, so
+// we just wait a fixed beat after the deep link (proven reliable in whatsappSend).
+async function waOpenChat(serial, h, { to, from }) {
+  if (to) {
+    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(`https://wa.me/${to}`), WA_PKG]);
+    // SPEED: poll for the compose box (id/entry) to appear instead of a flat 8s
+    // wait — the chat is usually reachable in ~2-3s. A single `find` per step is
+    // safe here (the compose box is EMPTY so there's no view-tree churn/ANR — the
+    // ANR only happens with text in the box + a dump LOOP, which we don't do). We
+    // give it ~2s to start rendering, then poll up to an 8s cap so a slow cold
+    // start still proceeds exactly as before.
+    await h.sleep(2000);
+    for (let i = 0; i < 12; i++) {
+      if (await h.find('com.whatsapp:id/entry', 'id').catch(() => null)) break;
+      await h.sleep(500);
+    }
+    return true;
+  }
+  if (from) {
+    await launchApp(serial, WA_PKG, null);
+    await h.sleep(3500);
+    if (await h.tapIf('Search', 'desc')) {
+      await h.sleep(800);
+      await inputText(serial, from);
+      await h.sleep(1500);
+      await h.tapBy(from, 'text').catch(() => undefined);
+      await h.sleep(2200);
+      return true;
+    }
+  }
+  return false;
+}
+
+// From an open chat, open the contact-info screen. The Conversation screen ANRs
+// uiautomator dump, so we DON'T dump here — we tap the toolbar title by
+// COORDINATE (it always sits top-left, just right of the back arrow). The
+// contact-info screen that opens does NOT churn, so callers can dump it safely.
+// Returns true if the info screen looks open (verified by a guarded dump).
+async function waOpenContactInfo(serial, h) {
+  const { sw, sh } = await wmSize(serial);
+  const ay = Math.round(sh * 0.06);
+  // Returns 'yes' (markers found), 'blank' (dump empty — inconclusive, likely on
+  // contact-info where capture/dump is flaky), or 'no' (dump had content but no
+  // contact-info markers → we're elsewhere, e.g. still on the chat).
+  const probe = async () => {
+    const xml = await uiDumpXml(serial).catch(() => '');
+    if (!xml) return 'blank';
+    if (/Media visibility|Medya görünürlüğü|Encryption|Şifreleme|Block \+|Engelle|Disappearing|list_item_title|ContactInfo/i.test(xml)) return 'yes';
+    return 'no';
+  };
+  // Tap the toolbar NAME (40% width), NOT the avatar: when a contact has a photo,
+  // tapping the avatar opens the full-screen photo viewer instead of contact info
+  // (VERIFIED). The name opens ContactInfoActivity. Because dump is flaky on this
+  // device, treat a BLANK dump after the tap as "probably on info" and let the
+  // caller's own dump attempts proceed — only a definite 'no' triggers a re-tap.
+  await tapReal(serial, Math.round(sw * 0.40), ay);
+  await h.sleep(1500); // contact-info opens quickly; probe below confirms
+  let seenBlank = false;
+  for (let i = 0; i < 3; i++) {
+    const r = await probe();
+    if (r === 'yes') return true;
+    if (r === 'blank') seenBlank = true;
+    await h.sleep(600);
+  }
+  // Definite miss (all 'no') → re-tap the name once and retry.
+  if (!seenBlank) {
+    await tapReal(serial, Math.round(sw * 0.40), ay);
+    await h.sleep(1500);
+    for (let i = 0; i < 3; i++) {
+      const r = await probe();
+      if (r === 'yes') return true;
+      if (r === 'blank') seenBlank = true;
+      await h.sleep(600);
+    }
+  }
+  // If we only ever got blank dumps, assume we're on contact-info (capture is
+  // blocked there on this device) and let the caller try — better than a false
+  // NO_INFO. If we got definite 'no', report failure.
+  return seenBlank;
+}
+
+// Open WhatsApp Settings. On WhatsApp 2.26+ the Settings activity is NO LONGER
+// exported (`am start com.whatsapp/.settings.Settings` → "Error type 3", VERIFIED),
+// so the ONLY reliable path is: cold-open Home → tap the overflow "More options"
+// (⋮) → wait for the popup menu → tap "Settings" → wait for the Settings screen
+// (the "Account" row is the landmark). Every step polls a FRESH dump (exec-out cat)
+// so we don't tap before the target has rendered — the classic Waydroid race.
+// Returns true once the Settings list is showing.
+async function waOpenSettings(serial, h) {
+  // One full attempt: cold-open Home → ⋮ → Settings → wait for the "Account" row.
+  // CRITICAL: use SYNTHETIC taps for the overflow + Settings — the vtouch FIFO tap
+  // opens then instantly dismisses the PopupWindow, so the menu never stays up (and
+  // dump can't see it). Only `input tap` keeps the menu open (VERIFIED w/ screenshots).
+  const attempt = async () => {
+    await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+    await h.sleep(1000);
+    await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.home.ui.HomeActivity`]).catch(() => undefined);
+    const overflow = await h.pollNode('More options', 9000, 'desc');
+    if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
+    // Wait for the popup menu ("New group" landmark); re-tap the overflow once if it
+    // didn't render.
+    if (!(await h.pollNode('New group', 8000, 'text'))) {
+      if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
+      await h.pollNode('New group', 6000, 'text');
+    }
+    const settings = await h.pollNode('Settings', 6000, 'any');
+    if (settings) await h.tapSynNode(settings);
+    else await h.tapSyn(812, 1060); // fixed Settings row center (VERIFIED bounds)
+    // Settings loaded when the "Account" row appears.
+    return Boolean(await h.pollNode('Account', 9000, 'any'));
+  };
+  // Retry the WHOLE flow once. On this Waydroid host the first ⋮/Settings tap
+  // occasionally lands before the chat list is fully interactive, so a single retry
+  // turns an intermittent "Ayarlar ekranı açılamadı" into a reliable success
+  // (VERIFIED: 1st polling-mode run failed, retry-hardened runs succeed).
+  if (await attempt()) return true;
+  await h.sleep(800);
+  return attempt();
+}
+
+// ── WhatsApp: fetch a contact's profile (avatar + name/about/last-seen) ──────
+//
+// Opens the chat, goes to contact info, scrapes the profile text, then taps the
+// avatar to open the full-screen photo viewer and grabs a screencap of it as a
+// PNG data-URI. WhatsApp encrypts the stored photo file, so a screen capture of
+// the viewer is the only ADB-only way to obtain the image (no image libs needed —
+// the agent stays zero-dependency; the PNG bytes are base64'd inline).
+//
+// payload: { to? (E.164 digits), from? (contact name) }
+// returns: { status, profile: { profileName?, about?, phone?, lastSeen? }, avatarBase64? }
+async function whatsappProfile(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const from = String(p(payload, 'from', '')).trim();
+  if (!to && !from) throw new Error('to veya from gerekli');
+
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+
+  const { sw, sh } = await wmSize(serial);
+  // Open the chat cleanly. force-stop first so the deep link always lands on the
+  // Conversation screen (a warm app sometimes stays on the chat LIST — VERIFIED).
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await waOpenChat(serial, h, { to, from });
+
+  // ── AVATAR (from the Conversation screen) ─────────────────────────────────
+  // The contact-info & full-screen-photo screens block screencap on this device
+  // (0 bytes), but the CONVERSATION screen's screencap works and shows the small
+  // round toolbar avatar top-left. Screencap it and crop that avatar out. The
+  // toolbar avatar center ≈ 17% width / 6% height with ~5% radius (VERIFIED).
+  let avatarBase64 = null;
+  const full = await grabPng(serial, 15000);
+  if (full) {
+    // Crop rect around the toolbar avatar (a bit generous, square).
+    const r = Math.round(sw * 0.058);         // radius-ish
+    const acx = Math.round(sw * 0.17), acy = Math.round(sh * 0.06);
+    const cropped = cropPng(full, acx - r, acy - r, r * 2, r * 2);
+    // Only keep the crop if it's a real photo, not the grey/placeholder circle.
+    // A placeholder (single-letter on flat bg) compresses tiny; a real photo
+    // doesn't. Require a non-trivial size as a cheap "has a photo" heuristic.
+    if (cropped && cropped.length > 900) {
+      avatarBase64 = `data:image/png;base64,${cropped.toString('base64')}`;
+    }
+  }
+
+  // ── PROFILE TEXT (from the contact-info screen) ───────────────────────────
+  // Tap the toolbar NAME (not the avatar — the avatar opens the photo viewer when
+  // a photo exists). The name reliably opens ContactInfoActivity, which is
+  // dump-safe. Name area center ≈ 40% width / 6% height.
+  await tapReal(serial, Math.round(sw * 0.40), Math.round(sh * 0.06));
+  await h.sleep(2200);
+  const nodes = await h.dump().catch(() => []);
+  const phoneNode = nodes.find((n) => /^\+?\d[\d\s()-]{6,}$/.test((n.text || '').trim()));
+  const phone = phoneNode ? phoneNode.text.trim() : (to ? `+${to}` : '');
+  // Profile name shows as "~ Foo" (push-name) on the info screen.
+  const tildeNode = nodes.find((n) => /^~\s*\S/.test((n.text || '').trim()));
+  const byId = (frag) => (nodes.find((n) => n.resId.includes(frag) && n.text) || {}).text || '';
+  const profileName = (tildeNode ? tildeNode.text.replace(/^~\s*/, '').trim() : '')
+    || byId('conversation_contact_name') || byId('profile_info') || from || '';
+  const about = byId('status') || byId('about');
+  const profile = {
+    ...(profileName ? { profileName } : {}),
+    ...(about ? { about } : {}),
+    ...(phone ? { phone } : {})
+  };
+  // Return to a neutral state.
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+
+  // If we got neither text nor an avatar, report the failure honestly.
+  if (!avatarBase64 && Object.keys(profile).length === 0) {
+    return { status: 'NO_INFO', note: 'Kişi bilgisi/foto alınamadı', to, from };
+  }
+
+  return {
+    status: 'OK',
+    profile,
+    ...(avatarBase64 ? { avatarBase64 } : {}),
+    to: to || undefined,
+    from: from || undefined
+  };
+}
+
+// ── WhatsApp: block / unblock a contact ─────────────────────────────────────
+//
+// Opens the chat, contact info, then taps the Block / Unblock row and confirms
+// the dialog. WhatsApp toggles the row label between "Block <name>" and
+// "Unblock <name>" (localised), so we match either the current-state row we want
+// and the confirmation button.
+//
+// payload: { to? , from? , block (bool, default true) }
+// returns: { status: 'BLOCKED' | 'UNBLOCKED' | 'NOOP', ... }
+async function whatsappBlock(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const from = String(p(payload, 'from', '')).trim();
+  const block = p(payload, 'block', true) !== false;
+  if (!to && !from) throw new Error('to veya from gerekli');
+
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+
+  const { sw, sh } = await wmSize(serial);
+  // force-stop first so the deep link lands on the Conversation screen (VERIFIED).
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await waOpenChat(serial, h, { to, from });
+  const onInfo = await waOpenContactInfo(serial, h);
+  if (!onInfo) return { status: 'NO_INFO', note: 'Kişi bilgisi ekranı açılamadı', to, from };
+
+  // Scroll down to the danger-zone rows (Block/Unblock sit near the bottom, just
+  // above Report). One big swipe brings them into view (VERIFIED on-device). The
+  // contact-info screen is dump-safe.
+  await adb(serial, ['shell', 'input', 'swipe', String(Math.round(sw * 0.5)), String(Math.round(sh * 0.75)), String(Math.round(sw * 0.5)), String(Math.round(sh * 0.25)), '250']).catch(() => undefined);
+  await h.sleep(900);
+
+  // Desired action label. WhatsApp shows "Block +<number>" / "Unblock +<number>"
+  // (or "Engelle"/"Engeli kaldır"). Match the verb at the start; the number tail
+  // is ignored. If the wanted verb is absent, the contact is already in the
+  // target state → ALREADY_*.
+  const wantRe = block ? /^block\b|^engelle/i : /^unblock\b|^engeli\s*kaldır/i;
+  const oppRe  = block ? /^unblock\b|^engeli\s*kaldır/i : /^block\b|^engelle/i;
+  const nodes = await h.dump().catch(() => []);
+  const norm = (t) => (t || '').trim();
+  const wantRow = nodes.find((n) => wantRe.test(norm(n.text)));
+  const oppRow  = nodes.find((n) => oppRe.test(norm(n.text)));
+  if (wantRow) {
+    await h.tapNode(wantRow);
+    await h.sleep(1200);
+  } else if (oppRow) {
+    return { status: block ? 'ALREADY_BLOCKED' : 'ALREADY_UNBLOCKED', to, from };
+  } else if (nodes.length === 0) {
+    // Dump came back empty (flaky on this device) but we scrolled to the danger
+    // zone. Coordinate-tap the Block/Unblock row: after the swipe it sits at
+    // ~40% width / 82% height (VERIFIED bounds [189,1933]-[682,1994] on 1080x2400).
+    await tapReal(serial, Math.round(sw * 0.40), Math.round(sh * 0.818));
+    await h.sleep(1200);
+  } else {
+    // Dump had content but neither verb was present.
+    return { status: 'NO_ACTION', note: 'Engelle/Engeli kaldır satırı bulunamadı', to, from };
+  }
+
+  // Confirm the dialog. The confirm button repeats the verb ("BLOCK"/"UNBLOCK" /
+  // "ENGELLE"/"ENGELİ KALDIR"). Some versions add a "Report" checkbox — we leave
+  // it unchecked and just confirm the block.
+  const conf = await h.dump().catch(() => []);
+  const confBtn = conf.find((n) => n.clickable && wantRe.test((n.text || '').trim()))
+    || conf.find((n) => wantRe.test((n.text || '').trim()) && (n.text || '').trim().length < 24);
+  if (confBtn) { await h.tapNode(confBtn); await h.sleep(1200); }
+  else {
+    // Confirm dialog button center ≈ 75% width / 55% height on the default
+    // 2-button alert; coordinate-tap it when the dump was empty.
+    await tapReal(serial, Math.round(sw * 0.75), Math.round(sh * 0.55)).catch(() => undefined);
+    await h.sleep(1000);
+  }
+
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  return { status: block ? 'BLOCKED' : 'UNBLOCKED', to: to || undefined, from: from || undefined };
+}
+
+// ── WhatsApp: read the blocked-contacts list ────────────────────────────────
+//
+// Navigates Settings → Privacy → Contacts → Blocked accounts and scrapes the
+// listed names/numbers. Returns the raw display strings — the API maps them to
+// threads. Path VERIFIED on WhatsApp 2.26.25.81 where the menu was reorganised:
+// "Blocked accounts" now lives UNDER a "Contacts" row inside Privacy (it used to
+// be a direct "Blocked contacts" row), and the Settings deep-link is gone.
+//
+// payload: {}  returns: { status: 'OK', count, blocked: [ "<name/number>", … ] }
+async function whatsappBlocklist(serial /*, payload */) {
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  const { sw, sh } = await wmSize(serial);
+
+  const ok = await waOpenSettings(serial, h);
+  if (!ok) return { status: 'NO_LIST', note: 'Ayarlar ekranı açılamadı', blocked: [], count: 0 };
+
+  // Settings → Privacy (synthetic taps — same PopupWindow/list behaviour).
+  const privacy = await h.pollNode('Privacy', 6000, 'any');
+  if (!privacy) return { status: 'NO_LIST', note: 'Privacy satırı bulunamadı', blocked: [], count: 0 };
+  await h.tapSynNode(privacy);
+  // Privacy screen landmark.
+  await h.pollNode('Last seen', 6000, 'any');
+
+  // "Contacts" (holding "Blocked accounts") sits far down the Privacy list — scroll
+  // until it appears (VERIFIED: ~2 page swipes). We match the row by its subtitle
+  // "Blocked accounts" (present in the content-desc "Contacts,Blocked accounts, …").
+  let contactsRow = null;
+  for (let s = 0; s < 5; s++) {
+    contactsRow = findNode(await h.dump().catch(() => []), 'Blocked accounts', 'any');
+    if (contactsRow) break;
+    await adb(serial, ['shell', 'input', 'swipe', String(Math.round(sw * 0.5)), String(Math.round(sh * 0.75)), String(Math.round(sw * 0.5)), String(Math.round(sh * 0.28)), '250']);
+    await h.sleep(450); // scroll settles fast; the next dump adds its own ~1.5s
+  }
+  if (!contactsRow) return { status: 'NO_LIST', note: 'Engellenen hesaplar satırı bulunamadı', blocked: [], count: 0 };
+  await h.tapSynNode(contactsRow);
+  // This lands on the "Contacts" hub (title "Contacts", a "Blocked accounts" row
+  // with a count, plus a "WhatsApp contacts" toggle). VERIFIED on 2.26.25.81.
+  // SPEED: poll for the hub, and REUSE that same dump to find the clickable row
+  // container — saves one ~2.2s dump vs a separate pollNode + dump.
+  await h.pollNode('WhatsApp contacts', 6000, 'any');
+  // Open the actual blocked list. CRITICAL: the "Blocked accounts" TEXT node is NOT
+  // clickable — its clickable parent is the row container
+  // `block_list_privacy_contacts_preference`; tapping the text does nothing
+  // (VERIFIED w/ screenshots). Tap that container by id; fall back to the text row.
+  const hubNodes = await h.dump().catch(() => []);
+  const container = findNode(hubNodes, 'block_list_privacy_contacts_preference', 'id');
+  if (container) await h.tapSynNode(container);
+  else {
+    const brow = findNode(hubNodes, 'Blocked accounts', 'any');
+    if (brow) await h.tapSynNode(brow);
+  }
+  // Wait for the Blocked-accounts list to render.
+  await h.pollNode('Accounts', 6000, 'any');
+  await h.sleep(400);
+
+  // Scrape the list rows. Blocked entries show as a contact display name or a raw
+  // number; scroll to page through. Skip chrome (headers/"Add blocked"). Most lists
+  // are short (0-few entries), so we stop as soon as a page adds nothing new — no
+  // need for a fixed 6-page walk.
+  const seen = new Set();
+  for (let page = 0; page < 6; page++) {
+    const nodes = await h.dump().catch(() => []);
+    const before = seen.size;
+    for (const n of nodes) {
+      const t = (n.text || '').trim();
+      if (!t) continue;
+      if (/contactpicker_row_name|contact_name|row_name|conversations_row_contact_name/i.test(n.resId)) seen.add(t);
+      else if (/^\+?\d[\d\s()+-]{6,}$/.test(t)) seen.add(t);
+      else if (/^~\s*\S/.test(t)) seen.add(t.replace(/^~\s*/, '').trim());
+    }
+    const scr = nodes.find((x) => x.scrollable);
+    // Stop early: nothing scrollable, OR this page added no new rows (list end).
+    if (!scr || seen.size === before) break;
+    await adb(serial, ['shell', 'input', 'swipe', String(scr.cx), String(Math.round(scr.cy + 300)), String(scr.cx), String(Math.max(200, scr.cy - 300)), '250']);
+    await h.sleep(450);
+  }
+  // Filter out chrome strings that slipped through.
+  const blocked = [...seen].filter((s) => !/add blocked|engellenen (kişi|hesap) ekle|blocked (contacts|accounts)|engellenen|whatsapp contacts|contacts are saved/i.test(s));
+  return { status: 'OK', count: blocked.length, blocked };
+}
+
+// ── WhatsApp: read the account's OWN number ─────────────────────────────────
+//
+// Opens Settings and reads the profile row, which shows this account's own phone
+// number. Settings deep-link is unreliable across builds, so we drive the UI:
+// open WhatsApp → overflow (⋮) → Settings → the top profile row holds the number.
+//
+// payload: {}  returns: { status: 'OK', number } | { status: 'NOT_FOUND' }
+//
+// Path (VERIFIED on WhatsApp 2.26.25.81): Settings → tap the profile row (its
+// content-desc is "You") → the Profile screen shows a "Phone" label immediately
+// followed by the account's own number. We scrape the first phone-like text on
+// that screen. Everything polls a fresh dump so we never read a stale screen.
+async function whatsappMyNumber(serial /*, payload */) {
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  const looksPhone = (t) => /^\+?\d[\d\s()+-]{8,}$/.test(String(t || '').trim());
+
+  // ── FAST PATH (~5s vs ~22s): the chat list shows the account's own number as a
+  // self-chat row "＋90 … (You)". Open Home, take ONE dump, and read it directly —
+  // no Settings navigation (which costs ~5 extra ~2.2s dumps). Falls through to the
+  // Settings path below if the self-chat row isn't present (user never messaged
+  // themselves), so nothing is lost. VERIFIED: text="+57 310 8228143 (You)".
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.home.ui.HomeActivity`]).catch(() => undefined);
+  await h.pollNode('More options', 8000, 'desc'); // chat list is up
+  {
+    const home = await h.dump().catch(() => []);
+    const youNode = home.find((n) => /\(You\)/i.test(n.text || '') && looksPhone((n.text || '').replace(/\s*\(You\)\s*/i, '')));
+    if (youNode) {
+      const num = youNode.text.replace(/\s*\(You\)\s*/i, '').trim();
+      if (num) return { status: 'OK', number: num };
+    }
+  }
+
+  // ── FALLBACK: Settings → profile row ("You") → Profile screen "Phone" number.
+  const ok = await waOpenSettings(serial, h);
+  if (!ok) return { status: 'NOT_FOUND', note: 'Ayarlar ekranı açılamadı' };
+  // The profile row at the very top has content-desc="You". Tapping it opens the
+  // Profile screen. (Fallback: some builds label it with the account name only.)
+  // Use synthetic taps throughout Settings (consistent with the menu behaviour).
+  const youRow = await h.pollNode('You', 5000, 'desc');
+  if (youRow) await h.tapSynNode(youRow);
+  else {
+    // Fallback: tap the top profile card by coordinate (~top of the list).
+    const { sw, sh } = await wmSize(serial);
+    await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.16));
+  }
+  // Wait for the Profile screen ("Phone" label is the landmark) then read the
+  // number that follows it.
+  await h.pollNode('Phone', 6000, 'text');
+  await h.sleep(600);
+  const nodes = await h.dump().catch(() => []);
+  // Prefer the node right after the "Phone" label; else any phone-like text that
+  // is NOT the "(You)" self-chat entry.
+  let number = '';
+  const phoneIdx = nodes.findIndex((n) => /^phone$/i.test((n.text || '').trim()));
+  if (phoneIdx >= 0) {
+    const after = nodes.slice(phoneIdx + 1).find((n) => looksPhone(n.text));
+    if (after) number = after.text.trim();
+  }
+  if (!number) {
+    const any = nodes.find((n) => looksPhone(n.text) && !/\(You\)/i.test(n.text));
+    if (any) number = any.text.trim();
+  }
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  if (number) return { status: 'OK', number };
+  return { status: 'NOT_FOUND', note: 'Kendi numara okunamadı' };
+}
+
+// ── WhatsApp: send a media message (image/file) ─────────────────────────────
+//
+// Downloads the media to the device, opens the chat, then drives attach (📎) → pick
+// the just-added photo from the INLINE grid in the attach sheet → caption → send.
+// VERIFIED on WhatsApp 2.26.25.81: the attach sheet shows a live photo grid inline
+// (no need to open the separate Gallery app), and its tiles carry
+// content-desc="Photo, date <when>…". We pushed the file just now, so the NEWEST
+// tile is ours. Taps on the sheet/preview use SYNTHETIC taps (overlay UI ignores
+// vtouch, same as menus). Send is VERIFIED by the compose/preview closing — no more
+// false "SENT" when nothing was actually attached.
+//
+// payload: { to (E.164 digits), mediaUrl, caption?, kind? ('image'|'document') }
+async function whatsappSendMedia(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const mediaUrl = String(p(payload, 'mediaUrl', ''));
+  const caption = String(p(payload, 'caption', ''));
+  const kind = String(p(payload, 'kind', 'image'));
+  if (!to) throw new Error('to gerekli');
+  if (!mediaUrl) throw new Error('mediaUrl gerekli');
+
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  const { sw, sh } = await wmSize(serial);
+
+  // 1) Push the media onto the device so the picker can see it. Land it in Pictures
+  //    (indexed fast by the media scanner) and force a scan so the grid refreshes.
+  const rawName = (mediaUrl.split('/').pop() || 'media').split('?')[0] || 'media';
+  const fileName = /\.(jpg|jpeg|png|gif|webp|mp4|pdf|docx?)$/i.test(rawName) ? rawName : `${rawName}.jpg`;
+  const local = await download(mediaUrl, fileName);
+  const dest = `/sdcard/Pictures/${fileName}`;
+  try {
+    await adb(serial, ['shell', 'mkdir', '-p', '/sdcard/Pictures']).catch(() => undefined);
+    await adb(serial, ['push', local, dest]);
+    await adb(serial, ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', `file://${dest}`]).catch(() => undefined);
+  } finally {
+    await safeRm(local);
+  }
+  // Give the media scanner a beat to index the new file before we open the grid.
+  await h.sleep(1500);
+
+  // 2) Open the chat (force-stop for a clean cold open).
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await waOpenChat(serial, h, { to });
+
+  // 3) Tap the compose Attach (📎) button. Prefer its node (content-desc="Attach"),
+  //    fall back to the known compose-bar position. Synthetic tap (overlay opens).
+  const attachNode = findNode(await h.dump().catch(() => []), 'Attach', 'desc')
+    || findNode(await h.dump().catch(() => []), 'Ekle', 'desc');
+  if (attachNode) await h.tapSynNode(attachNode);
+  else await h.tapSyn(Math.round(sw * 0.80), Math.round(sh * 0.916));
+  // Wait for the attach sheet (its Gallery/Document labels are the landmark).
+  await h.pollNode('Gallery', 4000, 'any');
+
+  // 4) Documents go through the Document row; images use the inline photo grid.
+  if (kind === 'document') {
+    (await h.tapSynIf('Document', 'any').catch(() => false)) || (await h.tapSynIf('Belge', 'any').catch(() => false));
+    await h.sleep(2500);
+    // Document picker: tap the top-most file entry.
+    const doc = (await h.dump().catch(() => [])).find((n) => /\.(pdf|docx?|txt|xlsx?)$/i.test(n.text || ''));
+    if (doc) await h.tapSynNode(doc); else await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.25));
+    await h.sleep(2000);
+  } else {
+    // Pick the NEWEST photo tile from the inline grid. Tiles carry
+    // content-desc="Photo, date <when>…"; the newest (our just-pushed file) is the
+    // first such node in document order. Fall back to Gallery if the grid is empty.
+    const photoTile = (await h.dump().catch(() => [])).find((n) => /^Photo,|^Fotoğraf,/i.test((n.desc || '').trim()));
+    if (photoTile) {
+      await h.tapSynNode(photoTile);
+      await h.sleep(2000);
+    } else {
+      // No inline grid — open Gallery and take the first item.
+      (await h.tapSynIf('Gallery', 'any').catch(() => false)) || (await h.tapSynIf('Galeri', 'any').catch(() => false));
+      await h.sleep(2500);
+      const first = (await h.dump().catch(() => [])).find((n) => /^Photo,|^Fotoğraf,|^Image|image_thumb/i.test((n.desc || '') + (n.resId || '')));
+      if (first) await h.tapSynNode(first); else await h.tapSyn(Math.round(sw * 0.18), Math.round(sh * 0.28));
+      await h.sleep(2000);
+    }
+  }
+
+  // 5) We should now be on the media preview (a caption field + a send FAB). Confirm
+  //    we actually reached it: the preview has a "Add a caption…" field or a Send
+  //    button with content-desc="Send".
+  let onPreview = Boolean(await h.pollNode('Send', 3500, 'desc'))
+    || Boolean(findNode(await h.dump().catch(() => []), 'caption', 'any'))
+    || Boolean(findNode(await h.dump().catch(() => []), 'Add a caption', 'any'));
+  if (!onPreview) {
+    // Nothing got attached — report honestly instead of a false SENT.
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    return { status: 'ATTACH_FAILED', note: 'Medya önizleme ekranı açılamadı (foto seçilemedi)', to, mediaUrl };
+  }
+
+  // 6) Optional caption: focus the caption field, CLEAR any leftover text (a prior
+  //    aborted attempt can leave stale text in the compose/caption box — that caused
+  //    two captions to merge), then type ours.
+  if (caption) {
+    const capField = findNode(await h.dump().catch(() => []), 'caption', 'any')
+      || findNode(await h.dump().catch(() => []), 'Add a caption', 'any');
+    if (capField) await h.tapSynNode(capField); else await h.tapSyn(Math.round(sw * 0.4), Math.round(sh * 0.9));
+    await h.sleep(500);
+    await h.ensureAdbKeyboard();
+    await h.clearField().catch(() => undefined);
+    await h.sleep(300);
+    await h.typeText(caption).catch(() => undefined);
+    await h.sleep(600);
+  }
+
+  // 7) Send. Prefer the Send node; fall back to the bottom-right FAB. Then VERIFY the
+  //    preview closed (we're back on the chat with the compose bar) → real SENT.
+  const sendNode = findNode(await h.dump().catch(() => []), 'Send', 'desc');
+  if (sendNode) await h.tapSynNode(sendNode); else await h.tapSyn(Math.round(sw * 0.9), Math.round(sh * 0.92));
+  await h.sleep(2500);
+  // Verify: the preview's Send button is gone AND the chat compose bar (entry) is back.
+  const after = await h.dump().catch(() => []);
+  const stillPreview = Boolean(findNode(after, 'Send', 'desc')) && !findNode(after, 'com.whatsapp:id/entry', 'id');
+  if (stillPreview) {
+    return { status: 'SEND_UNCONFIRMED', note: 'Gönder sonrası önizleme kapanmadı', to, mediaUrl, ...(caption ? { caption } : {}) };
+  }
+  return { status: 'SENT', to, mediaUrl, ...(caption ? { caption } : {}) };
+}
+
+// ── WhatsApp: delete a message (for me / for everyone) ──────────────────────
+//
+// Opens the chat, long-presses the LAST outgoing bubble (the most common target),
+// then Delete → "Delete for everyone" (scope=everyone) or "Delete for me". When a
+// `matchText` is given we long-press the bubble whose text contains it instead.
+//
+// The context menu ONLY opens on a genuine long-press: `input swipe x y x y 800`
+// is silently ignored on this Waydroid device — we use the vtouch MT-B sendevent
+// long-press (longPress). The CAB then exposes a top-bar "Delete" icon (a NODE with
+// content-desc="Delete", NOT text) which we tap by its live center. We verify the
+// confirm dialog actually appeared and retry the long-press once if the CAB never
+// showed (VERIFIED end-to-end on WhatsApp 2.26.25.81).
+//
+// payload: { to (E.164 digits), scope? ('me'|'everyone'), matchText? }
+async function whatsappDeleteMsg(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const scope = String(p(payload, 'scope', 'everyone'));
+  const matchText = String(p(payload, 'matchText', '')).trim();
+  if (!to) throw new Error('to gerekli');
+
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  const { sw, sh } = await wmSize(serial);
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await waOpenChat(serial, h, { to });
+
+  // Locate the bubble to long-press. The chat screen IS dump-safe here (it's the
+  // Conversation view but we're not typing, so no ANR). Prefer matchText; else the
+  // LAST message_text node (bottom-most = most recent). Fall back to a coordinate.
+  // A real message bubble (not a system line like "You deleted this message" or a
+  // date separator). We only long-press these.
+  const isRealBubble = (n) => /com\.whatsapp:id\/message_text/.test(n.resId || '')
+    && n.text
+    && !/^you deleted this message$|^this message was deleted$|bu mesaj silindi|mesaji sildiniz/i.test(n.text.trim());
+  const pickBubble = async () => {
+    const nodes = await h.dump().catch(() => []);
+    if (matchText) {
+      const b = nodes.find((n) => isRealBubble(n) && n.text.includes(matchText));
+      if (b) return { x: b.cx, y: b.cy };
+    }
+    const texts = nodes.filter(isRealBubble);
+    const last = texts[texts.length - 1];
+    if (last) return { x: last.cx, y: last.cy };
+    return { x: Math.round(sw * 0.72), y: Math.round(sh * 0.82) };
+  };
+
+  // Find the CAB "Delete" (trash) icon. It is an ImageButton with
+  // content-desc="Delete" in the top action bar (y is small) — match the DESC
+  // exactly, NOT any text, so we don't latch onto a "You deleted this message"
+  // bubble ("delete" is a substring of "deleted" — that bug picked the wrong node).
+  const findCabDelete = (nodes) => nodes.find((n) =>
+    /^delete$|^sil$/i.test((n.desc || '').trim()) && n.cy < Math.round(sh * 0.15)
+  ) || null;
+  // Open the CAB via a real long-press; confirm by finding the trash icon.
+  const openCab = async () => {
+    const { x, y } = await pickBubble();
+    await h.longPress(x, y, 750);
+    await h.sleep(1000); // CAB appears quickly; the dump poll below confirms
+    // Poll for the CAB trash icon (desc="Delete" near the top).
+    const start = Date.now();
+    for (;;) {
+      const d = findCabDelete(await h.dump().catch(() => []));
+      if (d) return d;
+      if (Date.now() - start >= 3500) return null;
+      await h.sleep(500);
+    }
+  };
+  let deleteNode = await openCab();
+  if (!deleteNode) { await h.sleep(500); deleteNode = await openCab(); }
+  if (!deleteNode) return { status: 'NO_MENU', note: 'Uzun-basma menüsü açılmadı (çöp ikonu yok)', to, scope };
+
+  // Optional debug: report the CAB node we're about to tap + all descs on screen.
+  if (p(payload, 'debugCab', false)) {
+    const nn = await h.dump().catch(() => []);
+    return { status: 'DEBUG_CAB', to,
+      deleteNode: deleteNode ? { text: deleteNode.text, desc: deleteNode.desc, resId: deleteNode.resId, cx: deleteNode.cx, cy: deleteNode.cy } : null,
+      descs: nn.map((n) => n.desc).filter(Boolean).slice(0, 20) };
+  }
+
+  // Tap the CAB "Delete" (trash) icon. CRITICAL: use a SYNTHETIC tap — the CAB is an
+  // action-bar overlay and, like the overflow menu, ignores the vtouch FIFO tap
+  // (the CAB stays open, no dialog appears — VERIFIED w/ screenshot). Use the live
+  // node bounds (coordinate math is offset-prone on this device).
+  await h.tapSynNode(deleteNode);
+  // Wait for the confirm dialog ("Delete message?" with scope buttons) to appear.
+  await h.pollNode('Delete for', 3500, 'any');
+  await h.sleep(400);
+
+  // Confirm dialog: pick scope (synthetic taps). "Delete for everyone" only exists
+  // within the ~2h window and only for outgoing messages; otherwise just
+  // "Delete for me" / a plain "Delete" confirm button. We track EXACTLY which
+  // button we hit so the reported scope is honest (don't claim 'everyone' when we
+  // actually fell back to 'me').
+  const wantEveryone = scope === 'everyone';
+  const dialogNodes = await h.dump().catch(() => []);
+  const dialogTexts = dialogNodes.map((n) => (n.text || '').trim()).filter(Boolean);
+  // Optional debug: return what the dialog looked like without acting.
+  if (p(payload, 'debugDialog', false)) {
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    return { status: 'DEBUG', to, wantEveryone, dialogTexts };
+  }
+  let chosen = null; // 'everyone' | 'me' | 'plain'
+  if (wantEveryone) {
+    if ((await h.tapSynIf('Delete for everyone', 'any').catch(() => false))
+      || (await h.tapSynIf('Herkesten sil', 'any').catch(() => false))) chosen = 'everyone';
+  }
+  if (!chosen) {
+    if ((await h.tapSynIf('Delete for me', 'any').catch(() => false))
+      || (await h.tapSynIf('Benden sil', 'any').catch(() => false))) chosen = 'me';
+    else if ((await h.tapSynIf('Delete', 'any').catch(() => false))
+      || (await h.tapSynIf('Sil', 'any').catch(() => false))) chosen = 'plain';
+  }
+  await h.sleep(1200);
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  if (!chosen) return { status: 'ATTEMPTED', to, scope, note: 'Onay düğmesi bulunamadı', dialogTexts };
+  // Honest scope: 'everyone' only if we actually hit the everyone button; when the
+  // caller wanted everyone but it wasn't offered, say so.
+  const actualScope = chosen === 'everyone' ? 'everyone' : 'me';
+  const out = { status: 'DELETED', to, scope: actualScope };
+  if (wantEveryone && chosen !== 'everyone') { out.note = 'Herkesten sil seçeneği yoktu, sadece benden silindi'; out.everyoneUnavailable = true; }
+  return out;
+}
+
+// ── WhatsApp: clear all messages in a chat ──────────────────────────────────
+//
+// Opens the chat, overflow (⋮) → "More" → "Clear chat" → confirm. Removes the
+// local history for this conversation (does not delete for the other party).
+// Path VERIFIED on WhatsApp 2.26.25.81: the chat ⋮ menu's first page has
+// New group/Add to contacts/Search/Media…/Mute/Disappearing/Chat theme/More, and
+// "Clear chat" lives under "More". All taps are SYNTHETIC — the ⋮ PopupWindow
+// ignores the vtouch FIFO tap (same as the Settings menu).
+//
+// payload: { to (E.164 digits) }
+async function whatsappClearChat(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  if (!to) throw new Error('to gerekli');
+
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(800);
+  await waOpenChat(serial, h, { to });
+
+  // Open the chat overflow (⋮, top-right). Prefer the node; fall back to its known
+  // fixed center. Synthetic tap so the popup stays open.
+  const overflow = findNode(await h.dump().catch(() => []), 'More options', 'desc');
+  if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
+  await h.pollNode('Chat theme', 4000, 'any'); // menu-open landmark
+
+  // "Clear chat" may be on the first page or nested under "More".
+  let opened = await h.tapSynIf('Clear chat', 'text').catch(() => false);
+  if (!opened) opened = await h.tapSynIf('Sohbeti temizle', 'text').catch(() => false);
+  if (!opened) {
+    // Open the "More" submenu, then Clear chat.
+    (await h.tapSynIf('More', 'text').catch(() => false)) || (await h.tapSynIf('Diğer', 'text').catch(() => false));
+    await h.pollNode('Clear chat', 4000, 'any');
+    opened = (await h.tapSynIf('Clear chat', 'text').catch(() => false))
+      || (await h.tapSynIf('Sohbeti temizle', 'text').catch(() => false));
+  }
+  if (!opened) return { status: 'NO_MENU', note: 'Sohbeti temizle bulunamadı', to };
+
+  // Confirm dialog (a bottom sheet). CRITICAL: it shows the TITLE "Clear chat" (not
+  // clickable, top) AND the confirm BUTTON, which on this build reads "CLEAR CHAT
+  // (52 KB)" — UPPERCASE with a size suffix (VERIFIED). An includes-match on "Clear
+  // chat" hits the TITLE first and does nothing → false CLEARED. So we POLL for the
+  // clickable confirm button (lower half, matches the verb OR a "(NN KB)" suffix) and
+  // tap that specific node.
+  const { sw, sh } = await wmSize(serial);
+  // The confirm BUTTON starts with the verb ("CLEAR CHAT (52 KB)" / "Sohbeti
+  // temizle"). Do NOT match a bare "(NN KB)" suffix — the radio option "All messages
+  // (52 kB)" also carries that suffix and sits higher, so a suffix-match grabbed the
+  // WRONG node (VERIFIED via debug). Verb-prefixed + clickable + lower half only.
+  const isConfirmBtn = (n) => n.clickable && n.cy > sh * 0.5 &&
+    /^(clear chat|sohbeti temizle|clear|temizle)\b/i.test((n.text || '').trim());
+  let confirmBtn = null;
+  const cstart = Date.now();
+  while (Date.now() - cstart < 4500) {
+    const nodes = await h.dump().catch(() => []);
+    // Among matches, take the LOWEST one (the action button sits at the very bottom).
+    const matches = nodes.filter(isConfirmBtn).sort((a, b) => b.cy - a.cy);
+    if (matches.length) { confirmBtn = matches[0]; break; }
+    await h.sleep(600);
+  }
+  // Optional debug: report what the clear dialog looked like + the chosen button.
+  if (p(payload, 'debugClear', false)) {
+    const nn = await h.dump().catch(() => []);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    return { status: 'DEBUG_CLEAR', to,
+      confirmBtn: confirmBtn ? { text: confirmBtn.text, cx: confirmBtn.cx, cy: confirmBtn.cy, clickable: confirmBtn.clickable } : null,
+      clickables: nn.filter((n) => n.clickable).map((n) => ({ text: n.text, cy: n.cy })).slice(0, 15) };
+  }
+  if (confirmBtn) {
+    await h.tapSynNode(confirmBtn);
+  } else {
+    // Fallback: the confirm button sits at the bottom-center of the sheet.
+    await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.905));
+  }
+  await h.sleep(1500);
+  // Verify the dialog actually closed (confirm button gone) → real CLEARED.
+  const afterClear = await h.dump().catch(() => []);
+  const dialogStillOpen = afterClear.some(isConfirmBtn);
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  return { status: dialogStillOpen ? 'ATTEMPTED' : 'CLEARED', to };
 }
 
 // Poll a disposable inbox for the latest 4-8 digit verification code. Supports
@@ -988,9 +2169,28 @@ async function launchApp(serial, pkg, activity) {
 
 // Returns the raw XML of the current screen.
 async function uiDumpXml(serial) {
-  // Dump to a file then cat it — `dump /dev/tty` is unreliable on some builds.
-  await adb(serial, ['shell', 'uiautomator', 'dump', '/sdcard/uidump.xml']).catch(() => undefined);
-  return adb(serial, ['shell', 'cat', '/sdcard/uidump.xml']);
+  // Dump to a file then read it back. Use adbT: `uiautomator dump` can HANG on the
+  // WhatsApp Conversation screen (view-tree churn → ANR) and a plain await would
+  // block the whole job forever. On timeout we return '' so dump-based finds
+  // degrade to "not found" instead of hanging — the caller's coordinate/screencap
+  // fallbacks then take over.
+  //
+  // CRITICAL: read the file with `exec-out cat`, NOT `shell cat`. On this Waydroid
+  // device a plain `adb shell cat` frequently returns a STALE copy of the previous
+  // dump (the file write hasn't flushed to the shell's view yet), which silently
+  // breaks every navigation that polls for a freshly-appeared screen. `exec-out`
+  // uses a separate exec transport that reflects the just-written bytes (VERIFIED:
+  // shell cat gave the old overflow menu while exec-out cat gave the live Settings).
+  await adbT(serial, ['shell', 'uiautomator', 'dump', '/sdcard/uidump.xml'], 12000).catch(() => undefined);
+  return adbExecOutText(serial, ['cat', '/sdcard/uidump.xml'], 8000).catch(() => '');
+}
+
+// Like adbT but over the `exec-out` transport (raw stdout, no pty line-ending
+// mangling and — importantly on Waydroid — a fresh view of just-written files).
+async function adbExecOutText(serial, args, ms = 8000) {
+  const full = serial ? ['-s', serial, 'exec-out', ...args] : ['exec-out', ...args];
+  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
+  return stdout;
 }
 
 // Parse the UIAutomator XML into a flat list of nodes we care about.
@@ -1115,7 +2315,9 @@ async function stealthSwipe(serial, x, y, x2, y2) {
 }
 async function stealthType(serial, text) {
   for (const ch of String(text)) {
-    await adb(serial, ['shell', 'input', 'text', ch === ' ' ? '%s' : ch]);
+    // Single-quote each char for the device sh so metachars (; $ ` etc.) can't
+    // execute when typed one at a time.
+    await adb(serial, ['shell', 'input', 'text', shArg(ch === ' ' ? '%s' : ch)]);
     await new Promise((r) => setTimeout(r, rnd(50, 200)));
   }
 }
@@ -1191,7 +2393,7 @@ async function execAgentAction(serial, action, stealth) {
     case 'type_text': {
       const text = String(a.text ?? '');
       if (stealth) await stealthType(serial, text);
-      else await adb(serial, ['shell', 'input', 'text', text.replace(/ /g, '%s')]);
+      else await inputText(serial, text);
       return;
     }
     case 'press_key':
@@ -1411,6 +2613,342 @@ async function provisionIntegrity(serial, payload) {
   };
 }
 
+// ── One-click device provisioning (PROVISION_DEVICE) ────────────────────────
+//
+// Builds a brand-new isolated Waydroid instance from scratch and brings it all
+// the way to "WhatsApp-ready", reporting each sub-step's progress so the
+// dashboard shows a live wizard. The agent runs AS ROOT on the KVM host, so it
+// shells out to the parametric provisioning scripts (WD_DIR) for the host-level
+// work (binderfs, bridge, userdata clone) and uses ADB / lxc-attach for the
+// in-container work. Every step was proven live on the fleet (mi1/mi2/mi3):
+//   - root: the cloned userdata's Magisk APK can be a STUB (29KB) that magiskd
+//     won't trust; reinstalling the REAL apk via container-side `pm install`
+//     restores su. (ADB `pm install` gives "Broken pipe" — lxc-attach is stable.)
+//   - screen: a fresh instance boots 1080x2368@180; the recipe coords need
+//     1080x2400@421, so we override.
+//   - mount trap: host-side userdata files may be invisible in the container's
+//     mount namespace — vtouch + wa-bringup are streamed in via base64.
+//   - unique identity: each device gets a distinct fingerprint (model/serial/
+//     android_id) so WhatsApp can't link the fleet together.
+// Scope ends at "WhatsApp-ready" — number/OTP registration is out of scope.
+
+const WD_DIR = process.env.FLEET_WD_DIR || '/opt/fleet-agent/waydroid';
+const MAGISK_PKG = 'io.github.huskydg.magisk';
+
+// Run one of the parametric host scripts (bash, on the host — NOT adb).
+async function hostSh(script, args = [], ms = 600000) {
+  const { stdout, stderr } = await execFileAsync('bash', [join(WD_DIR, script), ...args], {
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: ms,
+    killSignal: 'SIGKILL'
+  });
+  return { stdout: String(stdout || ''), stderr: String(stderr || '') };
+}
+
+// Fire-and-forget a host script that NEVER returns (e.g. wd-run.sh keeps the
+// systemd session alive with `wait $SESSION_PID`). Awaiting it would block the
+// agent for the full timeout; instead we spawn it fully detached so it boots
+// Android in the background while the agent proceeds to verify boot over ADB.
+function hostShDetached(script, args = []) {
+  const child = spawn('bash', [join(WD_DIR, script), ...args], {
+    detached: true,
+    stdio: 'ignore'
+  });
+  child.unref();
+  return child.pid;
+}
+
+// Run a command inside an instance's container (root, stable — survives the ADB
+// "Broken pipe" that plagues fresh Waydroid instances).
+async function lxcAttach(instance, argv, ms = 60000) {
+  const lxcp = `/var/lib/waydroid.${instance}/lxc`;
+  const { stdout } = await execFileAsync(
+    'lxc-attach',
+    ['-P', lxcp, '-n', 'waydroid', '--', ...argv],
+    { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' }
+  );
+  return String(stdout || '');
+}
+
+// Resolve the container's actual DHCP address (it may differ from the .112
+// guess). Reads the instance's dnsmasq lease file; falls back to the container's
+// live eth0 address. Returns null if neither is available yet.
+async function resolveLeaseIp(instance, subnetId) {
+  const leaseFile = `/var/lib/misc/dnsmasq.waydroid-${instance}.leases`;
+  try {
+    const raw = await readFile(leaseFile, 'utf8');
+    // lease line: "<expiry> <mac> <ip> <name> <clientid>" — take the last (newest).
+    const lines = raw.trim().split('\n').filter(Boolean);
+    const last = lines[lines.length - 1];
+    const ip = last && last.split(/\s+/)[2];
+    if (ip && ip.startsWith(`192.168.${subnetId}.`)) return ip;
+  } catch { /* lease file may not exist yet */ }
+  try {
+    const out = await lxcAttach(instance, ['ip', '-4', 'addr', 'show', 'eth0'], 15000);
+    const m = new RegExp(`inet (192\\.168\\.${subnetId}\\.\\d+)`).exec(out);
+    if (m) return m[1];
+  } catch { /* container may not be up yet */ }
+  return null;
+}
+
+// Poll getprop sys.boot_completed==1 over ADB until timeout.
+async function waitBoot(serial, ms = 180000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    try {
+      const out = await adbT(serial, ['shell', 'getprop', 'sys.boot_completed'], 8000);
+      if (String(out).trim() === '1') return true;
+    } catch { /* device may be reconnecting */ }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return false;
+}
+
+// Stream a local file into the container's OWN view of /data/local/tmp via
+// base64 (works around the mount-namespace trap where host-side userdata files
+// are invisible to the container). Chunked so the arg list never overflows.
+async function pushB64(serial, localPath, destPath) {
+  const buf = await readFile(localPath);
+  const b64 = buf.toString('base64');
+  const tmp = `${destPath}.b64`;
+  // truncate/create then append in ~48KB chunks
+  await adb(serial, ['shell', 'sh', '-c', shArg(`: > ${tmp}`)]);
+  for (let i = 0; i < b64.length; i += 48000) {
+    const chunk = b64.slice(i, i + 48000);
+    await adb(serial, ['shell', 'sh', '-c', shArg(`printf %s ${chunk} >> ${tmp}`)]);
+  }
+  // decode (toybox base64 -d, fall back to base64 -d) then make executable
+  await adb(serial, ['shell', 'sh', '-c',
+    shArg(`(toybox base64 -d ${tmp} > ${destPath} 2>/dev/null || base64 -d ${tmp} > ${destPath}); chmod 755 ${destPath}; rm -f ${tmp}`)]);
+}
+
+// Copy an installed APK from the source (running) instance into a new instance:
+// pull the REAL apk, push it, install container-side (stable). Returns true on
+// a verified install.
+async function cloneApk(srcSerial, dstSerial, instance, pkg) {
+  const path = String(await adb(srcSerial, ['shell', 'pm', 'path', pkg]) || '')
+    .split('\n').map((l) => l.trim()).find((l) => l.startsWith('package:'));
+  if (!path) throw new Error(`${pkg} not found on source ${srcSerial}`);
+  const apk = path.replace(/^package:/, '');
+  const dir = await mkdtemp(join(tmpdir(), 'wa-apk-'));
+  const local = join(dir, 'base.apk');
+  try {
+    await adb(srcSerial, ['pull', apk, local]);
+    await adb(dstSerial, ['push', local, '/data/local/tmp/_clone.apk']);
+    const out = await lxcAttach(instance, ['/system/bin/sh', '-c',
+      'pm install -r -g /data/local/tmp/_clone.apk; rm -f /data/local/tmp/_clone.apk'], 120000);
+    const ok = /Success/i.test(out) || (await adb(dstSerial, ['shell', 'pm', 'path', pkg])).includes('package:');
+    if (!ok) throw new Error(`install ${pkg} failed: ${out.trim().slice(0, 200)}`);
+    return true;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+// Best-effort progress report; never blocks the flow. `note` doubles as a live
+// log line (the dashboard streams these into a terminal); `status` lets us push
+// a terminal FAILED line the instant a step throws, before reportComplete.
+async function reportProgress(jobId, step, percent, note, status) {
+  try {
+    await api(`/agent/jobs/${jobId}/progress`, {
+      method: 'POST',
+      body: JSON.stringify({ step, percent, ...(note ? { note } : {}), ...(status ? { status } : {}) })
+    });
+  } catch (e) {
+    log('progress report failed:', e.message);
+  }
+}
+
+async function provisionDevice(job) {
+  const jobId = job.id;
+  const payload = job.payload || {};
+  const instance = String(payload.instance || '').trim();
+  if (!instance) throw new Error('provision: instance name required');
+  const srcSerial = String(payload.srcSerial || process.env.FLEET_WD_SRC || '192.168.248.112:5555');
+  const fp = payload.fingerprint || {};
+  const proxy = payload.proxy || null;
+
+  // Current step context so log() lines below carry the right step/percent.
+  let curStep = 'infra';
+  let curPct = 5;
+  // Emit a live log line to the dashboard terminal (best-effort).
+  const logLine = (text) => reportProgress(jobId, curStep, curPct, text);
+
+  const step = async (key, percent, note, fn) => {
+    curStep = key;
+    curPct = percent;
+    await reportProgress(jobId, key, percent, note);
+    try {
+      return await fn();
+    } catch (e) {
+      // Push a terminal FAILED line with the full technical detail immediately.
+      await reportProgress(jobId, key, percent, `❌ HATA: ${e.message}`, 'FAILED');
+      throw new Error(`provision ${key}: ${e.message}`);
+    }
+  };
+
+  // 1) infra — build the isolated instance (host-level). The script's ip= is a
+  //    best-guess (.112); the container actually gets its address from DHCP, so
+  //    we resolve the REAL ip from the dnsmasq lease after boot (step 2).
+  const infra = await step('infra', 8, 'İzole altyapı kuruluyor', async () => {
+    await logLine(`Instance "${instance}" için izole altyapı kuruluyor (binderfs + bridge + userdata klon ~4GB)…`);
+    const { stdout } = await hostSh('wd-provision.sh', [instance], 600000);
+    const m = /PROVISION_RESULT\s+subnet=(\d+)\s+ip=(\S+)\s+port=(\d+)/.exec(stdout);
+    if (!m) throw new Error(`no PROVISION_RESULT in output: ${stdout.trim().slice(-300)}`);
+    await logLine(`✓ Altyapı hazır — subnet 192.168.${m[1]}.0/24, bridge waydroid-${instance}`);
+    return { subnetId: Number(m[1]), ip: m[2], adbPort: Number(m[3]) };
+  });
+  const subnetId = infra.subnetId;
+  const adbPort = infra.adbPort;
+  let ip = infra.ip;
+  let serial = `${ip}:${adbPort}`;
+
+  // 2) boot — start the session DETACHED (wd-run never returns), then verify boot
+  //    over ADB and resolve the real DHCP ip.
+  await step('boot', 18, 'Cihaz açılışı bekleniyor', async () => {
+    await logLine('Android boot ediliyor (weston + container + session)…');
+    hostShDetached('wd-run.sh', [instance]); // fire-and-forget: keeps session alive
+    // Give the container a moment to come up + lease an address.
+    await new Promise((r) => setTimeout(r, 8000));
+    const leased = await resolveLeaseIp(instance, subnetId).catch(() => null);
+    if (leased && leased !== ip) {
+      await logLine(`DHCP → ${leased} (container adresini aldı)`);
+      ip = leased;
+      serial = `${ip}:${adbPort}`;
+    }
+    await ensureConnected(serial);
+    const booted = await waitBoot(serial, 180000);
+    if (!booted) throw new Error('boot_completed not reached within 180s');
+    await logLine(`✓ boot_completed=1 — Android hazır (${serial})`);
+  });
+
+  // 3) root — the cloned Magisk apk can be a stub; reinstall the real one.
+  await step('root', 35, 'Root / Magisk yeniden kuruluyor', async () => {
+    await logLine('Klon Magisk APK stub olabilir — gerçek Magisk (~12.7MB) kuruluyor…');
+    await cloneApk(srcSerial, serial, instance, MAGISK_PKG);
+    await launchApp(serial, MAGISK_PKG).catch(() => undefined); // refresh manager trust
+    await new Promise((r) => setTimeout(r, 4000));
+    const id = await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 20000).catch(() => '');
+    if (!/uid=0/.test(id)) throw new Error(`su denied after Magisk reinstall: ${id.trim().slice(0, 120)}`);
+    await logLine('✓ Root doğrulandı — su → uid=0(root)');
+  });
+
+  // 4) screen — recipe coordinates need 1080x2400 @ density 421.
+  await step('screen', 47, 'Ekran ayarları (1080x2400@421)', async () => {
+    await adb(serial, ['shell', 'wm', 'size', '1080x2400']);
+    await adb(serial, ['shell', 'wm', 'density', '421']);
+    vtouchCache.delete(serial);
+    await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
+  });
+
+  // 5) vtouch + unique identity — stream vtouch into the container, spoof a
+  //    UNIQUE device so WhatsApp can't link the fleet.
+  await step('vtouch', 58, 'Gerçek dokunma + benzersiz kimlik', async () => {
+    // stream vtouch binary + parametric wa-bringup into container-view
+    const vtLocal = `/root/.local/share-${instance}/waydroid/data/local/tmp/vtouch`;
+    await pushB64(serial, vtLocal, '/data/local/tmp/vtouch').catch(async () => {
+      // fall back to the source instance's vtouch if the clone lacks it
+      const srcVt = `/root/.local/share-work/waydroid/data/local/tmp/vtouch`;
+      await pushB64(serial, srcVt, '/data/local/tmp/vtouch');
+    });
+    await pushB64(serial, join(WD_DIR, 'wa-bringup.sh'), '/data/local/tmp/wa-bringup.sh');
+    // unique fingerprint via setprop (model/serial/android_id/etc.)
+    await applyFingerprint(serial, { fingerprint: fp }).catch((e) => log('applyFingerprint:', e.message));
+    // re-pin screen (applyFingerprint may have changed wm size from fp.resolution)
+    await adb(serial, ['shell', 'wm', 'size', '1080x2400']);
+    await adb(serial, ['shell', 'wm', 'density', '421']);
+    vtouchCache.delete(serial);
+    // run wa-bringup as root with unique-identity env (resetprop + vtouch node)
+    const env = [
+      fp.model ? `WA_MODEL=${shArg(fp.model)}` : '',
+      fp.brand ? `WA_BRAND=${shArg(fp.brand)}` : '',
+      fp.manufacturer ? `WA_MANUFACTURER=${shArg(fp.manufacturer)}` : '',
+      fp.buildNumber ? `WA_FINGERPRINT=${shArg(fp.buildNumber)}` : '',
+      fp.serialNo ? `WA_SERIAL=${shArg(fp.serialNo)}` : '',
+      fp.androidId ? `WA_ANDROID_ID=${shArg(fp.androidId)}` : ''
+    ].filter(Boolean).join(' ');
+    await adb(serial, ['shell', 'su', '-c', shArg(`${env} sh /data/local/tmp/wa-bringup.sh`)]).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 2000));
+    const ok = await ensureVtouch(serial).catch(() => false);
+    const model = fp.model || 'SM-G991B';
+    await logLine(ok
+      ? `✓ vtouch aktif + benzersiz kimlik (${model}) uygulandı`
+      : `⚠ Kimlik (${model}) uygulandı, vtouch InputReader'da henüz görünmüyor`);
+  });
+
+  // 6) route — Android netstack leaves fwmark tables empty every boot.
+  await step('route', 68, 'Ağ yönlendirme', async () => {
+    const gw = `192.168.${subnetId}.1`;
+    const cidr = `192.168.${subnetId}.0/24`;
+    for (const table of ['main', 'local_network', 'eth0']) {
+      await lxcAttach(instance, ['ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'table', table], 15000).catch(() => undefined);
+    }
+    for (const table of ['eth0', 'local_network']) {
+      await lxcAttach(instance, ['ip', 'route', 'add', cidr, 'dev', 'eth0', 'proto', 'static', 'scope', 'link', 'src', ip, 'table', table], 15000).catch(() => undefined);
+    }
+    await logLine(`✓ Ağ yönlendirme eklendi (gw ${gw})`);
+  });
+
+  // 7) proxy — country-matched residential exit (only if requested).
+  if (proxy && proxy.country && proxy.username && proxy.host) {
+    await step('proxy', 76, `Proxy (${proxy.country})`, async () => {
+      await logLine(`${proxy.country} residential proxy'ye yönlendiriliyor (redsocks + iptables)…`);
+      await hostSh('wd-proxy.sh', [
+        instance, String(proxy.country), String(proxy.username),
+        String(proxy.password || ''), String(proxy.host), String(proxy.port || 9999)
+      ], 60000);
+      await logLine(`✓ Çıkış IP ${proxy.country} ülkesine yönlendirildi`);
+    });
+  } else {
+    await logLine('Proxy istenmedi — atlanıyor (datacenter IP)');
+  }
+
+  // 8) apks — clone the WhatsApp-automation app set from the source instance.
+  await step('apks', 84, 'Uygulamalar kuruluyor', async () => {
+    const pkgs = [
+      ['com.whatsapp', 'WhatsApp'],
+      ['com.android.vending', 'Play Store'],
+      ['com.google.android.gms', 'Play Services'],
+      ['com.android.adbkeyboard', 'ADB Klavye'],
+      ['com.fleet.a11y', 'Erişilebilirlik']
+    ];
+    for (const [pkg, name] of pkgs) {
+      const has = (await adb(serial, ['shell', 'pm', 'path', pkg]).catch(() => '')).includes('package:');
+      if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
+      await logLine(`${name} kuruluyor…`);
+      await cloneApk(srcSerial, serial, instance, pkg)
+        .then(() => logLine(`✓ ${name} kuruldu`))
+        .catch((e) => logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 100)}`));
+    }
+  });
+
+  // 9) a11y + keyboard — enable the accessibility service + ADBKeyboard IME.
+  await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
+    await adb(serial, ['shell', 'cmd', 'settings', 'put', 'secure', 'enabled_accessibility_services',
+      'com.fleet.a11y/com.fleet.a11y.FleetA11yService']).catch(() => undefined);
+    await adb(serial, ['shell', 'cmd', 'settings', 'put', 'secure', 'accessibility_enabled', '1']).catch(() => undefined);
+    await adb(serial, ['shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME']).catch(() => undefined);
+    await adb(serial, ['shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME']).catch(() => undefined);
+    // GMS crash service that spams "Play Store keeps stopping" during registration
+    await adb(serial, ['shell', 'su', '-c',
+      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService']).catch(() => undefined);
+    await logLine('✓ Erişilebilirlik servisi + ADB klavye etkinleştirildi');
+  });
+
+  // 10) persist — verify the full stack is up.
+  const checks = await step('persist', 97, 'Kalıcılık doğrulanıyor', async () => {
+    const boot = String(await adbT(serial, ['shell', 'getprop', 'sys.boot_completed'], 8000) || '').trim() === '1';
+    const rootOk = /uid=0/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 15000).catch(() => ''));
+    const vt = await ensureVtouch(serial).catch(() => false);
+    await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
+    return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
+  });
+
+  // 11) done.
+  await reportProgress(jobId, 'done', 100, `✓ Kurulum tamamlandı — ${instance} WhatsApp-hazır (${serial})`);
+  return { instance, serial, ip, adbPort, subnetId, ready: true, checks };
+}
+
 async function runRpaStep(serial, step) {
   const type = String(step.type);
   switch (type) {
@@ -1419,7 +2957,7 @@ async function runRpaStep(serial, step) {
     case 'swipe':
       return adb(serial, ['shell', 'input', 'swipe', String(step.x), String(step.y), String(step.x2), String(step.y2)]);
     case 'type':
-      return adb(serial, ['shell', 'input', 'text', String(step.text ?? '').replace(/ /g, '%s')]);
+      return inputText(serial, String(step.text ?? ''));
     case 'keyevent':
       return adb(serial, ['shell', 'input', 'keyevent', String(step.keycode)]);
     case 'openApp':
@@ -1490,9 +3028,48 @@ async function runRpaStep(serial, step) {
 
 // --- file helpers -----------------------------------------------------------
 
+// Reject URLs that point at the host/private network. The full urlGuard (DNS
+// resolve + range check) lives on the API side; the agent is zero-dep, so we do a
+// lightweight literal-address + scheme + credential check. This blocks the obvious
+// SSRF payloads (http://169.254.169.254, http://10.x, http://[::1], http://localhost)
+// without pulling in `node:dns`. A hostname that resolves to a private IP at
+// connect time is not caught here, but redirects are re-checked at every hop.
+function assertPublicUrl(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch { throw new Error(`Invalid URL: ${raw}`); }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`Blocked URL scheme: ${u.protocol}`);
+  }
+  if (u.username || u.password) throw new Error('Blocked URL with embedded credentials');
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase(); // strip IPv6 brackets
+  const isPrivate =
+    host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') ||
+    host === '::1' || host === '0.0.0.0' ||
+    host.startsWith('127.') || host.startsWith('10.') ||
+    host.startsWith('192.168.') || host.startsWith('169.254.') ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||           // 172.16.0.0/12
+    /^(fc|fd)[0-9a-f]{2}:/.test(host) ||                 // fc00::/7 unique-local
+    host.startsWith('fe80:');                            // link-local
+  if (isPrivate) throw new Error(`Blocked private/loopback host: ${host}`);
+  return u;
+}
+
 async function download(url, name) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Download failed (${res.status}) for ${url}`);
+  assertPublicUrl(url);
+  // Follow redirects manually so each hop is re-validated (a public URL can 302
+  // to an internal one → SSRF). Cap the chain to avoid loops.
+  let current = String(url);
+  let res;
+  for (let hop = 0; hop < 5; hop++) {
+    res = await fetch(current, { redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      current = new URL(res.headers.get('location'), current).toString();
+      assertPublicUrl(current);
+      continue;
+    }
+    break;
+  }
+  if (!res || !res.ok) throw new Error(`Download failed (${res ? res.status : 'no response'}) for ${url}`);
   const dir = await mkdtemp(join(tmpdir(), 'fleet-'));
   const local = join(dir, name);
   await writeFile(local, Buffer.from(await res.arrayBuffer()));
@@ -1509,8 +3086,39 @@ async function safeRm(path) {
 
 // --- control-plane I/O ------------------------------------------------------
 
+// HMAC request signing (payload integrity + replay protection).
+//
+// Every agent→API request is signed with HMAC-SHA256 over a canonical string:
+//   `${timestamp}.${METHOD}.${path}.${bodyString}`
+// The signing KEY is the plaintext host agent key (HOST_KEY) — the SAME value we
+// already send in `x-agent-key`. The API looks the host up by sha256(x-agent-key)
+// and then re-computes this HMAC with the same plaintext key it just received, so
+// no extra shared secret / schema change is needed. Timestamp lets the API reject
+// stale/replayed requests (±5 min window). Uses only node:crypto (zero-dep).
+//
+// Emitted headers:
+//   x-agent-ts    = millisecond timestamp used in the signed string
+//   x-agent-sign  = hex HMAC-SHA256 of the canonical string
+function signRequest(method, path, bodyString) {
+  const ts = String(Date.now());
+  const canonical = `${ts}.${String(method).toUpperCase()}.${path}.${bodyString || ''}`;
+  const sign = createHmac('sha256', HOST_KEY).update(canonical).digest('hex');
+  return { ts, sign };
+}
+
+// fetch() wrapper that attaches the auth headers PLUS the HMAC signature headers.
+// The signed `path` and `bodyString` must exactly match what the server sees
+// (req.originalUrl and the raw JSON body), so callers pass the same path/body.
+async function signedFetch(path, init) {
+  const method = (init && init.method) || 'GET';
+  const bodyString = (init && typeof init.body === 'string') ? init.body : '';
+  const { ts, sign } = signRequest(method, path, bodyString);
+  const mergedHeaders = { ...headers, ...(init && init.headers ? init.headers : {}), 'x-agent-ts': ts, 'x-agent-sign': sign };
+  return fetch(`${API_URL}${path}`, { ...init, headers: mergedHeaders });
+}
+
 async function api(path, init) {
-  const res = await fetch(`${API_URL}${path}`, { ...init, headers });
+  const res = await signedFetch(path, init);
   const text = await res.text();
   let body;
   try {
@@ -1641,6 +3249,13 @@ const WA_INBOX_ENABLED = process.env.FLEET_WA_INBOX !== '0';
 // serial -> Set of recent message keys (sha256), capped to avoid unbounded growth.
 const waSeen = new Map();
 const WA_SEEN_MAX = 400;
+// serial -> last scrape state { sig, seq }. The foreground bubble-scrape only
+// sees the NEWEST incoming bubble, so two identical short replies ("ok", "evet")
+// would collapse to one dedup key and the second would be lost. We emit only
+// when the visible signature (text + position + incoming-count) changes, and tag
+// each emission with a monotonic sequence so genuinely-distinct same-text
+// messages get distinct dedup keys. Notification-path messages are untouched.
+const waScrapeState = new Map();
 
 function waSeenSet(serial) {
   let s = waSeen.get(serial);
@@ -1696,7 +3311,11 @@ function pickExtra(block, key) {
 // use each message_text node's horizontal center to keep only received ones.
 // Returns [{from, text, whenMs}] shaped like parseWaNotifications for merging.
 async function scrapeIncomingBubbles(serial) {
-  const nodes = await parseUiNodes(await uiDumpXml(serial)).catch(() => []);
+  // parseUiNodes is SYNCHRONOUS (returns an array, not a Promise) — the old
+  // `...).catch()` threw a TypeError and killed the whole poll. Guard the (async)
+  // uiDumpXml + (sync) parse together and bail cleanly on any failure.
+  let nodes = [];
+  try { nodes = parseUiNodes(await uiDumpXml(serial)); } catch { return []; }
   if (!nodes.length) return [];
   // Screen width to split left/right.
   let sw = 720;
@@ -1720,12 +3339,34 @@ async function scrapeIncomingBubbles(serial) {
     incoming.push({ text: n.text.trim(), cy: typeof n.cy === 'number' ? n.cy : 0 });
   }
   if (!incoming.length) return [];
-  // Newest bubble = lowest on screen (largest cy). Dedup on text is handled by
-  // the caller's seen-set, so returning just the newest avoids re-emitting the
-  // whole visible history every tick.
+  // Order bubbles top→bottom (oldest→newest) by vertical position.
   incoming.sort((a, b) => a.cy - b.cy);
-  const newest = incoming[incoming.length - 1];
-  return [{ from: peer, text: newest.text, whenMs: 0 }];
+
+  // Emit every incoming bubble AFTER the last one we already emitted, not just the
+  // single newest. When the operator sends several quick replies within one poll
+  // interval (3s), the old "newest only" logic dropped the ones in between. We
+  // anchor on the last-emitted text: find it in the current visible list and emit
+  // everything below it. If it's not visible anymore (scrolled off) we emit just
+  // the newest to avoid re-flooding old history. The seen-set (from|text) still
+  // dedups across ticks, so re-emitting an already-pushed bubble is a no-op.
+  const prev = waScrapeState.get(serial);
+  const texts = incoming.map((b) => b.text).filter(Boolean);
+  if (!texts.length) return [];
+  const newest = texts[texts.length - 1];
+  // Nothing changed since last tick → skip.
+  if (prev && prev.sig === newest) return [];
+
+  let toEmit;
+  if (prev && prev.sig) {
+    const idx = texts.lastIndexOf(prev.sig);
+    // Emit bubbles after the anchor; if the anchor isn't visible, just the newest.
+    toEmit = idx >= 0 ? texts.slice(idx + 1) : [newest];
+  } else {
+    toEmit = [newest]; // first sighting on this serial → only the newest
+  }
+  waScrapeState.set(serial, { sig: newest });
+  // whenMs stays 0 → the push uses Date.now(). Dedup by from|text in the seen-set.
+  return toEmit.map((text) => ({ from: peer, text, whenMs: 0 }));
 }
 
 async function pollWhatsappInbox(serial) {
@@ -1748,7 +3389,9 @@ async function pollWhatsappInbox(serial) {
   const seen = waSeenSet(serial);
   const fresh = [];
   for (const m of msgs) {
-    const key = createHash('sha256').update(`${m.from}|${m.text}|${m.whenMs}`).digest('hex');
+    // Include `seq` for scrape-path messages (undefined for notification-path):
+    // it lets two identical-text foreground replies dedup as distinct.
+    const key = createHash('sha256').update(`${m.from}|${m.text}|${m.whenMs}|${m.seq ?? ''}`).digest('hex');
     if (seen.has(key)) continue;
     seen.add(key);
     fresh.push({ ...m, key });
@@ -1781,9 +3424,17 @@ async function pollWhatsappInbox(serial) {
 // root / WhatsApp simply return nothing (adbSu → '' on failure).
 async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
+  // Skip while a job is running. A job's WhatsApp RPA (uiautomator dump / screencap
+  // / taps) and the inbox poll's own dumpsys/screencap on the SAME device race each
+  // other on this Waydroid host — that contention is a leading cause of the "job
+  // hangs / dump comes back blank" instability. Serialising the inbox poll behind
+  // the job loop keeps every job's device access exclusive, so jobs run faster and
+  // more reliably even under back-to-back load.
+  if (jobBusy) return;
   try {
     const serials = await reachableSerials();
     for (const serial of serials) {
+      if (jobBusy) return; // a job may have started mid-tick — yield the device
       await pollWhatsappInbox(serial).catch(() => undefined);
     }
   } catch (err) {
@@ -2077,9 +3728,9 @@ async function handleControl(msg) {
         // IME-injected `ADB_INPUT_TEXT` broadcast. Fall back to `input text`
         // when the ADB keyboard IME isn't the active one.
         else if (await ensureAdbKeyboard(serial)) {
-          await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', t]);
+          await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', shArg(t)]);
         } else {
-          await adb(serial, ['shell', 'input', 'text', t.replace(/ /g, '%s')]);
+          await inputText(serial, t);
         }
       }
       return;
@@ -2192,6 +3843,9 @@ function startStreamClient() {
 // --- main loop --------------------------------------------------------------
 
 let stopping = false;
+// True while a claimed job is executing. The WhatsApp inbox poll checks this and
+// yields the device so the job's RPA has exclusive ADB access (see whatsappInboxTick).
+let jobBusy = false;
 process.on('SIGINT', () => { stopping = true; });
 process.on('SIGTERM', () => { stopping = true; });
 
@@ -2200,7 +3854,8 @@ async function loop() {
   await heartbeat();
   const hb = setInterval(heartbeat, HEARTBEAT_MS);
   // WhatsApp inbound-message poll (notification-based). Best-effort; failures
-  // are logged and never block the job loop.
+  // are logged and never block the job loop. Gated on jobBusy so it never contends
+  // with a running job on the same device.
   const waInbox = WA_INBOX_ENABLED ? setInterval(() => { whatsappInboxTick().catch(() => undefined); }, WA_INBOX_MS) : null;
   startStreamClient();
 
@@ -2220,6 +3875,7 @@ async function loop() {
     }
 
     log(`claimed job ${job.id} (${job.type}) -> ${job.serial ?? 'no-serial'}`);
+    jobBusy = true;
     try {
       const result = await runJob(job);
       await reportComplete(job.id, 'COMPLETED', { result });
@@ -2231,6 +3887,8 @@ async function loop() {
       } catch (reportErr) {
         log('failed to report failure:', reportErr.message);
       }
+    } finally {
+      jobBusy = false;
     }
   }
 
@@ -2241,7 +3899,30 @@ async function loop() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-loop().catch((err) => {
-  console.error('[agent] fatal:', err);
-  process.exit(1);
-});
+// ── Test mode ────────────────────────────────────────────────────────────────
+// Run a SINGLE job locally and print its result, without touching the API/queue.
+// Usage: FLEET_TEST_JOB='{"type":"WHATSAPP_MYNUMBER","serial":"192.168.240.112:5555","payload":{}}' node agent.mjs
+// This exercises the exact runJob() path a claimed job would take — the truest
+// local verification of a device flow. Exits when done.
+if (process.env.FLEET_TEST_JOB) {
+  (async () => {
+    let spec;
+    try { spec = JSON.parse(process.env.FLEET_TEST_JOB); }
+    catch (e) { console.error('[test] bad FLEET_TEST_JOB json:', e.message); process.exit(2); }
+    const job = { id: 'test-' + Date.now(), type: spec.type, serial: spec.serial, payload: spec.payload || {} };
+    console.error(`[test] running ${job.type} on ${job.serial} ...`);
+    try {
+      const result = await runJob(job);
+      console.log('TEST_RESULT_JSON:' + JSON.stringify(result));
+      process.exit(0);
+    } catch (err) {
+      console.log('TEST_ERROR_JSON:' + JSON.stringify({ error: err.message, stack: err.stack }));
+      process.exit(1);
+    }
+  })();
+} else {
+  loop().catch((err) => {
+    console.error('[agent] fatal:', err);
+    process.exit(1);
+  });
+}

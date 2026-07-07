@@ -34,11 +34,19 @@ export async function createJobRecord(type: JobType, payload: JobPayload, emulat
   // already uses to claim jobs) so the link is preserved without breaking the FK.
   let validEmulatorId: string | undefined;
   let finalPayload = payload;
-  if (emulatorId) {
+  // Skip the Emulator lookup entirely when the payload ALREADY carries a deviceId:
+  // in that case the id-fold branch below can never fire, and no caller passes a
+  // real Emulator id together with a payload.deviceId — so the lookup would be a
+  // pure wasted query. This is the hot path for every device-scoped dispatch
+  // (all WhatsApp actions, RPA, snapshots, catalog installs) which pass the id via
+  // payload.deviceId; only legacy emulator-lifecycle flows (e.g. EMULATOR_START
+  // with an empty payload) still need the FK resolution.
+  const payloadHasDeviceId = Boolean((payload as Record<string, unknown>).deviceId);
+  if (emulatorId && !payloadHasDeviceId) {
     const exists = await prisma.emulator.findUnique({ where: { id: emulatorId }, select: { id: true } });
     if (exists) {
       validEmulatorId = emulatorId;
-    } else if (!('deviceId' in (payload as Record<string, unknown>))) {
+    } else {
       finalPayload = { ...(payload as Record<string, unknown>), deviceId: emulatorId } as unknown as JobPayload;
     }
   }

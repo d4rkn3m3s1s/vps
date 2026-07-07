@@ -5,6 +5,7 @@ import { costsRouter } from '../modules/costs/costs.routes';
 import { notificationsRouter } from '../modules/notifications/notifications.routes';
 import { agentRouter } from '../modules/agent/agent.routes';
 import { deviceAgentRouter } from '../modules/device-agent/device-agent.routes';
+import { provisionRouter } from '../modules/provision/provision.routes';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { alertsRouter } from '../modules/alerts/alerts.routes';
 import { analyticsRouter } from '../modules/analytics/analytics.routes';
@@ -28,6 +29,7 @@ import { libraryRouter } from '../modules/library/library.routes';
 import { permissionsRouter } from '../modules/permissions/permissions.routes';
 import { pluginsRouter } from '../modules/plugins/plugins.routes';
 import { proxyRouter } from '../modules/proxies/proxy.routes';
+import { publicRouter } from '../modules/public/public.routes';
 import { referralRouter } from '../modules/referral/referral.routes';
 import { reportsRouter } from '../modules/reports/reports.routes';
 import { rpaRouter } from '../modules/rpa/rpa.routes';
@@ -41,6 +43,7 @@ import { usersRouter } from '../modules/users/users.routes';
 import { resourcesRouter } from '../modules/resources/resources.routes';
 import { vastRouter } from '../modules/vast/vast.routes';
 import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
+import { whatsappRouter } from '../modules/whatsapp/whatsapp.routes';
 import { workspaceRouter } from '../modules/workspace/workspace.routes';
 
 export function registerRoutes(app: Express): void {
@@ -71,6 +74,7 @@ export function registerRoutes(app: Express): void {
   app.use('/hosts', hostsRouter);
   app.use('/cloud-providers', cloudProvidersRouter);
   app.use('/agent', agentRouter);
+  app.use('/provision', provisionRouter);
   app.use('/workspaces', workspaceRouter);
   app.use('/billing', billingRouter);
   app.use('/alerts', alertsRouter);
@@ -91,4 +95,8 @@ export function registerRoutes(app: Express): void {
   app.use('/costs', costsRouter);
   app.use('/device-agent', deviceAgentRouter);
   app.use('/notifications', notificationsRouter);
+  // WhatsApp conversation layer (chat list, threads, labels) — dashboard-facing.
+  app.use('/whatsapp', whatsappRouter);
+  // External/public API (x-api-key only, no JWT) — see modules/public.
+  app.use('/public', publicRouter);
 }

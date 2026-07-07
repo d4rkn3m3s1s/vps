@@ -41,50 +41,50 @@ export class EmulatorService {
     return prisma.emulator.findUnique({ where: { id } });
   }
 
-  async start(id: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async start(id: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_START', { emulatorId: id }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async stop(id: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async stop(id: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_STOP', { emulatorId: id }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async remove(id: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async remove(id: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_DELETE', { emulatorId: id }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async installApk(id: string, apkPath: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async installApk(id: string, apkPath: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_INSTALL_APK', { emulatorId: id, apkPath }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async screenshot(id: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async screenshot(id: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_SCREENSHOT', { emulatorId: id }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async shell(id: string, command: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async shell(id: string, command: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_SHELL', { emulatorId: id, command }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async openApp(id: string, packageName: string, activity?: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async openApp(id: string, packageName: string, activity?: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_OPEN_APP', { emulatorId: id, packageName, activity }, id);
     return { emulatorId: id, jobId: job.id };
   }
 
-  async closeApp(id: string, packageName: string): Promise<{ emulatorId: string; jobId: string }> {
-    await this.assertExists(id);
+  async closeApp(id: string, packageName: string, workspaceId?: string): Promise<{ emulatorId: string; jobId: string }> {
+    await this.assertExists(id, workspaceId);
     const job = await createJob('EMULATOR_CLOSE_APP', { emulatorId: id, packageName }, id);
     return { emulatorId: id, jobId: job.id };
   }
@@ -104,8 +104,13 @@ export class EmulatorService {
     );
   }
 
-  private async assertExists(id: string): Promise<void> {
-    const emulator = await prisma.emulator.findUnique({ where: { id } });
+  // Workspace-scoped existence check: an emulator from another tenant must not be
+  // controllable by id (start/stop/remove/shell/install…). Service identity
+  // (no workspaceId) still resolves any emulator.
+  private async assertExists(id: string, workspaceId?: string): Promise<void> {
+    const emulator = await prisma.emulator.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) }
+    });
     if (!emulator) {
       throw new AppError('Emulator not found', 404, 'EMULATOR_NOT_FOUND');
     }

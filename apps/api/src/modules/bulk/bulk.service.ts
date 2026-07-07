@@ -70,6 +70,29 @@ export class BulkService {
 
     return { updated: input.deviceIds.length, jobIds: jobs.map((j) => j.id) };
   }
+
+  // Stop many devices at once — dedicated helper so callers don't have to know the
+  // EMULATOR_STOP job type. Verifies ownership then fans out one stop job each.
+  async stopDevices(deviceIds: string[], workspaceId?: string) {
+    await assertDevices(deviceIds, workspaceId);
+    const jobs = await Promise.all(
+      deviceIds.map((deviceId) =>
+        createJobRecord('EMULATOR_STOP', { deviceId } as JobPayload, undefined, workspaceId)
+      )
+    );
+    return { stopped: deviceIds.length, jobIds: jobs.map((j) => j.id) };
+  }
+
+  // Delete many devices at once. Workspace-scoped atomic deleteMany — devices
+  // outside the caller's workspace are never matched (no cross-tenant delete).
+  // Returns how many rows were actually removed.
+  async deleteDevices(deviceIds: string[], workspaceId?: string) {
+    await assertDevices(deviceIds, workspaceId);
+    const { count } = await prisma.device.deleteMany({
+      where: { id: { in: deviceIds }, ...(workspaceId ? { workspaceId } : {}) }
+    });
+    return { deleted: count };
+  }
 }
 
 export const bulkService = new BulkService();

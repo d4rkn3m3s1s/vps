@@ -20,6 +20,15 @@ log "Installing agent to /opt/fleet-agent…"
 install -d /opt/fleet-agent
 install -m 0644 "$SRC_DIR/agent.mjs" /opt/fleet-agent/agent.mjs
 
+# Waydroid provisioning engine (parametric host scripts the agent shells out to
+# for the "one-click device" flow). Zero-dep bash; agent finds them at
+# FLEET_WD_DIR (default /opt/fleet-agent/waydroid).
+if [ -d "$SRC_DIR/../waydroid" ]; then
+  log "Installing Waydroid provisioning scripts…"
+  install -d /opt/fleet-agent/waydroid
+  install -m 0755 "$SRC_DIR/../waydroid/"*.sh /opt/fleet-agent/waydroid/
+fi
+
 if [ ! -f /etc/fleet-agent.env ]; then
   log "Creating /etc/fleet-agent.env from template — EDIT IT before the agent will work."
   install -m 0600 "$SRC_DIR/fleet-agent.env.example" /etc/fleet-agent.env

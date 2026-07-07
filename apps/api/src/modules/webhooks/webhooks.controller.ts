@@ -12,6 +12,7 @@ const WEBHOOK_EVENTS = [
   'DEVICE_OFFLINE',
   'QUOTA_HIGH',
   'ALERT_FIRED',
+  'WHATSAPP_MESSAGE',
   'ALL'
 ] as const;
 
@@ -57,12 +58,12 @@ export async function updateWebhookHandler(req: Request, res: Response): Promise
 }
 
 export async function listDeliveriesHandler(req: Request, res: Response): Promise<void> {
-  res.json({ data: await webhooksService.listDeliveries(requireId(req)) });
+  res.json({ data: await webhooksService.listDeliveries(requireId(req), getWorkspaceId(req)) });
 }
 
 export async function sendTestHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  const result = await webhooksService.sendTest(id);
+  const result = await webhooksService.sendTest(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'webhook.test',
@@ -78,7 +79,7 @@ export async function sendTestHandler(req: Request, res: Response): Promise<void
 export async function redeliverHandler(req: Request, res: Response): Promise<void> {
   const deliveryId = req.params.deliveryId;
   if (typeof deliveryId !== 'string') throw new AppError('Delivery id is required', 400, 'INVALID_DELIVERY_ID');
-  await webhooksService.redeliver(deliveryId);
+  await webhooksService.redeliver(deliveryId, getWorkspaceId(req));
   res.json({ data: { id: deliveryId, status: 'PENDING' } });
 }
 

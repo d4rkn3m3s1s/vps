@@ -8,6 +8,9 @@ export type DeviceCreateInput = {
   groupId?: string | undefined;
   countryCode?: string | undefined;
   metadata?: unknown;
+  // Bind the device to a KVM host at creation (one-click provisioning needs the
+  // Device row host-bound so the agent's claimNext can pick up its job).
+  hostId?: string | undefined;
   // Provisioning: pin a catalog device model and hardware tier at create time.
   deviceModel?: string | undefined;
   ramGb?: number | undefined;

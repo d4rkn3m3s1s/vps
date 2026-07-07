@@ -34,6 +34,40 @@ const envSchema = z.object({
   INSTAGRAM_CLIENT_ID: z.string().optional(),
   INSTAGRAM_CLIENT_SECRET: z.string().optional(),
   SOCIAL_CRYPTO_KEY: z.string().min(16).optional(),
+  // Key-rotation-aware envelope encryption (see lib/crypto.ts). Both optional —
+  // when unset, crypto falls back to the historical single-key behavior and the
+  // exact legacy (prefix-less) wire format, so nothing changes for existing DBs.
+  //   ENCRYPTION_KEYS: JSON object of { "<keyId>": "<secret>", ... }. keyId is a
+  //     short opaque tag (e.g. "k1"). secret should be >=32 chars of entropy.
+  //   ENCRYPTION_ACTIVE_KEY_ID: which keyId NEW encryptions use. Point it at a
+  //     key present in ENCRYPTION_KEYS (or "legacy"/unset for the historical key).
+  ENCRYPTION_KEYS: z
+    .string()
+    .optional()
+    .transform((raw, ctx) => {
+      if (!raw || !raw.trim()) return {} as Record<string, string>;
+      let obj: unknown;
+      try {
+        obj = JSON.parse(raw);
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ENCRYPTION_KEYS must be valid JSON' });
+        return z.NEVER;
+      }
+      if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'ENCRYPTION_KEYS must be a JSON object of keyId->secret' });
+        return z.NEVER;
+      }
+      const out: Record<string, string> = {};
+      for (const [id, secret] of Object.entries(obj as Record<string, unknown>)) {
+        if (typeof secret !== 'string' || secret.length < 16) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: `ENCRYPTION_KEYS["${id}"] must be a string of at least 16 chars` });
+          return z.NEVER;
+        }
+        out[id] = secret;
+      }
+      return out;
+    }),
+  ENCRYPTION_ACTIVE_KEY_ID: z.string().optional(),
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PRICE_PRO: z.string().optional(),
@@ -87,6 +121,8 @@ export const env = {
   instagramClientId: parsed.INSTAGRAM_CLIENT_ID,
   instagramClientSecret: parsed.INSTAGRAM_CLIENT_SECRET,
   socialCryptoKey: parsed.SOCIAL_CRYPTO_KEY,
+  encryptionKeys: parsed.ENCRYPTION_KEYS,
+  encryptionActiveKeyId: parsed.ENCRYPTION_ACTIVE_KEY_ID,
   stripeSecretKey: parsed.STRIPE_SECRET_KEY,
   stripeWebhookSecret: parsed.STRIPE_WEBHOOK_SECRET,
   stripePricePro: parsed.STRIPE_PRICE_PRO,

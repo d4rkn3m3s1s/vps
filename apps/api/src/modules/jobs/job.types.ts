@@ -22,10 +22,24 @@ export const JobTypes = [
   'REGISTER_WHATSAPP',
   'WHATSAPP_SEND',
   'WHATSAPP_READ',
+  'WHATSAPP_PROFILE',
+  'WHATSAPP_BLOCK',
+  'WHATSAPP_BLOCKLIST',
+  // Read the account's OWN WhatsApp number off the device (Settings › profile).
+  'WHATSAPP_MYNUMBER',
+  // Send a media message (image/file) to a peer via wa.me + attach flow.
+  'WHATSAPP_SEND_MEDIA',
+  // Delete a message: for me (scope=me) or for everyone (scope=everyone).
+  'WHATSAPP_DELETE_MSG',
+  // Clear all messages in a chat (overflow → Clear chat).
+  'WHATSAPP_CLEAR_CHAT',
   'APP_EXPLORE',
   'AGENT_RUN',
   'APPLY_FINGERPRINT',
-  'PROVISION_INTEGRITY'
+  'PROVISION_INTEGRITY',
+  // Tek-tık cihaz kurulumu: agent boot→WhatsApp-hazır akışını tek job'da sırayla
+  // yürütür ve her alt-adımın ilerlemesini /agent/jobs/:id/progress'e bildirir.
+  'PROVISION_DEVICE'
 ] as const;
 
 export type JobStatus = (typeof JobStatuses)[number];

@@ -3,7 +3,8 @@ import { cookies } from 'next/headers';
 import { apiCall } from '../../../lib/apiClient';
 
 export async function GET() {
-  const res = await apiCall('/users', { auth: false });
+  // Kullanıcı/PII listesi — statik referans değil; workspace-scoped JWT ile git.
+  const res = await apiCall('/users', { auth: true });
   return NextResponse.json({ data: res.data }, { status: res.ok ? 200 : res.status });
 }
 

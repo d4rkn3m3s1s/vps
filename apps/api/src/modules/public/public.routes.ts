@@ -1,0 +1,39 @@
+import { Router } from 'express';
+import { asyncHandler } from '../../lib/asyncHandler';
+import { requireApiKey } from '../../middleware/requireApiKey';
+import { apiRateLimiter } from '../../middleware/rateLimit';
+import { listDevicesHandler, sendHandler, messagesHandler, conversationsHandler, threadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler } from './public.controller';
+
+// External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
+// bound flk_ key minted in /admin/api-keys) — NO JWT. The workspace is resolved
+// from the key; requirePublicWorkspace (in the handlers) refuses any key that has
+// no workspace so this can never leak across tenants.
+export const publicRouter = Router();
+
+publicRouter.use(requireApiKey);
+
+publicRouter.get('/v1/devices', asyncHandler(listDevicesHandler));
+publicRouter.get('/v1/whatsapp/messages', asyncHandler(messagesHandler));
+// WhatsApp-Web-style chat list + per-thread history for external integrations.
+publicRouter.get('/v1/whatsapp/conversations', asyncHandler(conversationsHandler));
+publicRouter.get('/v1/whatsapp/thread', asyncHandler(threadHandler));
+publicRouter.get('/v1/whatsapp/stats', asyncHandler(statsHandler));
+// Categories (labels): read + create + assign to a chat, and chat state.
+publicRouter.get('/v1/whatsapp/labels', asyncHandler(labelsHandler));
+publicRouter.post('/v1/whatsapp/labels', asyncHandler(createLabelHandler));
+publicRouter.post('/v1/whatsapp/conversations/labels', asyncHandler(setLabelsHandler));
+publicRouter.post('/v1/whatsapp/conversations/state', asyncHandler(stateHandler));
+// Send drives a real device — rate-limit it to blunt abuse from a leaked key.
+publicRouter.post('/v1/whatsapp/send', apiRateLimiter, asyncHandler(sendHandler));
+// Broadcast (one-to-many throttled) — write scope, rate-limited.
+publicRouter.post('/v1/whatsapp/broadcast', apiRateLimiter, asyncHandler(broadcastHandler));
+// Contact profile (avatar + name), block/unblock, and blocked-list — on-device
+// jobs, write scope, rate-limited (they each drive a real device).
+publicRouter.post('/v1/whatsapp/profile', apiRateLimiter, asyncHandler(profileHandler));
+publicRouter.post('/v1/whatsapp/block', apiRateLimiter, asyncHandler(blockHandler));
+publicRouter.post('/v1/whatsapp/blocklist', apiRateLimiter, asyncHandler(blocklistHandler));
+// Own number, media send, message delete, clear chat — on-device, rate-limited.
+publicRouter.post('/v1/whatsapp/mynumber', apiRateLimiter, asyncHandler(myNumberHandler));
+publicRouter.post('/v1/whatsapp/send-media', apiRateLimiter, asyncHandler(sendMediaHandler));
+publicRouter.post('/v1/whatsapp/delete-message', apiRateLimiter, asyncHandler(deleteMessageHandler));
+publicRouter.post('/v1/whatsapp/clear-chat', apiRateLimiter, asyncHandler(clearChatHandler));

@@ -68,7 +68,9 @@ export default function ApiKeysPage() {
   // declaratively (label = the <select> text; needs = the fields to show).
   type EndpointKey =
     | 'devices' | 'conversations' | 'thread' | 'send' | 'messages'
-    | 'labels' | 'createLabel' | 'setLabels' | 'state' | 'broadcast' | 'stats';
+    | 'labels' | 'createLabel' | 'setLabels' | 'state' | 'broadcast' | 'stats'
+    | 'profile' | 'block' | 'blocklist'
+    | 'sendMedia' | 'deleteMessage' | 'clearChat' | 'myNumber';
   const [testKey, setTestKey] = useState('');
   const [testEndpoint, setTestEndpoint] = useState<EndpointKey>('devices');
   const [testDeviceId, setTestDeviceId] = useState('');
@@ -94,7 +96,14 @@ export default function ApiKeysPage() {
     createLabel:   { label: 'POST /whatsapp/labels — kategori oluştur (write)', needs: ['labelName'] },
     setLabels:     { label: 'POST /whatsapp/conversations/labels — sohbete etiket ata (write)', needs: ['deviceId', 'peer', 'labelIds'] },
     state:         { label: 'POST /whatsapp/conversations/state — favori/sabit (write)', needs: ['deviceId', 'peer'] },
-    broadcast:     { label: 'POST /whatsapp/broadcast — toplu mesaj (write)', needs: ['deviceId', 'labelIds', 'message'] }
+    broadcast:     { label: 'POST /whatsapp/broadcast — toplu mesaj (write)', needs: ['deviceId', 'labelIds', 'message'] },
+    profile:       { label: 'POST /whatsapp/profile — profil (avatar+ad) çek (write)', needs: ['deviceId', 'to'] },
+    block:         { label: 'POST /whatsapp/block — kişi engelle/kaldır (write)', needs: ['deviceId', 'to'] },
+    blocklist:     { label: 'POST /whatsapp/blocklist — engellenenler listesi (write)', needs: ['deviceId'] },
+    sendMedia:     { label: 'POST /whatsapp/send-media — medya (foto/belge) gönder (write)', needs: ['deviceId', 'to', 'message'] },
+    deleteMessage: { label: 'POST /whatsapp/delete-message — mesaj sil (write)', needs: ['deviceId', 'to'] },
+    clearChat:     { label: 'POST /whatsapp/clear-chat — sohbeti temizle (write)', needs: ['deviceId', 'to'] },
+    myNumber:      { label: 'POST /whatsapp/mynumber — kendi numarası (write)', needs: ['deviceId'] }
   };
   const activeNeeds = ENDPOINTS[testEndpoint].needs;
 
@@ -120,6 +129,13 @@ export default function ApiKeysPage() {
       case 'setLabels':     return { method: 'POST', path: '/public/v1/whatsapp/conversations/labels', body: { deviceId: dev, peer, labelIds: ids } };
       case 'state':         return { method: 'POST', path: '/public/v1/whatsapp/conversations/state', body: { deviceId: dev, peer, pinned: true, favorite: true } };
       case 'broadcast':     return { method: 'POST', path: '/public/v1/whatsapp/broadcast', body: { deviceId: dev, ...(ids[0] ? { labelId: ids[0] } : {}), message: testMessage } };
+      case 'profile':       return { method: 'POST', path: '/public/v1/whatsapp/profile', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, '') } };
+      case 'block':         return { method: 'POST', path: '/public/v1/whatsapp/block', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), block: true } };
+      case 'blocklist':     return { method: 'POST', path: '/public/v1/whatsapp/blocklist', body: { deviceId: dev } };
+      case 'sendMedia':     return { method: 'POST', path: '/public/v1/whatsapp/send-media', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), mediaUrl: 'https://picsum.photos/600', caption: testMessage } };
+      case 'deleteMessage': return { method: 'POST', path: '/public/v1/whatsapp/delete-message', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), scope: 'everyone' } };
+      case 'clearChat':     return { method: 'POST', path: '/public/v1/whatsapp/clear-chat', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, '') } };
+      case 'myNumber':      return { method: 'POST', path: '/public/v1/whatsapp/mynumber', body: { deviceId: dev } };
     }
   }
 
@@ -355,6 +371,15 @@ export default function ApiKeysPage() {
             <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/conversations/labels</code>
             <span className="api-doc-index-cat">Sohbet durumu</span>
             <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/conversations/state</code>
+            <span className="api-doc-index-cat">Profil & Engelleme</span>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/profile</code>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/block</code>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/blocklist</code>
+            <span className="api-doc-index-cat">Medya & Silme & Numara</span>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/send-media</code>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/delete-message</code>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/clear-chat</code>
+            <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/mynumber</code>
             <span className="api-doc-index-cat">Toplu & İstatistik</span>
             <span className="api-doc-verb api-doc-post">POST</span><code className="mono">/whatsapp/broadcast</code>
             <span className="api-doc-verb api-doc-get">GET</span><code className="mono">/whatsapp/stats</code>
@@ -532,6 +557,144 @@ export default function ApiKeysPage() {
             <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/conversations/state" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "peer": "905551112233",\n    "pinned": true, "favorite": true\n  }'`} />
             <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
             <CodeBlock code={`{ "data": { "ok": true } }`} />
+          </div>
+
+          {/* ── PROFİL & ENGELLEME ── */}
+          <div className="api-doc-cat">📷 Profil & 🚫 Engelleme</div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/profile</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir kişinin WhatsApp profilini cihazdan çeker: profil fotoğrafı (avatar) + görünen ad/durum bilgisi. Cihazda çalışan bir iş başlatır (~15sn); anında bir <code className="mono">jobId</code> döner. Sonuç (avatar + profil) hazır olduğunda ilgili sohbete işlenir — sohbet listesinden veya panelden görüntüleyin.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+              <li><code className="mono">to</code> <span className="api-doc-opt">opsiyonel</span> — telefon numarası (ülke kodlu, + olmadan). <code className="mono">to</code> veya <code className="mono">from</code>&apos;dan biri gerekli.</li>
+              <li><code className="mono">from</code> <span className="api-doc-opt">opsiyonel</span> — kişi adı (rehberde kayıtlıysa).</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/profile" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "to": "905551112233"\n  }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr8xz...", "status": "PENDING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/block</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir kişiyi cihaz üzerinden engeller veya engelini kaldırır. <code className="mono">block</code> alanı verilmezse varsayılan <b>engelle</b>dir. Cihazda çalışan bir iş başlatır; sohbetin engel durumu iş tamamlanınca güncellenir.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+              <li><code className="mono">to</code> <span className="api-doc-opt">opsiyonel</span> — telefon numarası. <code className="mono">to</code> veya <code className="mono">from</code>&apos;dan biri gerekli.</li>
+              <li><code className="mono">from</code> <span className="api-doc-opt">opsiyonel</span> — kişi adı.</li>
+              <li><code className="mono">block</code> <span className="api-doc-opt">opsiyonel</span> — <code className="mono">true</code> engelle (varsayılan), <code className="mono">false</code> engeli kaldır.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/block" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "to": "905551112233",\n    "block": true\n  }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr8yb...", "status": "PENDING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/blocklist</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Cihazın WhatsApp Ayarlar &rsaquo; Gizlilik &rsaquo; Engellenenler listesini okur. Cihazda çalışan bir iş başlatır; taranan liste iş sonucuna düşer. Engel işaretli sohbetler ayrıca sohbet listesinde <code className="mono">blocked: true</code> ile döner.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/blocklist" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{ "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml" }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr8zc...", "status": "PENDING" } }`} />
+          </div>
+
+          {/* ── MEDYA & SİLME & NUMARA ── */}
+          <div className="api-doc-cat">📎 Medya · 🗑 Silme · 📞 Numara</div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/send-media</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir kişiye fotoğraf veya belge gönderir. Medya, herkese açık bir <code className="mono">mediaUrl</code>&apos;den indirilip cihaza yüklenir, sonra WhatsApp&apos;ta gönderilir. İsteğe bağlı bir <code className="mono">caption</code> (açıklama) eklenebilir.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+              <li><code className="mono">to</code> <span className="api-doc-req">zorunlu</span> — telefon numarası (ülke kodlu).</li>
+              <li><code className="mono">mediaUrl</code> <span className="api-doc-req">zorunlu</span> — herkese açık medya URL&apos;i (görsel/belge).</li>
+              <li><code className="mono">caption</code> <span className="api-doc-opt">opsiyonel</span> — açıklama metni.</li>
+              <li><code className="mono">kind</code> <span className="api-doc-opt">opsiyonel</span> — <code className="mono">image</code> (varsayılan) veya <code className="mono">document</code>.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/send-media" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "to": "905551112233",\n    "mediaUrl": "https://ornek.com/resim.jpg",\n    "caption": "Merhaba!"\n  }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr9aa...", "status": "PENDING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/delete-message</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir mesajı siler: <b>kendinden</b> (<code className="mono">scope: &quot;me&quot;</code>) veya <b>herkesten</b> (<code className="mono">scope: &quot;everyone&quot;</code>, geri çek). Belirli bir mesajı hedeflemek için <code className="mono">matchText</code> verin; verilmezse son giden mesaj silinir.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+              <li><code className="mono">to</code> <span className="api-doc-req">zorunlu</span> — sohbetteki kişinin numarası.</li>
+              <li><code className="mono">scope</code> <span className="api-doc-opt">opsiyonel</span> — <code className="mono">everyone</code> (varsayılan, herkesten) veya <code className="mono">me</code> (kendinden).</li>
+              <li><code className="mono">matchText</code> <span className="api-doc-opt">opsiyonel</span> — silinecek mesajın içeriğinden bir parça.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/delete-message" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "to": "905551112233",\n    "scope": "everyone"\n  }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr9bb...", "status": "PENDING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/clear-chat</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir sohbetteki tüm yerel mesajları temizler (cihazdaki geçmişi siler; karşı taraftan silmez).</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+              <li><code className="mono">to</code> <span className="api-doc-req">zorunlu</span> — sohbetteki kişinin numarası.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/clear-chat" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "to": "905551112233"\n  }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr9cc...", "status": "PENDING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/mynumber</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Cihazdaki hesabın <b>kendi</b> WhatsApp numarasını okur (Ayarlar &rsaquo; profil satırı). Numara iş sonucuna düşer; <code className="mono">jobId</code> ile sorgulayın.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — hedef cihaz.</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/mynumber" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{ "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml" }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "jobId": "cmr9dd...", "status": "PENDING" } }`} />
           </div>
 
           {/* ── TOPLU & İSTATİSTİK ── */}

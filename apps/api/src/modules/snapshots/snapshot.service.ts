@@ -26,7 +26,12 @@ export const snapshotService = {
     input: { name: string; description?: string | undefined; tags?: string[] | undefined; visibility?: 'PRIVATE' | 'WORKSPACE' | 'PUBLIC' | undefined },
     ctx: { workspaceId?: string | undefined; userId?: string | undefined }
   ) {
-    const device = await prisma.device.findUnique({ where: { id: deviceId }, include: { fingerprint: true } });
+    // Workspace-scoped: capturing a snapshot from a foreign device is a
+    // cross-tenant IDOR — resolve the device within the caller's workspace only.
+    const device = await prisma.device.findFirst({
+      where: { id: deviceId, ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}) },
+      include: { fingerprint: true }
+    });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     if (!device.hostId) throw new AppError('Device has no host to capture from', 400, 'DEVICE_NO_HOST');
 
@@ -113,7 +118,11 @@ export const snapshotService = {
   // One-click "new device": wipe app data and optionally re-roll the fingerprint
   // so the phone looks brand new without changing its platform id.
   async resetDevice(deviceId: string, input: { regenerateFingerprint?: boolean | undefined; wipeData?: boolean | undefined }, ctx: { workspaceId?: string | undefined }) {
-    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    // Workspace-scoped: reset is destructive (wipe/re-roll), so a foreign device
+    // must resolve to 404 rather than being wiped cross-tenant.
+    const device = await prisma.device.findFirst({
+      where: { id: deviceId, ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}) }
+    });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
 
     if (input.regenerateFingerprint) {

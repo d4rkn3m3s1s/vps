@@ -1,7 +1,7 @@
-import type { Host } from '@prisma/client';
+import type { GeneratedAccountStatus, Host } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { decryptString } from '../../lib/crypto';
+import { decryptString, encryptString, sha256 } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
@@ -9,6 +9,8 @@ import { snapshotService } from '../snapshots/snapshot.service';
 import { usageService } from '../usage/usage.service';
 import { calendarService } from '../calendar/calendar.service';
 import { notificationsService } from '../notifications/notifications.service';
+import { whatsappService, normalizePeer } from '../whatsapp/whatsapp.service';
+import { provisionService } from '../provision/provision.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -111,6 +113,17 @@ export class AgentService {
       workspaceId: updated.workspaceId ?? undefined
     });
 
+    // ── WhatsApp on-device job → operator notification (Telegram/Slack/Discord) ──
+    // Every WhatsApp device action fired from Telegram/dashboard/public-API is an
+    // async PENDING job; the trigger only says "started". Without a completion
+    // notification the operator never learns the OUTCOME (deleted? blocked? number?).
+    // This is the single terminal chokepoint, so we fan a human-readable Turkish
+    // result out to the workspace's channels here — the fix for "Telegram logs never
+    // arrive". Best-effort; never blocks or throws.
+    if (updated.type.startsWith('WHATSAPP_') && updated.workspaceId) {
+      void notifyWhatsappJob(updated.workspaceId, updated.type, updated.payload, outcome).catch(() => undefined);
+    }
+
     // Snapshot capture jobs carry a snapshotId; reflect the outcome onto the
     // snapshot row (READY + artifactRef/size, or FAILED).
     if (updated.type === 'EMULATOR_SNAPSHOT_CREATE') {
@@ -121,23 +134,194 @@ export class AgentService {
       }
     }
 
-    // Outbound WhatsApp: record the sent message for the conversation history so
-    // the messages API shows both sides. Only on a real SENT outcome.
-    if (updated.type === 'WHATSAPP_SEND' && outcome.status === 'COMPLETED') {
-      const pl = (updated.payload as { deviceId?: string; to?: string; message?: string } | null) ?? {};
-      const res = (outcome.result as { status?: string } | undefined) ?? {};
-      if (pl.deviceId && pl.to && pl.message && res.status === 'SENT') {
+    // Outbound WhatsApp: record BOTH success and failure so the operator always
+    // sees the sent message in history with a delivery status (SENT / FAILED). A
+    // failed send (job FAILED, or COMPLETED with INVALID_RECIPIENT/COMPOSE_FAILED)
+    // used to vanish silently — now it's a FAILED bubble with the reason.
+    if (updated.type === 'WHATSAPP_SEND') {
+      const pl = (updated.payload as { deviceId?: string; to?: string; message?: string; broadcastId?: string } | null) ?? {};
+      const res = (outcome.result as { status?: string; note?: string } | undefined) ?? {};
+      if (pl.deviceId && pl.to && pl.message) {
+        // Canonical peer so outbound rows land in the SAME thread as inbound ones.
+        const outPeer = normalizePeer(String(pl.to));
+        const outBody = String(pl.message).slice(0, 4096);
+        const outAt = new Date();
+        const ok = outcome.status === 'COMPLETED' && res.status === 'SENT';
+        const status = ok ? 'SENT' : 'FAILED';
+        const failReason = ok ? null : (res.status || outcome.error || 'SEND_FAILED');
         void prisma.whatsappMessage
           .create({
             data: {
               deviceId: pl.deviceId,
               workspaceId: updated.workspaceId ?? null,
               direction: 'OUT',
-              peer: String(pl.to).slice(0, 256),
-              body: String(pl.message).slice(0, 4096)
+              peer: outPeer,
+              body: encryptString(outBody),
+              read: true,
+              status,
+              statusAt: outAt,
+              ...(failReason ? { failReason: String(failReason).slice(0, 200) } : {}),
+              waTimestamp: outAt
             }
           })
           .catch(() => undefined);
+        // Upsert the conversation thread with the outbound status (list tick).
+        void whatsappService
+          .recordMessage({
+            deviceId: pl.deviceId,
+            workspaceId: updated.workspaceId ?? null,
+            peer: outPeer,
+            direction: 'OUT',
+            plainBody: outBody,
+            at: outAt,
+            status
+          })
+          .catch(() => undefined);
+        // Webhook fan-out for external integrations (send outcome).
+        void webhooksService.dispatch(
+          ok ? 'WHATSAPP_SENT' : 'WHATSAPP_FAILED',
+          { deviceId: pl.deviceId, to: outPeer, status, ...(failReason ? { failReason: String(failReason) } : {}), ts: outAt.toISOString() },
+          updated.workspaceId ?? undefined
+        );
+        // Update the parent broadcast's fail counter if this send belonged to one.
+        if (pl.broadcastId && !ok) {
+          void prisma.whatsappBroadcast
+            .update({ where: { id: pl.broadcastId }, data: { failCount: { increment: 1 } } })
+            .catch(() => undefined);
+        }
+      }
+    }
+
+    // WhatsApp registration: reflect the agent's outcome onto the GeneratedAccount
+    // row so the operator-OTP flow can advance. The agent stops at OTP_WAIT (needs
+    // the SMS code), reaches CREATED once the code + profile name are entered, or
+    // hits a wall (device-integrity/ban/rejected code). Without this the account
+    // stayed stuck at REGISTERING forever.
+    if (updated.type === 'REGISTER_WHATSAPP') {
+      const accountId = (updated.payload as { accountId?: string } | null)?.accountId;
+      if (accountId) {
+        let nextStatus: GeneratedAccountStatus;
+        let error: string | null = null;
+        if (outcome.status === 'COMPLETED') {
+          const res = (outcome.result as { status?: string; note?: string } | undefined) ?? {};
+          switch (res.status) {
+            case 'OTP_WAIT':
+              nextStatus = 'AWAITING_OTP';
+              break;
+            case 'CREATED':
+            case 'REGISTERED':
+            case 'DONE':
+            case 'OK':
+              nextStatus = 'ACTIVE';
+              break;
+            default:
+              // DEVICE_WALL / OTP_REJECTED / NOT_INSTALLED / unknown → failure.
+              nextStatus = 'FAILED';
+              error = String(res.note ?? res.status ?? 'kayıt başarısız');
+          }
+        } else {
+          nextStatus = 'FAILED';
+          error = updated.error ?? 'kayıt işi başarısız';
+        }
+        void prisma.generatedAccount
+          .update({
+            where: { id: accountId },
+            data: { status: nextStatus, ...(error !== null ? { error } : { error: null }) }
+          })
+          .catch(() => undefined);
+      }
+    }
+
+    // WhatsApp profile fetch: persist the scraped avatar + profile text onto the
+    // matching conversation thread so the list/contact panel show a real photo
+    // and profile fields (name/about) instead of just initials. Best-effort: if
+    // no thread exists yet for this peer we skip (the operator hasn't opened a
+    // chat with them). The full result also stays on the Job row.
+    if (updated.type === 'WHATSAPP_PROFILE' && outcome.status === 'COMPLETED') {
+      const pl = (updated.payload as { deviceId?: string; to?: string } | null) ?? {};
+      const res = (outcome.result as
+        | { avatarBase64?: string; profile?: Record<string, unknown> }
+        | undefined) ?? {};
+      if (pl.deviceId && pl.to) {
+        const peer = normalizePeer(String(pl.to));
+        const data: Record<string, unknown> = {};
+        if (res.avatarBase64 && typeof res.avatarBase64 === 'string') {
+          // Cap the stored data-URI to keep the row sane (~1.3MB of base64).
+          data.avatarBase64 = res.avatarBase64.slice(0, 1_400_000);
+          data.avatarAt = new Date();
+        }
+        if (res.profile && typeof res.profile === 'object') {
+          data.profileInfo = res.profile as object;
+        }
+        if (Object.keys(data).length > 0) {
+          void prisma.whatsappConversation
+            .updateMany({ where: { deviceId: pl.deviceId, peer }, data })
+            .catch(() => undefined);
+        }
+      }
+    }
+
+    // WhatsApp block/unblock: reconcile the conversation's `blocked` flag from the
+    // agent's confirmed outcome (BLOCKED / UNBLOCKED / ALREADY_*). NO_ACTION /
+    // NO_INFO leave the flag untouched.
+    if (updated.type === 'WHATSAPP_BLOCK' && outcome.status === 'COMPLETED') {
+      const pl = (updated.payload as { deviceId?: string; to?: string } | null) ?? {};
+      const res = (outcome.result as { status?: string } | undefined) ?? {};
+      const st = String(res.status || '');
+      const blocked = /^BLOCKED$|^ALREADY_BLOCKED$/.test(st) ? true
+        : /^UNBLOCKED$|^ALREADY_UNBLOCKED$/.test(st) ? false
+        : null;
+      if (pl.deviceId && pl.to && blocked !== null) {
+        const peer = normalizePeer(String(pl.to));
+        void prisma.whatsappConversation
+          .updateMany({ where: { deviceId: pl.deviceId, peer }, data: { blocked } })
+          .catch(() => undefined);
+      }
+    }
+
+    // WhatsApp blocklist read: reconcile every thread's `blocked` flag on the
+    // device against the scraped list — set blocked=true for peers whose number
+    // appears, false for the rest. Matching is by the numeric tail of the scraped
+    // string (names without a number can't be reconciled and are left as-is).
+    if (updated.type === 'WHATSAPP_BLOCKLIST' && outcome.status === 'COMPLETED') {
+      const pl = (updated.payload as { deviceId?: string } | null) ?? {};
+      const res = (outcome.result as { blocked?: unknown } | undefined) ?? {};
+      const list = Array.isArray(res.blocked) ? (res.blocked as unknown[]) : [];
+      const blDeviceId = pl.deviceId;
+      if (blDeviceId) {
+        // Peers we can match are those where the scraped string carries a number.
+        const blockedPeers = new Set<string>();
+        for (const item of list) {
+          const digits = String(item).replace(/[^\d]/g, '');
+          if (digits.length >= 7) blockedPeers.add(normalizePeer(digits));
+        }
+        void (async () => {
+          const threads = await prisma.whatsappConversation.findMany({
+            where: { deviceId: blDeviceId },
+            select: { id: true, peer: true, blocked: true }
+          });
+          // Partition thread ids into "should be blocked" vs "should be unblocked",
+          // only where the current flag differs, then reconcile with at most TWO
+          // updateMany queries instead of one UPDATE per thread (was N+1 on chatty
+          // devices).
+          const toBlock: string[] = [];
+          const toUnblock: string[] = [];
+          for (const t of threads) {
+            const shouldBlock = blockedPeers.has(t.peer);
+            if (t.blocked === shouldBlock) continue;
+            (shouldBlock ? toBlock : toUnblock).push(t.id);
+          }
+          if (toBlock.length) {
+            await prisma.whatsappConversation
+              .updateMany({ where: { id: { in: toBlock } }, data: { blocked: true } })
+              .catch(() => undefined);
+          }
+          if (toUnblock.length) {
+            await prisma.whatsappConversation
+              .updateMany({ where: { id: { in: toUnblock } }, data: { blocked: false } })
+              .catch(() => undefined);
+          }
+        })().catch(() => undefined);
       }
     }
 
@@ -152,6 +336,38 @@ export class AgentService {
       }
     }
 
+    // One-click provisioning finished: the agent built a brand-new instance and
+    // returns its live ADB endpoint. Reflect it onto the Device so it becomes
+    // reachable/ONLINE and mark provisionStatus in metadata. On failure, flag it.
+    if (updated.type === 'PROVISION_DEVICE') {
+      const deviceId = (updated.payload as { deviceId?: string } | null)?.deviceId;
+      if (deviceId) {
+        const r = (outcome.result as { ip?: string; adbPort?: number; instance?: string } | undefined) ?? {};
+        const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
+        const meta = (device?.metadata ?? {}) as Record<string, unknown>;
+        if (outcome.status === 'COMPLETED' && r.ip && r.adbPort) {
+          await prisma.device
+            .update({
+              where: { id: deviceId },
+              data: {
+                ipAddress: r.ip,
+                adbPort: r.adbPort,
+                status: 'ONLINE',
+                metadata: { ...meta, provisionStatus: 'READY' } as object
+              }
+            })
+            .catch(() => undefined);
+        } else {
+          await prisma.device
+            .update({
+              where: { id: deviceId },
+              data: { metadata: { ...meta, provisionStatus: 'FAILED' } as object }
+            })
+            .catch(() => undefined);
+        }
+      }
+    }
+
     // Evaluate alert rules on job failure.
     if (outcome.status === 'FAILED') {
       void alertsService.evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', {
@@ -161,6 +377,32 @@ export class AgentService {
     }
 
     return { id: updated.id, status: updated.status };
+  }
+
+  // Agent-reported provision sub-step → normalize + broadcast provision.progress.
+  async reportProgress(
+    host: Host,
+    jobId: string,
+    input: { step: string; percent?: number | undefined; note?: string | undefined; status?: string | undefined }
+  ): Promise<{ ok: true }> {
+    const job = await prisma.job.findUnique({ where: { id: jobId } });
+    if (!job) throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
+    if (job.claimedByHostId !== host.id) {
+      throw new AppError('Job was not claimed by this host', 403, 'JOB_NOT_CLAIMED');
+    }
+    const deviceId = (job.payload as { deviceId?: string } | null)?.deviceId ?? '';
+    await provisionService.reportProgress(
+      {
+        deviceId,
+        jobId,
+        step: input.step,
+        ...(input.percent !== undefined ? { percent: input.percent } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {})
+      },
+      job.workspaceId ?? undefined
+    );
+    return { ok: true };
   }
 
   async heartbeat(
@@ -304,22 +546,56 @@ export class AgentService {
     if (!device) return { stored: false };
 
     const waTimestamp = input.ts && input.ts > 0 ? new Date(input.ts) : new Date();
-    const msg = await prisma.whatsappMessage.create({
-      data: {
+    // Keep the plaintext body for the live fan-out (WS/webhook/notification) but
+    // store the message body AES-256-GCM encrypted at rest.
+    const plainBody = input.text.slice(0, 4096);
+    // Canonical peer so an inbound "+90 546…" and an outbound "905…" share ONE thread.
+    const peer = normalizePeer(input.from);
+    // Idempotency key: a duplicate agent push (retry/restart re-scrape of the same
+    // notification) collides on the unique index and is skipped, so unread never
+    // double-counts. Bucketed to the minute so near-identical timestamps still dedup.
+    const dedupeKey = sha256(`${device.id}|${peer}|${plainBody}|${Math.floor(waTimestamp.getTime() / 60000)}`);
+
+    let msg;
+    try {
+      msg = await prisma.whatsappMessage.create({
+        data: {
+          deviceId: device.id,
+          workspaceId: device.workspaceId ?? null,
+          direction: 'IN',
+          peer,
+          body: encryptString(plainBody),
+          status: 'DELIVERED',
+          dedupeKey,
+          waTimestamp
+        }
+      });
+    } catch (e) {
+      // Unique violation on dedupeKey → this exact message was already stored.
+      // Treat as a successful no-op (don't bump unread, don't re-fan-out).
+      if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === 'P2002') {
+        return { stored: false };
+      }
+      throw e;
+    }
+
+    // Upsert the conversation thread (bumps unread, updates the list preview).
+    void whatsappService
+      .recordMessage({
         deviceId: device.id,
         workspaceId: device.workspaceId ?? null,
+        peer: msg.peer,
         direction: 'IN',
-        peer: input.from.slice(0, 256),
-        body: input.text.slice(0, 4096),
-        waTimestamp
-      }
-    });
+        plainBody,
+        at: waTimestamp
+      })
+      .catch(() => undefined);
 
     // Live push to dashboards.
     deviceHub.broadcast({
       type: 'whatsapp.message',
       deviceId: device.id,
-      payload: { id: msg.id, direction: 'IN', peer: msg.peer, body: msg.body, waTimestamp: msg.waTimestamp.toISOString() },
+      payload: { id: msg.id, direction: 'IN', peer: msg.peer, body: plainBody, waTimestamp: msg.waTimestamp.toISOString() },
       timestamp: new Date().toISOString(),
       workspaceId: device.workspaceId ?? undefined
     });
@@ -327,17 +603,26 @@ export class AgentService {
     // Webhook fan-out for external integrations.
     void webhooksService.dispatch(
       'WHATSAPP_MESSAGE',
-      { deviceId: device.id, deviceName: device.name, from: msg.peer, text: msg.body, ts: msg.waTimestamp.toISOString() },
+      { deviceId: device.id, deviceName: device.name, from: msg.peer, text: plainBody, ts: msg.waTimestamp.toISOString() },
       device.workspaceId ?? undefined
     );
 
     // Push to the operator's notification channels (Telegram/Slack/Discord) with
     // a rich, at-a-glance summary: who wrote, which device, and the message.
+    // Telegram gets actionable inline buttons keyed by this message's id so the
+    // operator can reply / open / mark-read straight from the notification.
     const when = msg.waTimestamp.toLocaleString('tr-TR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
     void notificationsService
       .dispatch(device.workspaceId ?? '', {
         title: `📩 WhatsApp — ${msg.peer}`,
-        detail: `💬 ${msg.body}\n\n📱 Cihaz: ${device.name}\n👤 Gönderen: ${msg.peer}\n🕒 ${when}`.slice(0, 900)
+        detail: `💬 ${plainBody}\n\n📱 Cihaz: ${device.name}\n👤 Gönderen: ${msg.peer}\n🕒 ${when}`.slice(0, 900),
+        telegramButtons: [
+          [
+            { text: '💬 Cevapla', callback_data: `wr:${msg.id}` },
+            { text: '👤 Aç', callback_data: `wo:${msg.id}` },
+            { text: '✓ Okundu', callback_data: `wk:${msg.id}` }
+          ]
+        ]
       })
       .catch(() => undefined);
 
@@ -361,3 +646,75 @@ export class AgentService {
 }
 
 export const agentService = new AgentService();
+
+// Turn a completed WhatsApp on-device job into a concise Turkish operator
+// notification and fan it out to the workspace's channels (Telegram/Slack/Discord).
+// Runs off the job-completion chokepoint so EVERY trigger surface (Telegram bot,
+// dashboard, public API) gets a result without each having to poll the job itself.
+async function notifyWhatsappJob(
+  workspaceId: string,
+  type: string,
+  payloadRaw: unknown,
+  outcome: { status: 'COMPLETED' | 'FAILED'; result?: unknown; error?: string | undefined }
+): Promise<void> {
+  const pl = (payloadRaw as { to?: string; from?: string; peer?: string } | null) ?? {};
+  const res = (outcome.result as Record<string, unknown> | undefined) ?? {};
+  const who = String(pl.to || pl.from || pl.peer || '').trim();
+  const whoSuffix = who ? ` (${who})` : '';
+  const failed = outcome.status === 'FAILED';
+  const reason = failed ? String(outcome.error || res.note || res.status || 'bilinmeyen hata') : '';
+
+  // WHATSAPP_SEND is already surfaced as a SENT/FAILED bubble + WHATSAPP_SENT
+  // webhook above — skip a duplicate here to avoid double-pinging the operator.
+  if (type === 'WHATSAPP_SEND') return;
+
+  let title = '';
+  let detail = '';
+  switch (type) {
+    case 'WHATSAPP_DELETE_MSG': {
+      const scope = String(res.scope || (pl as { scope?: string }).scope || '');
+      const scopeTr = scope === 'everyone' ? 'herkesten' : 'benden';
+      title = failed ? '🗑️ Mesaj silinemedi' : '🗑️ Mesaj silindi';
+      detail = failed ? `${whoSuffix.trim()} — ${reason}` : `Son mesaj ${scopeTr} silindi${whoSuffix}.`;
+      if (!failed && res.everyoneUnavailable) detail += ' (herkesten sil yoktu, benden silindi)';
+      break;
+    }
+    case 'WHATSAPP_CLEAR_CHAT':
+      title = failed ? '🧹 Sohbet temizlenemedi' : '🧹 Sohbet temizlendi';
+      detail = failed ? `${whoSuffix.trim()} — ${reason}` : `Sohbet geçmişi temizlendi${whoSuffix}.`;
+      break;
+    case 'WHATSAPP_BLOCK': {
+      const st = String(res.status || '');
+      const blocked = /^BLOCKED|ALREADY_BLOCKED/.test(st);
+      title = failed ? '🚫 Engelleme başarısız' : (blocked ? '🚫 Kişi engellendi' : '✅ Engel kaldırıldı');
+      detail = failed ? `${whoSuffix.trim()} — ${reason}` : `${who || 'Kişi'} için işlem tamam (${st || 'OK'}).`;
+      break;
+    }
+    case 'WHATSAPP_BLOCKLIST': {
+      const list = Array.isArray(res.blocked) ? (res.blocked as string[]) : [];
+      title = failed ? '📋 Engellenenler alınamadı' : '📋 Engellenen hesaplar';
+      detail = failed ? reason : (list.length ? `${list.length} kişi:\n${list.slice(0, 30).join('\n')}` : 'Engellenen kişi yok.');
+      break;
+    }
+    case 'WHATSAPP_MYNUMBER':
+      title = failed ? '📱 Numara okunamadı' : '📱 Kendi numaran';
+      detail = failed ? reason : String(res.number || 'okunamadı');
+      break;
+    case 'WHATSAPP_PROFILE': {
+      const prof = (res.profile as { profileName?: string; about?: string; phone?: string } | undefined) ?? {};
+      title = failed ? '👤 Profil çekilemedi' : '👤 Profil bilgisi';
+      detail = failed ? `${whoSuffix.trim()} — ${reason}`
+        : [prof.profileName && `İsim: ${prof.profileName}`, prof.about && `Durum: ${prof.about}`, prof.phone && `Numara: ${prof.phone}`, res.avatarBase64 && '(avatar çekildi)']
+            .filter(Boolean).join('\n') || `Profil çekildi${whoSuffix}.`;
+      break;
+    }
+    case 'WHATSAPP_SEND_MEDIA':
+      title = failed ? '🖼️ Medya gönderilemedi' : '🖼️ Medya gönderildi';
+      detail = failed ? `${whoSuffix.trim()} — ${reason}` : `Medya gönderildi${whoSuffix}.`;
+      break;
+    default:
+      return; // unknown WhatsApp job type — nothing to say
+  }
+
+  await notificationsService.dispatch(workspaceId, { title, detail });
+}

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL_MAP: Record<string, string> = {
@@ -11,7 +12,54 @@ const SYSTEM = `You are Fleet AI, the assistant inside a cloud-phone management 
 You help operators manage Android cloud phones, proxies, automation tasks, and social-media accounts.
 Be concise and practical. When asked how to do something in the platform, give clear step-by-step guidance.`;
 
+// Oturum cookie'sinin (backend JWT) yapısal + süre geçerliliği. Edge dışı ama
+// aynı ucuz kontrol: 3 parça + gelecekte exp. Gerçek yetki backend'de doğrulanır;
+// burada amaç ANTHROPIC_API_KEY'e anonim/sınırsız erişimi kapatmak.
+function isSessionValid(token: string | undefined): boolean {
+  if (!token) return false;
+  const parts = token.split('.');
+  if (parts.length !== 3 || !parts[1]) return false;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(Buffer.from(b64, 'base64').toString('utf8')) as { exp?: number };
+    if (typeof payload.exp !== 'number') return false;
+    return payload.exp * 1000 > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+// Basit in-memory rate-limit: oturum başına dakikada 10 istek. Sabit pencere.
+const RATE_LIMIT = 10;
+const WINDOW_MS = 60_000;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+
+function rateLimited(key: string): boolean {
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + WINDOW_MS });
+    return false;
+  }
+  if (bucket.count >= RATE_LIMIT) return true;
+  bucket.count += 1;
+  return false;
+}
+
 export async function POST(request: Request) {
+  // 1) Oturum zorunlu — yoksa/süresi dolmuşsa ANTHROPIC_API_KEY'e erişim yok.
+  const session = (await cookies()).get('fleet_session')?.value;
+  if (!isSessionValid(session)) {
+    return NextResponse.json({ error: 'Oturum gerekli.' }, { status: 401 });
+  }
+
+  // 2) Rate-limit: oturum token'ı bazında (fallback IP). Fatura DoS'unu sınırla.
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+  const rateKey = session ?? ip;
+  if (rateLimited(rateKey)) {
+    return NextResponse.json({ error: 'Çok fazla istek. Lütfen biraz bekleyin.' }, { status: 429 });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(

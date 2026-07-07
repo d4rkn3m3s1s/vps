@@ -340,36 +340,54 @@ export const farmService = {
     workspaceId?: string
   ): Promise<{ affected: number }> {
     if (deviceIds.length === 0) return { affected: 0 };
+    // Fetch the owned accounts (with tags) once instead of a findUnique per device.
     // Only act on accounts the caller owns — prevents cross-tenant bulk mutation.
-    const owned = new Set(
-      (await prisma.farmAccount.findMany({
-        where: { deviceId: { in: deviceIds }, ...(workspaceId ? { workspaceId } : {}) },
-        select: { deviceId: true }
-      })).map((a) => a.deviceId)
-    );
-    let affected = 0;
-    for (const deviceId of deviceIds) {
-      if (!owned.has(deviceId)) continue;
-      const acct = await prisma.farmAccount.findUnique({ where: { deviceId } });
-      if (!acct) continue;
-      if (action === 'addTags' && payload.tags?.length) {
-        const next = Array.from(new Set([...(acct.tags ?? []), ...payload.tags.map((t) => t.trim()).filter(Boolean)]));
-        await prisma.farmAccount.update({ where: { deviceId }, data: { tags: next } });
-      } else if (action === 'removeTags' && payload.tags?.length) {
-        const remove = new Set(payload.tags.map((t) => t.trim()));
-        await prisma.farmAccount.update({ where: { deviceId }, data: { tags: (acct.tags ?? []).filter((t) => !remove.has(t)) } });
-      } else if (action === 'pause') {
-        await this.autoPause(deviceId, 'Operatör tarafından toplu duraklatıldı');
-      } else if (action === 'resume') {
-        await this.resumeAccount(deviceId);
-      } else if (action === 'setGroup') {
-        await prisma.device.update({ where: { id: deviceId }, data: { groupId: payload.groupId || null } }).catch(() => undefined);
-      } else {
-        continue;
-      }
-      affected += 1;
+    const ownedAccounts = await prisma.farmAccount.findMany({
+      where: { deviceId: { in: deviceIds }, ...(workspaceId ? { workspaceId } : {}) },
+      select: { deviceId: true, tags: true }
+    });
+    const ownedIds = ownedAccounts.map((a) => a.deviceId);
+    if (ownedIds.length === 0) return { affected: 0 };
+
+    // setGroup touches Device (not FarmAccount) — do it in one updateMany, scoped
+    // to the owned devices (and workspace) so no cross-tenant device is moved.
+    if (action === 'setGroup') {
+      const { count } = await prisma.device.updateMany({
+        where: { id: { in: ownedIds }, ...(workspaceId ? { workspaceId } : {}) },
+        data: { groupId: payload.groupId || null }
+      });
+      return { affected: count };
     }
-    return { affected };
+
+    // pause/resume run per-account (each also writes an action-log entry); the
+    // owned filter above already bounds the loop to this tenant's accounts.
+    if (action === 'pause' || action === 'resume') {
+      let affected = 0;
+      for (const deviceId of ownedIds) {
+        if (action === 'pause') await this.autoPause(deviceId, 'Operatör tarafından toplu duraklatıldı');
+        else await this.resumeAccount(deviceId, workspaceId).catch(() => undefined);
+        affected += 1;
+      }
+      return { affected };
+    }
+
+    // Tag add/remove need per-row set math (each account has its own tag list), so
+    // we compute the next list from the batch we already fetched — no extra reads.
+    if ((action === 'addTags' || action === 'removeTags') && payload.tags?.length) {
+      const add = payload.tags.map((t) => t.trim()).filter(Boolean);
+      const remove = new Set(add);
+      let affected = 0;
+      for (const acct of ownedAccounts) {
+        const next = action === 'addTags'
+          ? Array.from(new Set([...(acct.tags ?? []), ...add]))
+          : (acct.tags ?? []).filter((t) => !remove.has(t));
+        await prisma.farmAccount.update({ where: { deviceId: acct.deviceId }, data: { tags: next } });
+        affected += 1;
+      }
+      return { affected };
+    }
+
+    return { affected: 0 };
   },
 
   // Ensure a FarmAccount row exists for a device (created lazily as devices farm).
@@ -414,7 +432,13 @@ export const farmService = {
         continue;
       }
 
-      const devices = await prisma.device.findMany({ where: { groupId: c.groupId }, select: { id: true, status: true } });
+      // Fetch group devices AND their warmup account in a single join. Previously
+      // each device did its own ensureAccount findUnique + an evaluateRisk
+      // findUnique — ~2 queries/device/tick (≈600 on a 300-device group). Now one.
+      const devices = await prisma.device.findMany({
+        where: { groupId: c.groupId },
+        select: { id: true, name: true, status: true, farmAccount: true }
+      });
       if (devices.length === 0) {
         await this.scheduleNext(c.id, c.minIntervalMin, c.maxIntervalMin, c.jitterPct, now);
         continue;
@@ -434,12 +458,24 @@ export const farmService = {
       // pick the right behavior (gentle for new accounts, richer for mature).
       const candidates: { deviceId: string; stage: number; actionsToday: number; cap: number }[] = [];
       for (const d of devices) {
-        const acct = await this.ensureAccount(d.id, c.workspaceId ?? undefined);
+        // Use the account joined in above; only fall back to a create for a device
+        // that has never farmed yet (lazy row). This drops the per-device findUnique.
+        const acct = d.farmAccount ?? await this.ensureAccount(d.id, c.workspaceId ?? undefined);
         const fresh = this.rollDayIfNeeded(acct, now);
         // Proactive ban-risk: recompute + persist each device's leading-indicator
         // risk score every tick, and alert once per cooldown when it spikes. This
         // catches a device drifting toward a ban *before* its health collapses.
-        await this.evaluateRisk(d.id, now, { hasDeadProxy }).catch(() => undefined);
+        // Pass the account we already hold so evaluateRisk skips its own findUnique.
+        await this.evaluateRisk(d.id, now, { hasDeadProxy }, {
+          healthScore: fresh.healthScore,
+          consecutiveErrors: fresh.consecutiveErrors,
+          warmupStage: fresh.warmupStage,
+          actionsToday: fresh.actionsToday,
+          paused: fresh.paused,
+          riskAlertedAt: fresh.riskAlertedAt,
+          workspaceId: fresh.workspaceId,
+          device: { name: d.name }
+        }).catch(() => undefined);
         // Ban defense: skip a device the engine has already auto-paused, and
         // auto-pause one whose health just fell below the campaign threshold.
         if (fresh.paused) continue;
@@ -782,9 +818,21 @@ export const farmService = {
   async evaluateRisk(
     deviceId: string,
     now: Date,
-    ctx: { hasDeadProxy: boolean }
+    ctx: { hasDeadProxy: boolean },
+    // Callers already holding the account row (e.g. the tick loop's joined fetch)
+    // can pass it to skip the extra findUnique — avoids an N+1 across the fleet.
+    preloaded?: {
+      healthScore: number;
+      consecutiveErrors: number;
+      warmupStage: number;
+      actionsToday: number;
+      paused: boolean;
+      riskAlertedAt: Date | null;
+      workspaceId: string | null;
+      device?: { name: string | null } | null;
+    } | null
   ): Promise<RiskVerdict | null> {
-    const acct = await prisma.farmAccount.findUnique({ where: { deviceId }, include: { device: { select: { name: true } } } });
+    const acct = preloaded ?? await prisma.farmAccount.findUnique({ where: { deviceId }, include: { device: { select: { name: true } } } });
     if (!acct) return null;
     const verdict = scoreRisk({
       healthScore: acct.healthScore,

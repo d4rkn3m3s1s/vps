@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { catalogService } from './catalog.service';
 
@@ -28,7 +29,7 @@ export async function listAppsHandler(_req: Request, res: Response): Promise<voi
 
 export async function installAppHandler(req: Request, res: Response): Promise<void> {
   const input = installAppSchema.parse(req.body);
-  const result = await catalogService.installApp(input.packageName, input.deviceIds, input.apkUrl);
+  const result = await catalogService.installApp(input.packageName, input.deviceIds, input.apkUrl, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'app.install',
@@ -49,7 +50,7 @@ export async function useTemplateHandler(req: Request, res: Response): Promise<v
   const id = req.params.id;
   if (typeof id !== 'string') throw new AppError('Template id is required', 400, 'INVALID_TEMPLATE_ID');
   const { deviceIds } = useTemplateSchema.parse(req.body);
-  const result = await catalogService.useTemplate(id, deviceIds);
+  const result = await catalogService.useTemplate(id, deviceIds, getWorkspaceId(req));
   res.status(201).json({ data: result });
 }
 
@@ -61,7 +62,7 @@ export async function installListingHandler(req: Request, res: Response): Promis
   const id = req.params.id;
   if (typeof id !== 'string') throw new AppError('Listing id is required', 400, 'INVALID_LISTING_ID');
   const { deviceIds } = installListingSchema.parse(req.body);
-  const result = await catalogService.installListing(id, deviceIds);
+  const result = await catalogService.installListing(id, deviceIds, getWorkspaceId(req));
   if (!result) throw new AppError('Listing not found', 404, 'LISTING_NOT_FOUND');
   await writeAuditLog({
     userId: req.auth?.userId,

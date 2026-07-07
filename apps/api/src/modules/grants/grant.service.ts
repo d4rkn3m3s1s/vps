@@ -31,8 +31,12 @@ async function hydrate<T extends GrantRow>(grants: T[]) {
 }
 
 export const grantService = {
-  // All grants issued on a device (newest first).
-  async listForDevice(deviceId: string) {
+  // All grants issued on a device (newest first). Scope the device to the caller's
+  // workspace first so a foreign device's grants (and their party emails) can't be
+  // enumerated by id.
+  async listForDevice(deviceId: string, workspaceId?: string) {
+    const device = await prisma.device.findFirst({ where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) } });
+    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     const grants = await prisma.deviceGrant.findMany({ where: { deviceId }, orderBy: { createdAt: 'desc' } });
     return hydrate(grants);
   },

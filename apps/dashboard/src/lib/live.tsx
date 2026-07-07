@@ -11,7 +11,9 @@ export type FleetEvent = {
     | 'device.heartbeat'
     | 'job.created'
     | 'job.updated'
-    | 'alert.fired';
+    | 'alert.fired'
+    | 'whatsapp.message'
+    | 'provision.progress';
   deviceId?: string;
   payload?: unknown;
   timestamp?: string;
@@ -36,18 +38,31 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
-    const url = process.env.NEXT_PUBLIC_WS_URL;
-    if (!url) return undefined;
+    const baseUrl = process.env.NEXT_PUBLIC_WS_URL;
+    if (!baseUrl) return undefined;
 
     let stopped = false;
     let retry = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-    function connect() {
+    // The event hub now authenticates the upgrade with a JWT (workspace-scoped).
+    // Fetch a short-lived token server-side and append it to the socket URL.
+    async function connect() {
+      if (stopped) return;
+      let url = baseUrl as string;
+      try {
+        const res = await fetch('/api/ws-token', { method: 'POST' });
+        if (res.ok) {
+          const { data } = (await res.json()) as { data: { token?: string } | null };
+          if (data?.token) url = `${baseUrl}?token=${encodeURIComponent(data.token)}`;
+        }
+      } catch {
+        /* fall back to tokenless — will be rejected, then retried */
+      }
       if (stopped) return;
       let ws: WebSocket;
       try {
-        ws = new WebSocket(url as string);
+        ws = new WebSocket(url);
       } catch {
         scheduleReconnect();
         return;

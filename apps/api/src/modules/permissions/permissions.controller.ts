@@ -24,7 +24,10 @@ function requireId(req: Request): string {
 
 export async function listPermissionsHandler(req: Request, res: Response): Promise<void> {
   const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
-  const data = userId ? await permissionsService.listForUser(userId) : await permissionsService.list();
+  const workspaceId = getWorkspaceId(req);
+  const data = userId
+    ? await permissionsService.listForUser(userId, workspaceId)
+    : await permissionsService.list(workspaceId);
   res.json({ data });
 }
 
@@ -46,7 +49,7 @@ export async function grantPermissionHandler(req: Request, res: Response): Promi
 
 export async function revokePermissionHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
-  await permissionsService.revoke(id);
+  await permissionsService.revoke(id, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'permission.revoke',

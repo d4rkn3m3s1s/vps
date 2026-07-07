@@ -1,10 +1,25 @@
 import type { JobType, ListingCategory, Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { createJobRecord } from '../jobs/jobs.service';
 import { APP_CATALOG, AUTOMATION_TEMPLATES, MARKETPLACE_LISTINGS } from './catalog.seed';
 
 export class CatalogService {
+  // Verify every requested device belongs to the caller's workspace before we
+  // dispatch install/automation jobs against them. Without this, a client could
+  // pass foreign device ids and drive/install onto another tenant's phones.
+  private async assertDevicesOwned(deviceIds: string[], workspaceId?: string): Promise<void> {
+    if (deviceIds.length === 0 || !workspaceId) return;
+    const owned = await prisma.device.findMany({
+      where: { id: { in: deviceIds }, workspaceId },
+      select: { id: true }
+    });
+    if (owned.length !== new Set(deviceIds).size) {
+      throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    }
+  }
+
   // ---------- Applications ----------
   async listApps() {
     await this.seedApps();
@@ -21,7 +36,7 @@ export class CatalogService {
   // (in priority) the caller-supplied apkUrl, else the catalog item's apkUrl. If
   // neither exists we throw a clear error instead of dispatching a job that would
   // fail at the agent with "apkPath is required".
-  async installApp(packageName: string, deviceIds: string[], apkUrl?: string) {
+  async installApp(packageName: string, deviceIds: string[], apkUrl?: string, workspaceId?: string) {
     const app = await prisma.appCatalogItem.findUnique({ where: { packageName } });
     const resolvedApk = apkUrl || app?.apkUrl || null;
     if (!resolvedApk) {
@@ -34,9 +49,13 @@ export class CatalogService {
     if (deviceIds.length === 0) {
       throw new AppError('En az bir cihaz seçin.', 422, 'NO_DEVICES');
     }
+    // SSRF guard: the host agent fetches apkPath server-side, so a user-supplied
+    // APK URL must not point at internal/loopback/metadata addresses.
+    await assertSafePublicUrl(resolvedApk);
+    await this.assertDevicesOwned(deviceIds, workspaceId);
     const jobs = await Promise.all(
       deviceIds.map((deviceId) =>
-        createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath: resolvedApk })
+        createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath: resolvedApk }, undefined, workspaceId)
       )
     );
     if (app) {
@@ -68,12 +87,13 @@ export class CatalogService {
 
   // Runs a template against devices: one job per device using the template's
   // job type + payload, plus a uses counter.
-  async useTemplate(templateId: string, deviceIds: string[]) {
+  async useTemplate(templateId: string, deviceIds: string[], workspaceId?: string) {
     const tpl = await prisma.automationTemplate.findUnique({ where: { id: templateId } });
     if (!tpl) return { used: 0, jobIds: [] as string[] };
+    await this.assertDevicesOwned(deviceIds, workspaceId);
     const jobs = await Promise.all(
       deviceIds.map((deviceId) =>
-        createJobRecord(tpl.jobType, { ...(tpl.payload as Record<string, unknown>), deviceId })
+        createJobRecord(tpl.jobType, { ...(tpl.payload as Record<string, unknown>), deviceId }, undefined, workspaceId)
       )
     );
     await prisma.automationTemplate.update({ where: { id: tpl.id }, data: { uses: { increment: deviceIds.length } } });
@@ -107,7 +127,7 @@ export class CatalogService {
   // job per device — the same agent path the app catalog uses — so a "Kur" click
   // actually puts the app on the phones, not just bumps a counter. Listings with
   // no APK (pure templates/integrations) just increment the counter.
-  async installListing(id: string, deviceIds: string[]) {
+  async installListing(id: string, deviceIds: string[], workspaceId?: string) {
     const listing = await prisma.marketplaceListing.findUnique({ where: { id } });
     if (!listing) return null;
     if (!listing.apkUrl || !listing.packageName || deviceIds.length === 0) {
@@ -122,8 +142,11 @@ export class CatalogService {
     }
     const apkPath = listing.apkUrl;
     const packageName = listing.packageName;
+    // Seeded listing APK URLs are also fetched by the agent → SSRF guard.
+    await assertSafePublicUrl(apkPath);
+    await this.assertDevicesOwned(deviceIds, workspaceId);
     const jobs = await Promise.all(
-      deviceIds.map((deviceId) => createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath }))
+      deviceIds.map((deviceId) => createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath }, undefined, workspaceId))
     );
     const updated = await prisma.marketplaceListing.update({
       where: { id },

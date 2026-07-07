@@ -58,7 +58,7 @@ export async function listEmulatorsHandler(req: Request, res: Response): Promise
 
 export async function startEmulatorHandler(req: Request, res: Response): Promise<void> {
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.start(emulatorId);
+  const result = await emulatorService.start(emulatorId, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.start',
@@ -73,7 +73,7 @@ export async function startEmulatorHandler(req: Request, res: Response): Promise
 
 export async function stopEmulatorHandler(req: Request, res: Response): Promise<void> {
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.stop(emulatorId);
+  const result = await emulatorService.stop(emulatorId, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.stop',
@@ -88,7 +88,7 @@ export async function stopEmulatorHandler(req: Request, res: Response): Promise<
 
 export async function deleteEmulatorHandler(req: Request, res: Response): Promise<void> {
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.remove(emulatorId);
+  const result = await emulatorService.remove(emulatorId, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.delete',
@@ -104,7 +104,7 @@ export async function deleteEmulatorHandler(req: Request, res: Response): Promis
 export async function installApkHandler(req: Request, res: Response): Promise<void> {
   const input = installSchema.parse(req.body);
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.installApk(emulatorId, input.apkPath);
+  const result = await emulatorService.installApk(emulatorId, input.apkPath, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.install_apk',
@@ -120,7 +120,7 @@ export async function installApkHandler(req: Request, res: Response): Promise<vo
 
 export async function screenshotHandler(req: Request, res: Response): Promise<void> {
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.screenshot(emulatorId);
+  const result = await emulatorService.screenshot(emulatorId, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.screenshot',
@@ -136,7 +136,7 @@ export async function screenshotHandler(req: Request, res: Response): Promise<vo
 export async function shellHandler(req: Request, res: Response): Promise<void> {
   const input = shellSchema.parse(req.body);
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.shell(emulatorId, input.command);
+  const result = await emulatorService.shell(emulatorId, input.command, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.shell',
@@ -153,7 +153,7 @@ export async function shellHandler(req: Request, res: Response): Promise<void> {
 export async function openAppHandler(req: Request, res: Response): Promise<void> {
   const input = appSchema.parse(req.body);
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.openApp(emulatorId, input.packageName, input.activity);
+  const result = await emulatorService.openApp(emulatorId, input.packageName, input.activity, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.open_app',
@@ -170,7 +170,7 @@ export async function openAppHandler(req: Request, res: Response): Promise<void>
 export async function closeAppHandler(req: Request, res: Response): Promise<void> {
   const input = appSchema.pick({ packageName: true }).parse(req.body);
   const emulatorId = requireEmulatorId(req);
-  const result = await emulatorService.closeApp(emulatorId, input.packageName);
+  const result = await emulatorService.closeApp(emulatorId, input.packageName, getWorkspaceId(req));
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'emulator.close_app',

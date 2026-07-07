@@ -37,7 +37,8 @@ const EVENT_OPTIONS: { value: string; label: string }[] = [
   { value: 'DEVICE_ONLINE', label: 'Cihaz çevrimiçi' },
   { value: 'DEVICE_OFFLINE', label: 'Cihaz çevrimdışı' },
   { value: 'QUOTA_HIGH', label: 'Kota neredeyse dolu' },
-  { value: 'ALERT_FIRED', label: 'Uyarı tetiklendi' }
+  { value: 'ALERT_FIRED', label: 'Uyarı tetiklendi' },
+  { value: 'WHATSAPP_MESSAGE', label: 'WhatsApp mesajı geldi' }
 ];
 
 export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {

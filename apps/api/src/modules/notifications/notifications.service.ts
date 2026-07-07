@@ -1,6 +1,28 @@
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { encryptString, decryptString } from '../../lib/crypto';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
+
+// Slack/Discord webhook URLs must live on the provider's own hosts. Pinning the
+// host (on top of the generic SSRF guard) blocks pointing a "webhook" at an
+// arbitrary internal/attacker endpoint that we then POST to server-side.
+const ALLOWED_WEBHOOK_HOSTS: Record<'slack' | 'discord', string[]> = {
+  slack: ['hooks.slack.com'],
+  discord: ['discord.com', 'discordapp.com', 'canary.discord.com', 'ptb.discord.com']
+};
+
+function assertAllowedWebhookHost(type: 'slack' | 'discord', rawUrl: string): void {
+  let host: string;
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    throw new AppError('Geçersiz webhook URL', 400, 'INVALID_CONFIG');
+  }
+  const allowed = ALLOWED_WEBHOOK_HOSTS[type];
+  if (!allowed.some((h) => host === h || host.endsWith(`.${h}`))) {
+    throw new AppError(`Yalnızca ${type} webhook host'una izin verilir`, 400, 'INVALID_WEBHOOK_HOST');
+  }
+}
 
 export type ChannelType = 'telegram' | 'slack' | 'discord';
 
@@ -11,7 +33,25 @@ type SlackConfig = { webhookUrl: string };
 type DiscordConfig = { webhookUrl: string };
 type ChannelConfig = TelegramConfig | SlackConfig | DiscordConfig;
 
-export type DispatchMessage = { title: string; detail: string };
+// A Telegram inline button (only used on Telegram; ignored by Slack/Discord).
+export type TelegramButton = { text: string; callback_data: string };
+
+export type DispatchMessage = {
+  title: string;
+  detail: string;
+  // Optional inline keyboard, delivered ONLY to Telegram channels (turns a plain
+  // notification into an actionable one — e.g. a "💬 Cevapla" button).
+  telegramButtons?: TelegramButton[][];
+};
+
+// A chatId may be a single id or several (comma/space separated) so a whole
+// operator team gets the same notifications and can command the bot.
+function parseChatIds(chatId: string): string[] {
+  return chatId
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 export type ChannelSummary = {
   id: string;
@@ -73,6 +113,13 @@ export async function saveChannel(
     throw new AppError('Desteklenmeyen kanal türü', 400, 'INVALID_CHANNEL_TYPE');
   }
   const validated = validateConfig(type, config);
+  // SSRF guard: Slack/Discord webhooks are POSTed to server-side. Pin the host to
+  // the provider and reject any URL that resolves to an internal address.
+  if (type === 'slack' || type === 'discord') {
+    const { webhookUrl } = validated as SlackConfig | DiscordConfig;
+    assertAllowedWebhookHost(type, webhookUrl);
+    await assertSafePublicUrl(webhookUrl);
+  }
   const configEnc = encryptString(JSON.stringify(validated));
   const row = await prisma.notificationChannel.upsert({
     where: { workspaceId_type: { workspaceId, type } },
@@ -99,6 +146,8 @@ export async function deleteChannel(workspaceId: string, id: string): Promise<vo
 }
 
 // Best-effort POST to a single channel. Never throws; returns ok/error.
+// Telegram: delivers to EVERY configured chatId (multi-operator) and attaches the
+// optional inline keyboard so notifications can be actionable.
 async function postToChannel(
   type: ChannelType,
   config: ChannelConfig,
@@ -106,13 +155,36 @@ async function postToChannel(
 ): Promise<{ ok: boolean; error?: string }> {
   const text = `${message.title}\n${message.detail}`.trim();
   try {
-    let url: string;
-    let body: Record<string, unknown>;
     if (type === 'telegram') {
       const cfg = config as TelegramConfig;
-      url = `https://api.telegram.org/bot${cfg.botToken}/sendMessage`;
-      body = { chat_id: cfg.chatId, text };
-    } else if (type === 'slack') {
+      const chatIds = parseChatIds(cfg.chatId);
+      const url = `https://api.telegram.org/bot${cfg.botToken}/sendMessage`;
+      let anyOk = false;
+      let lastErr: string | undefined;
+      for (const chatId of chatIds) {
+        const body: Record<string, unknown> = { chat_id: chatId, text };
+        if (message.telegramButtons?.length) {
+          body.reply_markup = { inline_keyboard: message.telegramButtons };
+        }
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(8000)
+          });
+          if (res.ok) anyOk = true;
+          else lastErr = `HTTP ${res.status}`;
+        } catch (e) {
+          lastErr = e instanceof Error ? e.message : 'unknown';
+        }
+      }
+      return anyOk ? { ok: true } : { ok: false, ...(lastErr ? { error: lastErr } : {}) };
+    }
+
+    let url: string;
+    let body: Record<string, unknown>;
+    if (type === 'slack') {
       url = (config as SlackConfig).webhookUrl;
       body = { text };
     } else {

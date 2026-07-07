@@ -83,7 +83,8 @@ function toAuditMetadata(value: unknown): Prisma.JsonValue | undefined {
 
 export async function listDevicesHandler(req: Request, res: Response): Promise<void> {
   const tag = typeof req.query.tag === 'string' ? req.query.tag : undefined;
-  const data = await deviceService.listDevices(getWorkspaceId(req), tag);
+  const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+  const data = await deviceService.listDevices(getWorkspaceId(req), tag, search);
   // Granular RBAC: a restricted (non-admin, has-grants) user only sees the
   // devices/groups they were granted. Service identity (no JWT) is unrestricted.
   if (req.auth) {

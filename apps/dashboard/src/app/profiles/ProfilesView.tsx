@@ -28,9 +28,11 @@ import {
   Network,
   Package,
   Send,
+  Zap,
   X
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
+import ProvisionModal, { type ProvisionStep } from './ProvisionModal';
 
 export type ProvisioningModel = { model: string; manufacturer: string; brand: string; resolution: string; dpi: number; osVersions: string[] };
 export type ProvisioningCatalog = { models: ProvisioningModel[]; ramTiers: number[]; cpuTiers: number[] };
@@ -175,6 +177,10 @@ export function ProfilesView({
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
+  // One-click provisioning: builds a brand-new isolated Waydroid instance from
+  // scratch and shows a live step-by-step wizard.
+  const [provisioning, setProvisioning] = useState<{ jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] } | null>(null);
+  const [provisionBusy, setProvisionBusy] = useState(false);
   // Provisioning catalog (device models + hardware tiers), lazy-loaded.
   const [catalog, setCatalog] = useState<ProvisioningCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -553,6 +559,52 @@ export function ProfilesView({
     setError(null);
     setCreateOpen(true);
   }
+  // Tek tık: sıfırdan yeni izole Waydroid instance kur (root+vtouch+spoof+proxy+
+  // APK'lar+a11y — WhatsApp-hazır). Canlı ilerleme modalını açar.
+  async function startProvision() {
+    if (provisionBusy) return;
+    setProvisionBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/provision/create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ...(form.countryCode ? { countryCode: form.countryCode, proxyCountry: form.countryCode } : {}),
+          ...(form.deviceModel ? { deviceModel: form.deviceModel } : {}),
+          ...(form.androidVersion ? { androidVersion: form.androidVersion } : {})
+        })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body?.data?.message || body?.error || 'Cihaz oluşturulamadı');
+        return;
+      }
+      const d = body.data as { jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] };
+      setCreateOpen(false);
+      setProvisioning({ jobId: d.jobId, deviceId: d.deviceId, instance: d.instance, steps: d.steps });
+    } catch {
+      setError('Cihaz oluşturulamadı (ağ hatası)');
+    } finally {
+      setProvisionBusy(false);
+    }
+  }
+  // "⚡ Kuruluyor" rozetine tıklandığında: devam eden kurulumun modalını geçmiş
+  // logla birlikte yeniden aç (metadata.provisionJobId → status endpoint).
+  async function reopenProvision(device: DeviceProfile) {
+    const jobId = device.metadata?.provisionJobId as string | undefined;
+    if (!jobId) return;
+    const instance = (device.metadata?.instance as string) || device.name;
+    let steps: ProvisionStep[] = [];
+    try {
+      const res = await fetch(`/api/provision/status/${jobId}`);
+      const body = await res.json().catch(() => ({}));
+      steps = (body?.data?.steps as ProvisionStep[]) ?? [];
+    } catch {
+      /* modal will still open; it fetches history itself on mount */
+    }
+    setProvisioning({ jobId, deviceId: device.id, instance, steps });
+  }
   function closeCreate() {
     if (busy) return;
     setError(null);
@@ -615,9 +667,14 @@ export function ProfilesView({
         title="Profiller"
         subtitle="Bulut telefon filonuzu yönetin — başlatın, taşıyın, parmak izi ve proxy atayın."
         actions={
-          <button type="button" className="btn-primary" onClick={openCreate}>
-            <Plus size={15} /> Yeni profil
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" className="btn-primary" onClick={startProvision} disabled={provisionBusy}>
+              <Zap size={15} /> {provisionBusy ? 'Başlatılıyor…' : 'Tek Tıkla Cihaz Oluştur'}
+            </button>
+            <button type="button" className="btn-ghost" onClick={openCreate}>
+              <Plus size={15} /> Yeni profil
+            </button>
+          </div>
         }
       />
 
@@ -751,9 +808,21 @@ export function ProfilesView({
                     <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
                       {device.name}
                     </Link>
-                    <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Cihazı aç" title="Cihazı aç">
-                      ⋮
-                    </Link>
+                    {(device.metadata?.provisionStatus as string) === 'PROVISIONING' ? (
+                      <button
+                        type="button"
+                        className="tag-chip tag-chip-sm"
+                        style={{ marginLeft: 'auto', color: '#fbbf24', borderColor: '#fbbf2455', display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                        onClick={() => reopenProvision(device)}
+                        title="Kurulum ilerlemesini göster"
+                      >
+                        <Zap size={12} /> Kuruluyor
+                      </button>
+                    ) : (
+                      <Link href={`/profiles/${device.id}`} className="card-menu" aria-label="Cihazı aç" title="Cihazı aç">
+                        ⋮
+                      </Link>
+                    )}
                   </div>
                   <ul className="card-meta">
                     <li>
@@ -1218,6 +1287,16 @@ export function ProfilesView({
             </footer>
           </div>
         </div>
+      ) : null}
+
+      {provisioning ? (
+        <ProvisionModal
+          jobId={provisioning.jobId}
+          deviceId={provisioning.deviceId}
+          instance={provisioning.instance}
+          steps={provisioning.steps}
+          onClose={() => setProvisioning(null)}
+        />
       ) : null}
     </div>
   );

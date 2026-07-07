@@ -11,7 +11,7 @@
 import { randomBytes } from 'node:crypto';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { encryptString, decryptString } from '../../lib/crypto';
+import { encryptString, decryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { accountsService } from './accounts.service';
@@ -48,6 +48,17 @@ const WHATSAPP_CHEAP_COUNTRIES: Array<{ id: number; code: string; cc: string }> 
 ];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Guard: the target device must belong to the caller's workspace before we
+// dispatch a job to it. A foreign (or missing) device resolves to "not found"
+// rather than letting a client-supplied deviceId drive another tenant's phone.
+async function assertDeviceInWorkspace(deviceId: string, workspaceId?: string): Promise<void> {
+  const device = await prisma.device.findFirst({
+    where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true }
+  });
+  if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+}
 
 // A strong, mixed-class password for a fresh account (upper/lower/digit/symbol).
 function generatePassword(): string {
@@ -217,6 +228,9 @@ export class BatchService {
       where: { id, ...(workspaceId ? { workspaceId } : {}) }
     });
     if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
+    // Verify the target device belongs to this workspace before dispatching a job
+    // to it (closes cross-tenant device control via a client-supplied deviceId).
+    await assertDeviceInWorkspace(deviceId, workspaceId);
 
     if (acc.platform === 'instagram') {
       if (!acc.emailAddress || !acc.passwordEnc || !acc.firstName) {
@@ -278,6 +292,8 @@ export class BatchService {
     if (acc.platform !== 'whatsapp') throw new AppError('Sadece WhatsApp hesapları mesaj gönderebilir', 400, 'PLATFORM_UNSUPPORTED');
     const deviceId = input.deviceId || acc.deviceId;
     if (!deviceId) throw new AppError('Cihaz belirtilmedi (hesap bir cihaza bağlı değil)', 400, 'NO_DEVICE');
+    // Verify the device belongs to this workspace before dispatching (cross-tenant guard).
+    await assertDeviceInWorkspace(deviceId, workspaceId);
     const payload = { accountId: acc.id, to: input.to, message: input.message } as unknown as JobPayload;
     const job = await createJobRecord('WHATSAPP_SEND', payload, deviceId, workspaceId);
     return { job };
@@ -302,6 +318,121 @@ export class BatchService {
     return { job };
   }
 
+  // Fetch a contact's WhatsApp profile (avatar + name/about) on a device. The
+  // agent screenshots the avatar and scrapes the contact-info screen; the result
+  // lands on the Job row AND is persisted onto the conversation thread by
+  // agentService.complete (avatar/profileInfo). Device-scoped + workspace-guarded.
+  async fetchProfile(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to?: string | undefined; from?: string | undefined }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const to = (input.to || '').replace(/[^\d]/g, '');
+    if (!to && !input.from) throw new AppError('to veya from gerekli', 400, 'MISSING_TARGET');
+    const payload = {
+      deviceId: input.deviceId,
+      ...(to ? { to } : {}),
+      ...(input.from ? { from: input.from } : {})
+    } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_PROFILE', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Block or unblock a contact on a device via the WhatsApp UI. `block` defaults
+  // to true. The conversation's `blocked` flag is reconciled in
+  // agentService.complete once the agent confirms the toggle. Workspace-guarded.
+  async blockContact(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to?: string | undefined; from?: string | undefined; block?: boolean | undefined }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const to = (input.to || '').replace(/[^\d]/g, '');
+    if (!to && !input.from) throw new AppError('to veya from gerekli', 400, 'MISSING_TARGET');
+    const block = input.block !== false;
+    const payload = {
+      deviceId: input.deviceId,
+      block,
+      ...(to ? { to } : {}),
+      ...(input.from ? { from: input.from } : {})
+    } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_BLOCK', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Read the device's blocked-contacts list (Settings › Privacy › Blocked). The
+  // scraped names/numbers land on the Job row; agentService.complete reconciles
+  // matching conversation threads' `blocked` flags. Workspace-guarded.
+  async listBlocked(
+    workspaceId: string | undefined,
+    input: { deviceId: string }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_BLOCKLIST', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Read the account's OWN WhatsApp number off the device (Settings profile row).
+  // The number lands on the Job result; poll the job. Workspace-guarded.
+  async myNumber(workspaceId: string | undefined, input: { deviceId: string }) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_MYNUMBER', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Send a media message (image/document) from a device to a peer. mediaUrl must
+  // be a public URL (SSRF-guarded on the agent when it downloads). Device-scoped.
+  async sendMedia(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to: string; mediaUrl: string; caption?: string | undefined; kind?: 'image' | 'document' | undefined }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const to = input.to.replace(/[^\d]/g, '');
+    if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
+    const payload = {
+      deviceId: input.deviceId,
+      to,
+      mediaUrl: input.mediaUrl,
+      ...(input.caption ? { caption: input.caption } : {}),
+      ...(input.kind ? { kind: input.kind } : {})
+    } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_SEND_MEDIA', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Delete a message in a chat: scope 'me' (for me) or 'everyone' (unsend).
+  // Optional matchText targets a specific bubble; otherwise the last outgoing one.
+  async deleteMessage(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to: string; scope?: 'me' | 'everyone' | undefined; matchText?: string | undefined }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const to = input.to.replace(/[^\d]/g, '');
+    if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
+    const payload = {
+      deviceId: input.deviceId,
+      to,
+      scope: input.scope ?? 'everyone',
+      ...(input.matchText ? { matchText: input.matchText } : {})
+    } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_DELETE_MSG', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Clear all local messages in a chat (overflow → Clear chat). Device-scoped.
+  async clearChat(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to: string }
+  ) {
+    await assertDeviceInWorkspace(input.deviceId, workspaceId);
+    const to = input.to.replace(/[^\d]/g, '');
+    if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
+    const payload = { deviceId: input.deviceId, to } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_CLEAR_CHAT', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
   // List stored WhatsApp messages (inbound captured by the agent's notification
   // poll + outbound we sent) for a device, newest first. Workspace-scoped so a
   // key can only read its own devices' messages.
@@ -316,7 +447,7 @@ export class BatchService {
     });
     if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
     const take = Math.min(Math.max(input.limit ?? 100, 1), 500);
-    const messages = await prisma.whatsappMessage.findMany({
+    const rows = await prisma.whatsappMessage.findMany({
       where: {
         deviceId: input.deviceId,
         ...(input.direction ? { direction: input.direction } : {})
@@ -324,6 +455,9 @@ export class BatchService {
       orderBy: { createdAt: 'desc' },
       take
     });
+    // Message body is AES-256-GCM encrypted at rest; decrypt for display.
+    // safeDecrypt keeps pre-encryption plaintext rows readable (backward-compat).
+    const messages = rows.map((m) => ({ ...m, body: safeDecrypt(m.body) }));
     return { messages };
   }
 
@@ -342,6 +476,8 @@ export class BatchService {
     if (acc.platform !== 'whatsapp') throw new AppError('Sadece WhatsApp hesapları mesaj okuyabilir', 400, 'PLATFORM_UNSUPPORTED');
     const deviceId = input.deviceId || acc.deviceId;
     if (!deviceId) throw new AppError('Cihaz belirtilmedi (hesap bir cihaza bağlı değil)', 400, 'NO_DEVICE');
+    // Verify the device belongs to this workspace before dispatching (cross-tenant guard).
+    await assertDeviceInWorkspace(deviceId, workspaceId);
     const payload = {
       accountId: acc.id,
       ...(input.from ? { from: input.from } : {}),
@@ -498,6 +634,104 @@ export class BatchService {
     // Success — mark ACTIVE.
     const done = await prisma.generatedAccount.update({ where: { id: acc.id }, data: { status: 'ACTIVE', error: null } });
     return { ok: true, status: 'ACTIVE', phoneNumber: phoneE164, otp, account: toPublic(done), result: res2 };
+  }
+
+  // ── OPERATOR-OTP WhatsApp registration ─────────────────────────────────────
+  // The one-click flow where the OPERATOR supplies their OWN number and enters
+  // the OTP themselves (no SMS provider). Unlike autoRegisterWhatsApp this is
+  // ASYNC: we dispatch and return immediately; the agent's OTP_WAIT/CREATED
+  // outcome is reflected onto the account by the REGISTER_WHATSAPP job-completion
+  // hook (agent.service.ts). The dashboard polls the account row for status.
+
+  // Pass 1: create the account row + dispatch REGISTER_WHATSAPP WITHOUT an OTP so
+  // the agent enters the number, auto-accepts the permission/consent screens, and
+  // stops at OTP_WAIT. A random name is generated here (used at the profile step).
+  async startOperatorRegister(
+    workspaceId: string | undefined,
+    deviceId: string,
+    phoneNumber: string
+  ) {
+    if (!deviceId) throw new AppError('Cihaz belirtilmedi', 400, 'NO_DEVICE');
+    // Verify the device belongs to this workspace before dispatching a job to it.
+    await assertDeviceInWorkspace(deviceId, workspaceId);
+
+    // Normalize to E.164 (agent's splitE164 wants a leading country code).
+    const digits = phoneNumber.replace(/[^\d]/g, '');
+    if (digits.length < 6) throw new AppError('Geçerli bir telefon numarası gerekli (ülke kodu dahil)', 400, 'INVALID_NUMBER');
+    const phoneE164 = `+${digits}`;
+
+    // Random identity for the WhatsApp profile name (offline-first, never throws).
+    const ident = await accountsService.generateIdentity().catch(() => null);
+    const fullName =
+      [ident?.firstName, ident?.lastName].filter(Boolean).join(' ') || 'Fleet User';
+    const [firstName, ...rest] = fullName.split(' ');
+    const lastName = rest.join(' ') || null;
+
+    const acc = await prisma.generatedAccount.create({
+      data: {
+        platform: 'whatsapp',
+        status: 'REGISTERING',
+        firstName: firstName ?? 'Fleet',
+        lastName,
+        phoneNumber: phoneE164,
+        deviceId,
+        ...(workspaceId ? { workspaceId } : {})
+      }
+    });
+
+    await createJobRecord(
+      'REGISTER_WHATSAPP',
+      { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
+      undefined,
+      workspaceId
+    );
+
+    return toPublic(acc);
+  }
+
+  // Pass 2: the operator hands us the SMS code. Store it (encrypted) and re-
+  // dispatch REGISTER_WHATSAPP WITH the otpCode so the agent enters it and
+  // finishes the profile (random name). The completion hook then flips the
+  // account to ACTIVE (or FAILED on a rejected code / wall).
+  async provideOperatorOtp(
+    workspaceId: string | undefined,
+    accountId: string,
+    otpCode: string
+  ) {
+    const acc = await prisma.generatedAccount.findFirst({
+      where: { id: accountId, ...(workspaceId ? { workspaceId } : {}) }
+    });
+    if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
+    if (acc.status !== 'AWAITING_OTP') {
+      throw new AppError('Hesap OTP aşamasında değil', 400, 'NOT_AWAITING_OTP');
+    }
+    if (!acc.deviceId) throw new AppError('Hesap bir cihaza bağlı değil', 400, 'NO_DEVICE');
+    if (!acc.phoneNumber) throw new AppError('Hesapta numara yok', 400, 'NO_NUMBER');
+
+    const otp = otpCode.replace(/\D/g, '').slice(0, 8);
+    if (!otp) throw new AppError('Geçerli bir OTP kodu gerekli', 400, 'INVALID_OTP');
+
+    const fullName = [acc.firstName, acc.lastName].filter(Boolean).join(' ') || 'Fleet User';
+
+    const updated = await prisma.generatedAccount.update({
+      where: { id: acc.id },
+      data: { otpCodeEnc: encryptString(otp), status: 'REGISTERING', error: null }
+    });
+
+    await createJobRecord(
+      'REGISTER_WHATSAPP',
+      {
+        deviceId: acc.deviceId,
+        accountId: acc.id,
+        phoneNumber: acc.phoneNumber,
+        fullName,
+        otpCode: otp
+      } as unknown as JobPayload,
+      undefined,
+      workspaceId
+    );
+
+    return toPublic(updated);
   }
 
   // Wait for a Job to reach a terminal state (COMPLETED / FAILED), polling the

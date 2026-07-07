@@ -2,16 +2,21 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, claimNextJobHandler, completeJobHandler, updateDeviceMetricsHandler, whatsappInboundHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, updateDeviceMetricsHandler, whatsappInboundHandler } from './agent.controller';
+import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
-// key (x-api-key) and the per-host agent key (x-agent-key).
+// key (x-api-key) and the per-host agent key (x-agent-key). Each request is also
+// HMAC-signed (verifyAgentSignature) for payload integrity + replay protection;
+// requireHostAgent must run first so the plaintext agent key (the HMAC key) is
+// resolved before verification.
 export const agentRouter = Router();
 
-agentRouter.use(requireApiKey, requireHostAgent);
+agentRouter.use(requireApiKey, requireHostAgent, verifyAgentSignature);
 
 agentRouter.get('/jobs/next', asyncHandler(claimNextJobHandler));
 agentRouter.post('/jobs/:id/complete', asyncHandler(completeJobHandler));
+agentRouter.post('/jobs/:id/progress', asyncHandler(agentProgressHandler));
 agentRouter.post('/heartbeat', asyncHandler(agentHeartbeatHandler));
 agentRouter.post('/device-metrics', asyncHandler(updateDeviceMetricsHandler));
 agentRouter.post('/whatsapp/inbound', asyncHandler(whatsappInboundHandler));

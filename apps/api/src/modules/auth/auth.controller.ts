@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { writeAuditLog } from '../audit/audit.service';
 import { isServiceAuth } from '../../lib/serviceAuth';
+import { clearLoginFailures, getLoginLockoutMs, recordLoginFailure } from '../../middleware/rateLimit';
 import { getCurrentUser, login, logout, refresh } from './auth.service';
 import { disableTwoFactor, enableTwoFactor, setupTwoFactor } from './twoFactor.service';
 
@@ -21,13 +22,47 @@ const refreshSchema = z.object({
 export async function loginHandler(req: Request, res: Response): Promise<void> {
   const input = loginSchema.parse(req.body);
   const serviceAuth = await isServiceAuth(req);
-  const result = await login(input, { serviceAuth });
 
-  // Password ok but a 2FA code is still needed: no tokens issued yet.
+  // Brute-force lockout (per IP+email). The trusted server-side service identity
+  // is exempt — it logs in on nearly every page render and must never be locked.
+  if (!serviceAuth) {
+    const lockMs = getLoginLockoutMs(req.ip, input.email);
+    if (lockMs > 0) {
+      throw new AppError(
+        `Too many failed attempts. Try again in ${Math.ceil(lockMs / 1000)}s.`,
+        429,
+        'LOGIN_LOCKED'
+      );
+    }
+  }
+
+  let result;
+  try {
+    result = await login(input, { serviceAuth });
+  } catch (err) {
+    // Count genuine credential AND 2FA-code failures against the lockout (both
+    // are guessable secrets), but NOT a require2fa policy rejection (403) that a
+    // correct password would still hit.
+    if (
+      !serviceAuth &&
+      err instanceof AppError &&
+      (err.code === 'INVALID_CREDENTIALS' || err.code === 'TWO_FACTOR_INVALID_CODE')
+    ) {
+      recordLoginFailure(req.ip, input.email);
+    }
+    throw err;
+  }
+
+  // Password ok but a 2FA code is still needed: no tokens issued yet. Don't
+  // clear the counter yet — the 2FA step can still fail — but this isn't a
+  // credential failure either, so leave the counter untouched.
   if ('twoFactorRequired' in result) {
     res.json({ data: result });
     return;
   }
+
+  // Full success: reset the failure counter for this IP+email.
+  if (!serviceAuth) clearLoginFailures(req.ip, input.email);
 
   await writeAuditLog({
     userId: result.user.id,

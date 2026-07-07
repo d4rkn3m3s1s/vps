@@ -37,6 +37,13 @@ const whatsappInboundSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+const progressSchema = z.object({
+  step: z.string().min(1),
+  percent: z.coerce.number().min(0).max(100).optional(),
+  note: z.string().max(500).optional(),
+  status: z.enum(['RUNNING', 'COMPLETED', 'FAILED']).optional()
+});
+
 function requireHost(req: Request) {
   if (!req.hostAgent) throw new AppError('Host agent not authenticated', 401, 'UNAUTHORIZED');
   return req.hostAgent;
@@ -55,6 +62,16 @@ export async function completeJobHandler(req: Request, res: Response): Promise<v
   if (typeof jobId !== 'string') throw new AppError('Job id is required', 400, 'INVALID_JOB_ID');
   const input = completeSchema.parse(req.body);
   res.json({ data: await agentService.complete(host, jobId, input) });
+}
+
+// Agent reports one provision sub-step; we normalize + broadcast it as a
+// `provision.progress` WS event so the dashboard wizard updates live.
+export async function agentProgressHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const jobId = req.params.id;
+  if (typeof jobId !== 'string') throw new AppError('Job id is required', 400, 'INVALID_JOB_ID');
+  const input = progressSchema.parse(req.body);
+  res.json({ data: await agentService.reportProgress(host, jobId, input) });
 }
 
 export async function agentHeartbeatHandler(req: Request, res: Response): Promise<void> {

@@ -1,8 +1,0 @@
-=== listening ports ===
-(none of 4000/3000/5432/6379)
-=== docker containers ===
-(docker not up)
-=== DB hosts ===
-(db query failed)
-=== DB devices ===
-(db query failed)

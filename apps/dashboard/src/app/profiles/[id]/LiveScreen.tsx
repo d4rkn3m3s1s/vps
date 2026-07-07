@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Square, ChevronLeft, Circle, Square as SquareIcon, Power, Volume2, Volume1, Maximize2, Loader2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Play, Square, ChevronLeft, Circle, Square as SquareIcon, Power, Volume2, Volume1, Maximize2, Minimize2, X, Loader2 } from 'lucide-react';
 
 // Android keyevent codes used by the nav bar.
 const KEY = { BACK: 4, HOME: 3, RECENTS: 187, POWER: 26, VOL_UP: 24, VOL_DOWN: 25 } as const;
@@ -270,36 +271,22 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
 
   const live = state === 'live';
 
-  return (
-    <div className="panel live-screen-panel">
-      <div className="live-screen-head">
-        <h2>Canlı ekran</h2>
-        <div className="live-screen-meta">
-          {live ? <span className="live-badge"><span className="live-dot" /> CANLI · {fps} fps</span> : null}
-          {state === 'connecting' ? <span className="helper"><Loader2 size={13} className="spin" /> bağlanıyor…</span> : null}
-          {state === 'offline' ? <span className="helper">cihaz bir sunucuya atanmamış</span> : null}
-          {state === 'error' ? <span className="helper live-err">bağlantı hatası</span> : null}
-          {live ? (
-            <button type="button" className="btn-ghost" onClick={() => { cleanup(); setState('idle'); }}><Square size={13} /> Durdur</button>
-          ) : (
-            <button type="button" className="btn-primary" disabled={state === 'connecting'} onClick={connect}><Play size={13} /> Yayını başlat</button>
-          )}
-        </div>
-      </div>
-
-      <div className={`live-screen-stage ${zoom ? 'is-zoom' : ''}`}>
-        {live ? (
-          <button
-            type="button"
-            className="live-zoom-btn"
-            onClick={() => setZoom((z) => !z)}
-            title={zoom ? 'Küçült' : 'Büyüt'}
-            aria-label={zoom ? 'Küçült' : 'Büyüt'}
-          >
-            <Maximize2 size={16} />
-          </button>
-        ) : null}
-        <div className="live-phone-frame">
+  // The screen surface (canvas + placeholder + nav bar). Rendered inline normally,
+  // or portaled into a fullscreen modal when zoomed. Keeping it as ONE JSX subtree
+  // means React MOVES the canvas node between parents instead of remounting it, so
+  // the live stream never drops when toggling zoom.
+  const surface = (
+    <>
+      <button
+        type="button"
+        className="live-zoom-btn"
+        onClick={() => setZoom((z) => !z)}
+        title={zoom ? 'Küçült' : 'Büyüt'}
+        aria-label={zoom ? 'Küçült' : 'Büyüt'}
+      >
+        {zoom ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+      </button>
+      <div className="live-phone-frame">
         <div
           className={`live-screen-frame ${live ? 'is-live' : ''}`}
           tabIndex={0}
@@ -350,19 +337,56 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
             </div>
           ) : null}
         </div>
-        </div>
+      </div>
 
-        {/* Android navigation bar — works whenever the stream is live. */}
-        <div className="live-screen-nav">
-          <button type="button" className="live-nav-btn" disabled={!live} title="Geri" onClick={() => send({ type: 'key', keycode: KEY.BACK })}><ChevronLeft size={18} /></button>
-          <button type="button" className="live-nav-btn" disabled={!live} title="Ana ekran" onClick={() => send({ type: 'key', keycode: KEY.HOME })}><Circle size={16} /></button>
-          <button type="button" className="live-nav-btn" disabled={!live} title="Son uygulamalar" onClick={() => send({ type: 'key', keycode: KEY.RECENTS })}><SquareIcon size={15} /></button>
-          <span className="live-nav-sep" />
-          <button type="button" className="live-nav-btn" disabled={!live} title="Ses +" onClick={() => send({ type: 'key', keycode: KEY.VOL_UP })}><Volume2 size={16} /></button>
-          <button type="button" className="live-nav-btn" disabled={!live} title="Ses −" onClick={() => send({ type: 'key', keycode: KEY.VOL_DOWN })}><Volume1 size={16} /></button>
-          <button type="button" className="live-nav-btn" disabled={!live} title="Güç" onClick={() => send({ type: 'key', keycode: KEY.POWER })}><Power size={16} /></button>
+      {/* Android navigation bar — works whenever the stream is live. */}
+      <div className="live-screen-nav">
+        <button type="button" className="live-nav-btn" disabled={!live} title="Geri" onClick={() => send({ type: 'key', keycode: KEY.BACK })}><ChevronLeft size={18} /></button>
+        <button type="button" className="live-nav-btn" disabled={!live} title="Ana ekran" onClick={() => send({ type: 'key', keycode: KEY.HOME })}><Circle size={16} /></button>
+        <button type="button" className="live-nav-btn" disabled={!live} title="Son uygulamalar" onClick={() => send({ type: 'key', keycode: KEY.RECENTS })}><SquareIcon size={15} /></button>
+        <span className="live-nav-sep" />
+        <button type="button" className="live-nav-btn" disabled={!live} title="Ses +" onClick={() => send({ type: 'key', keycode: KEY.VOL_UP })}><Volume2 size={16} /></button>
+        <button type="button" className="live-nav-btn" disabled={!live} title="Ses −" onClick={() => send({ type: 'key', keycode: KEY.VOL_DOWN })}><Volume1 size={16} /></button>
+        <button type="button" className="live-nav-btn" disabled={!live} title="Güç" onClick={() => send({ type: 'key', keycode: KEY.POWER })}><Power size={16} /></button>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="panel live-screen-panel">
+      <div className="live-screen-head">
+        <h2>Canlı ekran</h2>
+        <div className="live-screen-meta">
+          {live ? <span className="live-badge"><span className="live-dot" /> CANLI · {fps} fps</span> : null}
+          {state === 'connecting' ? <span className="helper"><Loader2 size={13} className="spin" /> bağlanıyor…</span> : null}
+          {state === 'offline' ? <span className="helper">cihaz bir sunucuya atanmamış</span> : null}
+          {state === 'error' ? <span className="helper live-err">bağlantı hatası</span> : null}
+          {live ? (
+            <button type="button" className="btn-ghost" onClick={() => { cleanup(); setState('idle'); }}><Square size={13} /> Durdur</button>
+          ) : (
+            <button type="button" className="btn-primary" disabled={state === 'connecting'} onClick={connect}><Play size={13} /> Yayını başlat</button>
+          )}
         </div>
       </div>
+
+      {zoom ? (
+        // Fullscreen modal (like the Wall focus view): a fixed backdrop with the
+        // enlarged mirror centered. Clicking the backdrop or the ✕ closes it.
+        createPortal(
+          <div className="live-zoom-overlay" onClick={() => setZoom(false)}>
+            <div className="live-zoom-shell" onClick={(e) => e.stopPropagation()}>
+              <div className="live-zoom-topbar">
+                <strong>Canlı ekran{live ? ` · ${fps} fps` : ''}</strong>
+                <button type="button" className="modal-close" aria-label="Kapat" onClick={() => setZoom(false)}><X size={16} /></button>
+              </div>
+              <div className="live-screen-stage is-zoom">{surface}</div>
+            </div>
+          </div>,
+          document.body
+        )
+      ) : (
+        <div className="live-screen-stage">{surface}</div>
+      )}
       <p className="helper live-screen-hint">İpucu: ekrana tıklayın = dokunma, sürükleyin = kaydırma. Çerçeveye odaklanınca klavyeyle yazabilirsiniz.</p>
     </div>
   );

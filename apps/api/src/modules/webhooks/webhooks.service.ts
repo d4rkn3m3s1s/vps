@@ -1,6 +1,7 @@
 import type { Prisma, WebhookEvent } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { enqueueDelivery } from './webhook.queue';
 
 // Concrete (non-ALL) events that can actually fire. ALL is a subscription filter
@@ -30,6 +31,9 @@ export class WebhooksService {
   }
 
   async create(input: WebhookInput, workspaceId?: string) {
+    // SSRF guard: the delivery worker POSTs to this URL server-side, so reject
+    // internal/loopback/metadata targets before we persist the hook.
+    await assertSafePublicUrl(input.url);
     const hook = await prisma.webhook.create({
       data: {
         label: input.label,
@@ -56,6 +60,8 @@ export class WebhooksService {
     workspaceId?: string
   ) {
     await this.assertExists(id, workspaceId);
+    // SSRF guard on any newly-supplied URL (worker POSTs to it server-side).
+    if (input.url) await assertSafePublicUrl(input.url);
     const hook = await prisma.webhook.update({
       where: { id },
       data: {
@@ -116,8 +122,11 @@ export class WebhooksService {
   }
 
   // Sends a synthetic test event to a single webhook (admin "Send test" button).
-  async sendTest(id: string): Promise<{ deliveryId: string }> {
-    const hook = await prisma.webhook.findUnique({ where: { id } });
+  // Workspace-scoped so one tenant can't test-fire another tenant's hook.
+  async sendTest(id: string, workspaceId?: string): Promise<{ deliveryId: string }> {
+    const hook = await prisma.webhook.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) }
+    });
     if (!hook) throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
     const delivery = await prisma.webhookDelivery.create({
       data: {
@@ -135,8 +144,14 @@ export class WebhooksService {
   }
 
   // Re-queues a past delivery (admin "Redeliver" button). Resets it to pending.
-  async redeliver(deliveryId: string): Promise<void> {
-    const delivery = await prisma.webhookDelivery.findUnique({ where: { id: deliveryId } });
+  // Workspace-scoped via the parent webhook so a foreign delivery is "not found".
+  async redeliver(deliveryId: string, workspaceId?: string): Promise<void> {
+    const delivery = await prisma.webhookDelivery.findFirst({
+      where: {
+        id: deliveryId,
+        ...(workspaceId ? { webhook: { workspaceId } } : {})
+      }
+    });
     if (!delivery) throw new AppError('Delivery not found', 404, 'DELIVERY_NOT_FOUND');
     await prisma.webhookDelivery.update({
       where: { id: deliveryId },
@@ -145,9 +160,10 @@ export class WebhooksService {
     await enqueueDelivery(deliveryId);
   }
 
-  // Recent delivery attempts for a webhook (history UI).
-  async listDeliveries(webhookId: string, limit = 25) {
-    await this.assertExists(webhookId);
+  // Recent delivery attempts for a webhook (history UI). Workspace-scoped so a
+  // foreign webhook's history can't be read by id.
+  async listDeliveries(webhookId: string, workspaceId?: string, limit = 25) {
+    await this.assertExists(webhookId, workspaceId);
     return prisma.webhookDelivery.findMany({
       where: { webhookId },
       orderBy: { createdAt: 'desc' },

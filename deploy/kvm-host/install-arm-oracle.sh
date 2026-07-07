@@ -116,6 +116,12 @@ if [ -n "$FLEET_API_URL" ] && [ -n "$FLEET_API_KEY" ] && [ -n "$FLEET_HOST_KEY" 
   else
     warn "agent.mjs not found next to this script; copy it to $AGENT_DIR/agent.mjs manually."
   fi
+  # Waydroid provisioning engine (one-click device flow — parametric host scripts).
+  if [ -d "$(dirname "$0")/waydroid" ]; then
+    mkdir -p "$AGENT_DIR/waydroid"
+    cp "$(dirname "$0")/waydroid/"*.sh "$AGENT_DIR/waydroid/"
+    chmod 0755 "$AGENT_DIR/waydroid/"*.sh
+  fi
   cat > /etc/systemd/system/fleet-agent.service <<EOF
 [Unit]
 Description=VPS Fleet Host Agent

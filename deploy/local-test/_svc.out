@@ -1,4 +1,0 @@
-docker=up
-postgres=/var/run/postgresql:5432 - accepting connections
-redis=PONG
-db_exists=1

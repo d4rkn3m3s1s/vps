@@ -27,12 +27,16 @@ export class DeviceService {
   // All reads/writes accept an optional workspaceId. When provided (every
   // interactive call), results are strictly scoped to that workspace so one
   // tenant can never see or touch another's devices.
-  async listDevices(workspaceId?: string, tag?: string) {
+  async listDevices(workspaceId?: string, tag?: string, search?: string) {
     const t = tag?.trim().toLowerCase();
+    const q = search?.trim();
     return prisma.device.findMany({
       where: {
         ...(workspaceId ? { workspaceId } : {}),
-        ...(t ? { tags: { has: t } } : {})
+        ...(t ? { tags: { has: t } } : {}),
+        // Free-text search over the device name (case-insensitive). Lets the
+        // dashboard/API filter a large fleet by name instead of only by tag.
+        ...(q ? { name: { contains: q, mode: 'insensitive' as const } } : {})
       },
       orderBy: { createdAt: 'desc' },
       include: { group: true, fingerprint: true, host: true }
@@ -80,6 +84,7 @@ export class DeviceService {
     if (typeof input.adbPort === 'number') data.adbPort = input.adbPort;
     if (input.androidVersion) data.androidVersion = input.androidVersion;
     if (input.groupId) data.group = { connect: { id: input.groupId } };
+    if (input.hostId) data.host = { connect: { id: input.hostId } };
     if (workspaceId) data.workspace = { connect: { id: workspaceId } };
     // Fold any chosen hardware tier into metadata so it's visible on the device.
     const baseMeta = buildJsonMetadata(input.metadata);

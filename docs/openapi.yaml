@@ -145,6 +145,262 @@ paths:
       responses:
         '200':
           description: Registration job dispatched (account → REGISTERING)
+
+  # ── WhatsApp Public API (x-api-key only, workspace-bound flk_ key; NO JWT) ──
+  # See docs/whatsapp-api.md for the full Turkish reference. On-device POSTs are
+  # asynchronous: they return { jobId, status: "PENDING" } and complete in ~10-40s.
+  /public/v1/devices:
+    get:
+      summary: List the workspace's devices (public API)
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200':
+          description: '{ data: [ { id, name, status } ] }'
+  /public/v1/whatsapp/messages:
+    get:
+      summary: Stored WhatsApp message history (IN + OUT), decrypted
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: query, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 500 } }
+        - { name: direction, in: query, schema: { type: string, enum: [IN, OUT] } }
+      responses:
+        '200':
+          description: '{ data: { messages: [...] } }'
+  /public/v1/whatsapp/conversations:
+    get:
+      summary: WhatsApp-Web-style chat list for a device
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: query, required: true, schema: { type: string } }
+        - { name: filter, in: query, schema: { type: string, enum: [all, unread, favorite, archived] } }
+        - { name: labelId, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 100 } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: '{ data: { conversations: [...], nextCursor } }'
+  /public/v1/whatsapp/thread:
+    get:
+      summary: One chat's message history (scroll-up pagination)
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: query, required: true, schema: { type: string } }
+        - { name: peer, in: query, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 200 } }
+        - { name: before, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: '{ data: { messages: [...], nextBefore } }'
+  /public/v1/whatsapp/stats:
+    get:
+      summary: Messaging counts + average first-response minutes
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: query, schema: { type: string } }
+        - { name: sinceHours, in: query, schema: { type: integer, maximum: 720 } }
+      responses:
+        '200':
+          description: '{ data: { inbound, outbound, failed, openThreads, avgResponseMinutes } }'
+  /public/v1/whatsapp/labels:
+    get:
+      summary: List conversation categories (labels)
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { labels: [...] } }' }
+    post:
+      summary: Create a category (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 40 }
+                color: { type: string }
+      responses:
+        '201': { description: Label created }
+  /public/v1/whatsapp/send:
+    post:
+      summary: Send a WhatsApp message from a device (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to, message]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number, e.g. 90XXXXXXXXXX }
+                message: { type: string, maxLength: 4096 }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/broadcast:
+    post:
+      summary: One-to-many throttled send (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, message]
+              properties:
+                deviceId: { type: string }
+                message: { type: string, maxLength: 4096 }
+                peers: { type: array, items: { type: string }, maxItems: 1000 }
+                labelId: { type: string }
+      responses:
+        '201': { description: '{ data: { broadcastId, queued } }' }
+  /public/v1/whatsapp/profile:
+    post:
+      summary: Fetch a contact's profile (avatar + name) on-device (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number (to OR from required) }
+                from: { type: string, description: contact display name }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/block:
+    post:
+      summary: Block / unblock a contact on-device (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number (to OR from required) }
+                from: { type: string }
+                block: { type: boolean, description: 'true = block (default), false = unblock' }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/blocklist:
+    post:
+      summary: Read the device's blocked-accounts list (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } } — result: { count, blocked: [...] }' }
+  /public/v1/whatsapp/mynumber:
+    post:
+      summary: Read the account's own WhatsApp number on-device (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } } — result: { number }' }
+  /public/v1/whatsapp/send-media:
+    post:
+      summary: Send an image/document from a URL (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to, mediaUrl]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number }
+                mediaUrl: { type: string, format: uri, maxLength: 2048 }
+                caption: { type: string, maxLength: 1024 }
+                kind: { type: string, enum: [image, document] }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/delete-message:
+    post:
+      summary: Delete a message (for me / for everyone) (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number }
+                scope: { type: string, enum: [me, everyone], description: 'default: everyone' }
+                matchText: { type: string, description: target a specific message by text }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/clear-chat:
+    post:
+      summary: Clear a chat's local history (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number }
+      responses:
+        '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/conversations/labels:
+    post:
+      summary: Assign categories to a chat (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, peer, labelIds]
+              properties:
+                deviceId: { type: string }
+                peer: { type: string }
+                labelIds: { type: array, items: { type: string }, maxItems: 20 }
+      responses:
+        '200': { description: '{ data: { ok: true } }' }
+  /public/v1/whatsapp/conversations/state:
+    post:
+      summary: Favourite / archive / pin a chat (write scope)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, peer]
+              properties:
+                deviceId: { type: string }
+                peer: { type: string }
+                favorite: { type: boolean }
+                archived: { type: boolean }
+                pinned: { type: boolean }
+      responses:
+        '200': { description: '{ data: { ok: true } }' }
 components:
   securitySchemes:
     bearerAuth:

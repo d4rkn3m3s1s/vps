@@ -45,6 +45,21 @@ enum JobType {
   REGISTER_WHATSAPP
   WHATSAPP_SEND
   WHATSAPP_READ
+  // Fetch a contact's profile: avatar screenshot (cropped to a data-URI) + name/
+  // about/last-seen text scraped from the contact-info screen.
+  WHATSAPP_PROFILE
+  // Block / unblock a contact from the chat's overflow menu (payload.block bool).
+  WHATSAPP_BLOCK
+  // Read the Settings › Privacy › Blocked-contacts list off the device.
+  WHATSAPP_BLOCKLIST
+  // Read the account's OWN WhatsApp number off the device.
+  WHATSAPP_MYNUMBER
+  // Send a media message (image/file) to a peer.
+  WHATSAPP_SEND_MEDIA
+  // Delete a message (for me / for everyone).
+  WHATSAPP_DELETE_MSG
+  // Clear all messages in a chat.
+  WHATSAPP_CLEAR_CHAT
   APP_EXPLORE
   AGENT_RUN
   APPLY_FINGERPRINT
@@ -1094,6 +1109,18 @@ model WhatsappConversation {
   notes          String?
   // Operator-assigned label ids (see WhatsappLabel). Postgres text[].
   labelIds       String[] @default([])
+  // Whether this contact is currently blocked on the device (set by WHATSAPP_BLOCK
+  // and reconciled from WHATSAPP_BLOCKLIST). The list dims blocked threads and the
+  // action toggles to "Engeli kaldır".
+  blocked        Boolean  @default(false)
+  // Cropped avatar as a data-URI ("data:image/png;base64,…"), captured by
+  // WHATSAPP_PROFILE off the contact-info screen. Null = fall back to initials.
+  avatarBase64   String?
+  // When the avatar was last refreshed (so the UI can re-fetch stale ones).
+  avatarAt       DateTime?
+  // Scraped profile text: { profileName?, about?, phone?, lastSeen? }. Plaintext
+  // (not secret) — shown in the contact-info panel.
+  profileInfo    Json?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   device         Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)

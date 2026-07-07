@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
+import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 import {
   providerStatusHandler,
   smsBalanceHandler,
@@ -27,9 +28,18 @@ import {
   sendWhatsAppFromDeviceHandler,
   readWhatsAppHandler,
   listWhatsAppMessagesHandler,
+  fetchWhatsAppProfileHandler,
+  blockWhatsAppContactHandler,
+  listWhatsAppBlockedHandler,
+  whatsAppMyNumberHandler,
+  sendWhatsAppMediaHandler,
+  deleteWhatsAppMessageHandler,
+  clearWhatsAppChatHandler,
   cancelAccountHandler,
   deleteAccountHandler,
-  autoRegisterWhatsAppHandler
+  autoRegisterWhatsAppHandler,
+  startRegisterHandler,
+  provideOtpHandler
 } from './batch.controller';
 
 export const accountsRouter = Router();
@@ -54,19 +64,43 @@ accountsRouter.get('/mail/message/:id', requireApiKey, authenticateJwt, asyncHan
 accountsRouter.post('/identity', requireApiKey, authenticateJwt, asyncHandler(generateIdentityHandler));
 
 // Fully automatic WhatsApp registration (rent number → register → OTP → finish).
-accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, asyncHandler(autoRegisterWhatsAppHandler));
+// Rents a paid number + drives a device — throttled to prevent bill-runner abuse.
+accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(autoRegisterWhatsAppHandler));
+
+// Operator-OTP one-click registration (operator's own number; enter OTP by hand).
+accountsRouter.post('/whatsapp/register', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(startRegisterHandler));
+accountsRouter.post('/whatsapp/register/:id/otp', requireApiKey, authenticateJwt, asyncHandler(provideOtpHandler));
 
 // Stored WhatsApp messages (inbound captured by the agent + outbound we sent),
 // device-scoped. ?deviceId=&limit=&direction=IN|OUT
 accountsRouter.get('/whatsapp/messages', requireApiKey, authenticateJwt, asyncHandler(listWhatsAppMessagesHandler));
 
+// Each of these dispatches an on-device WhatsApp RPA job (the agent runs them
+// serially on the phone). heavyOperationRateLimiter (per-user/API-key) caps how
+// fast a caller can queue them, so a runaway loop can't flood the PENDING queue.
 // Send a WhatsApp message directly from a device (WhatsApp page).
-accountsRouter.post('/whatsapp/send', requireApiKey, authenticateJwt, asyncHandler(sendWhatsAppFromDeviceHandler));
+accountsRouter.post('/whatsapp/send', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppFromDeviceHandler));
+
+// Fetch a contact's WhatsApp profile (avatar + name/about), device-scoped.
+accountsRouter.post('/whatsapp/profile', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(fetchWhatsAppProfileHandler));
+
+// Block / unblock a WhatsApp contact, device-scoped. { block?: boolean }
+accountsRouter.post('/whatsapp/block', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(blockWhatsAppContactHandler));
+
+// Read the blocked-contacts list off a device, device-scoped.
+accountsRouter.post('/whatsapp/blocklist', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(listWhatsAppBlockedHandler));
+
+// Own number, media send, message delete, and clear chat — device-scoped.
+accountsRouter.post('/whatsapp/mynumber', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppMyNumberHandler));
+accountsRouter.post('/whatsapp/send-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppMediaHandler));
+accountsRouter.post('/whatsapp/delete-message', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(deleteWhatsAppMessageHandler));
+accountsRouter.post('/whatsapp/clear-chat', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(clearWhatsAppChatHandler));
 
 // Batch account farm (GeneratedAccount lifecycle)
 accountsRouter.get('/batch/accounts', requireApiKey, authenticateJwt, asyncHandler(listAccountsHandler));
-accountsRouter.post('/batch', requireApiKey, authenticateJwt, asyncHandler(createBatchHandler));
-accountsRouter.post('/batch/provision', requireApiKey, authenticateJwt, asyncHandler(provisionBatchHandler));
+// Bulk account generation + provisioning — expensive, so per-user throttled.
+accountsRouter.post('/batch', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(createBatchHandler));
+accountsRouter.post('/batch/provision', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(provisionBatchHandler));
 accountsRouter.get('/batch/accounts/:id', requireApiKey, authenticateJwt, asyncHandler(getAccountHandler));
 accountsRouter.post('/batch/accounts/:id/provision', requireApiKey, authenticateJwt, asyncHandler(provisionAccountHandler));
 accountsRouter.post('/batch/accounts/:id/register', requireApiKey, authenticateJwt, asyncHandler(registerAccountHandler));

@@ -16,6 +16,7 @@ import { tickTrendsRollup } from './modules/trends/trends.service';
 import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
 import { webhooksService } from './modules/webhooks/webhooks.service';
+import { startTelegramBot } from './modules/telegram/telegram.service';
 
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
@@ -31,30 +32,43 @@ async function main(): Promise<void> {
   const webhookWorker = startWebhookWorker();
   logger.info('Webhook delivery worker started');
 
-  // In-process scheduler tick: fire any due tasks once a minute.
+  // Two-way Telegram bot: long-polls each workspace's configured bot for commands
+  // and inline-button taps, driving the same workspace-scoped services (list
+  // devices, send/read WhatsApp). Self-scheduling loop (not setInterval).
+  startTelegramBot();
+
+  // In-process scheduler tick: fire any due tasks once a minute. A reentrancy
+  // guard prevents a slow tick (300-device fleet) from overlapping the next one,
+  // which would double-dispatch the same due task/post.
+  let schedulerTickRunning = false;
   setInterval(() => {
-    schedulerService
-      .runDue()
-      .then((n) => {
+    if (schedulerTickRunning) return;
+    schedulerTickRunning = true;
+    void (async () => {
+      try {
+        const n = await schedulerService.runDue();
         if (n > 0) logger.info(`Scheduler fired ${n} due task(s)`);
-      })
-      .catch((error) => {
+      } catch (error) {
         logger.error('Scheduler tick failed', { error: error instanceof Error ? error.message : String(error) });
-      });
-    // Content calendar: dispatch any scheduled posts whose time has passed.
-    calendarService
-      .dispatchDue()
-      .then((r) => {
+      }
+      // Content calendar: dispatch any scheduled posts whose time has passed.
+      try {
+        const r = await calendarService.dispatchDue();
         if (r.dispatched > 0) logger.info(`Calendar dispatched ${r.dispatched} post(s)`);
-      })
-      .catch((error) => {
+      } catch (error) {
         logger.error('Calendar tick failed', { error: error instanceof Error ? error.message : String(error) });
-      });
+      } finally {
+        schedulerTickRunning = false;
+      }
+    })();
   }, 60_000).unref();
 
   // Periodic Vast.ai reconciliation: bring provisioned GPU hosts online and
   // auto-register their cloud phone once the instance is RUNNING.
+  let vastSyncRunning = false;
   setInterval(() => {
+    if (vastSyncRunning) return;
+    vastSyncRunning = true;
     syncAllWorkspaces()
       .then((r) => {
         if (r.hostsUpdated > 0 || r.devicesCreated > 0) {
@@ -63,12 +77,16 @@ async function main(): Promise<void> {
       })
       .catch((error) => {
         logger.error('Vast sync tick failed', { error: error instanceof Error ? error.message : String(error) });
-      });
+      })
+      .finally(() => { vastSyncRunning = false; });
   }, 90_000).unref();
 
   // Farm engine tick: dispatch humanized RPA runs for active campaigns, honoring
   // per-device daily caps, warmup stages, and active hours.
+  let farmTickRunning = false;
   setInterval(() => {
+    if (farmTickRunning) return;
+    farmTickRunning = true;
     farmService
       .tick()
       .then((r) => {
@@ -76,7 +94,8 @@ async function main(): Promise<void> {
       })
       .catch((error) => {
         logger.error('Farm tick failed', { error: error instanceof Error ? error.message : String(error) });
-      });
+      })
+      .finally(() => { farmTickRunning = false; });
   }, 60_000).unref();
 
   // Metrics rollup: snapshot today's fleet metrics into the MetricSnapshot

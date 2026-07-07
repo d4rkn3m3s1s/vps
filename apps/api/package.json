@@ -11,7 +11,8 @@
     "start:worker": "node dist/worker.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "rotate:encryption": "tsx scripts/rotate-encryption.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.9.0",

@@ -56,11 +56,13 @@ export async function getAccessToken(): Promise<string> {
       cache: 'no-store',
       headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, Authorization: `Bearer ${token}` }
     });
-    if (res.ok) {
-      const json = (await res.json()) as { data: { accessToken: string } };
-      token = json.data.accessToken;
+    if (!res.ok) {
+      // Switch başarısız (ör. üye değil): SESSİZCE base token'a düşme — bu,
+      // yetkisiz erişimi admin'in default workspace'i ile maskeler. Erişimi reddet.
+      throw new Error(`Workspace switch denied (${res.status})`);
     }
-    // If the switch fails (e.g. not a member), fall back to the base token.
+    const json = (await res.json()) as { data: { accessToken: string } };
+    token = json.data.accessToken;
   }
 
   cacheByWorkspace.set(workspaceId, { token, expiresAt: now + 12 * 60_000 });

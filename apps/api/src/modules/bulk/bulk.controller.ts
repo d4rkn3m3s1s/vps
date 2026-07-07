@@ -45,3 +45,35 @@ export async function bulkProxyHandler(req: Request, res: Response): Promise<voi
   });
   res.status(201).json({ data: result });
 }
+
+const bulkDeviceIdsSchema = z.object({ deviceIds: z.array(z.string()).min(1) });
+
+export async function bulkStopHandler(req: Request, res: Response): Promise<void> {
+  const { deviceIds } = bulkDeviceIdsSchema.parse(req.body);
+  const result = await bulkService.stopDevices(deviceIds, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'bulk.stop',
+    resourceType: 'device',
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { count: result.stopped }
+  });
+  res.status(201).json({ data: result });
+}
+
+export async function bulkDeleteHandler(req: Request, res: Response): Promise<void> {
+  const { deviceIds } = bulkDeviceIdsSchema.parse(req.body);
+  const result = await bulkService.deleteDevices(deviceIds, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'bulk.delete',
+    resourceType: 'device',
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined,
+    metadata: { count: result.deleted }
+  });
+  res.json({ data: result });
+}

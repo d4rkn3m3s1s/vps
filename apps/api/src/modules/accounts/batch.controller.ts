@@ -84,6 +84,79 @@ export async function sendWhatsAppFromDeviceHandler(req: Request, res: Response)
   res.json({ data: await batchService.sendFromDevice(getWorkspaceId(req), input) });
 }
 
+// Fetch a contact's WhatsApp profile (avatar + name/about) — device-scoped.
+const fetchProfileSchema = z
+  .object({
+    deviceId: z.string().min(1),
+    to: z.string().min(5).optional(),
+    from: z.string().min(1).optional()
+  })
+  .refine((v) => v.to || v.from, { message: 'to veya from gerekli' });
+export async function fetchWhatsAppProfileHandler(req: Request, res: Response): Promise<void> {
+  const input = fetchProfileSchema.parse(req.body);
+  res.json({ data: await batchService.fetchProfile(getWorkspaceId(req), input) });
+}
+
+// Block / unblock a WhatsApp contact — device-scoped. block defaults to true.
+const blockContactSchema = z
+  .object({
+    deviceId: z.string().min(1),
+    to: z.string().min(5).optional(),
+    from: z.string().min(1).optional(),
+    block: z.boolean().optional()
+  })
+  .refine((v) => v.to || v.from, { message: 'to veya from gerekli' });
+export async function blockWhatsAppContactHandler(req: Request, res: Response): Promise<void> {
+  const input = blockContactSchema.parse(req.body);
+  res.json({ data: await batchService.blockContact(getWorkspaceId(req), input) });
+}
+
+// Read the blocked-contacts list off a device — device-scoped.
+const blocklistSchema = z.object({ deviceId: z.string().min(1) });
+export async function listWhatsAppBlockedHandler(req: Request, res: Response): Promise<void> {
+  const input = blocklistSchema.parse(req.body);
+  res.json({ data: await batchService.listBlocked(getWorkspaceId(req), input) });
+}
+
+// Read the account's OWN WhatsApp number off a device — device-scoped.
+const myNumberSchema = z.object({ deviceId: z.string().min(1) });
+export async function whatsAppMyNumberHandler(req: Request, res: Response): Promise<void> {
+  const input = myNumberSchema.parse(req.body);
+  res.json({ data: await batchService.myNumber(getWorkspaceId(req), input) });
+}
+
+// Send a media message (image/document) from a device — device-scoped.
+const sendMediaSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(5),
+  mediaUrl: z.string().url().max(2048),
+  caption: z.string().max(1024).optional(),
+  kind: z.enum(['image', 'document']).optional()
+});
+export async function sendWhatsAppMediaHandler(req: Request, res: Response): Promise<void> {
+  const input = sendMediaSchema.parse(req.body);
+  res.json({ data: await batchService.sendMedia(getWorkspaceId(req), input) });
+}
+
+// Delete a message (for me / for everyone) — device-scoped.
+const deleteMsgSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(5),
+  scope: z.enum(['me', 'everyone']).optional(),
+  matchText: z.string().max(500).optional()
+});
+export async function deleteWhatsAppMessageHandler(req: Request, res: Response): Promise<void> {
+  const input = deleteMsgSchema.parse(req.body);
+  res.json({ data: await batchService.deleteMessage(getWorkspaceId(req), input) });
+}
+
+// Clear all messages in a chat — device-scoped.
+const clearChatSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(5) });
+export async function clearWhatsAppChatHandler(req: Request, res: Response): Promise<void> {
+  const input = clearChatSchema.parse(req.body);
+  res.json({ data: await batchService.clearChat(getWorkspaceId(req), input) });
+}
+
 // List stored WhatsApp messages (inbound + outbound) for a device. deviceId is a
 // query param so this works without an account id (any device the key owns).
 const listMessagesSchema = z.object({
@@ -123,4 +196,26 @@ export async function autoRegisterWhatsAppHandler(req: Request, res: Response): 
     ...(input.provider ? { provider: input.provider } : {})
   });
   res.json({ data: result });
+}
+
+// Operator-OTP registration (one-click). The operator supplies their OWN number;
+// the agent drives to OTP then stops. Async: returns the account row immediately
+// (status REGISTERING → AWAITING_OTP as the agent reports back).
+const startRegisterSchema = z.object({
+  deviceId: z.string().min(1),
+  phoneNumber: z.string().min(6)
+});
+export async function startRegisterHandler(req: Request, res: Response): Promise<void> {
+  const input = startRegisterSchema.parse(req.body);
+  const account = await batchService.startOperatorRegister(getWorkspaceId(req), input.deviceId, input.phoneNumber);
+  res.status(201).json({ data: account });
+}
+
+// Operator hands us the SMS code; re-dispatch so the agent enters it + finishes
+// the profile (random name). Account flips to ACTIVE (or FAILED) via the hook.
+const provideOtpSchema = z.object({ otpCode: z.string().min(4).max(8) });
+export async function provideOtpHandler(req: Request, res: Response): Promise<void> {
+  const { otpCode } = provideOtpSchema.parse(req.body);
+  const account = await batchService.provideOperatorOtp(getWorkspaceId(req), id(req), otpCode);
+  res.json({ data: account });
 }

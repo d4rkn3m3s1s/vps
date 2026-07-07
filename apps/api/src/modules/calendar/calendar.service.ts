@@ -19,6 +19,30 @@ function toDate(v: string | Date): Date {
   return v instanceof Date ? v : new Date(v);
 }
 
+// Validate that any group/flow/device the post references belongs to the caller's
+// workspace. Without this a post could target another tenant's group, flow, or
+// devices by id and have the scheduler drive them. Foreign ids → 404.
+async function assertReferencesOwned(
+  refs: { groupId?: string | null | undefined; rpaFlowId?: string | null | undefined; deviceIds?: string[] | undefined },
+  workspaceId?: string
+): Promise<void> {
+  if (!workspaceId) return;
+  if (refs.groupId) {
+    const group = await prisma.deviceGroup.findFirst({ where: { id: refs.groupId, workspaceId } });
+    if (!group) throw new AppError('Grup bulunamadı', 404, 'GROUP_NOT_FOUND');
+  }
+  if (refs.rpaFlowId) {
+    const flow = await prisma.rpaFlow.findFirst({ where: { id: refs.rpaFlowId, workspaceId } });
+    if (!flow) throw new AppError('RPA akışı bulunamadı', 404, 'FLOW_NOT_FOUND');
+  }
+  if (refs.deviceIds && refs.deviceIds.length > 0) {
+    const owned = await prisma.device.count({ where: { id: { in: refs.deviceIds }, workspaceId } });
+    if (owned !== new Set(refs.deviceIds).size) {
+      throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    }
+  }
+}
+
 export const calendarService = {
   async list(workspaceId?: string) {
     return prisma.scheduledPost.findMany({
@@ -35,6 +59,11 @@ export const calendarService = {
     if (Number.isNaN(when.getTime())) throw new AppError('Geçersiz zaman', 400, 'INVALID_TIME');
     // SSRF guard: the host agent fetches mediaUrl server-side, so reject internal targets.
     if (input.mediaUrl) await assertSafePublicUrl(input.mediaUrl);
+    // Ownership guard: group/flow/devices must belong to this workspace.
+    await assertReferencesOwned(
+      { groupId: input.groupId, rpaFlowId: input.rpaFlowId, deviceIds: input.deviceIds },
+      ctx.workspaceId
+    );
 
     const data: Prisma.ScheduledPostCreateInput = {
       caption: input.caption?.trim() ?? '',
@@ -71,6 +100,11 @@ export const calendarService = {
     if (!post) throw new AppError('Gönderi bulunamadı', 404, 'POST_NOT_FOUND');
     // SSRF guard on any newly-supplied mediaUrl (agent fetches it server-side).
     if (input.mediaUrl) await assertSafePublicUrl(input.mediaUrl);
+    // Ownership guard on any newly-supplied group/flow/devices (cross-tenant).
+    await assertReferencesOwned(
+      { groupId: input.groupId, rpaFlowId: input.rpaFlowId, deviceIds: input.deviceIds },
+      workspaceId
+    );
     const data: Prisma.ScheduledPostUpdateInput = {};
     if (input.caption !== undefined) data.caption = input.caption.trim();
     if (input.platform !== undefined) data.platform = input.platform;
@@ -93,10 +127,20 @@ export const calendarService = {
   },
 
   // Resolve the device set for a post: a target group's devices ∪ explicit ids.
-  async resolveDevices(post: { groupId: string | null; deviceIds: string[] }): Promise<string[]> {
+  // Scoped to the post's own workspace so a stale/cross-tenant group id can't pull
+  // in another tenant's devices at dispatch time.
+  async resolveDevices(post: {
+    groupId: string | null;
+    deviceIds: string[];
+    workspaceId?: string | null;
+  }): Promise<string[]> {
+    const ws = post.workspaceId ?? undefined;
     const ids = new Set<string>(post.deviceIds ?? []);
     if (post.groupId) {
-      const devices = await prisma.device.findMany({ where: { groupId: post.groupId }, select: { id: true } });
+      const devices = await prisma.device.findMany({
+        where: { groupId: post.groupId, ...(ws ? { workspaceId: ws } : {}) },
+        select: { id: true }
+      });
       for (const d of devices) ids.add(d.id);
     }
     return Array.from(ids);

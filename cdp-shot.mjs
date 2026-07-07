@@ -1,3 +1,4 @@
+
 import WebSocket from 'ws';
 import { writeFileSync } from 'node:fs';
 const [, , wsUrl, targetUrl, cookieVal, outPath, w, h] = process.argv;
@@ -19,5 +20,5 @@ ws.on('open', async () => {
   await new Promise((r) => setTimeout(r, 5000));
   const { data } = await send('Page.captureScreenshot', { format: 'png' }, sessionId);
   writeFileSync(outPath, Buffer.from(data, 'base64'));
-  console.log('saved', outPath); ws.close(); process.exit(0);
+  console.log('saved', outPath); ws.close(); process.exit(0); 
 });

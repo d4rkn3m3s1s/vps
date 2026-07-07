@@ -1,9 +1,30 @@
 import { randomBytes, randomInt } from 'node:crypto';
-import { Prisma } from '@prisma/client';
+import { Prisma, type DeviceFingerprint } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { encryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import { DEVICE_MODELS, LOCALES, type Locale } from './fingerprint.data';
+
+// Hardware-identity fields stored AES-256-GCM encrypted at rest. These are the
+// device-identifying values an anti-detection system must protect; the rest of
+// the fingerprint (model/brand/locale/GPS) is non-identifying display data.
+// Encryption happens in generateFingerprintData (so every write path — device
+// create, snapshot reset/clone, vast provision — stores ciphertext without those
+// modules needing to know), and decryption happens on read (get) and when the
+// value is pushed down to the physical device (applyToDevice).
+const FP_SECRET_FIELDS = ['imei', 'androidId', 'serialNo', 'macAddress', 'phoneNumber'] as const;
+
+// Decrypt the encrypted identity fields on a stored fingerprint row. safeDecrypt
+// keeps pre-encryption plaintext rows readable (backward-compat, no migration).
+function decryptFingerprint<T extends Partial<DeviceFingerprint>>(fp: T): T {
+  const out: T = { ...fp };
+  for (const f of FP_SECRET_FIELDS) {
+    const v = out[f as keyof T];
+    if (typeof v === 'string' && v) out[f as keyof T] = safeDecrypt(v) as T[keyof T];
+  }
+  return out;
+}
 
 function pick<T>(arr: T[]): T {
   return arr[randomInt(arr.length)] as T;
@@ -67,10 +88,11 @@ export function generateFingerprintData(opts: GenerateOptions = {}): Fingerprint
   const gpsEnabled = opts.gpsEnabled ?? false;
 
   return {
-    imei: generateImei(),
-    androidId: hex(8),
-    serialNo: hex(4).toUpperCase(),
-    macAddress: macAddress(),
+    // Identity fields are encrypted at rest (decrypted on read/apply).
+    imei: encryptString(generateImei()),
+    androidId: encryptString(hex(8)),
+    serialNo: encryptString(hex(4).toUpperCase()),
+    macAddress: encryptString(macAddress()),
     manufacturer: dev.manufacturer,
     model: dev.model,
     brand: dev.brand,
@@ -81,7 +103,7 @@ export function generateFingerprintData(opts: GenerateOptions = {}): Fingerprint
     carrier: locale.carrier,
     mcc: locale.mcc,
     mnc: locale.mnc,
-    phoneNumber: `${locale.dialCode}${randomInt(1000000000, 9999999999)}`,
+    phoneNumber: encryptString(`${locale.dialCode}${randomInt(1000000000, 9999999999)}`),
     language: locale.language,
     country: locale.country,
     countryCode: locale.countryCode,
@@ -100,18 +122,23 @@ export class FingerprintService {
       const device = await prisma.device.findFirst({ where: { id: deviceId, workspaceId }, select: { id: true } });
       if (!device) return null;
     }
-    return prisma.deviceFingerprint.findUnique({ where: { deviceId } });
+    const fp = await prisma.deviceFingerprint.findUnique({ where: { deviceId } });
+    return fp ? decryptFingerprint(fp) : null;
   }
 
   // Create-or-replace: ensures every device has exactly one fingerprint.
   async ensure(deviceId: string, opts: GenerateOptions = {}, workspaceId?: string) {
     await this.assertDevice(deviceId, workspaceId);
+    // Identity fields in `data` are already encrypted (generateFingerprintData);
+    // the row is stored ciphertext but the returned value is decrypted for the
+    // caller (the regenerate handler surfaces it to the dashboard).
     const data = generateFingerprintData(opts);
-    return prisma.deviceFingerprint.upsert({
+    const saved = await prisma.deviceFingerprint.upsert({
       where: { deviceId },
       create: { ...data, device: { connect: { id: deviceId } } },
       update: data
     });
+    return decryptFingerprint(saved);
   }
 
   async regenerate(deviceId: string, opts: GenerateOptions = {}, workspaceId?: string) {
@@ -141,7 +168,8 @@ export class FingerprintService {
       }
     }
 
-    return prisma.deviceFingerprint.update({ where: { deviceId }, data });
+    const saved = await prisma.deviceFingerprint.update({ where: { deviceId }, data });
+    return decryptFingerprint(saved);
   }
 
   listCountries() {

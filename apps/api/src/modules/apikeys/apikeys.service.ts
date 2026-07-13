@@ -94,7 +94,11 @@ export class ApiKeysService {
         name: DOC_KEY_NAME,
         keyPrefix: prefix,
         keyHash: hash,
-        scopes: ['read', 'write'],
+        // Read-only: this is a documentation/playground example key whose
+        // plaintext is stored + returned. A write-scoped key that leaks (it is
+        // shown in the docs UI) could drive real devices; read scope contains
+        // the blast radius to non-mutating endpoints.
+        scopes: ['read'],
         docPlaintext: encryptString(plain),
         ...(workspaceId ? { workspaceId } : {})
       }

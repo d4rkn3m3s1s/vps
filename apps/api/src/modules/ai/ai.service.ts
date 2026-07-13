@@ -140,6 +140,129 @@ export async function callForcedTool(
   return toolUse.input as Record<string, unknown>;
 }
 
+// ── Vision screen analysis (agent UI-dump fallback) ─────────────────────────
+// When the host agent's uiautomator dump comes back empty/garbled (some Waydroid
+// builds return nothing on certain screens), the agent can't locate buttons by
+// resource-id/text. It sends the current screen as a downscaled JPEG and this
+// runs a server-side Claude vision call that returns the screen state + a tap
+// coordinate. The Anthropic key stays server-side (agent is zero-dep and never
+// holds it) — same trust model as the AI Device Agent. Coordinates come back in
+// the SAME pixel space as the image the agent sent (agent scales back if it
+// downscaled). Opus 4.8 has native high-res vision + forced tool output.
+export type VisionLocate = {
+  found: boolean; // whether the requested target is visible on screen
+  x: number; // tap X in image pixels (only meaningful when found)
+  y: number; // tap Y in image pixels
+  screen: string; // short label of what screen this is (e.g. "instagram_signup_email")
+  note: string; // one-line human explanation / why not found
+};
+
+const LOCATE_TARGET_TOOL = {
+  name: 'locate_target',
+  description:
+    'Report what Android screen this is and where to tap for the requested target. Coordinates are in the pixel space of the provided image (top-left origin).',
+  input_schema: {
+    type: 'object',
+    properties: {
+      found: { type: 'boolean', description: 'true if the requested target element is visible and tappable' },
+      x: { type: 'number', description: 'tap X in image pixels (center of the target)' },
+      y: { type: 'number', description: 'tap Y in image pixels (center of the target)' },
+      screen: {
+        type: 'string',
+        description: 'short snake_case label of the current screen, e.g. instagram_signup_email, whatsapp_verify_number, permission_dialog, unknown'
+      },
+      note: { type: 'string', description: 'one short line: what you see / why the target is not found' }
+    },
+    required: ['found', 'screen', 'note']
+  }
+} as const;
+
+const VISION_SYSTEM = [
+  'You are a mobile UI locator for an Android automation agent.',
+  'You are shown a screenshot of an Android phone and told which element to find.',
+  'Always call the locate_target tool; never answer in prose.',
+  'Rules:',
+  '- Coordinates are in the PIXEL space of the image you were given (top-left is 0,0).',
+  '- Return the CENTER of the tappable element (the button/field itself, not its label far away).',
+  '- If the requested target is not visible, set found=false and describe what IS on screen in `screen`/`note`.',
+  '- Be precise: a wrong coordinate makes the automation tap the wrong thing.'
+].join('\n');
+
+// Analyze one screenshot and locate a target element. `imageBase64` is a base64
+// JPEG (no data: prefix). `target` is a short natural-language description of
+// what to tap (e.g. "the Next button", "the email input field"). `hint` is
+// optional extra context the caller knows (e.g. expected screen).
+export async function analyzeScreen(
+  imageBase64: string,
+  target: string,
+  hint?: string
+): Promise<VisionLocate> {
+  if (!env.anthropicApiKey) {
+    throw new AppError('AI yapılandırılmamış: ANTHROPIC_API_KEY eksik', 503, 'AI_NOT_CONFIGURED');
+  }
+  if (!imageBase64) throw new AppError('Ekran görüntüsü eksik', 400, 'VISION_NO_IMAGE');
+
+  const userText =
+    `Find this element and give me its tap coordinate: ${target}.` +
+    (hint ? `\nContext: ${hint}` : '');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  let res: Response;
+  try {
+    res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': env.anthropicApiKey,
+        'anthropic-version': ANTHROPIC_VERSION
+      },
+      body: JSON.stringify({
+        model: env.anthropicModel,
+        max_tokens: 512,
+        system: VISION_SYSTEM,
+        tools: [LOCATE_TARGET_TOOL],
+        tool_choice: { type: 'tool', name: 'locate_target' },
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+              { type: 'text', text: userText }
+            ]
+          }
+        ]
+      })
+    });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof Error && e.name === 'AbortError') throw new AppError('AI isteği zaman aşımına uğradı', 504, 'AI_TIMEOUT');
+    throw new AppError('AI servisine ulaşılamadı', 502, 'AI_UNREACHABLE');
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new AppError(`AI hatası (${res.status})`, 502, 'AI_ERROR', detail.slice(0, 300));
+  }
+
+  const body = (await res.json()) as { content?: Array<{ type: string; name?: string; input?: unknown }> };
+  const toolUse = (body.content ?? []).find((b) => b.type === 'tool_use' && b.name === 'locate_target');
+  if (!toolUse?.input || typeof toolUse.input !== 'object') {
+    throw new AppError('AI geçerli bir yanıt üretemedi', 502, 'AI_BAD_OUTPUT');
+  }
+  const out = toolUse.input as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    found: out.found === true,
+    x: Math.round(num(out.x)),
+    y: Math.round(num(out.y)),
+    screen: typeof out.screen === 'string' ? out.screen.slice(0, 60) : 'unknown',
+    note: typeof out.note === 'string' ? out.note.slice(0, 300) : ''
+  };
+}
+
 // ── Multi-tool ReAct caller (AI Device Agent) ───────────────────────────────
 // Unlike callForcedTool (single forced tool, one-shot), this lets the model pick
 // AMONG several tools each turn and accepts the full conversation so far, so the
@@ -599,5 +722,12 @@ export const aiService = {
     }
 
     return { type, message, result };
+  },
+
+  // ── Vision fallback (agent UI-dump replacement) ──────────────────────────
+  // Thin wrapper the agent endpoint calls. Delegates to analyzeScreen; kept on
+  // the service object so the controller depends only on aiService.
+  async locateOnScreen(imageBase64: string, target: string, hint?: string): Promise<VisionLocate> {
+    return analyzeScreen(imageBase64, target, hint);
   }
 };

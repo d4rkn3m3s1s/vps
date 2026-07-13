@@ -22,6 +22,7 @@ import {
   getAccountHandler,
   provisionAccountHandler,
   pollOtpHandler,
+  registrationShotsHandler,
   provisionBatchHandler,
   registerAccountHandler,
   sendWhatsAppHandler,
@@ -39,7 +40,10 @@ import {
   deleteAccountHandler,
   autoRegisterWhatsAppHandler,
   startRegisterHandler,
-  provideOtpHandler
+  provideOtpHandler,
+  waRegisterStatusHandler,
+  startInstagramRegisterHandler,
+  igRegisterStatusHandler
 } from './batch.controller';
 
 export const accountsRouter = Router();
@@ -70,6 +74,13 @@ accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, h
 // Operator-OTP one-click registration (operator's own number; enter OTP by hand).
 accountsRouter.post('/whatsapp/register', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(startRegisterHandler));
 accountsRouter.post('/whatsapp/register/:id/otp', requireApiKey, authenticateJwt, asyncHandler(provideOtpHandler));
+// Live registration progress (log + last step) for the dashboard modal to restore.
+accountsRouter.get('/whatsapp/register/:id/status', requireApiKey, authenticateJwt, asyncHandler(waRegisterStatusHandler));
+
+// One-click Instagram registration (email-based, fully autonomous — agent reads
+// the confirmation code from email; no operator-OTP step). Throttled like WA.
+accountsRouter.post('/instagram/register', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(startInstagramRegisterHandler));
+accountsRouter.get('/instagram/register/:id/status', requireApiKey, authenticateJwt, asyncHandler(igRegisterStatusHandler));
 
 // Stored WhatsApp messages (inbound captured by the agent + outbound we sent),
 // device-scoped. ?deviceId=&limit=&direction=IN|OUT
@@ -107,5 +118,6 @@ accountsRouter.post('/batch/accounts/:id/register', requireApiKey, authenticateJ
 accountsRouter.post('/batch/accounts/:id/whatsapp/send', requireApiKey, authenticateJwt, asyncHandler(sendWhatsAppHandler));
 accountsRouter.post('/batch/accounts/:id/whatsapp/read', requireApiKey, authenticateJwt, asyncHandler(readWhatsAppHandler));
 accountsRouter.get('/batch/accounts/:id/otp', requireApiKey, authenticateJwt, asyncHandler(pollOtpHandler));
+accountsRouter.get('/batch/accounts/:id/shots', requireApiKey, authenticateJwt, asyncHandler(registrationShotsHandler));
 accountsRouter.post('/batch/accounts/:id/cancel', requireApiKey, authenticateJwt, asyncHandler(cancelAccountHandler));
 accountsRouter.delete('/batch/accounts/:id', requireApiKey, authenticateJwt, asyncHandler(deleteAccountHandler));

@@ -64,7 +64,7 @@ Leave it running. In another Kali tab, check: `curl -s localhost:4000/health`.
 ```bash
 cd "/mnt/c/Yeni klasör/vps"
 export FLEET_API_URL=http://localhost:4000
-export FLEET_API_KEY=f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9
+export FLEET_API_KEY=<FLEET_API_KEY>
 # one phone is enough to prove the flow; ADB endpoint is 127.0.0.1:5555
 FLEET_ADB_PORTS=5555 node deploy/local-test/register.mjs admin@local.dev '<ADMIN_PASSWORD>'
 ```
@@ -72,7 +72,7 @@ Copy the `FLEET_HOST_KEY=...` it prints, then in another tab:
 ```bash
 cd "/mnt/c/Yeni klasör/vps"
 FLEET_API_URL=http://localhost:4000 \
-FLEET_API_KEY=f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9 \
+FLEET_API_KEY=<FLEET_API_KEY> \
 FLEET_HOST_KEY=<printed key> \
 node deploy/kvm-host/agent/agent.mjs
 ```

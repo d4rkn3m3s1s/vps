@@ -27,8 +27,12 @@ import {
   listDevicesHandler,
   listGroupsHandler,
   provisioningCatalogHandler,
+  rebootDeviceHandler,
+  refreshStreamHandler,
+  sleepDeviceHandler,
   updateDeviceHandler,
-  updateGroupHandler
+  updateGroupHandler,
+  wakeDeviceHandler
 } from './device.controller';
 
 export const deviceRouter = Router();
@@ -48,6 +52,12 @@ deviceRouter.put('/:id', requireApiKey, authenticateJwt, asyncHandler(updateDevi
 deviceRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteDeviceHandler));
 deviceRouter.post('/:id/heartbeat', requireApiKey, asyncHandler(heartbeatDeviceHandler));
 deviceRouter.post('/:id/shell', requireApiKey, authenticateJwt, asyncHandler(deviceShellHandler));
+// Real Waydroid lifecycle (wake/sleep/reboot) — starts/stops the instance host-side.
+deviceRouter.post('/:id/wake', requireApiKey, authenticateJwt, asyncHandler(wakeDeviceHandler));
+deviceRouter.post('/:id/sleep', requireApiKey, authenticateJwt, asyncHandler(sleepDeviceHandler));
+deviceRouter.post('/:id/reboot', requireApiKey, authenticateJwt, asyncHandler(rebootDeviceHandler));
+// Refresh a live stream stuck on "bağlanıyor" (re-open ADB + re-send stream.start).
+deviceRouter.post('/:id/refresh-stream', requireApiKey, authenticateJwt, asyncHandler(refreshStreamHandler));
 // File transfer + clipboard (queued as host-agent jobs).
 deviceRouter.post('/:id/clipboard', requireApiKey, authenticateJwt, asyncHandler(clipboardSetHandler));
 deviceRouter.post('/:id/clipboard/read', requireApiKey, authenticateJwt, asyncHandler(clipboardGetHandler));

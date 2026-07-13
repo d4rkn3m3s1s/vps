@@ -13,7 +13,9 @@ export type FleetEvent = {
     | 'job.updated'
     | 'alert.fired'
     | 'whatsapp.message'
-    | 'provision.progress';
+    | 'provision.progress'
+    | 'whatsapp.register.progress'
+    | 'instagram.register.progress';
   deviceId?: string;
   payload?: unknown;
   timestamp?: string;

@@ -32,14 +32,26 @@ async function assertDevices(deviceIds: string[], workspaceId?: string): Promise
 
 export class BulkService {
   // Fans out one job per device for a single action (start/stop/install/etc.).
+  // A busy device (DEVICE_BUSY) is skipped, not fatal for the whole batch — we
+  // report which devices were skipped so the panel can warn the operator.
   async runJob(input: BulkJobInput, workspaceId?: string) {
     await assertDevices(input.deviceIds, workspaceId);
-    const jobs = await Promise.all(
+    const results = await Promise.allSettled(
       input.deviceIds.map((deviceId) =>
         createJobRecord(input.jobType, { ...(input.payload ?? {}), deviceId } as JobPayload, undefined, workspaceId)
+          .then((j) => ({ deviceId, id: j.id }))
       )
     );
-    return { created: jobs.length, jobIds: jobs.map((j) => j.id) };
+    const jobIds: string[] = [];
+    const skipped: { deviceId: string; reason: string }[] = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') jobIds.push(r.value.id);
+      else {
+        const err = r.reason as { code?: string; message?: string };
+        skipped.push({ deviceId: input.deviceIds[i]!, reason: err?.message || 'İş oluşturulamadı' });
+      }
+    });
+    return { created: jobIds.length, jobIds, skipped };
   }
 
   // Assigns the same proxy to many devices: updates each device's connection
@@ -55,17 +67,28 @@ export class BulkService {
 
     // NOTE: do not overwrite the device's ipAddress/adbPort here — those are the
     // phone's own ADB endpoint, not the proxy. The proxy is applied inside the
-    // phone via the SET_PROXY job payload below.
+    // phone via the SET_PROXY job payload below (real redsocks routing for Waydroid).
     const jobs = await Promise.all(
-      input.deviceIds.map((deviceId) =>
-        createJobRecord('EMULATOR_SET_PROXY', {
+      input.deviceIds.map(async (deviceId) => {
+        // Persist the device↔proxy link so the panel can show + change it.
+        await prisma.device.update({ where: { id: deviceId }, data: { proxyId: proxy.id } }).catch(() => undefined);
+        // Fold the Waydroid instance name so the agent can drive wd-proxy.sh
+        // (real country-matched redsocks routing, not the ignored global http_proxy).
+        const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
+        const instance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+        return createJobRecord('EMULATOR_SET_PROXY', {
           deviceId,
           proxyId: proxy.id,
           host: proxy.host,
           port: proxy.port,
-          type: proxy.type
-        } as JobPayload, undefined, workspaceId)
-      )
+          type: proxy.type,
+          ...(typeof instance === 'string' ? { instance } : {}),
+          ...(proxy.countryCode ? { country: proxy.countryCode } : {}),
+          ...(proxy.username ? { username: proxy.username } : {}),
+          // passwordEnc is decrypted by agent.service.materializePayload before dispatch.
+          ...(proxy.password ? { passwordEnc: proxy.password } : {})
+        } as JobPayload, undefined, workspaceId);
+      })
     );
 
     return { updated: input.deviceIds.length, jobIds: jobs.map((j) => j.id) };

@@ -170,19 +170,29 @@ export async function processJob(job: BullJob<JobPayload, unknown, JobType>): Pr
       case 'EMULATOR_PUSH_FILE': {
         const serial = await getDeviceSerial(String(job.data.deviceId));
         const url = String(job.data.url ?? '');
-        const fileName = String(job.data.fileName ?? 'file');
+        // Basename-only: the name lands in host + device paths, so strip any
+        // directory traversal (../) and keep only a safe filename.
+        const { basename } = await import('node:path');
+        const rawName = String(job.data.fileName ?? 'file');
+        const fileName = basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128) || 'file';
         if (!url) throw new AppError('url is required', 400, 'INVALID_URL');
         // Download to a temp path, push to the device, then media-scan.
         const tmp = `/tmp/${Date.now()}-${fileName}`;
         const dest = job.data.destination === 'downloads' ? `/sdcard/Download/${fileName}` : `/sdcard/DCIM/${fileName}`;
         const resp = await fetch(url);
         if (!resp.ok) throw new AppError('Failed to download file', 502, 'DOWNLOAD_FAILED');
-        const { writeFile } = await import('node:fs/promises');
+        const { writeFile, rm } = await import('node:fs/promises');
         await writeFile(tmp, Buffer.from(await resp.arrayBuffer()));
-        await adbService.push(serial, tmp, dest);
-        const scan = await adbService.scanMedia(serial, dest);
-        await updateJob(job.id as string, { status: 'COMPLETED', result: { dest, scan } });
-        return { dest };
+        try {
+          await adbService.push(serial, tmp, dest);
+          const scan = await adbService.scanMedia(serial, dest);
+          await updateJob(job.id as string, { status: 'COMPLETED', result: { dest, scan } });
+          return { dest };
+        } finally {
+          // Always remove the temp download, on success AND on push/scan failure,
+          // so /tmp doesn't leak a file per EMULATOR_PUSH_FILE job.
+          await rm(tmp, { force: true }).catch(() => undefined);
+        }
       }
       case 'EMULATOR_SET_PROXY': {
         const serial = await getDeviceSerial(String(job.data.deviceId));

@@ -5,6 +5,10 @@ import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { webhooksService } from './webhooks.service';
 
+// Must stay in sync with the Prisma WebhookEvent enum + everything the producers
+// dispatch. WHATSAPP_SENT / WHATSAPP_FAILED are emitted by agent.service on job
+// completion; without them here, users could not subscribe to those events (the
+// producer fired an event no consumer could ever select — silent drift).
 const WEBHOOK_EVENTS = [
   'JOB_COMPLETED',
   'JOB_FAILED',
@@ -13,6 +17,8 @@ const WEBHOOK_EVENTS = [
   'QUOTA_HIGH',
   'ALERT_FIRED',
   'WHATSAPP_MESSAGE',
+  'WHATSAPP_SENT',
+  'WHATSAPP_FAILED',
   'ALL'
 ] as const;
 

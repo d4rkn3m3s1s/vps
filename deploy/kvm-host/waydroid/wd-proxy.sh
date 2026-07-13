@@ -12,23 +12,46 @@
 # thordata username format: <user>-cc-<CC>  (CC = ISO country, e.g. AL/US/BG).
 set -u
 INSTANCE="${1:?instance}"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SUBNET_ID="$(sh "$HERE/net-head.sh" "$INSTANCE")"
+SUBNET="192.168.$SUBNET_ID.0/24"
+RS_PORT=12345
+
+log(){ echo "[wd-proxy:$INSTANCE] $*"; }
+
+# `wd-proxy.sh <instance> clear` removes this instance's REDIRECT rules so its
+# traffic exits directly again (used when a device's proxy is unassigned).
+if [ "${2:-}" = "clear" ]; then
+  modprobe xt_REDIRECT 2>/dev/null || true
+  while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q "$SUBNET"; do
+    N=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$SUBNET" | awk '{print $1}' | sort -rn | head -1)
+    [ -n "$N" ] && iptables -t nat -D PREROUTING "$N" 2>/dev/null || break
+  done
+  log "iptables REDIRECT rules cleared for $SUBNET"
+  echo "PROXY_RESULT instance=$INSTANCE cc=- subnet=$SUBNET_ID redsocks=cleared"
+  exit 0
+fi
+
 CC="${2:?country code}"
 PUSER="${3:?proxy user}"
 PPASS="${4:?proxy pass}"
 PHOST="${5:?proxy host}"
 PPORT="${6:?proxy port}"
-HERE="$(cd "$(dirname "$0")" && pwd)"
-SUBNET_ID="$(sh "$HERE/net-head.sh" "$INSTANCE")"
-SUBNET="192.168.$SUBNET_ID.0/24"
-RS_PORT=12345
 CONF="/etc/redsocks-$CC.conf"
-
-log(){ echo "[wd-proxy:$INSTANCE] $*"; }
 
 # resolve upstream host to an IP (redsocks wants an IP, and we must RETURN it)
 PIP="$(getent hosts "$PHOST" | awk '{print $1; exit}')"
 [ -z "$PIP" ] && PIP="$PHOST"
 log "cc=$CC upstream=$PHOST($PIP):$PPORT subnet=$SUBNET"
+
+# The thordata sticky-country username is "<user>-cc-<CC>". Some proxy providers
+# (and some of our stored usernames) ALREADY embed the country as "-cc-XX" or
+# "-country-xx" — in that case we must NOT append another "-cc-XX" (it produces an
+# invalid login and auth fails). Only append the country tag when it's absent.
+case "$PUSER" in
+  *-cc-*|*-country-*) LOGIN="$PUSER" ;;
+  *)                  LOGIN="$PUSER-cc-$CC" ;;
+esac
 
 # ── 1) redsocks config (one per country) + (re)start ─────────────────────────
 cat > "$CONF" <<EOF
@@ -45,18 +68,42 @@ redsocks {
     ip = $PIP;
     port = $PPORT;
     type = http-connect;
-    login = "$PUSER-cc-$CC";
+    login = "$LOGIN";
     password = "$PPASS";
 }
 EOF
 # redsocks on RS_PORT is shared per country; (re)start only if not already up
-# with THIS country's config.
-if ! pgrep -f "redsocks -c $CONF" >/dev/null 2>&1; then
-  # a redsocks may already own RS_PORT for a different country — that's fine only
-  # if same port/country; otherwise the operator runs one country at a time.
-  pkill -f "redsocks -c /etc/redsocks-" 2>/dev/null || true
-  sleep 1
-  redsocks -c "$CONF" && log "redsocks started ($CC)" || { log "redsocks FAILED"; exit 1; }
+# with THIS country's config. If a redsocks is already running with EXACTLY this
+# config, reuse it (no-op). Otherwise free the port and start fresh.
+if pgrep -f "redsocks -c $CONF" >/dev/null 2>&1; then
+  log "redsocks already up for $CC (reusing)"
+else
+  # Something else may own RS_PORT — a redsocks for a DIFFERENT country, OR a stale
+  # redsocks from an older run started with a different config path (e.g. the
+  # legacy /etc/redsocks.conf). The old `pkill -f "redsocks -c /etc/redsocks-"`
+  # only matched OUR per-country configs, so a legacy redsocks kept the port and
+  # `redsocks -c $CONF` died with "Address already in use" (VERIFIED live on mi7).
+  # Kill EVERY redsocks (any config path) + whatever holds RS_PORT, then wait for
+  # the port to actually free before starting.
+  pkill -x redsocks 2>/dev/null || true
+  pkill -f "redsocks -c" 2>/dev/null || true
+  # Kill any lingering listener on RS_PORT (belt-and-suspenders; fuser handles the
+  # case where the process name isn't literally "redsocks").
+  fuser -k "$RS_PORT/tcp" 2>/dev/null || true
+  # Wait up to ~5s for the port to be released (TIME_WAIT / slow teardown).
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " || break
+    sleep 0.5
+  done
+  if ss -tlnp 2>/dev/null | grep -q ":$RS_PORT "; then
+    log "redsocks port $RS_PORT still busy after kill — cannot start"; exit 1
+  fi
+  redsocks -c "$CONF" && log "redsocks started ($CC)" || { log "redsocks FAILED (start)"; exit 1; }
+  # Give the daemon a moment to bind before we assert it's listening.
+  for _i in 1 2 3 4 5 6; do
+    ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " && break
+    sleep 0.5
+  done
 fi
 ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " || { log "redsocks not listening on $RS_PORT"; exit 1; }
 

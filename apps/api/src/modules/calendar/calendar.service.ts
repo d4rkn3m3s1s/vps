@@ -157,6 +157,17 @@ export const calendarService = {
     let dispatched = 0;
     for (const post of due) {
       try {
+        // Atomically claim this post before doing any work: flip SCHEDULED →
+        // POSTING first. If a concurrent ticker (multi-instance / overlapping
+        // run) already claimed it, count===0 and we skip — otherwise the same
+        // post would be dispatched twice (double post). The status is later
+        // corrected to POSTED/FAILED below (or by agent.complete for RPA flows).
+        const claim = await prisma.scheduledPost.updateMany({
+          where: { id: post.id, status: 'SCHEDULED' },
+          data: { status: 'POSTING' }
+        });
+        if (claim.count === 0) continue;
+
         const deviceIds = await this.resolveDevices(post);
         if (deviceIds.length === 0) {
           await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'FAILED', error: 'Hedef cihaz yok' } });

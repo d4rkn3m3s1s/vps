@@ -170,6 +170,19 @@ export const snapshotService = {
     // normally the source device's host. Honor an explicit hostId, else fall back
     // to the source device's host. Without ANY host the clone is just a blank row
     // (no restore can run), so surface that honestly via restoreDispatched=false.
+    // Tenant guard: a client-supplied hostId/groupId must belong to the caller's
+    // workspace, otherwise the clone could be placed on another tenant's host or
+    // cross-linked into another tenant's group. The src-device host fallback below
+    // is safe (the snapshot already passed the workspace guard, and src is that
+    // snapshot's own host). Mirrors device.service createDevice's checks.
+    if (input.hostId && ctx.workspaceId) {
+      const ownHost = await prisma.host.findFirst({ where: { id: input.hostId, workspaceId: ctx.workspaceId }, select: { id: true } });
+      if (!ownHost) throw new AppError('Host not found', 404, 'HOST_NOT_FOUND');
+    }
+    if (input.groupId && ctx.workspaceId) {
+      const ownGroup = await prisma.deviceGroup.findFirst({ where: { id: input.groupId, workspaceId: ctx.workspaceId }, select: { id: true } });
+      if (!ownGroup) throw new AppError('Group not found', 404, 'GROUP_NOT_FOUND');
+    }
     let hostId = input.hostId;
     if (!hostId && snap.sourceDeviceId) {
       const src = await prisma.device.findUnique({ where: { id: snap.sourceDeviceId }, select: { hostId: true } });

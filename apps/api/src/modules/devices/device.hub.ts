@@ -18,7 +18,9 @@ export type DeviceHubEvent = {
     | 'job.updated'
     | 'alert.fired'
     | 'whatsapp.message'
-    | 'provision.progress';
+    | 'provision.progress'
+    | 'whatsapp.register.progress'
+    | 'instagram.register.progress';
   deviceId: string;
   payload: unknown;
   timestamp: string;
@@ -98,7 +100,15 @@ export class DeviceHub {
       // tenant. Untagged events (no workspaceId) still go to everyone (system-wide).
       if (event.workspaceId && client.workspaceId && client.workspaceId !== event.workspaceId) continue;
       if (client.readyState === WebSocket.OPEN) {
-        client.send(message);
+        // Guard each send: a socket can flip OPEN → CLOSING between the check and
+        // the send (or send can throw on a half-dead peer). Without this, one bad
+        // client would abort the loop and starve every remaining client of the
+        // broadcast. Swallow + continue so delivery is best-effort per client.
+        try {
+          client.send(message);
+        } catch {
+          // dead/closing peer — skip; the ws 'close' handler removes it from the set
+        }
       }
     }
   }

@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { agentService } from './agent.service';
+import { aiService } from '../ai/ai.service';
 
 const completeSchema = z.object({
   status: z.enum(['COMPLETED', 'FAILED']),
@@ -14,7 +15,14 @@ const heartbeatSchema = z.object({
   capacity: z.coerce.number().int().nonnegative().optional(),
   // ADB serials currently reachable on the host (ip:port). When present, only
   // these phones are marked ONLINE and the rest OFFLINE.
-  serials: z.array(z.string()).optional()
+  serials: z.array(z.string()).optional(),
+  // Host-level disk/RAM (GB) for the "how many more devices fit" estimate.
+  diskTotalGb: z.coerce.number().int().nonnegative().optional(),
+  diskFreeGb: z.coerce.number().int().nonnegative().optional(),
+  ramFreeGb: z.coerce.number().int().nonnegative().optional(),
+  // 1-minute load average (may be fractional) + CPU count → CPU saturation gauge.
+  loadAvg1m: z.coerce.number().nonnegative().optional(),
+  cpuCores: z.coerce.number().int().positive().optional()
 });
 
 const deviceMetricsSchema = z.object({
@@ -30,6 +38,17 @@ const deviceMetricsSchema = z.object({
     .default([])
 });
 
+// Vision fallback: agent sends a downscaled screenshot when its uiautomator dump
+// is empty/garbled, and asks where to tap for `target`. The Anthropic key lives
+// here (server-side) — the zero-dep agent never holds it. `image` is a base64
+// JPEG (no data: prefix), bounded ~1.5MB (a ~400px downscaled JPEG is ~15-40KB;
+// the ceiling just protects against a full-res upload).
+const visionAnalyzeSchema = z.object({
+  image: z.string().min(1).max(1_500_000),
+  target: z.string().min(1).max(300),
+  hint: z.string().max(300).optional()
+});
+
 const whatsappInboundSchema = z.object({
   serial: z.string().min(1),
   from: z.string().min(1),
@@ -41,7 +60,11 @@ const progressSchema = z.object({
   step: z.string().min(1),
   percent: z.coerce.number().min(0).max(100).optional(),
   note: z.string().max(500).optional(),
-  status: z.enum(['RUNNING', 'COMPLETED', 'FAILED']).optional()
+  status: z.enum(['RUNNING', 'COMPLETED', 'FAILED']).optional(),
+  // WhatsApp register: correlates the two register jobs into one panel; shot is a
+  // downscaled base64 JPEG for the live "SS göster" toggle (bounded ~700KB).
+  accountId: z.string().max(60).optional(),
+  shot: z.string().max(700000).optional()
 });
 
 function requireHost(req: Request) {
@@ -94,4 +117,13 @@ export async function whatsappInboundHandler(req: Request, res: Response): Promi
   const host = requireHost(req);
   const input = whatsappInboundSchema.parse(req.body);
   res.json({ data: await agentService.inboundWhatsapp(host, input) });
+}
+
+// Vision fallback: locate a tap target on a screenshot the agent couldn't parse
+// via uiautomator. Requires host-agent auth (same as every /agent/* route).
+export async function visionAnalyzeHandler(req: Request, res: Response): Promise<void> {
+  requireHost(req);
+  const input = visionAnalyzeSchema.parse(req.body);
+  const result = await aiService.locateOnScreen(input.image, input.target, input.hint);
+  res.json({ data: result });
 }

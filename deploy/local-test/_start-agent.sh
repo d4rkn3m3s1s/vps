@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Start the host agent detached, bound to host local-wsl2 / Local Phone 01.
 export FLEET_API_URL="http://localhost:4000"
-export FLEET_API_KEY="f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9"
-export FLEET_HOST_KEY="host_6bbbbfe1fd292aa80f2aa1b7ab1a0326"
+export FLEET_API_KEY="${FLEET_API_KEY:?set FLEET_API_KEY}"
+export FLEET_HOST_KEY="${FLEET_HOST_KEY:?set FLEET_HOST_KEY}"
 export FLEET_ADB="adb"
 export FLEET_POLL_MS=3000
 # kill stale agent

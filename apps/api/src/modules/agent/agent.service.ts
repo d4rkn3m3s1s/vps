@@ -1,6 +1,18 @@
 import type { GeneratedAccountStatus, Host } from '@prisma/client';
 import { prisma } from '../../db/prisma';
+import { logger } from '../../lib/logger';
 import { AppError } from '../../lib/errors';
+
+// Best-effort side-effect logger. Use in place of `.catch(() => undefined)` on
+// post-completion downstream writes so a failure leaves a diagnosable trail
+// (which step, which job) instead of vanishing — without aborting the others.
+const quiet = (step: string, jobId?: string) => (err: unknown) => {
+  logger.warn('post-complete side-effect failed', {
+    step,
+    ...(jobId ? { jobId } : {}),
+    error: err instanceof Error ? err.message : String(err)
+  });
+};
 import { decryptString, encryptString, sha256 } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
@@ -11,6 +23,8 @@ import { calendarService } from '../calendar/calendar.service';
 import { notificationsService } from '../notifications/notifications.service';
 import { whatsappService, normalizePeer } from '../whatsapp/whatsapp.service';
 import { provisionService } from '../provision/provision.service';
+import { waRegisterService } from '../accounts/wa-register.service';
+import { igRegisterService } from '../accounts/ig-register.service';
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -30,7 +44,7 @@ export class AgentService {
     // Devices physically running on this host.
     const devices = await prisma.device.findMany({
       where: { hostId: host.id },
-      select: { id: true, ipAddress: true, adbPort: true }
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true }
     });
     if (devices.length === 0) return null;
 
@@ -38,12 +52,28 @@ export class AgentService {
     const serialById = new Map(
       devices.map((d) => [d.id, d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null])
     );
+    // Tenant guard: the device a job targets must belong to the SAME workspace
+    // as the job. Without this, a cross-tenant job whose payload names another
+    // tenant's device (or a device later transferred between workspaces) would
+    // execute arbitrary shell/RPA on the victim's phone. Closes the whole class
+    // at the single claim chokepoint.
+    const workspaceByDevice = new Map(devices.map((d) => [d.id, d.workspaceId]));
 
-    // Find a candidate PENDING job whose payload targets one of this host's
-    // devices. Jobs carry the Device id in payload.deviceId (the dashboard shape)
-    // or in emulatorId for legacy emulator jobs.
+    // Find a candidate PENDING job whose target device is one of THIS host's
+    // devices — narrowed in the DB (indexed deviceId column, with emulatorId and
+    // the legacy payload.deviceId path as fallbacks) instead of pulling the 25
+    // globally-oldest jobs and filtering in JS. The old approach could starve a
+    // host whose oldest 25 jobs all belonged to other hosts.
     const candidates = await prisma.job.findMany({
-      where: { status: 'PENDING', claimedByHostId: null },
+      where: {
+        status: 'PENDING',
+        claimedByHostId: null,
+        OR: [
+          { deviceId: { in: deviceIds } },
+          { emulatorId: { in: deviceIds } },
+          { AND: [{ deviceId: null }, { emulatorId: null }] } // pre-backfill: fall back to JS payload check
+        ]
+      },
       orderBy: { createdAt: 'asc' },
       take: 25
     });
@@ -52,6 +82,11 @@ export class AgentService {
       const payload = (job.payload as Record<string, unknown>) ?? {};
       const deviceId = (payload.deviceId as string | undefined) ?? job.emulatorId ?? undefined;
       if (!deviceId || !deviceIds.includes(deviceId)) continue;
+
+      // Cross-tenant guard: refuse to run a job on a device that belongs to a
+      // different workspace than the job. (Jobs created without a workspace —
+      // legacy/internal — are allowed through unchanged.)
+      if (job.workspaceId && workspaceByDevice.get(deviceId) !== job.workspaceId) continue;
 
       // Race-safe claim: flips PENDING -> RUNNING only if still unclaimed.
       const claimed = await prisma.job.updateMany({
@@ -84,8 +119,13 @@ export class AgentService {
       throw new AppError('Job was not claimed by this host', 403, 'JOB_NOT_CLAIMED');
     }
 
-    const updated = await prisma.job.update({
-      where: { id: jobId },
+    // Terminal-state guard: only a RUNNING job may transition to a terminal
+    // state. Without this, a job that reapStaleJobs already marked FAILED (after
+    // its stale timeout) would be resurrected to COMPLETED when the agent finally
+    // reports back — a lie the operator sees. Conditional update flips only if
+    // still RUNNING; count===0 means it was already finalized elsewhere.
+    const flipped = await prisma.job.updateMany({
+      where: { id: jobId, status: 'RUNNING' },
       data: {
         status: outcome.status,
         finishedAt: new Date(),
@@ -93,6 +133,10 @@ export class AgentService {
         ...(outcome.error !== undefined ? { error: outcome.error } : {})
       }
     });
+    if (flipped.count === 0) {
+      throw new AppError('Job already finalized', 409, 'JOB_ALREADY_FINALIZED');
+    }
+    const updated = await prisma.job.findUniqueOrThrow({ where: { id: jobId } });
 
     void webhooksService.dispatch(
       outcome.status === 'COMPLETED' ? 'JOB_COMPLETED' : 'JOB_FAILED',
@@ -121,7 +165,7 @@ export class AgentService {
     // result out to the workspace's channels here — the fix for "Telegram logs never
     // arrive". Best-effort; never blocks or throws.
     if (updated.type.startsWith('WHATSAPP_') && updated.workspaceId) {
-      void notifyWhatsappJob(updated.workspaceId, updated.type, updated.payload, outcome).catch(() => undefined);
+      void notifyWhatsappJob(updated.workspaceId, updated.type, updated.payload, outcome).catch(quiet('notifyWhatsappJob', updated.id));
     }
 
     // Snapshot capture jobs carry a snapshotId; reflect the outcome onto the
@@ -130,7 +174,7 @@ export class AgentService {
       const snapshotId = (updated.payload as { snapshotId?: string } | null)?.snapshotId;
       if (snapshotId) {
         const r = (outcome.result as { artifactRef?: string; sizeBytes?: number } | undefined) ?? null;
-        void snapshotService.onCaptureResult(snapshotId, r, outcome.status === 'COMPLETED').catch(() => undefined);
+        void snapshotService.onCaptureResult(snapshotId, r, outcome.status === 'COMPLETED').catch(quiet('snapshot.onCaptureResult', updated.id));
       }
     }
 
@@ -223,12 +267,100 @@ export class AgentService {
           nextStatus = 'FAILED';
           error = updated.error ?? 'kayıt işi başarısız';
         }
+        // The step-by-step screenshots the agent captured (bug-tracking) live on
+        // Job.result.shots — the dashboard loads them via the account's last
+        // REGISTER_WHATSAPP job to show exactly where a failed run stalled.
         void prisma.generatedAccount
           .update({
             where: { id: accountId },
             data: { status: nextStatus, ...(error !== null ? { error } : { error: null }) }
           })
           .catch(() => undefined);
+
+        // Keep the device's WA-registration badge (metadata) in sync so the
+        // profiles card reflects reality: AWAITING_OTP while waiting for the code,
+        // CLEARED on a terminal outcome (ACTIVE/FAILED). Only touch the badge if it
+        // belongs to THIS account (a newer registration may have replaced it).
+        const devId = (updated.payload as { deviceId?: string } | null)?.deviceId;
+        if (devId) {
+          void prisma.device
+            .findUnique({ where: { id: devId }, select: { metadata: true } })
+            .then((dev) => {
+              const meta = (dev?.metadata ?? {}) as Record<string, unknown>;
+              if (meta.waRegisterAccountId !== accountId) return;
+              const terminal = nextStatus === 'ACTIVE' || nextStatus === 'FAILED';
+              const nextMeta = { ...meta };
+              if (terminal) {
+                delete nextMeta.waRegisterStatus;
+                delete nextMeta.waRegisterAccountId;
+                delete nextMeta.waRegisterPhone;
+                delete nextMeta.waRegisterJobId;
+              } else {
+                nextMeta.waRegisterStatus = nextStatus; // AWAITING_OTP
+              }
+              return prisma.device.update({ where: { id: devId }, data: { metadata: nextMeta as object } });
+            })
+            .catch(() => undefined);
+        }
+      }
+    }
+
+    // Instagram registration: reflect the agent's outcome onto the GeneratedAccount
+    // row. Unlike WhatsApp there's no operator-OTP step (the agent reads the email
+    // code itself), so the terminal states are: CREATED → ACTIVE, a captcha/SMS
+    // wall → AWAITING_MANUAL (needs a human), anything else → FAILED.
+    if (updated.type === 'REGISTER_INSTAGRAM') {
+      const accountId = (updated.payload as { accountId?: string } | null)?.accountId;
+      if (accountId) {
+        let nextStatus: GeneratedAccountStatus;
+        let error: string | null = null;
+        if (outcome.status === 'COMPLETED') {
+          const res = (outcome.result as { status?: string; note?: string } | undefined) ?? {};
+          switch (res.status) {
+            case 'CREATED':
+            case 'REGISTERED':
+            case 'DONE':
+            case 'OK':
+              nextStatus = 'ACTIVE';
+              break;
+            case 'CAPTCHA_WALL':
+            case 'SMS_WALL':
+              nextStatus = 'AWAITING_MANUAL';
+              error = String(res.note ?? res.status);
+              break;
+            default:
+              nextStatus = 'FAILED';
+              error = String(res.note ?? res.status ?? 'kayıt başarısız');
+          }
+        } else {
+          nextStatus = 'FAILED';
+          error = updated.error ?? 'kayıt işi başarısız';
+        }
+        void prisma.generatedAccount
+          .update({
+            where: { id: accountId },
+            data: { status: nextStatus, ...(error !== null ? { error } : { error: null }) }
+          })
+          .catch(() => undefined);
+
+        // Keep the device's IG-registration badge in sync (clear on any terminal
+        // outcome — ACTIVE, AWAITING_MANUAL, or FAILED all end the live panel).
+        const devId = (updated.payload as { deviceId?: string } | null)?.deviceId;
+        if (devId) {
+          void prisma.device
+            .findUnique({ where: { id: devId }, select: { metadata: true } })
+            .then((dev) => {
+              const meta = (dev?.metadata ?? {}) as Record<string, unknown>;
+              if (meta.igRegisterAccountId !== accountId) return;
+              const nextMeta = { ...meta };
+              delete nextMeta.igRegisterStatus;
+              delete nextMeta.igRegisterAccountId;
+              delete nextMeta.igRegisterEmail;
+              delete nextMeta.igRegisterJobId;
+              return prisma.device.update({ where: { id: devId }, data: { metadata: nextMeta as object } });
+            })
+            .catch(() => undefined);
+        }
       }
     }
 
@@ -368,6 +500,31 @@ export class AgentService {
       }
     }
 
+    // Wake / sleep finished: reflect the real instance state onto the device.
+    if (updated.type === 'DEVICE_WAKE' || updated.type === 'DEVICE_SLEEP') {
+      const deviceId = (updated.payload as { deviceId?: string } | null)?.deviceId;
+      if (deviceId) {
+        if (updated.type === 'DEVICE_WAKE' && outcome.status === 'COMPLETED') {
+          const r = (outcome.result as { ip?: string; adbPort?: number } | undefined) ?? {};
+          await prisma.device
+            .update({
+              where: { id: deviceId },
+              data: {
+                status: 'ONLINE',
+                ...(r.ip ? { ipAddress: r.ip } : {}),
+                ...(r.adbPort ? { adbPort: r.adbPort } : {}),
+                lastSeen: new Date()
+              }
+            })
+            .catch(() => undefined);
+        } else if (updated.type === 'DEVICE_SLEEP' && outcome.status === 'COMPLETED') {
+          await prisma.device.update({ where: { id: deviceId }, data: { status: 'OFFLINE' } }).catch(() => undefined);
+        } else if (outcome.status === 'FAILED') {
+          await prisma.device.update({ where: { id: deviceId }, data: { status: 'ERROR' } }).catch(() => undefined);
+        }
+      }
+    }
+
     // Evaluate alert rules on job failure.
     if (outcome.status === 'FAILED') {
       void alertsService.evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', {
@@ -383,14 +540,51 @@ export class AgentService {
   async reportProgress(
     host: Host,
     jobId: string,
-    input: { step: string; percent?: number | undefined; note?: string | undefined; status?: string | undefined }
+    input: { step: string; percent?: number | undefined; note?: string | undefined; status?: string | undefined; accountId?: string | undefined; shot?: string | undefined }
   ): Promise<{ ok: true }> {
     const job = await prisma.job.findUnique({ where: { id: jobId } });
     if (!job) throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
     if (job.claimedByHostId !== host.id) {
       throw new AppError('Job was not claimed by this host', 403, 'JOB_NOT_CLAIMED');
     }
-    const deviceId = (job.payload as { deviceId?: string } | null)?.deviceId ?? '';
+    const payload = (job.payload ?? {}) as { deviceId?: string; accountId?: string };
+    const deviceId = payload.deviceId ?? '';
+    // Route by job type: WhatsApp registration progress → its own service (keyed by
+    // accountId, may carry a screenshot); everything else → provision progress.
+    if (job.type === 'REGISTER_WHATSAPP') {
+      const accountId = input.accountId ?? payload.accountId ?? '';
+      await waRegisterService.reportProgress(
+        {
+          accountId,
+          deviceId,
+          jobId,
+          step: input.step,
+          ...(input.percent !== undefined ? { percent: input.percent } : {}),
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.shot !== undefined ? { shot: input.shot } : {})
+        },
+        job.workspaceId ?? undefined
+      );
+      return { ok: true };
+    }
+    if (job.type === 'REGISTER_INSTAGRAM') {
+      const accountId = input.accountId ?? payload.accountId ?? '';
+      await igRegisterService.reportProgress(
+        {
+          accountId,
+          deviceId,
+          jobId,
+          step: input.step,
+          ...(input.percent !== undefined ? { percent: input.percent } : {}),
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.shot !== undefined ? { shot: input.shot } : {})
+        },
+        job.workspaceId ?? undefined
+      );
+      return { ok: true };
+    }
     await provisionService.reportProgress(
       {
         deviceId,
@@ -407,7 +601,7 @@ export class AgentService {
 
   async heartbeat(
     host: Host,
-    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined }
+    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined }
   ) {
     const updated = await prisma.host.update({
       where: { id: host.id },
@@ -415,7 +609,12 @@ export class AgentService {
         status: 'ONLINE',
         lastSeenAt: new Date(),
         ...(typeof input.runningPhones === 'number' ? { runningPhones: input.runningPhones } : {}),
-        ...(typeof input.capacity === 'number' ? { capacity: input.capacity } : {})
+        ...(typeof input.capacity === 'number' ? { capacity: input.capacity } : {}),
+        ...(typeof input.diskTotalGb === 'number' ? { diskTotalGb: input.diskTotalGb } : {}),
+        ...(typeof input.diskFreeGb === 'number' ? { diskFreeGb: input.diskFreeGb } : {}),
+        ...(typeof input.ramFreeGb === 'number' ? { ramFreeGb: input.ramFreeGb } : {}),
+        ...(typeof input.loadAvg1m === 'number' ? { loadAvg1m: input.loadAvg1m } : {}),
+        ...(typeof input.cpuCores === 'number' ? { cpuCores: input.cpuCores } : {})
       }
     });
 
@@ -448,12 +647,18 @@ export class AgentService {
       const isUp = hasSerials ? Boolean(serial && reachable.has(serial)) : true;
 
       if (isUp) {
+        // Advance lastSeen FIRST and let it throw on failure. Only after the
+        // window has been committed do we bill it, so a failed lastSeen write
+        // aborts before accrue — otherwise accrue(lastSeen→now) could succeed
+        // while lastSeen stays put, and the next heartbeat would bill the same
+        // minutes again (double-billing). The status/lastSeen write is idempotent.
+        const prevLastSeen = d.lastSeen;
+        await prisma.device.update({ where: { id: d.id }, data: { status: 'ONLINE', lastSeen: now } });
         // Credit online time only for devices that were already ONLINE (a freshly
         // promoted device has no measurable online slice yet).
         if (d.status === 'ONLINE') {
-          await usageService.accrue(d.id, d.lastSeen, now, d.workspaceId ?? undefined);
+          await usageService.accrue(d.id, prevLastSeen, now, d.workspaceId ?? undefined).catch(() => undefined);
         }
-        await prisma.device.update({ where: { id: d.id }, data: { status: 'ONLINE', lastSeen: now } }).catch(() => undefined);
         // Fire DEVICE_ONLINE only on a real transition into ONLINE.
         if (d.status !== 'ONLINE') {
           void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);

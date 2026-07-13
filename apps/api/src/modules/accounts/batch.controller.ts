@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { batchService } from './batch.service';
+import { waRegisterService } from './wa-register.service';
+import { igRegisterService } from './ig-register.service';
 
 function id(req: Request): string {
   const v = req.params.id;
@@ -36,6 +38,11 @@ export async function provisionAccountHandler(req: Request, res: Response): Prom
 
 export async function pollOtpHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.pollOtp(getWorkspaceId(req), id(req)) });
+}
+
+// Step-by-step screenshots from the account's last WhatsApp registration job.
+export async function registrationShotsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.getRegistrationShots(getWorkspaceId(req), id(req)) });
 }
 
 const provisionBatchSchema = z.object({ batchId: z.string().min(1) });
@@ -218,4 +225,34 @@ export async function provideOtpHandler(req: Request, res: Response): Promise<vo
   const { otpCode } = provideOtpSchema.parse(req.body);
   const account = await batchService.provideOperatorOtp(getWorkspaceId(req), id(req), otpCode);
   res.json({ data: account });
+}
+
+// Live WhatsApp-registration progress (log + last step) for the modal to restore.
+export async function waRegisterStatusHandler(req: Request, res: Response): Promise<void> {
+  const data = await waRegisterService.getStatus(id(req), getWorkspaceId(req));
+  res.json({ data });
+}
+
+// One-click Instagram registration. Email-based and fully autonomous (the agent
+// reads the confirmation code from email). All identity fields are optional —
+// anything omitted is generated. Returns the account row immediately; the modal
+// polls status while the agent works.
+const startIgRegisterSchema = z.object({
+  deviceId: z.string().min(1),
+  email: z.string().email().optional(),
+  password: z.string().min(6).max(64).optional(),
+  fullName: z.string().min(1).max(80).optional(),
+  birthYear: z.coerce.number().int().min(1950).max(2007).optional()
+});
+export async function startInstagramRegisterHandler(req: Request, res: Response): Promise<void> {
+  const input = startIgRegisterSchema.parse(req.body);
+  const { deviceId, ...overrides } = input;
+  const account = await batchService.startInstagramRegister(getWorkspaceId(req), deviceId, overrides);
+  res.status(201).json({ data: account });
+}
+
+// Live Instagram-registration progress (log + last step) for the modal to restore.
+export async function igRegisterStatusHandler(req: Request, res: Response): Promise<void> {
+  const data = await igRegisterService.getStatus(id(req), getWorkspaceId(req));
+  res.json({ data });
 }

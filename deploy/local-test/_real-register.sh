@@ -4,7 +4,7 @@
 # texts the user). Tolerates the agent's post-submit "id yok" (number is already
 # in). Captures the final screen state. Args: $1=number (E164 no +) $2=name
 API=http://localhost:4000
-KEY=f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9
+KEY="${FLEET_API_KEY:?set FLEET_API_KEY}"
 NUM="${1:-905457438530}"
 NAME="${2:-Furkan}"
 SUDO_PASS=163244
@@ -29,7 +29,7 @@ echo "device=$DID number=$NUM job=$JOBID" >> "$OUT"
 # run agent BLOCKING (it claims + drives; exits after job or 150s)
 echo "$SUDO_PASS" | sudo -S pkill -9 -f 'node agent.mjs' 2>/dev/null; sleep 1
 cd "/mnt/c/Yeni klasör/vps/deploy/kvm-host/agent" || exit 1
-export FLEET_API_URL=http://localhost:4000 FLEET_API_KEY=$KEY FLEET_HOST_KEY=host_6bbbbfe1fd292aa80f2aa1b7ab1a0326 FLEET_ADB=adb
+export FLEET_API_URL=http://localhost:4000 FLEET_API_KEY=$KEY FLEET_HOST_KEY="${FLEET_HOST_KEY:?set FLEET_HOST_KEY}" FLEET_ADB=adb
 timeout 150 node agent.mjs >>"$OUT" 2>&1
 
 # capture final screen

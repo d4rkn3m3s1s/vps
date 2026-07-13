@@ -8,8 +8,8 @@ Start-Sleep -Seconds 2
 try { if (Test-Path $log) { Clear-Content $log -ErrorAction Stop } } catch {}
 $envs = @{
   FLEET_API_URL  = "http://localhost:4000"
-  FLEET_API_KEY  = "f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9"
-  FLEET_HOST_KEY = "host_6bbbbfe1fd292aa80f2aa1b7ab1a0326"
+  FLEET_API_KEY  = $env:FLEET_API_KEY
+  FLEET_HOST_KEY = $env:FLEET_HOST_KEY
   FLEET_ADB      = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
   # ffmpeg → MJPEG path: reliable <img> rendering at ~20-25fps. This is the
   # DEFAULT because it just works everywhere. (The raw-H.264/WebCodecs path,

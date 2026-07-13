@@ -65,6 +65,8 @@ enum JobType {
   APPLY_FINGERPRINT
   PROVISION_INTEGRITY
   PROVISION_DEVICE
+  DEVICE_WAKE
+  DEVICE_SLEEP
 }
 
 // Lifecycle of an AI Device Agent run (Claude autonomously driving a phone).
@@ -93,6 +95,15 @@ model Host {
   runningPhones Int      @default(0)
   cpuCores    Int?
   memoryGb    Int?
+  // Live capacity from the agent heartbeat (df / free). Used to show "how many
+  // more devices fit" — each Waydroid instance needs ~8GB disk + ~1.5GB RAM.
+  diskTotalGb Int?
+  diskFreeGb  Int?
+  ramFreeGb   Int?
+  // 1-minute load average from the agent heartbeat. Combined with cpuCores it
+  // gives CPU saturation (load / cores) — the dashboard warns when this is high
+  // so an operator can sleep idle devices (software-rendered Waydroid pins CPU).
+  loadAvg1m   Float?
   kvm         Boolean    @default(true)
   agentKeyHash String?
   lastSeenAt  DateTime?
@@ -483,6 +494,10 @@ model Device {
   groupId        String?
   hostId         String?
   workspaceId    String?
+  // The proxy this device's traffic is routed through (redsocks/transparent).
+  // Persisted so the panel can show + change a device's proxy; the actual routing
+  // is applied host-side by wd-proxy.sh via an EMULATOR_SET_PROXY job.
+  proxyId        String?
   // Cloud-phone backend. null/"SELF" = our own KVM host-agent fleet. Otherwise the
   // device is a rented phone from an external vendor: `cloudProvider` names the
   // vendor kind, `cloudProviderId` links the CloudPhoneProvider credential row,
@@ -501,6 +516,7 @@ model Device {
   group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
   host           Host?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
   workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  proxy          Proxy?        @relation(fields: [proxyId], references: [id], onDelete: SetNull)
 
   // Anti-detection device fingerprint (one per cloud phone).
   fingerprint    DeviceFingerprint?
@@ -653,6 +669,12 @@ model DeviceFingerprint {
 model Job {
   id          String     @id @default(cuid())
   emulatorId  String?
+  // First-class copy of payload.deviceId. The device a job targets was only ever
+  // stored inside the JSON payload, so the device-idle guard + agent claim had to
+  // filter on a JSON path (payload.deviceId) that no index can serve. This column
+  // is populated by createJobRecord and indexed so those hot paths use an index
+  // seek instead of scanning PENDING/RUNNING jobs.
+  deviceId    String?
   type        JobType
   status      JobStatus  @default(PENDING)
   payload     Json
@@ -676,6 +698,10 @@ model Job {
   @@index([status, claimedByHostId, createdAt])
   // Newest-jobs-per-workspace list query (orderBy createdAt desc).
   @@index([workspaceId, createdAt])
+  // Device-exclusive-job guard (assertDeviceIdle) + agent claim filter by the
+  // target device; index status too so "active exclusive job for this device" is
+  // an index-only lookup.
+  @@index([deviceId, status])
 }
 
 model AuditLog {
@@ -787,6 +813,7 @@ model Proxy {
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  devices     Device[]
 
   @@index([workspaceId])
   @@index([checksDue])
@@ -1037,6 +1064,10 @@ model FarmActionLog {
   campaign    FarmCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
 
   @@index([deviceId])
+  // Composite index for getHealthTrend / listActionLog: filter by device + order
+  // by time. FarmActionLog grows fast (a row per farm tick), so the plain
+  // deviceId index alone forces a sort on createdAt.
+  @@index([deviceId, createdAt])
   @@index([campaignId])
   @@index([workspaceId])
 }
@@ -1369,13 +1400,14 @@ model ScheduledPost {
 // number + the OTP, then the on-device registration via RPA. Secrets are
 // AES-256-GCM encrypted at rest and never returned raw to clients.
 enum GeneratedAccountStatus {
-  PENDING        // queued, nothing done yet
-  IDENTITY_READY // fake identity generated
-  CONTACT_READY  // email + phone number provisioned
-  AWAITING_OTP   // number rented, waiting for the SMS code
-  REGISTERING    // on-device RPA registration in progress
-  ACTIVE         // account created successfully
-  FAILED         // gave up (no OTP, RPA error, etc.)
+  PENDING          // queued, nothing done yet
+  IDENTITY_READY   // fake identity generated
+  CONTACT_READY    // email + phone number provisioned
+  AWAITING_OTP     // number rented, waiting for the SMS code
+  REGISTERING      // on-device RPA registration in progress
+  ACTIVE           // account created successfully
+  AWAITING_MANUAL  // created but blocked on a human step (IG captcha / SMS wall)
+  FAILED           // gave up (no OTP, RPA error, etc.)
 }
 
 model GeneratedAccount {
@@ -1403,6 +1435,11 @@ model GeneratedAccount {
   deviceId      String?
   error         String?
   notes         String?
+
+  // Live WhatsApp-registration progress: { log: [...], lastProgress: {...} }.
+  // Persisted here (not on the Job) because Job.result is overwritten wholesale on
+  // completion; keyed by account so the two register jobs share one panel history.
+  registerLog   Json?
 
   workspaceId   String?
   createdAt     DateTime @default(now())

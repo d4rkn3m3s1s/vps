@@ -3,7 +3,7 @@
 # run on the redroid phone. Uses the API directly (login → create job).
 set -u
 API=http://localhost:4000
-KEY=f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9
+KEY="${FLEET_API_KEY:?set FLEET_API_KEY}"
 DEVICE=cmqlrf4ni000gj50fjimgvk4u
 TO="${1:-905551234567}"
 MSG="${2:-Merhaba, bu bir test mesajidir}"

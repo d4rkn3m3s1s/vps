@@ -1,8 +1,11 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { AppError } from '../../lib/errors';
 import { DeviceService } from '../devices/device.service';
 import { batchService } from '../accounts/batch.service';
 import { whatsappService } from '../whatsapp/whatsapp.service';
+import { provisionService } from '../provision/provision.service';
+import { waRegisterService } from '../accounts/wa-register.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
 
 const deviceService = new DeviceService();
@@ -290,4 +293,97 @@ export async function stateHandler(req: Request, res: Response): Promise<void> {
   const input = stateSchema.parse(req.body);
   await whatsappService.setConversationState(workspaceId, input);
   res.json({ data: { ok: true } });
+}
+
+// ── One-click device provision (API) ───────────────────────────────────────
+// POST /public/v1/devices/provision — build a brand-new isolated cloud phone
+// from scratch (boot → root → identity → proxy → apps → WhatsApp-ready), exactly
+// like the dashboard's "Tek Tıkla Cihaz Oluştur". Async: returns immediately with
+// the deviceId + jobId; poll GET /v1/devices or the job to watch it come online.
+const provisionSchema = z.object({
+  name: z.string().min(1).max(60).optional(),
+  countryCode: z.string().length(2).optional(),
+  deviceModel: z.string().max(60).optional(),
+  androidVersion: z.string().max(10).optional(),
+  // Country-matched residential proxy (ISO-2). WhatsApp needs number-country ==
+  // exit-IP country, so set this to the country you'll register numbers from.
+  proxyCountry: z.string().length(2).optional()
+});
+export async function provisionDeviceHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = provisionSchema.parse(req.body ?? {});
+  const result = await provisionService.createInstance(
+    {
+      ...(input.name ? { name: input.name } : {}),
+      ...(input.countryCode ? { countryCode: input.countryCode } : {}),
+      ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),
+      ...(input.androidVersion ? { androidVersion: input.androidVersion } : {}),
+      ...(input.proxyCountry ? { proxyCountry: input.proxyCountry } : {})
+    },
+    workspaceId
+  );
+  res.status(201).json({ data: { deviceId: result.deviceId, jobId: result.jobId, instance: result.instance, status: 'PROVISIONING' } });
+}
+
+// GET /public/v1/devices/provision/:jobId/status — live step-by-step provision
+// progress (current step, percent, full step log), EXACTLY what the dashboard
+// modal shows. Poll this to watch a one-click device build boot → root → identity
+// → proxy → apps → WhatsApp-ready. status: PENDING/RUNNING/COMPLETED/FAILED.
+export async function provisionStatusHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const jobId = typeof req.params.jobId === 'string' ? req.params.jobId : '';
+  if (!jobId) throw new AppError('jobId gerekli', 400, 'MISSING_JOB_ID');
+  const data = await provisionService.getStatus(jobId, workspaceId);
+  res.json({ data });
+}
+
+// ── One-click WhatsApp registration (API) ──────────────────────────────────
+// POST /public/v1/whatsapp/register — start an autonomous WhatsApp signup on a
+// device using the caller's OWN number. Async, two-phase: the agent drives to the
+// SMS-code screen and stops (status AWAITING_OTP); submit the code you receive to
+// /register/:id/otp to finish. Poll /register/:id/status for live progress.
+const registerSchema = z.object({
+  deviceId: z.string().min(1),
+  phoneNumber: z.string().min(6)
+});
+export async function registerWhatsappHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = registerSchema.parse(req.body);
+  const account = await batchService.startOperatorRegister(workspaceId, input.deviceId, input.phoneNumber);
+  // account carries accountId + deviceId + steps + proxyAssigned.
+  const a = account as Record<string, unknown>;
+  res.status(201).json({
+    data: {
+      accountId: a.accountId,
+      deviceId: a.deviceId,
+      phoneNumber: a.phoneNumber,
+      status: a.status ?? 'REGISTERING',
+      ...(a.proxyAssigned ? { proxyAssigned: a.proxyAssigned } : {})
+    }
+  });
+}
+
+// POST /public/v1/whatsapp/register/:id/otp — submit the SMS code so the agent
+// enters it + finishes the profile. Account flips to ACTIVE (or FAILED).
+const otpSchema = z.object({ otpCode: z.string().min(4).max(8) });
+export async function registerWhatsappOtpHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const accountId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
+  const { otpCode } = otpSchema.parse(req.body);
+  const account = await batchService.provideOperatorOtp(workspaceId, accountId, otpCode);
+  res.json({ data: account });
+}
+
+// GET /public/v1/whatsapp/register/:id/status — live registration progress
+// (current step, percent, full step log). Poll this to track a signup.
+export async function registerWhatsappStatusHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const accountId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
+  const data = await waRegisterService.getStatus(accountId, workspaceId);
+  res.json({ data });
 }

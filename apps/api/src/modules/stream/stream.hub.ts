@@ -46,6 +46,9 @@ export type AgentAction = {
 type AgentControl =
   | { type: 'stream.start'; deviceId: string; serial: string | null; fps?: number; quality?: number }
   | { type: 'stream.stop'; deviceId: string; serial: string | null }
+  // Operator "refresh": tell the agent to re-open ADB to the device (recovers a
+  // dropped 'device not found' before restarting capture).
+  | { type: 'adb.reconnect'; deviceId: string; serial: string | null }
   | { type: 'input.tap'; deviceId: string; serial: string | null; x: number; y: number }
   | { type: 'input.swipe'; deviceId: string; serial: string | null; x: number; y: number; x2: number; y2: number; ms?: number }
   | { type: 'input.key'; deviceId: string; serial: string | null; keycode: number }
@@ -390,6 +393,22 @@ export class StreamHub {
     if (!hostId) return false;
     const a = this.agents.get(hostId);
     return Boolean(a && a.readyState === WebSocket.OPEN);
+  }
+
+  // Operator-triggered "refresh stream" for ONE device: re-send stream.start so a
+  // viewer stuck on "bağlanıyor" (e.g. the agent reconnected after an API restart,
+  // or the capture died) gets frames again. Also nudges the agent to re-open ADB
+  // to the device first. Returns whether the host agent is reachable — if not, the
+  // caller surfaces "agent çevrimdışı" instead of pretending it worked.
+  refreshDeviceStream(deviceId: string, hostId: string | null, serial: string | null): { agentConnected: boolean } {
+    const agentConnected = this.isAgentConnected(hostId);
+    if (agentConnected && hostId) {
+      // Ask the agent to (re)connect ADB, then (re)start capture. Both are
+      // idempotent on the agent side (stopCapture→startCapture).
+      if (serial) this.toAgent(hostId, { type: 'adb.reconnect', deviceId, serial });
+      this.toAgent(hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
+    }
+    return { agentConnected };
   }
 
   // ── AI Device Agent request/response ────────────────────────────────────────

@@ -3,7 +3,7 @@
 # sms-bus number. The agent drives EULA -> Register new account -> number ->
 # (stops at OTP_WAIT). We then poll sms-bus for the OTP and re-dispatch with it.
 API=http://localhost:4000
-KEY=f185cb2df56900c9b2a2cdc350ee5cc0db2ceff9
+KEY="${FLEET_API_KEY:?set FLEET_API_KEY}"
 NUMBER="${1:-6285165139215}"
 NAME="${2:-Aylin Demir}"
 

@@ -34,7 +34,7 @@ export async function getJobsHandler(req: Request, res: Response): Promise<void>
 }
 
 export async function getJobHandler(req: Request, res: Response): Promise<void> {
-  const job = await getJob(requireJobId(req));
+  const job = await getJob(requireJobId(req), getWorkspaceId(req));
   if (!job) {
     res.status(404).json({ error: 'JOB_NOT_FOUND', message: 'Job not found' });
     return;

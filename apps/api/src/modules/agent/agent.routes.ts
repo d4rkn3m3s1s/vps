@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, updateDeviceMetricsHandler, whatsappInboundHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -20,3 +20,4 @@ agentRouter.post('/jobs/:id/progress', asyncHandler(agentProgressHandler));
 agentRouter.post('/heartbeat', asyncHandler(agentHeartbeatHandler));
 agentRouter.post('/device-metrics', asyncHandler(updateDeviceMetricsHandler));
 agentRouter.post('/whatsapp/inbound', asyncHandler(whatsappInboundHandler));
+agentRouter.post('/vision/analyze', asyncHandler(visionAnalyzeHandler));

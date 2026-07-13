@@ -8,6 +8,7 @@ import {
   listCountriesHandler,
   provisionIntegrityHandler,
   regenerateFingerprintHandler,
+  rerollIdentityHandler,
   updateGpsHandler
 } from './fingerprint.controller';
 
@@ -20,4 +21,6 @@ fingerprintRouter.post('/:deviceId/regenerate', requireApiKey, authenticateJwt, 
 fingerprintRouter.put('/:deviceId/gps', requireApiKey, authenticateJwt, asyncHandler(updateGpsHandler));
 // Apply the stored fingerprint to the device + provision integrity (over ADB).
 fingerprintRouter.post('/:deviceId/apply', requireApiKey, authenticateJwt, asyncHandler(applyFingerprintHandler));
+// One-click identity reroll (new IMEI/serial/android_id/MAC; screen/model kept).
+fingerprintRouter.post('/:deviceId/reroll', requireApiKey, authenticateJwt, asyncHandler(rerollIdentityHandler));
 fingerprintRouter.post('/:deviceId/provision-integrity', requireApiKey, authenticateJwt, asyncHandler(provisionIntegrityHandler));

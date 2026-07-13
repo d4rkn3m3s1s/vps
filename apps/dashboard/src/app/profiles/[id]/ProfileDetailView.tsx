@@ -8,6 +8,7 @@ import {
   History,
   Play,
   Square,
+  RotateCw,
   Camera,
   Cpu,
   MemoryStick,
@@ -22,7 +23,8 @@ import {
   Globe,
   Hash,
   Wifi,
-  Monitor
+  Monitor,
+  Shuffle
 } from 'lucide-react';
 import { PageMotion } from '../../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../../components/hud';
@@ -168,35 +170,6 @@ export function ProfileDetailView({
     setTimeout(() => setToast(null), 3000);
   }
 
-  async function action(jobType: string, status: string, label: string) {
-    setBusy(label);
-    try {
-      const jobRes = await fetch('/api/bulk/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds: [device.id], jobType })
-      });
-      if (!jobRes.ok) {
-        flash(`${label} başarısız oldu`, 'err');
-        return;
-      }
-      const statusRes = await fetch(`/api/devices/${device.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-      if (!statusRes.ok) {
-        flash(`${label} başarısız oldu`, 'err');
-        return;
-      }
-      flash(`${label} sıraya alındı`, 'ok');
-      router.refresh();
-    } catch {
-      flash(`${label} başarısız oldu`, 'err');
-    } finally {
-      setBusy(null);
-    }
-  }
 
   async function screenshot() {
     setBusy('Ekran görüntüsü');
@@ -214,6 +187,46 @@ export function ProfileDetailView({
       router.refresh();
     } catch {
       flash('Ekran görüntüsü başarısız oldu', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // One-click identity reroll: new IMEI/serial/android_id/MAC/build, KEEPING the
+  // screen/model/OS/GPS intact (so WhatsApp + general use stay unbroken).
+  async function rerollIdentity() {
+    setBusy('Kimlik');
+    try {
+      const res = await fetch(`/api/fingerprints/${device.id}/reroll`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        flash(body?.data?.message || body?.error || 'Kimlik değiştirilemedi', 'err');
+        return;
+      }
+      flash('Yeni kimlik uygulandı — ekran ve ayarlar korundu', 'ok');
+      router.refresh();
+    } catch {
+      flash('Kimlik değiştirilemedi', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // Real Waydroid lifecycle — wake/sleep/reboot actually start/stop the instance
+  // host-side (unlike EMULATOR_START which only ack'd). endpoint = wake|sleep|reboot.
+  async function lifecycle(endpoint: 'wake' | 'sleep' | 'reboot', label: string) {
+    setBusy(label);
+    try {
+      const res = await fetch(`/api/devices/${device.id}/${endpoint}`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        flash(body?.data?.message || body?.error || `${label} başarısız oldu`, 'err');
+        return;
+      }
+      flash(`${label} başlatıldı`, 'ok');
+      router.refresh();
+    } catch {
+      flash(`${label} başarısız oldu`, 'err');
     } finally {
       setBusy(null);
     }
@@ -254,10 +267,13 @@ export function ProfileDetailView({
         subtitle={`${STATUS_LABEL[device.status] ?? device.status} · ${fp?.country ?? '—'}`}
         actions={
           <>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_START', 'STARTING', 'Başlat')}>
-              <Play size={14} /> Başlat
+            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => lifecycle('wake', 'Uyandır')}>
+              <Play size={14} /> Uyandır
             </button>
-            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => action('EMULATOR_STOP', 'STOPPING', 'Durdur')}>
+            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => lifecycle('reboot', 'Yeniden başlat')}>
+              <RotateCw size={14} /> Yeniden başlat
+            </button>
+            <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => lifecycle('sleep', 'Durdur')}>
               <Square size={14} /> Durdur
             </button>
             <button type="button" className="btn-primary" disabled={!!busy} onClick={screenshot}>
@@ -343,20 +359,29 @@ export function ProfileDetailView({
 
         <HoloPanel title="Cihaz parmak izi" icon={<Fingerprint size={16} />} tilt>
           {fp ? (
-            <div className="panel-stack">
-              <div className="row"><span className="helper"><Smartphone size={13} /> Model</span><span>{fp.manufacturer} {fp.model}</span></div>
-              <div className="row"><span className="helper"><Hash size={13} /> OS</span><span className="mono">Android {fp.osVersion}</span></div>
-              <div className="row"><span className="helper"><Hash size={13} /> IMEI</span><span className="mono">{fp.imei}</span></div>
-              <div className="row"><span className="helper"><Wifi size={13} /> MAC</span><span className="mono">{fp.macAddress}</span></div>
-              <div className="row"><span className="helper"><Monitor size={13} /> Ekran</span><span className="mono">{fp.resolution} @ {fp.dpi}dpi</span></div>
-              <div className="row"><span className="helper"><Radio size={13} /> Operatör</span><span>{fp.carrier}</span></div>
-              <div className="row"><span className="helper"><Globe size={13} /> Yerel ayar</span><span>{fp.country} · {fp.language} · {fp.timezone}</span></div>
-              <div className="row">
-                <span className="helper"><MapPin size={13} /> GPS</span>
-                <span className="mono">
+            <div className="fp-detail">
+              <div className="fp-detail-row"><span className="fp-detail-key"><Smartphone size={13} /> Model</span><span className="fp-detail-val">{fp.manufacturer} {fp.model}</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Hash size={13} /> OS</span><span className="fp-detail-val mono">Android {fp.osVersion}</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Hash size={13} /> IMEI</span><span className="fp-detail-val mono">{fp.imei}</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Wifi size={13} /> MAC</span><span className="fp-detail-val mono">{fp.macAddress}</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Monitor size={13} /> Ekran</span><span className="fp-detail-val mono">{fp.resolution} @ {fp.dpi}dpi</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Radio size={13} /> Operatör</span><span className="fp-detail-val">{fp.carrier}</span></div>
+              <div className="fp-detail-row"><span className="fp-detail-key"><Globe size={13} /> Yerel ayar</span><span className="fp-detail-val">{fp.country} · {fp.language} · {fp.timezone}</span></div>
+              <div className="fp-detail-row">
+                <span className="fp-detail-key"><MapPin size={13} /> GPS</span>
+                <span className="fp-detail-val mono">
                   {fp.gpsEnabled ? `${fp.latitude ?? '—'}, ${fp.longitude ?? '—'}` : 'devre dışı'}
                 </span>
               </div>
+              <button
+                type="button"
+                className="btn-ghost fp-reroll-btn"
+                disabled={busy === 'Kimlik'}
+                onClick={rerollIdentity}
+                title="Yeni IMEI/seri/MAC/android_id üret ve cihaza uygula — ekran, model ve ayarlar korunur"
+              >
+                <Shuffle size={14} /> {busy === 'Kimlik' ? 'Kimlik değişiyor…' : 'Tek tıkla yeni kimlik'}
+              </button>
             </div>
           ) : (
             <p className="helper">Parmak izi oluşturulmadı.</p>

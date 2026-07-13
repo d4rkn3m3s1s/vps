@@ -17,7 +17,10 @@ const FP_SECRET_FIELDS = ['imei', 'androidId', 'serialNo', 'macAddress', 'phoneN
 
 // Decrypt the encrypted identity fields on a stored fingerprint row. safeDecrypt
 // keeps pre-encryption plaintext rows readable (backward-compat, no migration).
-function decryptFingerprint<T extends Partial<DeviceFingerprint>>(fp: T): T {
+// Exported so device.getDevice/listDevices can decrypt the eager-loaded
+// fingerprint (otherwise IMEI/MAC/serial/androidId/phone show as AES ciphertext
+// in the dashboard's device-detail panel).
+export function decryptFingerprint<T extends Partial<DeviceFingerprint>>(fp: T): T {
   const out: T = { ...fp };
   for (const f of FP_SECRET_FIELDS) {
     const v = out[f as keyof T];
@@ -143,6 +146,61 @@ export class FingerprintService {
 
   async regenerate(deviceId: string, opts: GenerateOptions = {}, workspaceId?: string) {
     return this.ensure(deviceId, opts, workspaceId);
+  }
+
+  // ── One-click IDENTITY reroll ──────────────────────────────────────────────
+  // Give the device a brand-new anti-detection identity WITHOUT disturbing what
+  // the one-click provision set up (screen resolution/dpi, model, OS, country,
+  // GPS). We reroll ONLY the identifier surface — IMEI, android_id, serial, MAC,
+  // phone number, build number — and keep model/resolution/dpi/timezone/country
+  // exactly as-is, then push the identity to the device WITHOUT touching wm
+  // size/density/timezone (those would shift WhatsApp's coordinate recipe). This
+  // is the safe reroll the operator asked for: "hiçbir özelliğini bozmadan".
+  async rerollIdentity(deviceId: string, workspaceId?: string) {
+    await this.assertDevice(deviceId, workspaceId);
+    const existing = await prisma.deviceFingerprint.findUnique({ where: { deviceId } });
+    if (!existing) {
+      // No fingerprint yet — fall back to a full generate (screen included, since
+      // there's nothing to preserve) and apply everything.
+      const created = await this.ensure(deviceId, {}, workspaceId);
+      const job = await this.applyIdentityJob(deviceId, created, { includeScreen: true }, workspaceId);
+      return { jobId: job.jobId, fingerprint: created };
+    }
+    // Keep model/os/screen/locale; reroll only the identifiers.
+    const data: Prisma.DeviceFingerprintUpdateInput = {
+      imei: encryptString(generateImei()),
+      androidId: encryptString(hex(8)),
+      serialNo: encryptString(hex(4).toUpperCase()),
+      macAddress: encryptString(macAddress()),
+      buildNumber: `${(existing.brand || 'BRAND').toUpperCase()}.${existing.osVersion || '13'}.${randomInt(100000, 999999)}`
+    };
+    const saved = decryptFingerprint(await prisma.deviceFingerprint.update({ where: { deviceId }, data }));
+    // Apply WITHOUT screen/timezone so the WhatsApp-ready layout stays intact.
+    const job = await this.applyIdentityJob(deviceId, saved, { includeScreen: false }, workspaceId);
+    return { jobId: job.jobId, fingerprint: saved };
+  }
+
+  // Dispatch APPLY_FINGERPRINT. When includeScreen is false we omit
+  // resolution/dpi/timezone so the agent doesn't run wm size/density (which would
+  // break the pinned 1080x2400 WhatsApp layout). Identity props always go.
+  private async applyIdentityJob(
+    deviceId: string,
+    fp: DeviceFingerprint,
+    opts: { includeScreen: boolean },
+    workspaceId?: string
+  ): Promise<{ jobId: string }> {
+    const fingerprint = {
+      model: fp.model,
+      manufacturer: fp.manufacturer,
+      brand: fp.brand,
+      osVersion: fp.osVersion,
+      buildNumber: fp.buildNumber,
+      serialNo: fp.serialNo,
+      androidId: fp.androidId,
+      ...(opts.includeScreen ? { resolution: fp.resolution, dpi: fp.dpi, timezone: fp.timezone } : {})
+    };
+    const job = await createJobRecord('APPLY_FINGERPRINT', { deviceId, fingerprint } as never, undefined, workspaceId);
+    return { jobId: job.id };
   }
 
   async updateGps(deviceId: string, input: { latitude?: number | undefined; longitude?: number | undefined; gpsEnabled?: boolean | undefined; countryCode?: string | undefined }, workspaceId?: string) {

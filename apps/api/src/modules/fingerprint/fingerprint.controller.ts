@@ -76,6 +76,25 @@ export async function applyFingerprintHandler(req: Request, res: Response): Prom
   res.status(201).json({ data });
 }
 
+// One-click identity reroll: new IMEI/serial/android_id/MAC/build, KEEPING the
+// screen/model/OS/GPS the one-click provision set up (so WhatsApp's layout + the
+// device's general use stay intact). Applies to the device in the same call.
+export async function rerollIdentityHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  const data = await fingerprintService.rerollIdentity(deviceId, workspaceId);
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'fingerprint.reroll',
+    resourceType: 'device',
+    resourceId: deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { jobId: data.jobId, model: data.fingerprint.model }
+  });
+  res.status(201).json({ data });
+}
+
 // Provision device/Play integrity (BASIC props over ADB; STRONG needs real device).
 export async function provisionIntegrityHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);

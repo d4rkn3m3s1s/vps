@@ -18,6 +18,19 @@ export async function provisionStepsHandler(_req: Request, res: Response): Promi
   res.json({ data: { steps: provisionService.steps() } });
 }
 
+// Host'larda kaç cihaz daha sığar (canlı disk/RAM'den).
+export async function provisionCapacityHandler(req: Request, res: Response): Promise<void> {
+  const data = await provisionService.capacity(getWorkspaceId(req));
+  res.json({ data });
+}
+
+// Host CPU yükü + boşta (uyutulabilir) cihaz adayları. Dashboard "CPU yüksek —
+// boşta cihazları uyut?" uyarısı ve manuel toplu-sleep için kullanır.
+export async function provisionCpuPressureHandler(req: Request, res: Response): Promise<void> {
+  const data = await provisionService.cpuPressure(getWorkspaceId(req));
+  res.json({ data });
+}
+
 // Bir kurulum job'unun kalıcı log geçmişi + son durumu (modal arka plandan dönünce
 // geçmişi geri yükler).
 export async function provisionStatusHandler(req: Request, res: Response): Promise<void> {

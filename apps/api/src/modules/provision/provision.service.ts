@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { encryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import { deviceHub } from '../devices/device.hub';
 import { DeviceService } from '../devices/device.service';
@@ -99,12 +100,105 @@ class ProvisionService {
     return PROVISION_STEPS;
   }
 
+  // How many more devices fit on each host, from live heartbeat disk/RAM. Each
+  // Waydroid instance needs ~8GB disk + ~1.5GB RAM (measured). Returns per-host +
+  // an aggregate so the dashboard can show "~N cihaz daha sığar".
+  async capacity(workspaceId?: string): Promise<{
+    totalFits: number;
+    hosts: Array<{ id: string; name: string; status: string; diskFreeGb: number | null; diskTotalGb: number | null; ramFreeGb: number | null; runningPhones: number; fits: number }>;
+  }> {
+    const DISK_PER = 8;
+    const RAM_PER = 1.5;
+    const hosts = await prisma.host.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, name: true, status: true, diskFreeGb: true, diskTotalGb: true, ramFreeGb: true, runningPhones: true }
+    });
+    let totalFits = 0;
+    const list = hosts.map((h) => {
+      const byDisk = typeof h.diskFreeGb === 'number' ? Math.floor(h.diskFreeGb / DISK_PER) : 0;
+      const byRam = typeof h.ramFreeGb === 'number' ? Math.floor(h.ramFreeGb / RAM_PER) : 0;
+      // Only ONLINE hosts can actually take new devices.
+      const fits = h.status === 'ONLINE' ? Math.max(0, Math.min(byDisk, byRam)) : 0;
+      totalFits += fits;
+      return {
+        id: h.id,
+        name: h.name,
+        status: h.status,
+        diskFreeGb: h.diskFreeGb ?? null,
+        diskTotalGb: h.diskTotalGb ?? null,
+        ramFreeGb: h.ramFreeGb ?? null,
+        runningPhones: h.runningPhones ?? 0,
+        fits
+      };
+    });
+    return { totalFits, hosts: list };
+  }
+
+  // CPU pressure per host + the sleepable ("idle-candidate") devices on hot hosts.
+  // The dashboard uses this to warn "CPU yüksek — boşta cihazları uyut?" and offer
+  // a manual bulk-sleep. We deliberately do NOT auto-sleep (an operator decides):
+  // software-rendered Waydroid pins the CPU, so sleeping devices nobody is using
+  // directly speeds up the ones that are. "Sleepable" = ONLINE + has a Waydroid
+  // instance in metadata (so DEVICE_SLEEP can actually stop it).
+  async cpuPressure(workspaceId?: string): Promise<{
+    hot: boolean;
+    hosts: Array<{
+      id: string; name: string; status: string;
+      loadAvg1m: number | null; cpuCores: number | null; saturationPct: number | null;
+      runningPhones: number;
+      sleepable: Array<{ id: string; name: string; instance: string }>;
+    }>;
+  }> {
+    // saturation >= this (load per core) is "hot" — the CPU is oversubscribed and
+    // capture/render crawls. 1.5 = 150% (measured pain point on this host).
+    const HOT = Number(process.env.FLEET_CPU_HOT || 1.5);
+    const hosts = await prisma.host.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, name: true, status: true, loadAvg1m: true, cpuCores: true, runningPhones: true }
+    });
+    let hot = false;
+    const list = await Promise.all(hosts.map(async (h) => {
+      const sat = typeof h.loadAvg1m === 'number' && typeof h.cpuCores === 'number' && h.cpuCores > 0
+        ? Math.round((h.loadAvg1m / h.cpuCores) * 100) / 100
+        : null;
+      const isHot = h.status === 'ONLINE' && sat !== null && sat >= HOT;
+      if (isHot) hot = true;
+      // Sleepable devices on this host: only fetch them for a hot host (the
+      // dashboard only needs the candidate list where it will actually warn).
+      let sleepable: Array<{ id: string; name: string; instance: string }> = [];
+      if (isHot) {
+        const devices = await prisma.device.findMany({
+          where: { hostId: h.id, status: 'ONLINE', ...(workspaceId ? { workspaceId } : {}) },
+          select: { id: true, name: true, metadata: true }
+        });
+        sleepable = devices
+          .map((d) => {
+            const meta = (d.metadata ?? {}) as Record<string, unknown>;
+            const instance = typeof meta.instance === 'string' ? meta.instance : '';
+            return instance ? { id: d.id, name: d.name, instance } : null;
+          })
+          .filter((x): x is { id: string; name: string; instance: string } => x !== null);
+      }
+      return {
+        id: h.id,
+        name: h.name,
+        status: h.status,
+        loadAvg1m: h.loadAvg1m ?? null,
+        cpuCores: h.cpuCores ?? null,
+        saturationPct: sat,
+        runningPhones: h.runningPhones ?? 0,
+        sleepable
+      };
+    }));
+    return { hot, hosts: list };
+  }
+
   // Pick the next free instance name for a host. Deterministic names (mi4, mi5…)
   // can collide on subnet (net-head.sh is md5-based), so we skip any name whose
   // subnet is already taken by another instance on this host or by a reserved one.
-  private async nextInstanceName(hostId: string): Promise<string> {
+  private async nextInstanceName(hostId: string, tx: Prisma.TransactionClient = prisma): Promise<string> {
     const prefix = process.env.FLEET_WD_PREFIX || 'mi';
-    const devices = await prisma.device.findMany({
+    const devices = await tx.device.findMany({
       where: { hostId },
       select: { metadata: true }
     });
@@ -145,20 +239,30 @@ class ProvisionService {
     });
     if (!host) throw new AppError('No online KVM host available for provisioning', 409, 'NO_ONLINE_HOST');
 
-    const instance = await this.nextInstanceName(host.id);
-    const subnetId = subnetIdFor(instance);
-
-    const device = await deviceService.createDevice(
-      {
-        name: input.name && input.name.trim() ? input.name.trim() : `Cihaz ${instance}`,
-        hostId: host.id,
-        ...(input.countryCode ? { countryCode: input.countryCode } : {}),
-        ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),
-        ...(input.androidVersion ? { androidVersion: input.androidVersion } : {}),
-        metadata: { instance, subnetId, provisionStatus: 'PROVISIONING' }
-      },
-      workspaceId
-    );
+    // Race guard: two concurrent one-click provisions on the same host must not
+    // allocate the same instance name/subnet (nextInstanceName is check-then-act
+    // and the deterministic subnet would then collide, breaking one instance's
+    // network). Serialize name-pick + device-create per host with a Postgres
+    // transaction-level advisory lock (auto-released on commit/rollback) so the
+    // second caller sees the first device and picks the next free name.
+    const { device, instance, subnetId } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(424242, hashtext(${host.id}))`;
+      const instance = await this.nextInstanceName(host.id, tx);
+      const subnetId = subnetIdFor(instance);
+      const device = await deviceService.createDevice(
+        {
+          name: input.name && input.name.trim() ? input.name.trim() : `Cihaz ${instance}`,
+          hostId: host.id,
+          ...(input.countryCode ? { countryCode: input.countryCode } : {}),
+          ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),
+          ...(input.androidVersion ? { androidVersion: input.androidVersion } : {}),
+          metadata: { instance, subnetId, provisionStatus: 'PROVISIONING' }
+        },
+        workspaceId,
+        tx
+      );
+      return { device, instance, subnetId };
+    });
 
     // Decrypt the unique fingerprint so the agent can spoof a distinct identity.
     const fp = await fingerprintService.get(device.id, workspaceId);
@@ -186,6 +290,34 @@ class ProvisionService {
             port: PROXY_PORT
           }
         : null;
+
+    // Mirror the provision proxy into the Proxy table so it shows up in the panel
+    // and the device↔proxy link is persistent (otherwise the one-click proxy is
+    // invisible on the Proxies page). Idempotent per (country, host).
+    if (proxy) {
+      const label = `Provision ${proxy.country}`;
+      const existing = await prisma.proxy.findFirst({
+        where: { label, host: proxy.host, ...(workspaceId ? { workspaceId } : {}) },
+        select: { id: true }
+      });
+      const proxyRow = existing
+        ? existing
+        : await prisma.proxy.create({
+            data: {
+              label,
+              type: 'HTTP',
+              host: proxy.host,
+              port: proxy.port,
+              username: proxy.username,
+              password: encryptString(proxy.password),
+              group: 'residential',
+              countryCode: proxy.country,
+              ...(workspaceId ? { workspace: { connect: { id: workspaceId } } } : {})
+            },
+            select: { id: true }
+          });
+      await prisma.device.update({ where: { id: device.id }, data: { proxyId: proxyRow.id } }).catch(() => undefined);
+    }
 
     const payload = {
       deviceId: device.id,
@@ -283,7 +415,7 @@ class ProvisionService {
   async getStatus(
     jobId: string,
     workspaceId?: string
-  ): Promise<{ jobId: string; deviceId: string; status: string; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[] }> {
+  ): Promise<{ jobId: string; deviceId: string; status: string; phase: 'provisioning' | 'ready' | 'failed'; percent: number; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[] }> {
     const job = await prisma.job.findFirst({
       where: { id: jobId, ...(workspaceId ? { workspaceId } : {}) },
       select: { id: true, status: true, result: true, payload: true }
@@ -291,12 +423,18 @@ class ProvisionService {
     if (!job) throw new AppError('Provision job not found', 404, 'JOB_NOT_FOUND');
     const result = (job.result ?? {}) as Record<string, unknown>;
     const deviceId = (job.payload as { deviceId?: string } | null)?.deviceId ?? '';
+    const last = (result.lastProgress as ProvisionProgress) ?? null;
+    // Coarse phase for integrations: provisioning → ready (WhatsApp-ready) / failed.
+    const phase: 'provisioning' | 'ready' | 'failed' =
+      job.status === 'FAILED' ? 'failed' : job.status === 'COMPLETED' || last?.step === 'done' ? 'ready' : 'provisioning';
     return {
       jobId: job.id,
       deviceId,
       status: job.status,
+      phase,
+      percent: last?.percent ?? 0,
       steps: PROVISION_STEPS,
-      lastProgress: (result.lastProgress as ProvisionProgress) ?? null,
+      lastProgress: last,
       log: Array.isArray(result.provisionLog) ? (result.provisionLog as unknown[]) : []
     };
   }

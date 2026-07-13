@@ -29,10 +29,56 @@ import {
   Package,
   Send,
   Zap,
+  MessageCircle,
+  Camera,
+  Shuffle,
+  Loader2,
+  Check,
+  AlertTriangle,
   X
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 import ProvisionModal, { type ProvisionStep } from './ProvisionModal';
+import WhatsappRegisterModal, { type WaStep } from './WhatsappRegisterModal';
+import InstagramRegisterModal, { type IgStep } from './InstagramRegisterModal';
+import DeviceProxyModal from './DeviceProxyModal';
+
+// Step plan for reopening the WA panel from the card badge (mirrors the API's
+// WA_REGISTER_STEPS). The modal also refetches these via getStatus on mount.
+const WA_REGISTER_STEPS_CLIENT: WaStep[] = [
+  { key: 'queued', label: 'Kuyruğa alındı', percent: 3 },
+  { key: 'perms', label: 'İzinler veriliyor', percent: 8 },
+  { key: 'a11y', label: 'Erişilebilirlik + klavye', percent: 15 },
+  { key: 'launch', label: 'WhatsApp açılıyor', percent: 25 },
+  { key: 'eula', label: 'EULA / uyarılar', percent: 35 },
+  { key: 'register', label: 'Yeni hesap kaydı (⋮ menü)', percent: 50 },
+  { key: 'number', label: 'Numara giriliyor', percent: 62 },
+  { key: 'submit', label: 'Numara onayı (Next → Yes)', percent: 72 },
+  { key: 'verify', label: 'Doğrulama yöntemi (SMS)', percent: 80 },
+  { key: 'otp_wait', label: 'SMS kodu bekleniyor', percent: 85 },
+  { key: 'otp', label: 'SMS kodu giriliyor', percent: 90 },
+  { key: 'profile', label: 'Profil ismi', percent: 96 },
+  { key: 'done', label: 'Kayıt tamamlandı (sohbet ekranı)', percent: 100 }
+];
+
+// Step plan for reopening the Instagram panel from the card badge (mirrors the
+// API's IG_REGISTER_STEPS). The modal refetches these via getStatus on mount.
+const IG_REGISTER_STEPS_CLIENT: IgStep[] = [
+  { key: 'queued', label: 'Kuyruğa alındı', percent: 3 },
+  { key: 'perms', label: 'İzinler veriliyor', percent: 8 },
+  { key: 'launch', label: 'Instagram açılıyor', percent: 18 },
+  { key: 'signup', label: 'E-posta ile kayıt', percent: 28 },
+  { key: 'email', label: 'E-posta giriliyor', percent: 38 },
+  { key: 'code_wait', label: 'Doğrulama kodu bekleniyor (e-posta)', percent: 48 },
+  { key: 'code', label: 'Kod giriliyor', percent: 56 },
+  { key: 'password', label: 'Şifre oluşturuluyor', percent: 64 },
+  { key: 'birthday', label: 'Doğum tarihi', percent: 72 },
+  { key: 'name', label: 'İsim giriliyor', percent: 80 },
+  { key: 'username', label: 'Kullanıcı adı', percent: 88 },
+  { key: 'terms', label: 'Şartlar kabul (hesap oluşturuluyor)', percent: 94 },
+  { key: 'done', label: 'Hesap oluşturuldu', percent: 100 },
+  { key: 'wall', label: 'Doğrulama duvarı (captcha/SMS)', percent: 100 }
+];
 
 export type ProvisioningModel = { model: string; manufacturer: string; brand: string; resolution: string; dpi: number; osVersions: string[] };
 export type ProvisioningCatalog = { models: ProvisioningModel[]; ramTiers: number[]; cpuTiers: number[] };
@@ -83,6 +129,7 @@ export type DeviceProfile = {
   metadata?: Record<string, unknown> | null;
   fingerprint?: DeviceFingerprint | null;
   tags?: string[];
+  proxyId?: string | null;
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
@@ -90,6 +137,15 @@ export type ProxyOption = { id: string; label: string; host: string; port: numbe
 export type AppOption = { id: string; name: string; packageName: string; version: string; apkUrl: string | null };
 
 type ViewMode = 'card' | 'list';
+
+// CPU pressure payload from GET /provision/cpu-pressure.
+type CpuSleepable = { id: string; name: string; instance: string };
+type CpuPressureHost = {
+  id: string; name: string; status: string;
+  loadAvg1m: number | null; cpuCores: number | null; saturationPct: number | null;
+  runningPhones: number; sleepable: CpuSleepable[];
+};
+type CpuPressure = { hot: boolean; hosts: CpuPressureHost[] };
 
 const STATUS_LABEL: Record<string, string> = {
   ONLINE: 'Çalışıyor',
@@ -169,6 +225,24 @@ export function ProfilesView({
     const id = setInterval(tick, 5000);
     return () => { alive = false; clearInterval(id); };
   }, []);
+
+  // Poll host CPU pressure so the "CPU yüksek — boşta cihazları uyut?" banner
+  // appears/clears live as load rises and falls.
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      try {
+        const res = await fetch('/api/provision/cpu-pressure', { cache: 'no-store' });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (alive && json?.data) setCpuPressure(json.data as CpuPressure);
+      } catch { /* keep last */ }
+    };
+    void tick();
+    const id = setInterval(tick, 15000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
   const [query, setQuery] = useState('');
   const [groupId, setGroupId] = useState<string>('all');
   const [tagFilter, setTagFilter] = useState<string | null>(null);
@@ -177,6 +251,9 @@ export function ProfilesView({
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
+  // Optional pre-provision dialog to capture a WhatsApp number (semi-autonomous
+  // register on the fresh device). Blank number → device-only provision.
+  const [provisionFormOpen, setProvisionFormOpen] = useState(false);
   // One-click provisioning: builds a brand-new isolated Waydroid instance from
   // scratch and shows a live step-by-step wizard.
   const [provisioning, setProvisioning] = useState<{ jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] } | null>(null);
@@ -201,6 +278,33 @@ export function ProfilesView({
   // Bulk install-app modal.
   const [appOpen, setAppOpen] = useState(false);
   const [appChoice, setAppChoice] = useState('');
+  // "Tek Tık WhatsApp" — open WhatsApp registration on ONE device. Separate from
+  // provisioning: pick a ready device, enter a number, the agent drives to the OTP
+  // screen and stops (operator enters the SMS code on the /whatsapp page).
+  const [waOpen, setWaOpen] = useState<DeviceProfile | null>(null);
+  const [waPhone, setWaPhone] = useState('');
+  const [waBusy, setWaBusy] = useState(false);
+  const [waMsg, setWaMsg] = useState<string | null>(null);
+  // Live WhatsApp-registration panel (opens after "Başlat"), like `provisioning`.
+  const [waRegistering, setWaRegistering] = useState<{ accountId: string; deviceId: string; phoneNumber: string; steps: WaStep[] } | null>(null);
+  // "Tek Tık Instagram" — open Instagram registration on ONE device. Email-based
+  // and fully autonomous (agent reads the email code). igOpen = confirm dialog;
+  // igRegistering = the live progress panel.
+  const [igOpen, setIgOpen] = useState<DeviceProfile | null>(null);
+  const [igBusy, setIgBusy] = useState(false);
+  const [igMsg, setIgMsg] = useState<string | null>(null);
+  const [igRegistering, setIgRegistering] = useState<{ accountId: string; deviceId: string; email: string; steps: IgStep[] } | null>(null);
+  // One-click identity reroll: per-device in-flight flag + toast.
+  const [rerollBusy, setRerollBusy] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  // Per-device proxy modal (country-grouped picker + verify).
+  const [proxyDevice, setProxyDevice] = useState<DeviceProfile | null>(null);
+  // CPU pressure warning: software-rendered Waydroid pins the host CPU, which
+  // makes the live screen crawl. When a host is "hot" we surface a banner with a
+  // one-click "sleep the idle devices" action (operator-driven, never automatic).
+  const [cpuPressure, setCpuPressure] = useState<CpuPressure | null>(null);
+  const [sleepBusy, setSleepBusy] = useState(false);
+  const [sleepMsg, setSleepMsg] = useState<string | null>(null);
 
   // All distinct tags across the fleet, for the quick-filter chip row.
   const allTags = useMemo(() => {
@@ -471,26 +575,14 @@ export function ProfilesView({
     }
   }
 
-  async function bulkJob(jobType: string, status: string) {
+  // Real Waydroid lifecycle for the selection — wake/sleep/reboot per device
+  // (each actually starts/stops the instance host-side, unlike EMULATOR_START).
+  async function bulkLifecycle(endpoint: 'wake' | 'sleep' | 'reboot') {
     if (selectionCount === 0) return;
     setBusy(true);
     try {
       const ids = Array.from(selected);
-      // Fire one real job per selected device, then reflect the new status.
-      await fetch('/api/bulk/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds: ids, jobType })
-      });
-      await Promise.all(
-        ids.map((id) =>
-          fetch(`/api/devices/${id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status })
-          })
-        )
-      );
+      await Promise.all(ids.map((id) => fetch(`/api/devices/${id}/${endpoint}`, { method: 'POST' }).catch(() => undefined)));
       router.refresh();
     } finally {
       setBusy(false);
@@ -559,6 +651,146 @@ export function ProfilesView({
     setError(null);
     setCreateOpen(true);
   }
+
+  // "Tek Tık WhatsApp": start operator-OTP registration on the chosen device with
+  // the given number. The agent drives to the OTP screen and stops; the operator
+  // enters the SMS code from the WhatsApp page (account → AWAITING_OTP → ACTIVE).
+  async function startWhatsapp() {
+    if (waBusy || !waOpen) return;
+    const num = waPhone.replace(/[^\d+]/g, '');
+    if (num.replace(/\D/g, '').length < 6) { setWaMsg('Geçerli bir numara girin (ülke kodu dahil)'); return; }
+    setWaBusy(true);
+    setWaMsg(null);
+    try {
+      const res = await fetch('/api/accounts/whatsapp/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: waOpen.id, phoneNumber: num })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setWaMsg(body?.data?.message || body?.error || 'WhatsApp kaydı başlatılamadı');
+        return;
+      }
+      const d = body?.data as { accountId?: string; deviceId?: string; steps?: WaStep[]; phoneNumber?: string } | undefined;
+      // Open the live step-by-step panel (accountId correlates the whole flow).
+      if (d?.accountId && Array.isArray(d.steps)) {
+        setWaRegistering({
+          accountId: d.accountId,
+          deviceId: d.deviceId || waOpen.id,
+          phoneNumber: d.phoneNumber || num,
+          steps: d.steps
+        });
+        setWaOpen(null);
+        setWaPhone('');
+        setWaMsg(null);
+      } else {
+        setWaMsg('Kayıt başladı ama panel açılamadı — WhatsApp sayfasından takip edin.');
+        setTimeout(() => { setWaOpen(null); setWaPhone(''); setWaMsg(null); }, 3500);
+      }
+    } catch {
+      setWaMsg('WhatsApp kaydı başlatılamadı (ağ hatası)');
+    } finally {
+      setWaBusy(false);
+    }
+  }
+
+  // "Tek Tık Instagram": start email-based Instagram registration on the chosen
+  // device. Fully autonomous — the agent generates an identity/email/password,
+  // reads the confirmation code from the email itself, and either finishes
+  // (ACTIVE), hits a captcha/SMS wall (AWAITING_MANUAL, finish on the live screen)
+  // or fails. No operator input needed.
+  async function startInstagram() {
+    if (igBusy || !igOpen) return;
+    setIgBusy(true);
+    setIgMsg(null);
+    try {
+      const res = await fetch('/api/accounts/instagram/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ deviceId: igOpen.id })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setIgMsg(body?.data?.message || body?.error || 'Instagram kaydı başlatılamadı');
+        return;
+      }
+      const d = body?.data as { accountId?: string; deviceId?: string; steps?: IgStep[]; email?: string } | undefined;
+      if (d?.accountId && Array.isArray(d.steps)) {
+        setIgRegistering({
+          accountId: d.accountId,
+          deviceId: d.deviceId || igOpen.id,
+          email: d.email || '',
+          steps: d.steps
+        });
+        setIgOpen(null);
+        setIgMsg(null);
+      } else {
+        setIgMsg('Kayıt başladı ama panel açılamadı — Hesaplar sayfasından takip edin.');
+        setTimeout(() => { setIgOpen(null); setIgMsg(null); }, 3500);
+      }
+    } catch {
+      setIgMsg('Instagram kaydı başlatılamadı (ağ hatası)');
+    } finally {
+      setIgBusy(false);
+    }
+  }
+
+  // Auto-dismiss the toast after a few seconds.
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4200);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // One-click identity reroll: new IMEI/serial/android_id/MAC/build, KEEPING the
+  // screen/model/OS the one-click provision set up (so WhatsApp stays ready). The
+  // API applies it to the device (APPLY_FINGERPRINT job) in the same call.
+  async function rerollIdentity(device: DeviceProfile) {
+    if (rerollBusy.has(device.id)) return;
+    setRerollBusy((prev) => new Set(prev).add(device.id));
+    try {
+      const res = await fetch(`/api/fingerprints/${device.id}/reroll`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // 409 DEVICE_BUSY etc. — surface the reason.
+        setToast({ kind: res.status === 409 ? 'warn' : 'err', text: body?.data?.message || body?.error || 'Kimlik değiştirilemedi' });
+        return;
+      }
+      const fp = body?.data?.fingerprint as { model?: string; manufacturer?: string } | undefined;
+      setToast({ kind: 'ok', text: `Yeni kimlik uygulandı${fp?.model ? ` · ${fp.manufacturer ?? ''} ${fp.model}` : ''} — ekran/ayarlar korundu.` });
+      router.refresh();
+    } catch {
+      setToast({ kind: 'err', text: 'Kimlik değiştirilemedi (ağ hatası)' });
+    } finally {
+      setRerollBusy((prev) => { const next = new Set(prev); next.delete(device.id); return next; });
+    }
+  }
+
+  // Sleep every idle-candidate device on the hot hosts (operator-triggered, from
+  // the CPU pressure banner). Each device gets a DEVICE_SLEEP job (wd-stop.sh);
+  // freeing CPU speeds up the phones still in use. Wake is on-demand later.
+  async function sleepIdleDevices() {
+    if (sleepBusy || !cpuPressure) return;
+    const targets = cpuPressure.hosts.filter((h) => h.saturationPct !== null && h.status === 'ONLINE')
+      .flatMap((h) => h.sleepable);
+    if (targets.length === 0) return;
+    setSleepBusy(true);
+    setSleepMsg(null);
+    try {
+      const results = await Promise.allSettled(
+        targets.map((t) => fetch(`/api/devices/${t.id}/sleep`, { method: 'POST' }))
+      );
+      const ok = results.filter((r) => r.status === 'fulfilled' && (r.value as Response).ok).length;
+      setSleepMsg(`${ok}/${targets.length} cihaz uyutuldu`);
+      // Optimistically clear the banner; the next poll re-derives real state.
+      setCpuPressure(null);
+    } catch {
+      setSleepMsg('Uyutma başarısız');
+    } finally {
+      setSleepBusy(false);
+    }
+  }
   // Tek tık: sıfırdan yeni izole Waydroid instance kur (root+vtouch+spoof+proxy+
   // APK'lar+a11y — WhatsApp-hazır). Canlı ilerleme modalını açar.
   async function startProvision() {
@@ -582,6 +814,7 @@ export function ProfilesView({
       }
       const d = body.data as { jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] };
       setCreateOpen(false);
+      setProvisionFormOpen(false);
       setProvisioning({ jobId: d.jobId, deviceId: d.deviceId, instance: d.instance, steps: d.steps });
     } catch {
       setError('Cihaz oluşturulamadı (ağ hatası)');
@@ -634,9 +867,9 @@ export function ProfilesView({
   function runBulk(action: string) {
     if (selectionCount === 0) return undefined;
     if (action === 'Sil') return deleteSelected();
-    if (action === 'Başlat') return bulkJob('EMULATOR_START', 'STARTING');
-    if (action === 'Kapat') return bulkJob('EMULATOR_STOP', 'STOPPING');
-    if (action === 'Yeniden başlat') return bulkJob('EMULATOR_START', 'REBOOTING');
+    if (action === 'Başlat') return bulkLifecycle('wake');
+    if (action === 'Kapat') return bulkLifecycle('sleep');
+    if (action === 'Yeniden başlat') return bulkLifecycle('reboot');
     if (action === 'Dosya gönder') {
       setError(null);
       setPushOpen(true);
@@ -668,7 +901,7 @@ export function ProfilesView({
         subtitle="Bulut telefon filonuzu yönetin — başlatın, taşıyın, parmak izi ve proxy atayın."
         actions={
           <div style={{ display: 'flex', gap: 8 }}>
-            <button type="button" className="btn-primary" onClick={startProvision} disabled={provisionBusy}>
+            <button type="button" className="btn-primary" onClick={() => { setError(null); setProvisionFormOpen(true); }} disabled={provisionBusy}>
               <Zap size={15} /> {provisionBusy ? 'Başlatılıyor…' : 'Tek Tıkla Cihaz Oluştur'}
             </button>
             <button type="button" className="btn-ghost" onClick={openCreate}>
@@ -677,6 +910,31 @@ export function ProfilesView({
           </div>
         }
       />
+
+      {(() => {
+        if (!cpuPressure?.hot) return null;
+        const hotHosts = cpuPressure.hosts.filter((h) => h.status === 'ONLINE' && h.saturationPct !== null && h.saturationPct >= 1.5);
+        const idleCount = hotHosts.reduce((n, h) => n + h.sleepable.length, 0);
+        const peak = Math.max(...hotHosts.map((h) => h.saturationPct ?? 0));
+        return (
+          <div className="cpu-pressure-banner" role="alert">
+            <Cpu size={18} />
+            <div className="cpu-pressure-text">
+              <strong>Sunucu CPU yükü yüksek</strong> (~%{Math.round(peak * 100)} doygunluk).
+              {' '}Yazılım-render cihazlar CPU&apos;yu dolduruyor, canlı ekran yavaşlıyor.
+              {idleCount > 0
+                ? ` ${idleCount} boşta cihaz uyutularak kullanımdaki cihazlar hızlanır.`
+                : ' Boşta uyutulabilir cihaz yok.'}
+              {sleepMsg ? <span className="cpu-pressure-msg"> — {sleepMsg}</span> : null}
+            </div>
+            {idleCount > 0 ? (
+              <button type="button" className="btn-primary" onClick={sleepIdleDevices} disabled={sleepBusy}>
+                <Power size={14} /> {sleepBusy ? 'Uyutuluyor…' : `${idleCount} boşta cihazı uyut`}
+              </button>
+            ) : null}
+          </div>
+        );
+      })()}
 
       <Reveal>
         <div className="holo-stats-grid">
@@ -858,13 +1116,101 @@ export function ProfilesView({
                     <button type="button" className="tag-chip tag-chip-add" onClick={() => editTags(device)} title="Etiketleri düzenle">+ etiket</button>
                   </div>
                   <div className="card-foot">
-                    <span className="status-chip">
-                      <span className={statusClass(device.status)} />
-                      {STATUS_LABEL[device.status] ?? device.status}
-                    </span>
-                    <button type="button" className="fp-btn" onClick={() => openFingerprint(device)}>
-                      <Fingerprint size={13} /> Parmak izi
-                    </button>
+                    {/* Status row — full width, its own line so it never crowds the actions. */}
+                    <div className="card-status-row">
+                      <span className="status-chip">
+                        <span className={statusClass(device.status)} />
+                        {STATUS_LABEL[device.status] ?? device.status}
+                      </span>
+                      {(() => {
+                        const waStatus = device.metadata?.waRegisterStatus as string | undefined;
+                        if (!waStatus) return null;
+                        const accId = device.metadata?.waRegisterAccountId as string | undefined;
+                        const label = waStatus === 'AWAITING_OTP' ? 'Kod bekleniyor' : 'WA kaydı sürüyor';
+                        return (
+                          <button
+                            type="button"
+                            className="wa-badge"
+                            title="WhatsApp kayıt panelini yeniden aç"
+                            onClick={() => {
+                              if (!accId) return;
+                              setWaRegistering({
+                                accountId: accId,
+                                deviceId: device.id,
+                                phoneNumber: (device.metadata?.waRegisterPhone as string) || '',
+                                steps: WA_REGISTER_STEPS_CLIENT
+                              });
+                            }}
+                          >
+                            <MessageCircle size={11} /> {label}
+                          </button>
+                        );
+                      })()}
+                      {(() => {
+                        const igStatus = device.metadata?.igRegisterStatus as string | undefined;
+                        if (!igStatus) return null;
+                        const accId = device.metadata?.igRegisterAccountId as string | undefined;
+                        return (
+                          <button
+                            type="button"
+                            className="wa-badge"
+                            title="Instagram kayıt panelini yeniden aç"
+                            onClick={() => {
+                              if (!accId) return;
+                              setIgRegistering({
+                                accountId: accId,
+                                deviceId: device.id,
+                                email: (device.metadata?.igRegisterEmail as string) || '',
+                                steps: IG_REGISTER_STEPS_CLIENT
+                              });
+                            }}
+                          >
+                            <Camera size={11} /> IG kaydı sürüyor
+                          </button>
+                        );
+                      })()}
+                    </div>
+                    {/* Action bar — three evenly sized buttons on their own aligned row. */}
+                    <div className="card-actions">
+                      <button type="button" className="card-action-btn" onClick={() => openFingerprint(device)} title="Parmak izi / GPS ayrıntıları">
+                        <Fingerprint size={14} /> <span>Parmak izi</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="card-action-btn"
+                        disabled={rerollBusy.has(device.id)}
+                        onClick={() => rerollIdentity(device)}
+                        title="Tek tıkla yeni kimlik (IMEI/seri/MAC) — ekran ve ayarlar korunur"
+                      >
+                        {rerollBusy.has(device.id) ? <Loader2 size={14} className="spin" /> : <Shuffle size={14} />} <span>Kimlik</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="card-action-btn"
+                        title="Bu cihaza ülke-eşleşmeli proxy göm (redsocks) + doğrula"
+                        onClick={() => setProxyDevice(device)}
+                      >
+                        <Network size={14} /> <span>Proxy</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="card-action-btn card-action-wa"
+                        disabled={Boolean(device.metadata?.waRegisterStatus)}
+                        title="Bu cihazda WhatsApp hesabı aç (numara gir → otonom kayıt → OTP)"
+                        onClick={() => { setWaOpen(device); setWaPhone(''); setWaMsg(null); }}
+                      >
+                        <MessageCircle size={14} /> <span>WhatsApp</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="card-action-btn card-action-ig"
+                        disabled={Boolean(device.metadata?.igRegisterStatus)}
+                        title="Bu cihazda Instagram hesabı aç (otonom: kimlik+e-posta üret → kayıt → e-posta kodu)"
+                        onClick={() => { setIgOpen(device); setIgMsg(null); }}
+                      >
+                        <Camera size={14} /> <span>Instagram</span>
+                      </button>
+                    </div>
                   </div>
                 </Holo3D>
               );
@@ -1252,6 +1598,116 @@ export function ProfilesView({
         </div>
       ) : null}
 
+      {provisionFormOpen ? (
+        <div className="modal-overlay" onClick={() => setProvisionFormOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2><Zap size={16} /> Tek Tıkla Cihaz Oluştur</h2>
+              <button type="button" className="modal-close" onClick={() => setProvisionFormOpen(false)}>
+                <X size={16} />
+              </button>
+            </header>
+            <p className="helper">
+              Sıfırdan izole bir Waydroid cihazı kurulur (root + parmak izi + proxy + APK&apos;lar — WhatsApp&apos;a hazır).
+              WhatsApp hesabı açmak ayrı bir adımdır: cihaz hazır olduktan sonra profil menüsünden &quot;WhatsApp Aç&quot;.
+            </p>
+            <label className="field">
+              <span>Ülke (proxy eşleşmesi için)</span>
+              <input
+                className="field-input"
+                type="text"
+                maxLength={2}
+                placeholder="US / AL / TR"
+                value={form.countryCode}
+                onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value.toUpperCase() }))}
+              />
+            </label>
+            {error ? <p className="field-error">{error}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" onClick={() => setProvisionFormOpen(false)}>
+                İptal
+              </button>
+              <button type="button" className="btn-primary" disabled={provisionBusy} onClick={startProvision}>
+                <Zap size={14} /> {provisionBusy ? 'Başlatılıyor…' : 'Cihazı kur'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {waOpen ? (
+        <div className="modal-overlay" onClick={() => !waBusy && setWaOpen(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2><MessageCircle size={16} /> WhatsApp Aç — {waOpen.name}</h2>
+              <button type="button" className="modal-close" onClick={() => !waBusy && setWaOpen(null)}>
+                <X size={16} />
+              </button>
+            </header>
+            <p className="helper">
+              Bu cihazda otonom WhatsApp kaydı başlar. Ajan numara ekranına kadar kendisi ilerler ve
+              SMS kodu ekranında durur — kodu WhatsApp sayfasından girersiniz.
+            </p>
+            <label className="field">
+              <span>Telefon numarası (ülke kodu dahil)</span>
+              <input
+                className="field-input"
+                type="tel"
+                placeholder="+355 68 234 2382"
+                value={waPhone}
+                autoFocus
+                onChange={(e) => setWaPhone(e.target.value)}
+              />
+            </label>
+            <p className="helper" style={{ opacity: 0.7 }}>
+              ⚠️ Numaranın ülkesi ile cihazın proxy çıkış ülkesi AYNI olmalı (yoksa WhatsApp
+              &quot;Login not available&quot; verir). Cihaza doğru ülkenin proxy&apos;sini atadığınızdan emin olun.
+            </p>
+            {waMsg ? <p className={waMsg.startsWith('Kayıt başladı') ? 'helper' : 'field-error'}>{waMsg}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" disabled={waBusy} onClick={() => setWaOpen(null)}>
+                İptal
+              </button>
+              <button type="button" className="btn-primary" disabled={waBusy || !waPhone.trim()} onClick={startWhatsapp}>
+                <MessageCircle size={14} /> {waBusy ? 'Başlatılıyor…' : 'WhatsApp kaydını başlat'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {igOpen ? (
+        <div className="modal-overlay" onClick={() => !igBusy && setIgOpen(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2><Camera size={16} /> Instagram Aç — {igOpen.name}</h2>
+              <button type="button" className="modal-close" onClick={() => !igBusy && setIgOpen(null)}>
+                <X size={16} />
+              </button>
+            </header>
+            <p className="helper">
+              Bu cihazda <strong>tam otonom</strong> Instagram kaydı başlar. Ajan sahte bir kimlik +
+              tek-kullanımlık e-posta + şifre üretir, e-posta ile kayıt olur ve doğrulama kodunu
+              e-postadan kendisi okur. Sizin bir şey girmenize gerek yok — canlı adım adım izleyebilirsiniz.
+            </p>
+            <p className="helper" style={{ opacity: 0.7 }}>
+              ⚠️ Instagram bazen captcha veya telefon doğrulaması isteyebilir. O durumda hesap
+              oluşur ama &quot;doğrulama duvarı&quot; olarak işaretlenir — canlı ekrandan elle tamamlarsınız.
+              Cihaza ülke-eşleşmeli residential proxy atadığınızdan emin olun (ban riskini azaltır).
+            </p>
+            {igMsg ? <p className={igMsg.startsWith('Kayıt başladı') ? 'helper' : 'field-error'}>{igMsg}</p> : null}
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" disabled={igBusy} onClick={() => setIgOpen(null)}>
+                İptal
+              </button>
+              <button type="button" className="btn-primary" disabled={igBusy} onClick={startInstagram}>
+                <Camera size={14} /> {igBusy ? 'Başlatılıyor…' : 'Instagram kaydını başlat'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
       {appOpen ? (
         <div className="modal-overlay" onClick={closeApp}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1298,15 +1754,56 @@ export function ProfilesView({
           onClose={() => setProvisioning(null)}
         />
       ) : null}
+
+      {waRegistering ? (
+        <WhatsappRegisterModal
+          accountId={waRegistering.accountId}
+          deviceId={waRegistering.deviceId}
+          phoneNumber={waRegistering.phoneNumber}
+          steps={waRegistering.steps}
+          onClose={() => setWaRegistering(null)}
+        />
+      ) : null}
+
+      {igRegistering ? (
+        <InstagramRegisterModal
+          accountId={igRegistering.accountId}
+          deviceId={igRegistering.deviceId}
+          email={igRegistering.email}
+          steps={igRegistering.steps}
+          onClose={() => setIgRegistering(null)}
+        />
+      ) : null}
+
+      {proxyDevice ? (
+        <DeviceProxyModal
+          deviceId={proxyDevice.id}
+          deviceName={proxyDevice.name}
+          currentProxyId={proxyDevice.proxyId ?? null}
+          currentCountry={(proxyDevice.metadata?.proxyCountry as string) ?? null}
+          onClose={() => setProxyDevice(null)}
+          onAssigned={() => router.refresh()}
+        />
+      ) : null}
+
+      {/* Fleet toast — DEVICE_BUSY warnings, identity-reroll result, etc. */}
+      {toast ? (
+        <div className={`fleet-toast fleet-toast-${toast.kind}`} role="status" onClick={() => setToast(null)}>
+          {toast.kind === 'ok' ? <Check size={15} /> : toast.kind === 'warn' ? <AlertTriangle size={15} /> : <X size={15} />}
+          <span>{toast.text}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function FpRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  // Stacked layout: label on top (small), value below (wraps freely) — long mono
+  // ids (IMEI/MAC/serial/phone) never overlap the label anymore.
   return (
     <div className="fp-row">
-      <span className="helper">{label}</span>
-      <span className={mono ? 'mono' : undefined}>{value}</span>
+      <span className="fp-row-label">{label}</span>
+      <span className={`fp-row-value${mono ? ' mono' : ''}`} title={value}>{value}</span>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Server, Plus, Trash2, Cpu, MemoryStick, Smartphone, ShieldCheck, MapPin, Activity, Copy, Terminal, X } from 'lucide-react';
+import { Server, Plus, Trash2, Cpu, MemoryStick, Smartphone, ShieldCheck, MapPin, Activity, Copy, Terminal, X, HardDrive, Zap } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 
 export type Host = {
@@ -15,9 +15,20 @@ export type Host = {
   runningPhones: number;
   cpuCores: number | null;
   memoryGb: number | null;
+  diskTotalGb: number | null;
+  diskFreeGb: number | null;
+  ramFreeGb: number | null;
   kvm: boolean;
   lastSeenAt: string | null;
 };
+
+// Each Waydroid instance needs ~8GB disk + ~1.5GB RAM (measured). "How many more
+// devices fit" = min(diskFree/8, ramFree/1.5), or null if the host hasn't
+// reported live metrics yet.
+function devicesFit(h: Host): number | null {
+  if (h.diskFreeGb == null || h.ramFreeGb == null) return null;
+  return Math.max(0, Math.min(Math.floor(h.diskFreeGb / 8), Math.floor(h.ramFreeGb / 1.5)));
+}
 
 type Toast = { kind: 'ok' | 'err'; text: string } | null;
 
@@ -153,6 +164,24 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
                     <div><span className="helper"><MemoryStick size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />RAM</span><strong className="mono">{h.memoryGb ?? '—'}GB</strong></div>
                     <div><span className="helper"><ShieldCheck size={11} style={{ verticalAlign: 'middle', marginRight: 3 }} />KVM</span><strong className={h.kvm ? 'form-status--ok' : 'form-status--err'}>{h.kvm ? 'Var' : 'Yok'}</strong></div>
                   </div>
+                  {(() => {
+                    const fit = devicesFit(h);
+                    return (
+                      <div className="host-capacity" style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8, background: 'rgba(99,102,241,0.08)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                        <span className="helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                          <HardDrive size={12} />
+                          {h.diskFreeGb != null && h.diskTotalGb != null
+                            ? `Boş disk ${h.diskFreeGb}/${h.diskTotalGb} GB · RAM ${h.ramFreeGb ?? '—'} GB`
+                            : 'Kapasite bilgisi bekleniyor (heartbeat)'}
+                        </span>
+                        {fit != null && (
+                          <strong style={{ color: fit > 0 ? '#22c55e' : '#ef4444', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <Zap size={13} /> ~{fit} cihaz daha sığar
+                          </strong>
+                        )}
+                      </div>
+                    );
+                  })()}
                   <div className="row">
                     <span className="helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                       <MapPin size={11} /> {h.region ?? 'kendi sunucunuz'} · son görülme {h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString('tr-TR') : 'hiç'}

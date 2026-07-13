@@ -36,9 +36,13 @@ export class AnalyticsService {
     const [devices, onlineDevices, jobs, farmAccounts, usage] = await Promise.all([
       prisma.device.count(workspaceId ? { where: { workspaceId } } : undefined),
       prisma.device.count({ where: { status: 'ONLINE', ...(workspaceId ? { workspaceId } : {}) } }),
+      // Only the createdAt slice is materialized (needed for the per-day
+      // timeline). Type/status counts come from a DB-side groupBy below instead
+      // of counting every row in JS — so a workspace with tens of thousands of
+      // jobs in the window doesn't pull them all into memory just to tally.
       prisma.job.findMany({
         where: { createdAt: { gte: since }, ...wsJob },
-        select: { type: true, status: true, createdAt: true }
+        select: { status: true, createdAt: true }
       }),
       prisma.farmAccount.findMany({
         where: wsFarm,
@@ -70,14 +74,21 @@ export class AnalyticsService {
       onlineMinutes
     };
 
-    // Per job type.
+    // Per job type — counted in the DB (groupBy type+status) instead of scanning
+    // every row in JS.
+    const typeGroups = await prisma.job.groupBy({
+      by: ['type', 'status'],
+      where: { createdAt: { gte: since }, ...wsJob },
+      _count: { _all: true }
+    });
     const typeMap = new Map<string, { total: number; completed: number; failed: number }>();
-    for (const j of jobs) {
-      const cur = typeMap.get(j.type) ?? { total: 0, completed: 0, failed: 0 };
-      cur.total += 1;
-      if (j.status === 'COMPLETED') cur.completed += 1;
-      if (j.status === 'FAILED') cur.failed += 1;
-      typeMap.set(j.type, cur);
+    for (const g of typeGroups) {
+      const cur = typeMap.get(g.type) ?? { total: 0, completed: 0, failed: 0 };
+      const n = g._count._all;
+      cur.total += n;
+      if (g.status === 'COMPLETED') cur.completed += n;
+      if (g.status === 'FAILED') cur.failed += n;
+      typeMap.set(g.type, cur);
     }
     const byJobType = Array.from(typeMap.entries())
       .map(([type, v]) => ({ type, ...v, successRate: pct(v.completed, v.completed + v.failed) }))

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
-import { generateFingerprintData } from '../fingerprint/fingerprint.service';
+import { generateFingerprintData, decryptFingerprint } from '../fingerprint/fingerprint.service';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { usageService } from '../usage/usage.service';
@@ -30,7 +30,7 @@ export class DeviceService {
   async listDevices(workspaceId?: string, tag?: string, search?: string) {
     const t = tag?.trim().toLowerCase();
     const q = search?.trim();
-    return prisma.device.findMany({
+    const devices = await prisma.device.findMany({
       where: {
         ...(workspaceId ? { workspaceId } : {}),
         ...(t ? { tags: { has: t } } : {}),
@@ -41,13 +41,21 @@ export class DeviceService {
       orderBy: { createdAt: 'desc' },
       include: { group: true, fingerprint: true, host: true }
     });
+    // Decrypt each fingerprint's identity fields so the profiles list + the
+    // fingerprint modal show real IMEI/MAC/serial/androidId/phone, not ciphertext.
+    for (const d of devices) if (d.fingerprint) d.fingerprint = decryptFingerprint(d.fingerprint);
+    return devices;
   }
 
   async getDevice(id: string, workspaceId?: string) {
-    return prisma.device.findFirst({
+    const device = await prisma.device.findFirst({
       where: { id, ...(workspaceId ? { workspaceId } : {}) },
       include: { group: true, fingerprint: true, host: true }
     });
+    // Decrypt the eager-loaded fingerprint's identity fields (IMEI/MAC/serial/
+    // androidId/phone) so the detail panel shows real values, not ciphertext.
+    if (device?.fingerprint) device.fingerprint = decryptFingerprint(device.fingerprint);
+    return device;
   }
 
   // Recent CPU/mem/disk timeseries for one device (workspace-scoped). `hours`
@@ -74,9 +82,20 @@ export class DeviceService {
     }));
   }
 
-  async createDevice(input: DeviceCreateInput, workspaceId?: string) {
+  async createDevice(input: DeviceCreateInput, workspaceId?: string, tx?: Prisma.TransactionClient) {
+    // Run inside the caller's transaction when provided (e.g. provisioning holds
+    // a per-host advisory lock so concurrent one-click provisions can't allocate
+    // the same instance name/subnet). Falls back to the global client otherwise.
+    const db = tx ?? prisma;
     if (input.groupId) {
       await this.assertGroupExists(input.groupId, workspaceId);
+    }
+    // Tenant guard: a client-supplied hostId must belong to the caller's
+    // workspace, otherwise a device could be placed onto another tenant's host
+    // (and its jobs would dispatch to the victim's agent). Mirrors the groupId
+    // check above and updateDevice's assertHostExists.
+    if (input.hostId) {
+      await this.assertHostExists(input.hostId, workspaceId);
     }
 
     const data: Prisma.DeviceCreateInput = { name: input.name };
@@ -109,7 +128,7 @@ export class DeviceService {
       })
     };
 
-    return prisma.device.create({
+    return db.device.create({
       data,
       include: { group: true, fingerprint: true }
     });
@@ -192,6 +211,47 @@ export class DeviceService {
       data,
       include: { group: true, host: true }
     });
+  }
+
+  // Wake / sleep / reboot a Waydroid instance FOR REAL (EMULATOR_START only ack'd
+  // it host-side). Writes a DEVICE_WAKE / DEVICE_SLEEP job carrying the instance
+  // name from metadata; the agent runs wd-run.sh / wd-stop.sh. On completion the
+  // agent.service marks the device ONLINE/OFFLINE from the job result.
+  private async instanceOf(id: string, workspaceId?: string): Promise<{ device: { id: string; hostId: string | null }; instance: string }> {
+    const device = await prisma.device.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, hostId: true, metadata: true }
+    });
+    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    if (!device.hostId) throw new AppError('Device is not bound to a host', 409, 'DEVICE_NO_HOST');
+    const meta = (device.metadata ?? {}) as Record<string, unknown>;
+    const instance = typeof meta.instance === 'string' ? meta.instance : '';
+    if (!instance) throw new AppError('Device has no Waydroid instance to control', 409, 'DEVICE_NO_INSTANCE');
+    return { device: { id: device.id, hostId: device.hostId }, instance };
+  }
+
+  async wake(id: string, workspaceId?: string) {
+    const { instance } = await this.instanceOf(id, workspaceId);
+    const job = await createJobRecord('DEVICE_WAKE', { deviceId: id, instance } as JobPayload, id, workspaceId);
+    await prisma.device.update({ where: { id }, data: { status: 'STARTING' } });
+    return { jobId: job.id, deviceId: id, instance };
+  }
+
+  async sleep(id: string, workspaceId?: string) {
+    const { instance } = await this.instanceOf(id, workspaceId);
+    const job = await createJobRecord('DEVICE_SLEEP', { deviceId: id, instance } as JobPayload, id, workspaceId);
+    await prisma.device.update({ where: { id }, data: { status: 'STOPPING' } });
+    return { jobId: job.id, deviceId: id, instance };
+  }
+
+  async reboot(id: string, workspaceId?: string) {
+    const { instance } = await this.instanceOf(id, workspaceId);
+    // Reboot = sleep then wake, chained by the agent as two jobs. We enqueue SLEEP
+    // then WAKE; the agent processes them in order (sleep completes, then wake).
+    await createJobRecord('DEVICE_SLEEP', { deviceId: id, instance } as JobPayload, id, workspaceId);
+    const wake = await createJobRecord('DEVICE_WAKE', { deviceId: id, instance } as JobPayload, id, workspaceId);
+    await prisma.device.update({ where: { id }, data: { status: 'REBOOTING' } });
+    return { jobId: wake.id, deviceId: id, instance };
   }
 
   async heartbeat(id: string, input: DeviceHeartbeatInput) {

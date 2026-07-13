@@ -70,7 +70,8 @@ export default function ApiKeysPage() {
     | 'devices' | 'conversations' | 'thread' | 'send' | 'messages'
     | 'labels' | 'createLabel' | 'setLabels' | 'state' | 'broadcast' | 'stats'
     | 'profile' | 'block' | 'blocklist'
-    | 'sendMedia' | 'deleteMessage' | 'clearChat' | 'myNumber';
+    | 'sendMedia' | 'deleteMessage' | 'clearChat' | 'myNumber'
+    | 'provision' | 'register' | 'registerOtp' | 'registerStatus';
   const [testKey, setTestKey] = useState('');
   const [testEndpoint, setTestEndpoint] = useState<EndpointKey>('devices');
   const [testDeviceId, setTestDeviceId] = useState('');
@@ -80,6 +81,10 @@ export default function ApiKeysPage() {
   const [testLabelName, setTestLabelName] = useState('');
   const [testLabelIds, setTestLabelIds] = useState('');
   const [testFilter, setTestFilter] = useState('all');
+  const [testPhone, setTestPhone] = useState('');
+  const [testAccountId, setTestAccountId] = useState('');
+  const [testOtp, setTestOtp] = useState('');
+  const [testCountry, setTestCountry] = useState('');
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<number | null>(null);
@@ -103,7 +108,11 @@ export default function ApiKeysPage() {
     sendMedia:     { label: 'POST /whatsapp/send-media — medya (foto/belge) gönder (write)', needs: ['deviceId', 'to', 'message'] },
     deleteMessage: { label: 'POST /whatsapp/delete-message — mesaj sil (write)', needs: ['deviceId', 'to'] },
     clearChat:     { label: 'POST /whatsapp/clear-chat — sohbeti temizle (write)', needs: ['deviceId', 'to'] },
-    myNumber:      { label: 'POST /whatsapp/mynumber — kendi numarası (write)', needs: ['deviceId'] }
+    myNumber:      { label: 'POST /whatsapp/mynumber — kendi numarası (write)', needs: ['deviceId'] },
+    provision:     { label: 'POST /devices/provision — tek tıkla cihaz oluştur (write)', needs: ['labelName', 'country'] },
+    register:      { label: 'POST /whatsapp/register — tek tıkla WhatsApp kaydı (write)', needs: ['deviceId', 'phone'] },
+    registerOtp:   { label: 'POST /whatsapp/register/:id/otp — SMS kodu gönder (write)', needs: ['accountId', 'otp'] },
+    registerStatus:{ label: 'GET  /whatsapp/register/:id/status — kayıt durumu', needs: ['accountId'] }
   };
   const activeNeeds = ENDPOINTS[testEndpoint].needs;
 
@@ -136,6 +145,10 @@ export default function ApiKeysPage() {
       case 'deleteMessage': return { method: 'POST', path: '/public/v1/whatsapp/delete-message', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), scope: 'everyone' } };
       case 'clearChat':     return { method: 'POST', path: '/public/v1/whatsapp/clear-chat', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, '') } };
       case 'myNumber':      return { method: 'POST', path: '/public/v1/whatsapp/mynumber', body: { deviceId: dev } };
+      case 'provision':     return { method: 'POST', path: '/public/v1/devices/provision', body: { ...(testLabelName.trim() ? { name: testLabelName.trim() } : {}), ...(testCountry ? { countryCode: testCountry.toUpperCase(), proxyCountry: testCountry.toUpperCase() } : {}) } };
+      case 'register':      return { method: 'POST', path: '/public/v1/whatsapp/register', body: { deviceId: dev, phoneNumber: testPhone.replace(/[^\d+]/g, '') } };
+      case 'registerOtp':   return { method: 'POST', path: `/public/v1/whatsapp/register/${encodeURIComponent(testAccountId)}/otp`, body: { otpCode: testOtp.replace(/[^\d]/g, '') } };
+      case 'registerStatus':return { method: 'GET', path: `/public/v1/whatsapp/register/${encodeURIComponent(testAccountId)}/status` };
     }
   }
 
@@ -697,6 +710,70 @@ export default function ApiKeysPage() {
             <CodeBlock code={`{ "data": { "jobId": "cmr9dd...", "status": "PENDING" } }`} />
           </div>
 
+          {/* ── OTONOM KURULUM & KAYIT ── */}
+          <div className="api-doc-cat">🤖 Tek tıkla cihaz & WhatsApp otonom kayıt</div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/devices/provision</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Sıfırdan izole bir bulut telefon kurar (boot → root → benzersiz kimlik → proxy → uygulamalar → WhatsApp-hazır). Panelin <b>&quot;Tek Tıkla Cihaz Oluştur&quot;</b> akışının API karşılığı. Asenkron: hemen <code className="mono">deviceId</code>+<code className="mono">jobId</code> döner; cihaz online olana kadar (~2-5 dk) <code className="mono">GET /v1/devices</code> ile izleyin.</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">name</code> <span className="api-doc-opt">opsiyonel</span> — cihaz adı.</li>
+              <li><code className="mono">countryCode</code> <span className="api-doc-opt">opsiyonel</span> — parmak izi ülkesi (ISO-2).</li>
+              <li><code className="mono">deviceModel</code>, <code className="mono">androidVersion</code> <span className="api-doc-opt">opsiyonel</span> — katalog modeli / Android sürümü.</li>
+              <li><code className="mono">proxyCountry</code> <span className="api-doc-opt">opsiyonel</span> — ülke-eşleşmeli residential proxy (WhatsApp için numara-ülkesi = çıkış-IP ülkesi ŞART).</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/devices/provision" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{ "name": "Bot-01", "countryCode": "US", "proxyCountry": "US" }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>201</span></div>
+            <CodeBlock code={`{ "data": { "deviceId": "cmr9...", "jobId": "cmr9...", "instance": "mi8", "status": "PROVISIONING" } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/register</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc">Bir cihazda <b>kendi numaranızla</b> otonom WhatsApp kaydı başlatır. Ajan izinleri verir, EULA&apos;yı geçer, numarayı girer ve <b>SMS kodu ekranında durur</b> (<code className="mono">status</code> = <code className="mono">AWAITING_OTP</code>). Numaranın ülkesine göre proxy otomatik atanır. Cihaz durdurulmuş/aracısı kopuksa <b>anında</b> <code className="mono">409</code> döner (sonsuza kadar beklemez).</p>
+            <div className="api-doc-sub">Gövde alanları</div>
+            <ul className="api-doc-params">
+              <li><code className="mono">deviceId</code> <span className="api-doc-req">zorunlu</span> — çevrimiçi + aracısı canlı cihaz.</li>
+              <li><code className="mono">phoneNumber</code> <span className="api-doc-req">zorunlu</span> — ülke kodu dahil (örn. <code className="mono">+15551234567</code>).</li>
+            </ul>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/register" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{ "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml", "phoneNumber": "+15551234567" }'`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>201</span></div>
+            <CodeBlock code={`{ "data": { "accountId": "cmr9...", "deviceId": "cmr3...", "phoneNumber": "+15551234567", "status": "REGISTERING", "proxyAssigned": { "country": "US" } } }`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-post">POST</span>
+              <code className="mono">/public/v1/whatsapp/register/:id/otp</code>
+              <span className="api-doc-scope">write</span>
+            </div>
+            <p className="helper api-doc-desc"><code className="mono">:id</code> = kayıt yanıtındaki <code className="mono">accountId</code>. SMS kodunu ajana iletir; ajan girip profili tamamlar. Hesap <code className="mono">ACTIVE</code> (başarılı) veya <code className="mono">FAILED</code> olur.</p>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s -X POST "${PUBLIC_API_BASE}/public/v1/whatsapp/register/cmr9.../otp" \\\n  -H "x-api-key: ${docKey}" \\\n  -H "content-type: application/json" \\\n  -d '{ "otpCode": "123456" }'`} />
+          </div>
+
+          <div className="api-doc-block">
+            <div className="api-doc-title">
+              <span className="api-doc-verb api-doc-get">GET</span>
+              <code className="mono">/public/v1/whatsapp/register/:id/status</code>
+            </div>
+            <p className="helper api-doc-desc"><code className="mono">:id</code> = <code className="mono">accountId</code>. Canlı adım-adım ilerleme (mevcut adım, yüzde, tüm adım günlüğü). Kaydı takip etmek için birkaç saniyede bir yoklayın; <code className="mono">status</code> <code className="mono">AWAITING_OTP</code> olunca kodu gönderin, <code className="mono">ACTIVE</code>/<code className="mono">FAILED</code> olunca durun.</p>
+            <div className="api-doc-sub">İstek</div>
+            <CodeBlock code={`curl -s "${PUBLIC_API_BASE}/public/v1/whatsapp/register/cmr9.../status" \\\n  -H "x-api-key: ${docKey}"`} />
+            <div className="api-doc-sub">Yanıt <span className="mono" style={{ opacity: 0.6 }}>200 OK</span></div>
+            <CodeBlock code={`{ "data": { "accountId": "cmr9...", "status": "AWAITING_OTP", "lastProgress": { "step": "otp_wait", "percent": 85, "note": "SMS kodu bekleniyor" }, "log": [ ... ] } }`} />
+          </div>
+
           {/* ── TOPLU & İSTATİSTİK ── */}
           <div className="api-doc-cat">📣 Toplu mesaj & 📈 istatistik</div>
 
@@ -834,8 +911,36 @@ export default function ApiKeysPage() {
 
             {activeNeeds.includes('labelName') ? (
               <label className="field">
-                <span>Etiket adı</span>
-                <input className="field-input" placeholder="VIP" value={testLabelName} onChange={(e) => setTestLabelName(e.target.value)} />
+                <span>{testEndpoint === 'provision' ? 'Cihaz adı (opsiyonel)' : 'Etiket adı'}</span>
+                <input className="field-input" placeholder={testEndpoint === 'provision' ? 'Bot-01' : 'VIP'} value={testLabelName} onChange={(e) => setTestLabelName(e.target.value)} />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('country') ? (
+              <label className="field">
+                <span>Ülke kodu (ISO-2, opsiyonel — proxy + parmak izi)</span>
+                <input className="field-input mono" placeholder="US" maxLength={2} value={testCountry} onChange={(e) => setTestCountry(e.target.value)} />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('phone') ? (
+              <label className="field">
+                <span>Telefon numarası (ülke kodu dahil)</span>
+                <input className="field-input mono" placeholder="+15551234567" value={testPhone} onChange={(e) => setTestPhone(e.target.value)} inputMode="tel" />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('accountId') ? (
+              <label className="field">
+                <span>accountId (kayıt yanıtından)</span>
+                <input className="field-input mono" placeholder="cmr9..." value={testAccountId} onChange={(e) => setTestAccountId(e.target.value)} />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('otp') ? (
+              <label className="field">
+                <span>SMS kodu</span>
+                <input className="field-input mono" placeholder="123456" maxLength={8} value={testOtp} onChange={(e) => setTestOtp(e.target.value)} inputMode="numeric" />
               </label>
             ) : null}
 

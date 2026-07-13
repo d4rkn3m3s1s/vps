@@ -24,9 +24,7 @@ const STATUS_TR: Record<string, string> = {
   PENDING: 'Bekliyor',
   RUNNING: 'Çalışıyor',
   COMPLETED: 'Tamamlandı',
-  FAILED: 'Başarısız',
-  CANCELLED: 'İptal edildi',
-  QUEUED: 'Kuyrukta'
+  FAILED: 'Başarısız'
 };
 
 function statusClass(status: string): string {
@@ -53,10 +51,13 @@ function screenshotOf(result: unknown): string | null {
   return null;
 }
 
+type JobTab = 'all' | 'active' | 'completed' | 'failed';
+
 export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
   const [jobs, setJobs] = useState<Job[]>(initialJobs);
   const [live, setLive] = useState(true);
   const [selected, setSelected] = useState<Job | null>(null);
+  const [tab, setTab] = useState<JobTab>('active');
 
   // Live polling: refresh the job list every 4s while enabled (skips ticks when
   // the tab is hidden, so background tabs don't keep hitting the API).
@@ -79,9 +80,18 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
       .catch(() => {});
   });
 
-  const pending = jobs.filter((j) => j.status === 'PENDING' || j.status === 'RUNNING').length;
+  const isActive = (j: Job) => j.status === 'PENDING' || j.status === 'RUNNING';
+  const pending = jobs.filter(isActive).length;
   const completed = jobs.filter((j) => j.status === 'COMPLETED').length;
   const failed = jobs.filter((j) => j.status === 'FAILED').length;
+
+  // Tab-filtered view. Data is already complete from the API, so filter client-side.
+  const filteredJobs = jobs.filter((j) => {
+    if (tab === 'active') return isActive(j);
+    if (tab === 'completed') return j.status === 'COMPLETED';
+    if (tab === 'failed') return j.status === 'FAILED';
+    return true;
+  });
 
   function exportCsv() {
     downloadCsv(
@@ -122,37 +132,45 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
       />
 
       <div className="holo-stats-grid">
-        <HoloStat
-          label="Toplam İşlem"
-          value={<span className="mono">{jobs.length}</span>}
-          sub="kuyruktaki tüm görevler"
-          tone="cyan"
-          icon={<ListTree size={16} />}
-        />
-        <HoloStat
-          label="Devam Eden"
-          value={<span className="mono">{pending}</span>}
-          sub="bekleyen / çalışan"
-          tone="warning"
-          icon={<Loader2 size={16} />}
-        />
-        <HoloStat
-          label="Tamamlandı"
-          value={<span className="mono">{completed}</span>}
-          sub="başarıyla bitti"
-          tone="success"
-          icon={<CheckCircle2 size={16} />}
-        />
-        <HoloStat
-          label="Başarısız"
-          value={<span className="mono">{failed}</span>}
-          sub="hata ile sonuçlandı"
-          tone="error"
-          icon={<AlertTriangle size={16} />}
-        />
+        <button type="button" onClick={() => setTab('all')} style={{ all: 'unset', cursor: 'pointer', display: 'block', outline: tab === 'all' ? '2px solid var(--accent, #6366f1)' : 'none', borderRadius: 12 }}>
+          <HoloStat
+            label="Toplam İşlem"
+            value={<span className="mono">{jobs.length}</span>}
+            sub="tümünü göster"
+            tone="cyan"
+            icon={<ListTree size={16} />}
+          />
+        </button>
+        <button type="button" onClick={() => setTab('active')} style={{ all: 'unset', cursor: 'pointer', display: 'block', outline: tab === 'active' ? '2px solid var(--accent, #6366f1)' : 'none', borderRadius: 12 }}>
+          <HoloStat
+            label="Devam Eden"
+            value={<span className="mono">{pending}</span>}
+            sub="bekleyen / çalışan"
+            tone="warning"
+            icon={<Loader2 size={16} />}
+          />
+        </button>
+        <button type="button" onClick={() => setTab('completed')} style={{ all: 'unset', cursor: 'pointer', display: 'block', outline: tab === 'completed' ? '2px solid var(--accent, #6366f1)' : 'none', borderRadius: 12 }}>
+          <HoloStat
+            label="Tamamlandı"
+            value={<span className="mono">{completed}</span>}
+            sub="başarıyla bitti"
+            tone="success"
+            icon={<CheckCircle2 size={16} />}
+          />
+        </button>
+        <button type="button" onClick={() => setTab('failed')} style={{ all: 'unset', cursor: 'pointer', display: 'block', outline: tab === 'failed' ? '2px solid var(--accent, #6366f1)' : 'none', borderRadius: 12 }}>
+          <HoloStat
+            label="Başarısız"
+            value={<span className="mono">{failed}</span>}
+            sub="hata ile sonuçlandı"
+            tone="error"
+            icon={<AlertTriangle size={16} />}
+          />
+        </button>
       </div>
 
-      <HoloPanel title="Görev Akışı" icon={<Activity size={16} />}>
+      <HoloPanel title={`Görev Akışı · ${tab === 'all' ? 'Tümü' : tab === 'active' ? 'Devam Eden' : tab === 'completed' ? 'Tamamlanan' : 'Başarısız'} (${filteredJobs.length})`} icon={<Activity size={16} />}>
         <div className="profile-table-wrap">
           <table className="profile-table">
             <thead>
@@ -165,17 +183,17 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
               </tr>
             </thead>
             <tbody>
-              {jobs.length === 0 ? (
+              {filteredJobs.length === 0 ? (
                 <tr>
                   <td colSpan={5}>
                     <div className="table-empty">
                       <div className="empty-art">☰</div>
-                      <span>Henüz görev yok</span>
+                      <span>Bu sekmede görev yok</span>
                     </div>
                   </td>
                 </tr>
               ) : (
-                jobs.map((job) => {
+                filteredJobs.map((job) => {
                   const target = (job.payload?.deviceId as string) ?? job.emulatorId ?? '—';
                   return (
                     <tr

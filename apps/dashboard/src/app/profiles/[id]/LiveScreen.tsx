@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Play, Square, ChevronLeft, Circle, Square as SquareIcon, Power, Volume2, Volume1, Maximize2, Minimize2, X, Loader2 } from 'lucide-react';
+import { Play, Square, ChevronLeft, Circle, Square as SquareIcon, Power, Volume2, Volume1, Maximize2, Minimize2, X, Loader2, RefreshCw } from 'lucide-react';
 
 // Android keyevent codes used by the nav bar.
 const KEY = { BACK: 4, HOME: 3, RECENTS: 187, POWER: 26, VOL_UP: 24, VOL_DOWN: 25 } as const;
@@ -17,6 +17,11 @@ type ConnState = 'idle' | 'connecting' | 'live' | 'offline' | 'error';
 export function LiveScreen({ deviceId, online }: { deviceId: string; online: boolean }) {
   const [state, setState] = useState<ConnState>('idle');
   const [fps, setFps] = useState(0);
+  // "Yayını yenile" (agent tazele) — shown when the stream sits on "bağlanıyor"
+  // too long (agent-stream WS dropped after an API restart, capture died, etc.).
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [stuck, setStuck] = useState(false);
   // Fullscreen ("büyüt") mode — enlarges the mirror to a centered overlay so
   // the operator can see + tap precisely. Esc or the close button exits.
   const [zoom, setZoom] = useState(false);
@@ -169,6 +174,38 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
     }
   }, [deviceId, pumpJpeg, handleH264]);
 
+  // Operator "refresh stream": ask the API to nudge the host agent (re-open ADB +
+  // re-send stream.start), then reconnect the viewer. Recovers a stream stuck on
+  // "bağlanıyor" after an API restart / dead capture, WITHOUT a full agent SSH.
+  const refreshStream = useCallback(async () => {
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/refresh-stream`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      const d = body?.data as { agentConnected?: boolean; message?: string } | undefined;
+      setRefreshMsg(d?.message ?? (res.ok ? 'Yayın yenilendi.' : 'Yenileme başarısız.'));
+      if (d?.agentConnected) {
+        // Reconnect the viewer so it picks up the fresh capture.
+        cleanup();
+        setStuck(false);
+        setTimeout(() => void connect(), 600);
+      }
+    } catch {
+      setRefreshMsg('Yenileme başarısız (ağ hatası).');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [deviceId, cleanup, connect]);
+
+  // If we sit on "connecting" for >6s, surface the refresh button — the agent
+  // stream channel is probably dropped and won't recover on its own.
+  useEffect(() => {
+    if (state !== 'connecting') { setStuck(false); return; }
+    const t = setTimeout(() => setStuck(true), 6000);
+    return () => clearTimeout(t);
+  }, [state]);
+
   // FPS meter.
   useEffect(() => {
     const t = setInterval(() => {
@@ -307,6 +344,17 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
                 <>
                   <Loader2 size={36} className="spin" />
                   <p>Bağlanıyor…</p>
+                  {stuck ? (
+                    <>
+                      <p className="helper" style={{ maxWidth: 260, textAlign: 'center' }}>
+                        Uzun sürdü — yayın kanalı kopmuş olabilir. Aracıyı tazeleyip tekrar deneyin.
+                      </p>
+                      <button type="button" className="btn-ghost" disabled={refreshing} onClick={refreshStream} style={{ marginTop: 6 }}>
+                        {refreshing ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Yayını yenile
+                      </button>
+                      {refreshMsg ? <p className="helper" style={{ marginTop: 4, textAlign: 'center', maxWidth: 260 }}>{refreshMsg}</p> : null}
+                    </>
+                  ) : null}
                 </>
               ) : (
                 <>
@@ -361,6 +409,17 @@ export function LiveScreen({ deviceId, online }: { deviceId: string; online: boo
           {state === 'connecting' ? <span className="helper"><Loader2 size={13} className="spin" /> bağlanıyor…</span> : null}
           {state === 'offline' ? <span className="helper">cihaz bir sunucuya atanmamış</span> : null}
           {state === 'error' ? <span className="helper live-err">bağlantı hatası</span> : null}
+          {/* Always-available "refresh" — recovers a dead/stuck stream by nudging
+              the host agent (ADB reconnect + re-send stream.start). */}
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={refreshing}
+            title="Yayını yenile (aracıyı tazele) — görüntü gelmiyorsa/donduysa"
+            onClick={refreshStream}
+          >
+            {refreshing ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Yenile
+          </button>
           {live ? (
             <button type="button" className="btn-ghost" onClick={() => { cleanup(); setState('idle'); }}><Square size={13} /> Durdur</button>
           ) : (

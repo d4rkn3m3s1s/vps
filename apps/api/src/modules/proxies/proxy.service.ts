@@ -192,7 +192,12 @@ export class ProxyService {
   // Pick a healthy proxy whose countryCode matches the device's fingerprint
   // country (falling back to any healthy proxy), then dispatch a SET_PROXY job.
   async autoAssignGeoMatched(deviceId: string, workspaceId?: string): Promise<{ assigned: boolean; proxyId?: string; matchedCountry?: boolean }> {
-    const device = await prisma.device.findUnique({ where: { id: deviceId }, include: { fingerprint: { select: { countryCode: true } } } });
+    // Tenant guard: only operate on a device in the caller's workspace, so a
+    // foreign deviceId can't get a SET_PROXY job written to another tenant's phone.
+    const device = await prisma.device.findFirst({
+      where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) },
+      include: { fingerprint: { select: { countryCode: true } } }
+    });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     const country = device.fingerprint?.countryCode ?? null;
 
@@ -213,6 +218,71 @@ export class ProxyService {
       workspaceId
     );
     return { assigned: true, proxyId: pick.id, matchedCountry: matched.length > 0 };
+  }
+
+  // ── Provider (country-selectable) proxies ──────────────────────────────────
+  // A "provider" proxy is a residential account whose exit COUNTRY is chosen at
+  // assign time by appending -cc-<CC> to the username (thordata/BrightData style).
+  // We store it once (group='provider', username = the BASE with NO country) and
+  // let the operator pick any country in the modal. wd-proxy.sh appends -cc-<CC>
+  // (verified live: us/gb/de/tr/al all resolve to the right country).
+  async listProviders(workspaceId?: string) {
+    const rows = await prisma.proxy.findMany({
+      where: { ...(workspaceId ? { workspaceId } : {}), group: 'provider' },
+      orderBy: { createdAt: 'desc' }
+    });
+    return rows.map(toPublic);
+  }
+
+  // Route ONE device through a provider proxy for a chosen country. Dispatches
+  // EMULATOR_SET_PROXY with instance + BASE username + country + decrypted pass;
+  // the agent's wd-proxy.sh builds the -cc-<CC> sticky-country login. Persists the
+  // device↔proxy link + the chosen country on device.metadata.
+  async assignCountryProxy(
+    deviceId: string,
+    providerId: string,
+    countryCode: string,
+    workspaceId?: string
+  ): Promise<{ jobId: string; country: string }> {
+    const cc = countryCode.trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(cc)) throw new AppError('Geçerli bir ülke kodu gerekli (ISO-2)', 400, 'INVALID_COUNTRY');
+
+    const device = await prisma.device.findFirst({
+      where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, metadata: true }
+    });
+    if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    const instance = ((device.metadata ?? {}) as Record<string, unknown>).instance;
+    if (typeof instance !== 'string' || !instance) {
+      throw new AppError('Bu cihazın Waydroid instance adı yok — proxy gömülemiyor (yalnızca tek-tık kurulan cihazlarda).', 409, 'NO_INSTANCE');
+    }
+
+    const provider = await prisma.proxy.findFirst({
+      where: { id: providerId, group: 'provider', ...(workspaceId ? { workspaceId } : {}) }
+    });
+    if (!provider) throw new AppError('Proxy sağlayıcısı bulunamadı', 404, 'PROVIDER_NOT_FOUND');
+
+    const job = await createJobRecord(
+      'EMULATOR_SET_PROXY',
+      {
+        deviceId,
+        instance,
+        country: cc,
+        host: provider.host,
+        port: provider.port,
+        username: provider.username ?? '',
+        // password is decrypted here (the agent can't); wd-proxy.sh gets plaintext.
+        password: provider.password ? decryptString(provider.password) : ''
+      } as unknown as JobPayload,
+      undefined,
+      workspaceId
+    );
+
+    // Persist the link + chosen country so the card/detail can show it.
+    const meta = { ...((device.metadata ?? {}) as Record<string, unknown>), proxyCountry: cc, proxyProviderId: providerId };
+    await prisma.device.update({ where: { id: deviceId }, data: { proxyId: providerId, metadata: meta as object } }).catch(() => undefined);
+
+    return { jobId: job.id, country: cc };
   }
 
   // Health check: actually route a public-IP probe THROUGH the proxy and record

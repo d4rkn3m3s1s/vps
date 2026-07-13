@@ -8,6 +8,8 @@ import { writeAuditLog } from '../audit/audit.service';
 import { deviceHub } from './device.hub';
 import { DeviceService } from './device.service';
 import { createJobRecord } from '../jobs/jobs.service';
+import { streamHub } from '../stream/stream.hub';
+import { prisma } from '../../db/prisma';
 import { permissionsService } from '../permissions/permissions.service';
 import { DEVICE_MODELS } from '../fingerprint/fingerprint.data';
 
@@ -101,15 +103,69 @@ const clipboardSetSchema = z.object({ text: z.string().max(10000) });
 // Set the device clipboard to the given text (dispatched to the host agent).
 export async function clipboardSetHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  // Tenant guard: only queue on-device jobs for a device in the caller's
+  // workspace (otherwise a foreign deviceId could inject clipboard text into
+  // another tenant's phone). Mirrors deviceShellHandler.
+  const device = await deviceService.getDevice(deviceId, workspaceId);
+  if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
   const { text } = clipboardSetSchema.parse(req.body);
-  const job = await createJobRecord('EMULATOR_CLIPBOARD_SET', { deviceId, text } as never, undefined, getWorkspaceId(req));
+  const job = await createJobRecord('EMULATOR_CLIPBOARD_SET', { deviceId, text } as never, undefined, workspaceId);
   res.status(201).json({ data: { jobId: job.id } });
+}
+
+// Really start a stopped Waydroid instance (wd-run.sh + boot + route).
+export async function wakeDeviceHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const data = await deviceService.wake(deviceId, getWorkspaceId(req));
+  res.status(201).json({ data });
+}
+
+// Cleanly stop a running Waydroid instance (wd-stop.sh).
+export async function sleepDeviceHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const data = await deviceService.sleep(deviceId, getWorkspaceId(req));
+  res.status(201).json({ data });
+}
+
+// Reboot = sleep then wake (two chained jobs).
+export async function rebootDeviceHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const data = await deviceService.reboot(deviceId, getWorkspaceId(req));
+  res.status(201).json({ data });
+}
+
+// Operator "refresh stream" — recovers a live screen stuck on "bağlanıyor" by
+// nudging the host agent to re-open ADB + re-send stream.start for this device.
+// Reports whether the agent is actually reachable so the UI can say
+// "aracı çevrimdışı" instead of silently doing nothing.
+export async function refreshStreamHandler(req: Request, res: Response): Promise<void> {
+  const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  const device = await prisma.device.findFirst({
+    where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true, hostId: true, ipAddress: true, adbPort: true }
+  });
+  if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+  const serial = device.ipAddress && device.adbPort ? `${device.ipAddress}:${device.adbPort}` : null;
+  const { agentConnected } = streamHub.refreshDeviceStream(device.id, device.hostId, serial);
+  res.json({
+    data: {
+      agentConnected,
+      ...(agentConnected
+        ? { message: 'Yayın yenilendi — birkaç saniye içinde görüntü gelmeli.' }
+        : { message: 'Sunucu aracısı çevrimdışı görünüyor — yayın başlatılamadı. Aracıyı/cihazı kontrol edin.' })
+    }
+  });
 }
 
 // Read the device clipboard (queues a job; result lands on the job record).
 export async function clipboardGetHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
-  const job = await createJobRecord('EMULATOR_CLIPBOARD_GET', { deviceId } as never, undefined, getWorkspaceId(req));
+  const workspaceId = getWorkspaceId(req);
+  const device = await deviceService.getDevice(deviceId, workspaceId);
+  if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+  const job = await createJobRecord('EMULATOR_CLIPBOARD_GET', { deviceId } as never, undefined, workspaceId);
   res.status(201).json({ data: { jobId: job.id } });
 }
 
@@ -119,8 +175,12 @@ const pullSchema = z.object({ remotePath: z.string().min(1).max(500) });
 // host-side path on completion).
 export async function pullFileHandler(req: Request, res: Response): Promise<void> {
   const deviceId = requireDeviceId(req);
+  const workspaceId = getWorkspaceId(req);
+  // Tenant guard: prevent pulling files off another tenant's device (data exfil).
+  const device = await deviceService.getDevice(deviceId, workspaceId);
+  if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
   const { remotePath } = pullSchema.parse(req.body);
-  const job = await createJobRecord('EMULATOR_PULL_FILE', { deviceId, remotePath } as never, undefined, getWorkspaceId(req));
+  const job = await createJobRecord('EMULATOR_PULL_FILE', { deviceId, remotePath } as never, undefined, workspaceId);
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.file.pull',

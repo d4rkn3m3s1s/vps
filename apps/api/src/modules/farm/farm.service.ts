@@ -461,7 +461,7 @@ export const farmService = {
         // Use the account joined in above; only fall back to a create for a device
         // that has never farmed yet (lazy row). This drops the per-device findUnique.
         const acct = d.farmAccount ?? await this.ensureAccount(d.id, c.workspaceId ?? undefined);
-        const fresh = this.rollDayIfNeeded(acct, now);
+        const fresh = await this.rollDayIfNeeded(acct, now);
         // Proactive ban-risk: recompute + persist each device's leading-indicator
         // risk score every tick, and alert once per cooldown when it spikes. This
         // catches a device drifting toward a ban *before* its health collapses.
@@ -619,15 +619,22 @@ export const farmService = {
   },
 
   // Reset the daily counter at a new calendar day and bump maturity.
-  rollDayIfNeeded<T extends { id: string; actionsToday: number; daysActive: number; warmupStage: number; dayAnchor: Date }>(acct: T, now: Date): T {
+  async rollDayIfNeeded<T extends { id: string; actionsToday: number; daysActive: number; warmupStage: number; dayAnchor: Date }>(acct: T, now: Date): Promise<T> {
     const sameDay = acct.dayAnchor.toDateString() === now.toDateString();
     if (sameDay) return acct;
     // New day: reset today's counter, age the account, advance warmup stage
-    // every 3 active days (cap at 5).
+    // every 3 active days (cap at 5). Await the reset so the in-memory
+    // actionsToday:0 we return is actually persisted BEFORE the caller runs its
+    // cap check + increment — a fire-and-forget update could be lost and let the
+    // daily cap be miscomputed. Guard with a same-day condition so a concurrent
+    // roll doesn't double-age.
     const daysActive = acct.daysActive + 1;
     const warmupStage = Math.min(5, 1 + Math.floor(daysActive / 3));
-    void prisma.farmAccount
-      .update({ where: { id: acct.id }, data: { actionsToday: 0, daysActive, warmupStage, dayAnchor: now } })
+    await prisma.farmAccount
+      .updateMany({
+        where: { id: acct.id, dayAnchor: acct.dayAnchor },
+        data: { actionsToday: 0, daysActive, warmupStage, dayAnchor: now }
+      })
       .catch(() => undefined);
     return { ...acct, actionsToday: 0, daysActive, warmupStage, dayAnchor: now };
   },

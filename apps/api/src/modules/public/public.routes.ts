@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, sendHandler, messagesHandler, conversationsHandler, threadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler } from './public.controller';
+import { listDevicesHandler, sendHandler, messagesHandler, conversationsHandler, threadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappStatusHandler } from './public.controller';
+import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
 // bound flk_ key minted in /admin/api-keys) — NO JWT. The workspace is resolved
@@ -37,3 +38,13 @@ publicRouter.post('/v1/whatsapp/mynumber', apiRateLimiter, asyncHandler(myNumber
 publicRouter.post('/v1/whatsapp/send-media', apiRateLimiter, asyncHandler(sendMediaHandler));
 publicRouter.post('/v1/whatsapp/delete-message', apiRateLimiter, asyncHandler(deleteMessageHandler));
 publicRouter.post('/v1/whatsapp/clear-chat', apiRateLimiter, asyncHandler(clearChatHandler));
+
+// ── One-click provision + WhatsApp registration (write scope, heavily throttled
+// because they spin up instances / rent-free operator numbers and drive a real
+// device end-to-end). ──────────────────────────────────────────────────────
+publicRouter.post('/v1/devices/provision', heavyOperationRateLimiter, asyncHandler(provisionDeviceHandler));
+// Live step-by-step provision progress (same data the dashboard modal shows).
+publicRouter.get('/v1/devices/provision/:jobId/status', asyncHandler(provisionStatusHandler));
+publicRouter.post('/v1/whatsapp/register', heavyOperationRateLimiter, asyncHandler(registerWhatsappHandler));
+publicRouter.post('/v1/whatsapp/register/:id/otp', apiRateLimiter, asyncHandler(registerWhatsappOtpHandler));
+publicRouter.get('/v1/whatsapp/register/:id/status', asyncHandler(registerWhatsappStatusHandler));

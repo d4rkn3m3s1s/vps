@@ -8,6 +8,7 @@ import { ensureDefaultWorkspace } from './modules/workspace/workspace.bootstrap'
 import { deviceHub } from './modules/devices/device.hub';
 import { streamHub } from './modules/stream/stream.hub';
 import { schedulerService } from './modules/scheduler/scheduler.service';
+import { reapStaleJobs } from './modules/jobs/jobs.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
@@ -152,10 +153,13 @@ async function main(): Promise<void> {
           });
         }
         return stale.length;
-      })()
+      })(),
+      // Fail jobs that hang PENDING/RUNNING with no agent progress, so the
+      // dashboard shows an error instead of an eternal "yükleniyor" spinner.
+      reapStaleJobs()
     ])
-      .then(([devices, hosts]) => {
-        if (devices > 0 || hosts > 0) logger.info('Offline detection', { devices, hosts });
+      .then(([devices, hosts, reapedJobs]) => {
+        if (devices > 0 || hosts > 0 || reapedJobs > 0) logger.info('Offline detection', { devices, hosts, reapedJobs });
       })
       .catch((error) => {
         logger.error('Offline detection tick failed', { error: error instanceof Error ? error.message : String(error) });

@@ -540,6 +540,232 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/conversations/state \
 
 ---
 
+### POST /v1/devices/provision — Tek tıkla cihaz oluştur
+
+Sıfırdan izole bir bulut telefon kurar (Waydroid instance: boot → root → benzersiz
+kimlik → proxy → uygulamalar → WhatsApp-hazır). Panelin **"Tek Tıkla Cihaz Oluştur"**
+akışının API karşılığı. **write kapsamı gerekir.** Ağır işlem → sıkı hız sınırlı.
+
+Asenkron: hemen `deviceId` + `jobId` döner; cihaz online olana kadar (~2-5 dk)
+`GET /v1/devices` ile durumunu izleyin (`status` `PROVISIONING` → `ONLINE`).
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `name` | string | – | Cihaz adı (boş → otomatik "Cihaz miN") |
+| `countryCode` | string(2) | – | Parmak izi ülkesi (ISO-2, örn. `US`) |
+| `deviceModel` | string | – | Katalog modeli (örn. `Samsung Galaxy S21`) |
+| `androidVersion` | string | – | Android sürümü (örn. `13`) |
+| `proxyCountry` | string(2) | – | Ülke-eşleşmeli residential proxy (WhatsApp için numara-ülkesi = çıkış-IP ülkesi ŞART) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/devices/provision \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "name": "Bot-01", "countryCode": "US", "proxyCountry": "US" }'
+```
+
+```json
+{ "data": { "deviceId": "cmr9...", "jobId": "cmr9...", "instance": "mi8", "status": "PROVISIONING" } }
+```
+
+---
+
+### GET /v1/devices/provision/:jobId/status — Kurulum ilerlemesi (adım adım)
+
+`:jobId` = provision yanıtındaki `jobId`. Panelin canlı kurulum modalıyla **aynı** veriyi
+döndürür: `phase`, `percent`, mevcut adım ve tüm adım günlüğü. Birkaç saniyede bir yoklayın.
+
+`phase`: `provisioning` (kuruluyor) → `ready` (WhatsApp-hazır) veya `failed`.
+
+```bash
+curl "https://<sunucu-adresi>/public/v1/devices/provision/cmr9.../status" \
+  -H "x-api-key: flk_..."
+```
+
+```json
+{
+  "data": {
+    "jobId": "cmr9...",
+    "deviceId": "cmr9...",
+    "status": "RUNNING",
+    "phase": "provisioning",
+    "percent": 86,
+    "lastProgress": { "step": "apks", "percent": 86, "status": "RUNNING", "note": "Uygulamalar kuruluyor" },
+    "steps": [ { "key": "boot", "label": "Cihaz açılışı bekleniyor", "percent": 22 }, "…" ],
+    "log": [ { "ts": "…", "step": "boot", "percent": 22, "status": "RUNNING" }, "…" ]
+  }
+}
+```
+
+---
+
+### POST /v1/whatsapp/register — Tek tıkla WhatsApp otonom kayıt
+
+Bir cihazda **kendi numaranızla** otonom WhatsApp kaydı başlatır. Ajan izinleri verir,
+EULA'yı geçer, numarayı girer ve **SMS kodu ekranında durur** (`status` = `AWAITING_OTP`).
+Kodu alınca `/register/:id/otp` ile gönderin; ajan kodu girip profili tamamlar.
+**write kapsamı gerekir.** Ağır işlem → sıkı hız sınırlı.
+
+Numaranın ülkesine göre uygun bir residential proxy otomatik atanır (varsa).
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Kaydın yapılacağı cihaz (çevrimiçi + aracısı canlı olmalı) |
+| `phoneNumber` | string | ✔ | Ülke kodu dahil numara (örn. `+15551234567`) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/register \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "phoneNumber": "+15551234567" }'
+```
+
+```json
+{
+  "data": {
+    "accountId": "cmr9...",
+    "deviceId": "cmr3...",
+    "phoneNumber": "+15551234567",
+    "status": "REGISTERING",
+    "proxyAssigned": { "proxyId": "cmr9...", "country": "US" }
+  }
+}
+```
+
+> **Not:** Cihaz durdurulmuşsa veya aracısı/ADB bağlantısı kopuksa istek **anında**
+> `409 DEVICE_OFFLINE` / `409 AGENT_UNREACHABLE` döner (iş sonsuza kadar beklemez).
+> Aynı cihazda zaten bir ağır iş sürüyorsa `409 DEVICE_BUSY` döner.
+
+---
+
+### POST /v1/whatsapp/register/:id/otp — SMS kodunu gönder
+
+`:id` = kayıt yanıtındaki `accountId`. Kodu ajana iletir; ajan girip profili tamamlar.
+Hesap `ACTIVE` (başarılı) veya `FAILED` olur. **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `otpCode` | string(4-8) | ✔ | SMS ile gelen doğrulama kodu |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/register/cmr9.../otp \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "otpCode": "123456" }'
+```
+
+```json
+{ "data": { "id": "cmr9...", "status": "REGISTERING", "phoneNumber": "+15551234567" } }
+```
+
+---
+
+### GET /v1/whatsapp/register/:id/status — Kayıt ilerlemesi
+
+`:id` = `accountId`. Canlı adım-adım ilerleme (mevcut adım, yüzde, tüm adım günlüğü) —
+panelin canlı modalıyla **aynı** veri. Birkaç saniyede bir yoklayın. Okuma — her anahtar erişir.
+
+`phase` (basit durum makinesi): `starting` → `waiting_phone` (numara giriliyor) →
+`waiting_sms` (SMS kodu bekleniyor) → `opened` (hesap açıldı), veya `failed`.
+
+```bash
+curl "https://<sunucu-adresi>/public/v1/whatsapp/register/cmr9.../status" \
+  -H "x-api-key: flk_..."
+```
+
+```json
+{
+  "data": {
+    "accountId": "cmr9...",
+    "deviceId": "cmr3...",
+    "status": "AWAITING_OTP",
+    "phase": "waiting_sms",
+    "percent": 85,
+    "steps": [ { "key": "number", "label": "Numara giriliyor", "percent": 62 }, "…" ],
+    "lastProgress": { "step": "otp_wait", "percent": 85, "status": "RUNNING", "note": "📲 SMS kodu bekleniyor" },
+    "log": [ { "ts": "…", "step": "eula", "percent": 35, "status": "RUNNING", "note": "EULA geçiliyor" }, "…" ]
+  }
+}
+```
+
+---
+
+## 6. Uçtan uca akış — iki API örneği (durum makinesi)
+
+Panelde adım adım gördüğünüz akışın **birebir API karşılığı**. Her aşamada `phase`
+alanını yoklayın; panel de aynı veriyi WebSocket ile canlı gösterir.
+
+### Örnek 1 — Tek tıkla cihaz kurulumu (API)
+
+```
+POST /v1/devices/provision                → { jobId, status: PROVISIONING }   (slot artık "meşgul")
+  ↓  poll GET /v1/devices/provision/:jobId/status
+phase: provisioning   (boot → root → APK yükleme → proxy …)   percent artar
+  ↓
+phase: ready          (WhatsApp-hazır)   ← kurulum başarılı
+  (veya phase: failed → lastProgress.note sebebi verir)
+```
+
+```bash
+# 1) Kurulumu başlat
+JOB=$(curl -s -X POST https://<host>/public/v1/devices/provision \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "name":"Bot-01", "countryCode":"US", "proxyCountry":"US" }' | jq -r .data.jobId)
+
+# 2) "ready" olana kadar yokla (aynı cihaza ikinci kurulum GİTMEZ — meşgul/kilitli)
+while true; do
+  P=$(curl -s "https://<host>/public/v1/devices/provision/$JOB/status" -H "x-api-key: flk_..." | jq -r .data.phase)
+  echo "kurulum: $P"; [ "$P" = "ready" ] || [ "$P" = "failed" ] && break; sleep 5
+done
+```
+
+### Örnek 2 — WhatsApp otonom kayıt (API)
+
+```
+POST /v1/whatsapp/register  { deviceId, phoneNumber }   → { accountId, status: REGISTERING }
+  ↓  poll GET /v1/whatsapp/register/:accountId/status
+phase: starting        (izinler → EULA → menü)
+phase: waiting_phone   (numara + ülke kodu otomatik yazılıyor → İleri)
+phase: waiting_sms     (SMS doğrulama ekranı)   ← burada kodu gönder
+  ↓  POST /v1/whatsapp/register/:accountId/otp  { otpCode }
+phase: opened          (hesap açıldı — success)
+  (veya phase: failed → lastProgress.note sebebi)
+```
+
+```bash
+# 1) Kaydı başlat (kendi numaranla). deviceId = kurulan cihaz.
+ACC=$(curl -s -X POST https://<host>/public/v1/whatsapp/register \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId":"cmr3...", "phoneNumber":"+15551234567" }' | jq -r .data.accountId)
+
+# 2) waiting_sms olana kadar yokla
+while true; do
+  P=$(curl -s "https://<host>/public/v1/whatsapp/register/$ACC/status" -H "x-api-key: flk_..." | jq -r .data.phase)
+  echo "kayıt: $P"; [ "$P" = "waiting_sms" ] || [ "$P" = "opened" ] || [ "$P" = "failed" ] && break; sleep 4
+done
+
+# 3) SMS kodunu gönder
+curl -s -X POST "https://<host>/public/v1/whatsapp/register/$ACC/otp" \
+  -H "x-api-key: flk_..." -H "content-type: application/json" -d '{ "otpCode":"123456" }'
+
+# 4) opened olana kadar yokla → hesap açıldı. Sonra profil foto/isim güncellenebilir
+#    (POST /v1/whatsapp/profile ... — mevcut endpoint'ler).
+while true; do
+  P=$(curl -s "https://<host>/public/v1/whatsapp/register/$ACC/status" -H "x-api-key: flk_..." | jq -r .data.phase)
+  echo "kayıt: $P"; [ "$P" = "opened" ] || [ "$P" = "failed" ] && break; sleep 4
+done
+```
+
+**Faz karşılıkları (panel ↔ API):**
+
+| Panel (canlı modal) | API `phase` | API `status` |
+|---|---|---|
+| Kuruluyor (boot/APK…) | `provisioning` | `RUNNING` |
+| Kurulum bitti | `ready` | `COMPLETED` |
+| Numara giriliyor | `waiting_phone` | `REGISTERING` |
+| SMS kodu bekleniyor | `waiting_sms` | `AWAITING_OTP` |
+| Hesap açıldı | `opened` | `ACTIVE` |
+| Hata | `failed`/`failed` | `FAILED` |
+
+---
+
 ## 4. Webhook'lar
 
 Panelden `Webhooks` bölümünde bir URL'ye şu olaylara abone olabilirsiniz. Her
@@ -592,10 +818,16 @@ content-type: application/json
 | HTTP | Kod | Anlamı |
 |---|---|---|
 | `400` | `INVALID_RECIPIENT` | Geçersiz/eksik telefon numarası |
+| `400` | `INVALID_NUMBER` | Kayıt için geçersiz telefon numarası (ülke kodu dahil olmalı) |
 | `400` | (zod doğrulama) | Eksik/hatalı alan (örn. `message` boş) |
 | `401` | — | `x-api-key` başlığı yok veya geçersiz |
 | `403` | `WORKSPACE_REQUIRED` | Anahtar bir çalışma alanına bağlı değil (servis anahtarı kabul edilmez) |
 | `403` | `INSUFFICIENT_SCOPE` | Yazma işlemi için `write`/`admin` kapsamı yok |
+| `404` | `DEVICE_NOT_FOUND` | Cihaz bulunamadı (veya başka bir çalışma alanına ait) |
+| `409` | `DEVICE_OFFLINE` | Cihaz durdurulmuş — önce uyandırın |
+| `409` | `AGENT_UNREACHABLE` | Cihazın sunucu aracısı/ADB'si yanıt vermiyor (iş gönderilemez) |
+| `409` | `DEVICE_BUSY` | Cihazda zaten bir ağır iş sürüyor — bitince tekrar deneyin |
+| `409` | `NO_ONLINE_HOST` | Kurulum için çevrimiçi KVM sunucusu yok |
 | `429` | — | Hız sınırı aşıldı (IP başına ~120 istek/dakika; cihaz süren uçlar ek sınırlı) |
 
 Hata gövdesi:

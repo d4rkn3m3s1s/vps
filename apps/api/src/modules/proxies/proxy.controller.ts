@@ -7,6 +7,27 @@ import { ProxyService } from './proxy.service';
 
 const proxyService = new ProxyService();
 
+// Curated country catalogue for provider (thordata-style) proxies. ISO-2 + a
+// Turkish label. thordata resolves -cc-<CC> for all of these (verified live for
+// US/GB/DE/TR/AL). Ordered by how often we farm them.
+const PROXY_COUNTRIES: Array<{ code: string; name: string }> = [
+  { code: 'US', name: 'Amerika' }, { code: 'GB', name: 'Birleşik Krallık' }, { code: 'DE', name: 'Almanya' },
+  { code: 'FR', name: 'Fransa' }, { code: 'NL', name: 'Hollanda' }, { code: 'IT', name: 'İtalya' },
+  { code: 'ES', name: 'İspanya' }, { code: 'TR', name: 'Türkiye' }, { code: 'AL', name: 'Arnavutluk' },
+  { code: 'BG', name: 'Bulgaristan' }, { code: 'RO', name: 'Romanya' }, { code: 'GR', name: 'Yunanistan' },
+  { code: 'PL', name: 'Polonya' }, { code: 'UA', name: 'Ukrayna' }, { code: 'RU', name: 'Rusya' },
+  { code: 'PT', name: 'Portekiz' }, { code: 'SE', name: 'İsveç' }, { code: 'NO', name: 'Norveç' },
+  { code: 'DK', name: 'Danimarka' }, { code: 'FI', name: 'Finlandiya' }, { code: 'AT', name: 'Avusturya' },
+  { code: 'CH', name: 'İsviçre' }, { code: 'BE', name: 'Belçika' }, { code: 'IE', name: 'İrlanda' },
+  { code: 'CA', name: 'Kanada' }, { code: 'BR', name: 'Brezilya' }, { code: 'MX', name: 'Meksika' },
+  { code: 'AR', name: 'Arjantin' }, { code: 'IN', name: 'Hindistan' }, { code: 'ID', name: 'Endonezya' },
+  { code: 'PH', name: 'Filipinler' }, { code: 'VN', name: 'Vietnam' }, { code: 'TH', name: 'Tayland' },
+  { code: 'MY', name: 'Malezya' }, { code: 'SG', name: 'Singapur' }, { code: 'BD', name: 'Bangladeş' },
+  { code: 'PK', name: 'Pakistan' }, { code: 'AE', name: 'BAE' }, { code: 'SA', name: 'Suudi Arabistan' },
+  { code: 'EG', name: 'Mısır' }, { code: 'ZA', name: 'Güney Afrika' }, { code: 'NG', name: 'Nijerya' },
+  { code: 'AU', name: 'Avustralya' }, { code: 'NZ', name: 'Yeni Zelanda' }, { code: 'JP', name: 'Japonya' }
+];
+
 const createSchema = z.object({
   label: z.string().min(1),
   type: z.enum(['HTTP', 'HTTPS', 'SOCKS5']).optional(),
@@ -107,6 +128,38 @@ export async function autoAssignProxyHandler(req: Request, res: Response): Promi
   const { deviceId } = assignSchema.parse(req.body);
   const result = await proxyService.autoAssignGeoMatched(deviceId, getWorkspaceId(req));
   res.json({ data: result });
+}
+
+// List provider proxies (country-selectable residential accounts).
+export async function listProvidersHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await proxyService.listProviders(getWorkspaceId(req)) });
+}
+
+// Countries a provider proxy can exit from. thordata-style accounts support the
+// full residential catalogue; we expose a curated ISO-2 list with names.
+export async function proxyCountriesHandler(_req: Request, res: Response): Promise<void> {
+  res.json({ data: PROXY_COUNTRIES });
+}
+
+// Route a device through a provider proxy for a chosen country.
+const countryAssignSchema = z.object({
+  deviceId: z.string().min(1),
+  providerId: z.string().min(1),
+  countryCode: z.string().length(2)
+});
+export async function assignCountryProxyHandler(req: Request, res: Response): Promise<void> {
+  const input = countryAssignSchema.parse(req.body);
+  const result = await proxyService.assignCountryProxy(input.deviceId, input.providerId, input.countryCode, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'proxy.assignCountry',
+    resourceType: 'device',
+    resourceId: input.deviceId,
+    requestId: req.requestId,
+    ip: req.ip,
+    metadata: { providerId: input.providerId, country: result.country }
+  });
+  res.status(201).json({ data: result });
 }
 
 // IP-change endpoint: rotates the proxy's exit IP. For rotating/residential

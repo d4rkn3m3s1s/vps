@@ -3578,12 +3578,20 @@ async function installBundledApkTo(instance, apkFile) {
     // its absolute path. (Direct `lxc-attach -- pm` resolved it, `sh -c 'pm'` does not.)
     out = await lxcAttach(instance, ['/system/bin/sh', '-c',
       `export PATH=/system/bin:/system/xbin:$PATH; pm install -r -g /data/local/tmp/${apkFile} 2>&1; true`], 240000);
-    // Verify with `pm path` WHILE the unfreeze loop is still running — otherwise
-    // the container can freeze between install and check and answer nothing.
-    const pkgLine = pkgFor(apkFile);
-    installed = pkgLine
-      ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
-      : /Success/i.test(out);
+    // `pm install` printing "Success" IS the authoritative signal — trust it first.
+    // The old code re-checked with `pm path`, which returns nothing when the
+    // container briefly freezes between install and probe, so a genuinely-installed
+    // APK read as FAILED and the whole step re-installed it 3–10× (VERIFIED: log
+    // spam "FAIL: Success", provision dragged past 6 min). Only fall back to `pm
+    // path` when the output is ambiguous (no clear Success/Failure line).
+    if (/\bSuccess\b/i.test(out)) installed = true;
+    else if (/\bFailure\b|INSTALL_FAILED/i.test(out)) installed = false;
+    else {
+      const pkgLine = pkgFor(apkFile);
+      installed = pkgLine
+        ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
+        : false;
+    }
   } catch (e) {
     out = `EXC:${e.message}`;
   } finally {

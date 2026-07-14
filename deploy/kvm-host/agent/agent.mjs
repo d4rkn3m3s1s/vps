@@ -3824,7 +3824,7 @@ async function provisionDevice(job) {
   // 4) screen — recipe coordinates need 1080x2400 @ density 421. Via lxc-attach
   //    (ADB shell hangs on fresh ARM Waydroid).
   await step('screen', 47, 'Ekran ayarları (1080x2400@421)', async () => {
-    await lxcAttach(instance, ['/system/bin/sh', '-c', 'wm size 1080x2400; wm density 421'], 20000).catch((e) => log('screen step:', e.message));
+    await lxcAttach(instance, ['/system/bin/sh', '-c', 'wm size 1080x2400; wm density 421; true'], 20000).catch((e) => log('screen step:', e.message));
     vtouchCache.delete(serial);
     await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
   });
@@ -3895,6 +3895,15 @@ async function provisionDevice(job) {
   //    (host-mount + pm install). GApps/Play Services ship inside system.img, so
   //    only the extra apps are installed here. No source device required.
   await step('apks', 84, 'Uygulamalar kuruluyor', async () => {
+    // sys.boot_completed=1 fires before PackageManager is ready to install; a `pm
+    // install` here fails silently. Wait for `pm` to actually answer before we
+    // start installing (up to ~60s).
+    await logLine('PackageManager hazırlanıyor…');
+    for (let i = 0; i < 30; i++) {
+      const ok = (await lxcAttach(instance, ['pm', 'path', 'android'], 8000).catch(() => '')).includes('package:');
+      if (ok) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
     const apks = [
       ['com.whatsapp', 'whatsapp.apk', 'WhatsApp'],
       ['com.android.adbkeyboard', 'adbkeyboard.apk', 'ADB Klavye'],
@@ -3906,9 +3915,15 @@ async function provisionDevice(job) {
       const has = (await lxcAttach(instance, ['pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
       if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
-      await installBundledApkTo(instance, file)
-        .then(() => logLine(`✓ ${name} kuruldu`))
-        .catch((e) => logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 100)}`));
+      // Retry once — the first install right after boot can still race PM startup.
+      let done = false;
+      for (let attempt = 1; attempt <= 2 && !done; attempt++) {
+        try { await installBundledApkTo(instance, file); done = true; await logLine(`✓ ${name} kuruldu`); }
+        catch (e) {
+          if (attempt === 2) await logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 100)}`);
+          else await new Promise((r) => setTimeout(r, 4000));
+        }
+      }
     }
   });
 
@@ -3916,12 +3931,14 @@ async function provisionDevice(job) {
   //    Via lxc-attach `sh -c` (ADB shell hangs on fresh ARM Waydroid). Also re-pin
   //    the screen here since wd-run's boot-time size can revert to the panel default.
   await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
+    // Trailing `; true` so a non-zero exit from the last command doesn't make
+    // execFile reject and drop the whole (best-effort) step.
     await lxcAttach(instance, ['/system/bin/sh', '-c',
       'cmd settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService; ' +
       'cmd settings put secure accessibility_enabled 1; ' +
       'ime enable com.android.adbkeyboard/.AdbIME; ime set com.android.adbkeyboard/.AdbIME; ' +
       'wm size 1080x2400; wm density 421; ' +
-      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService'
+      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService; true'
     ], 30000).catch((e) => log('a11y step:', e.message));
     await logLine('✓ Erişilebilirlik servisi + ADB klavye + ekran (1080x2400) etkinleştirildi');
   });

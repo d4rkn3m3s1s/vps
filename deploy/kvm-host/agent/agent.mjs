@@ -3616,15 +3616,37 @@ function pkgFor(apkFile) {
 // ro.hardware.egl), so we don't need resetprop/root (which doesn't work headless —
 // Magisk's su-approval handshake can't be answered). Per-device fingerprint via fp
 // so WhatsApp can't link the fleet; falls back to a Galaxy S21. VERIFIED live on mi5.
+// Per-model coherent device profiles (device/name/fingerprint/description that
+// actually go with each model), so every provisioned phone spoofs a DISTINCT and
+// INTERNALLY-CONSISTENT identity. Picking model="Pixel 8 Pro" but writing a Samsung
+// build fingerprint is a dead giveaway WhatsApp uses to link/ban the fleet — so we
+// key the whole build off the model the control-plane chose. Unknown model → Galaxy
+// S21 profile (matches the SM-G991B default elsewhere).
+const DEVICE_PROFILES = {
+  'SM-S918B':      { brand: 'samsung',  manufacturer: 'samsung',  device: 'dm3q',     name: 'dm3qxxx', fp: 'samsung/dm3qxxx/dm3q:14/UP1A.231005.007/S918BXXS4CWL2:user/release-keys' },
+  'SM-A546B':      { brand: 'samsung',  manufacturer: 'samsung',  device: 'a54x',     name: 'a54xnaxx', fp: 'samsung/a54xnaxx/a54x:14/UP1A.231005.007/A546BXXU7CWL1:user/release-keys' },
+  'SM-G991B':      { brand: 'samsung',  manufacturer: 'samsung',  device: 'o1s',      name: 'o1seea',  fp: 'samsung/o1seea/o1s:13/TP1A.220624.014/G991BXXU5CVK1:user/release-keys' },
+  'Pixel 8 Pro':   { brand: 'google',   manufacturer: 'Google',   device: 'husky',    name: 'husky',   fp: 'google/husky/husky:14/AP2A.240805.005/12025142:user/release-keys' },
+  'Pixel 7':       { brand: 'google',   manufacturer: 'Google',   device: 'panther',  name: 'panther', fp: 'google/panther/panther:14/AP2A.240805.005/12025142:user/release-keys' },
+  'Redmi Note 12': { brand: 'Redmi',    manufacturer: 'Xiaomi',   device: 'tapas',    name: 'tapas',   fp: 'Redmi/tapas/tapas:13/TKQ1.221114.001/V14.0.3.0.TMGMIXM:user/release-keys' },
+  '2210132G':      { brand: 'Xiaomi',   manufacturer: 'Xiaomi',   device: 'fuxi',     name: 'fuxi',    fp: 'Xiaomi/fuxi/fuxi:14/UKQ1.230804.001/V816.0.8.0.UMCMIXM:user/release-keys' },
+  'CPH2449':       { brand: 'OnePlus',  manufacturer: 'OnePlus',  device: 'OP5943L1', name: 'CPH2449', fp: 'OnePlus/CPH2449/OP5943L1:14/UKQ1.230924.001/R.202405xx:user/release-keys' },
+  'CPH2451':       { brand: 'OPPO',     manufacturer: 'OPPO',     device: 'OP5761L1', name: 'CPH2451', fp: 'OPPO/CPH2451/OP5761L1:13/TP1A.220905.001/R.202312xx:user/release-keys' },
+  'V2230':         { brand: 'vivo',     manufacturer: 'vivo',     device: 'V2230',    name: 'V2230',   fp: 'vivo/V2230/V2230:13/TP1A.220624.014/compiler05061933:user/release-keys' },
+  'moto g84 5G':   { brand: 'motorola', manufacturer: 'motorola', device: 'bangkk',   name: 'bangkk',  fp: 'motorola/bangkk_g/bangkk:14/U1TDS34.66-24-10/xxxxx:user/release-keys' }
+};
+
 async function applyIntegritySpoof(instance, fp = {}) {
   const model = fp.model || 'SM-G991B';
-  const brand = fp.brand || 'samsung';
-  const manufacturer = fp.manufacturer || 'samsung';
-  const device = fp.device || 'o1s';
-  const name = fp.name || 'o1seea';
-  const fingerprint = fp.buildNumber || fp.fingerprint ||
-    'samsung/o1seea/o1s:13/TP1A.220624.014/G991BXXU5CVK1:user/release-keys';
-  const description = fp.description || 'o1seea-user 13 TP1A.220624.014 G991BXXU5CVK1 release-keys';
+  const prof = DEVICE_PROFILES[model] || DEVICE_PROFILES['SM-G991B'];
+  // Trust the control-plane fp when it provides these; otherwise use the coherent
+  // profile for the chosen model (NEVER the fixed Samsung strings for a non-Samsung).
+  const brand = fp.brand || prof.brand;
+  const manufacturer = fp.manufacturer || prof.manufacturer;
+  const device = fp.device || prof.device;
+  const name = fp.name || prof.name;
+  const fingerprint = fp.buildNumber || fp.fingerprint || prof.fp;
+  const description = fp.description || prof.fp.replace(/^[^/]+\//, '').replace(':', '-').replace(/\//g, ' ');
   const lines = [
     `ro.product.model=${model}`,
     `ro.product.manufacturer=${manufacturer}`,

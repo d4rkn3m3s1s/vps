@@ -3513,11 +3513,18 @@ async function installBundledApkTo(instance, apkFile) {
   // exits non-zero on some ARM Waydroid builds even when the install lands) does
   // NOT throw before we can verify — we trust `pm path` below, not the exit code.
   let out = '';
+  let installed = false;
   try {
     // `sh -c` doesn't inherit Android's PATH, so `pm` alone is "not found" — use
     // its absolute path. (Direct `lxc-attach -- pm` resolved it, `sh -c 'pm'` does not.)
     out = await lxcAttach(instance, ['/system/bin/sh', '-c',
       `export PATH=/system/bin:/system/xbin:$PATH; pm install -r -g /data/local/tmp/${apkFile} 2>&1; true`], 240000);
+    // Verify with `pm path` WHILE the unfreeze loop is still running — otherwise
+    // the container can freeze between install and check and answer nothing.
+    const pkgLine = pkgFor(apkFile);
+    installed = pkgLine
+      ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
+      : /Success/i.test(out);
   } catch (e) {
     out = `EXC:${e.message}`;
   } finally {
@@ -3525,12 +3532,6 @@ async function installBundledApkTo(instance, apkFile) {
     await thaw.catch(() => undefined);
   }
   await execFileAsync('rm', ['-f', dest]).catch(() => undefined);
-  // Trust the package manager, not the stdout: a stalled/odd `pm install` can
-  // succeed without a clean "Success" line, so verify with `pm path`.
-  const pkgLine = pkgFor(apkFile);
-  const installed = pkgLine
-    ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
-    : /Success/i.test(out);
   if (!installed) {
     log(`installBundledApk ${apkFile} FAIL: ${out.slice(0, 160)}`);
     throw new Error(`pm install başarısız (${apkFile}): ${out.slice(0, 160)}`);
@@ -3871,7 +3872,7 @@ async function provisionDevice(job) {
   // 4) screen — recipe coordinates need 1080x2400 @ density 421. Via lxc-attach
   //    (ADB shell hangs on fresh ARM Waydroid).
   await step('screen', 47, 'Ekran ayarları (1080x2400@421)', async () => {
-    await lxcAttach(instance, ['/system/bin/sh', '-c', 'wm size 1080x2400; wm density 421; true'], 20000).catch((e) => log('screen step:', e.message));
+    await lxcAttach(instance, ['/system/bin/sh', '-c', 'export PATH=/system/bin:/system/xbin:$PATH; wm size 1080x2400; wm density 421; true'], 20000).catch((e) => log('screen step:', e.message));
     vtouchCache.delete(serial);
     await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
   });
@@ -3980,9 +3981,11 @@ async function provisionDevice(job) {
   //    Via lxc-attach `sh -c` (ADB shell hangs on fresh ARM Waydroid). Also re-pin
   //    the screen here since wd-run's boot-time size can revert to the panel default.
   await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
-    // Trailing `; true` so a non-zero exit from the last command doesn't make
-    // execFile reject and drop the whole (best-effort) step.
+    // export PATH — `sh -c` doesn't inherit Android's PATH so cmd/settings/ime/wm/pm
+    // would be "not found". Trailing `; true` so a non-zero last command doesn't
+    // make execFile reject and drop the whole (best-effort) step.
     await lxcAttach(instance, ['/system/bin/sh', '-c',
+      'export PATH=/system/bin:/system/xbin:$PATH; ' +
       'cmd settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService; ' +
       'cmd settings put secure accessibility_enabled 1; ' +
       'ime enable com.android.adbkeyboard/.AdbIME; ime set com.android.adbkeyboard/.AdbIME; ' +

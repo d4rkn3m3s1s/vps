@@ -3645,8 +3645,15 @@ async function applyIntegritySpoof(instance, fp = {}) {
   const manufacturer = fp.manufacturer || prof.manufacturer;
   const device = fp.device || prof.device;
   const name = fp.name || prof.name;
-  const fingerprint = fp.buildNumber || fp.fingerprint || prof.fp;
-  const description = fp.description || prof.fp.replace(/^[^/]+\//, '').replace(':', '-').replace(/\//g, ' ');
+  // Use the model's coherent build fingerprint. Only accept fp.fingerprint if it's a
+  // REAL E.164-style build fingerprint (brand/device:ver/id:type/tag); the control-
+  // plane's fp.buildNumber is a short display string (e.g. "SAMSUNG.14.640105") that
+  // must NOT be used as ro.build.fingerprint — an invalid/inconsistent fingerprint is
+  // itself a ban signal. So: real fingerprint from fp → use it; else the profile's.
+  const looksLikeFingerprint = (s) => typeof s === 'string' && /\/.+:.+\/.+:.+\//.test(s);
+  const fingerprint = looksLikeFingerprint(fp.fingerprint) ? fp.fingerprint : prof.fp;
+  const description = fp.description ||
+    fingerprint.replace(/^[^/]+\//, '').replace(':', '-').replace(/\//g, ' ');
   const lines = [
     `ro.product.model=${model}`,
     `ro.product.manufacturer=${manufacturer}`,

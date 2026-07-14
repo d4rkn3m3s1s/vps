@@ -3549,6 +3549,55 @@ function pkgFor(apkFile) {
   })[apkFile] || '';
 }
 
+// Write integrity-spoof props into the instance's waydroid_base.prop + waydroid.prop
+// BEFORE boot, so the container comes up looking like a real, locked Samsung phone
+// (WhatsApp shows "Login not available for security reasons" on a Waydroid device
+// that reports model="WayDroid arm64 Device"/tags=test-keys). This is the ROOT-LESS
+// path: Waydroid's *.prop files are read by init at boot and DO override ro.* (like
+// ro.hardware.egl), so we don't need resetprop/root (which doesn't work headless —
+// Magisk's su-approval handshake can't be answered). Per-device fingerprint via fp
+// so WhatsApp can't link the fleet; falls back to a Galaxy S21. VERIFIED live on mi5.
+async function applyIntegritySpoof(instance, fp = {}) {
+  const model = fp.model || 'SM-G991B';
+  const brand = fp.brand || 'samsung';
+  const manufacturer = fp.manufacturer || 'samsung';
+  const device = fp.device || 'o1s';
+  const name = fp.name || 'o1seea';
+  const fingerprint = fp.buildNumber || fp.fingerprint ||
+    'samsung/o1seea/o1s:13/TP1A.220624.014/G991BXXU5CVK1:user/release-keys';
+  const description = fp.description || 'o1seea-user 13 TP1A.220624.014 G991BXXU5CVK1 release-keys';
+  const lines = [
+    `ro.product.model=${model}`,
+    `ro.product.manufacturer=${manufacturer}`,
+    `ro.product.brand=${brand}`,
+    `ro.product.name=${name}`,
+    `ro.product.device=${device}`,
+    'ro.build.tags=release-keys',
+    'ro.build.type=user',
+    `ro.build.fingerprint=${fingerprint}`,
+    `ro.build.description=${description}`,
+    // Locked-bootloader / verified-boot signals WhatsApp's "custom ROM" check reads.
+    'ro.boot.verifiedbootstate=green',
+    'ro.boot.flash.locked=1',
+    'ro.boot.veritymode=enforcing',
+    'ro.secure=1',
+    'ro.debuggable=0'
+  ].join('\n') + '\n';
+  const dir = `/var/lib/waydroid.${instance}`;
+  for (const f of [`${dir}/waydroid_base.prop`, `${dir}/waydroid.prop`]) {
+    // Only append if not already spoofed (idempotent across re-provisions).
+    const cur = await readFile(f, 'utf8').catch(() => null);
+    if (cur === null) continue;                    // file not created yet (skip)
+    if (cur.includes('ro.product.model=' + model)) continue;
+    // Strip any prior ro.product/ro.build override we may have added, then append.
+    const cleaned = cur.split('\n').filter((l) =>
+      !/^ro\.(product\.(model|manufacturer|brand|name|device)|build\.(tags|type|fingerprint|description)|boot\.(verifiedbootstate|flash\.locked|veritymode)|secure|debuggable)=/.test(l)
+    ).join('\n').replace(/\n+$/, '\n');
+    await writeFile(f, cleaned + lines).catch((e) => log('spoof write', f, e.message));
+  }
+  return true;
+}
+
 // Pre-authorize ADB for an instance: write the agent's ADB public key into the
 // container's /data/misc/adb/adb_keys and restart adbd. Without this, a freshly
 // booted Waydroid returns "unauthorized" over ADB, so waitBoot() can't read
@@ -3826,7 +3875,10 @@ async function provisionDevice(job) {
     const { stdout } = await hostSh('wd-provision.sh', [instance], 600000);
     const m = /PROVISION_RESULT\s+subnet=(\d+)\s+ip=(\S+)\s+port=(\d+)/.exec(stdout);
     if (!m) throw new Error(`no PROVISION_RESULT in output: ${stdout.trim().slice(-300)}`);
-    await logLine(`✓ Altyapı hazır — subnet 192.168.${m[1]}.0/24, bridge waydroid-${instance}`);
+    // Spoof device integrity into the instance's prop files BEFORE boot (root-less;
+    // WhatsApp bans a device that reports model="WayDroid arm64 Device"/test-keys).
+    await applyIntegritySpoof(instance, fp).catch((e) => log('integrity spoof:', e.message));
+    await logLine(`✓ Altyapı hazır — subnet 192.168.${m[1]}.0/24, kimlik: ${fp.model || 'SM-G991B'}`);
     return { subnetId: Number(m[1]), ip: m[2], adbPort: Number(m[3]) };
   });
   const subnetId = infra.subnetId;

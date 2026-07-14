@@ -3494,11 +3494,56 @@ async function installBundledApkTo(instance, apkFile) {
   await execFileAsync('chmod', ['666', dest]).catch(() => undefined);
   await execFileAsync('chown', ['2000:2000', dest]).catch(() => undefined);
 
-  // pm install via lxc-attach (root, stable). Big APK → generous timeout.
-  const out = await lxcAttach(instance, ['pm', 'install', '-r', '-g', `/data/local/tmp/${apkFile}`], 240000);
+  // ROOT CAUSE of "install fails during provision but works manually minutes
+  // later": Waydroid's suspend_action=freeze FREEZES the container when it looks
+  // idle, which stalls a long `pm install` (the 137 MB WhatsApp APK) mid-flight.
+  // Keep the container thawed for the whole install with a background unfreeze
+  // loop (best-effort; harmless if suspend_action is already none).
+  const lxcp = `/var/lib/waydroid.${instance}/lxc`;
+  let thawing = true;
+  const thaw = (async () => {
+    while (thawing) {
+      await execFileAsync('lxc-unfreeze', ['-n', 'waydroid', '-P', lxcp]).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  })();
+
+  // pm install via lxc-attach (root, stable). Big APK → generous timeout. Wrap in
+  // `sh -c ... 2>&1; true` so a non-zero exit (pm prints warnings to stderr and
+  // exits non-zero on some ARM Waydroid builds even when the install lands) does
+  // NOT throw before we can verify — we trust `pm path` below, not the exit code.
+  let out = '';
+  try {
+    out = await lxcAttach(instance, ['/system/bin/sh', '-c',
+      `pm install -r -g /data/local/tmp/${apkFile} 2>&1; true`], 240000);
+  } catch (e) {
+    out = `EXC:${e.message}`;
+  } finally {
+    thawing = false;
+    await thaw.catch(() => undefined);
+  }
   await execFileAsync('rm', ['-f', dest]).catch(() => undefined);
-  if (!/Success/i.test(out)) throw new Error(`pm install başarısız: ${out.slice(0, 200)}`);
+  // Trust the package manager, not the stdout: a stalled/odd `pm install` can
+  // succeed without a clean "Success" line, so verify with `pm path`.
+  const pkgLine = pkgFor(apkFile);
+  const installed = pkgLine
+    ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
+    : /Success/i.test(out);
+  if (!installed) {
+    log(`installBundledApk ${apkFile} FAIL: ${out.slice(0, 160)}`);
+    throw new Error(`pm install başarısız (${apkFile}): ${out.slice(0, 160)}`);
+  }
   return { stdout: out.trim(), apkFile, instance };
+}
+
+// Map a bundled APK file name → its package (for post-install verification).
+function pkgFor(apkFile) {
+  return ({
+    'whatsapp.apk': 'com.whatsapp',
+    'magisk.apk': 'io.github.huskydg.magisk',
+    'fleet-a11y.apk': 'com.fleet.a11y',
+    'adbkeyboard.apk': 'com.android.adbkeyboard'
+  })[apkFile] || '';
 }
 
 // Pre-authorize ADB for an instance: write the agent's ADB public key into the

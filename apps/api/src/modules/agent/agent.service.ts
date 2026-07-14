@@ -250,7 +250,18 @@ export class AgentService {
           const res = (outcome.result as { status?: string; note?: string } | undefined) ?? {};
           switch (res.status) {
             case 'OTP_WAIT':
+            case 'RATE_LIMITED':
+              // RATE_LIMITED: number temporarily locked ("Send SMS in N hours"). Not
+              // a hard failure — the operator can retry later, so surface it like an
+              // OTP wait (panel shows the code box) with the wait note in `error`.
               nextStatus = 'AWAITING_OTP';
+              if (res.status === 'RATE_LIMITED') error = String(res.note ?? 'geçici olarak kısıtlandı');
+              break;
+            case 'AWAITING_MANUAL':
+              // e.g. the number is already on another phone's WhatsApp and the code
+              // went there (move/other-phone verify) — needs a human, not a failure.
+              nextStatus = 'AWAITING_MANUAL';
+              error = String(res.note ?? 'manuel adım gerekli');
               break;
             case 'CREATED':
             case 'REGISTERED':

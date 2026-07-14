@@ -1487,6 +1487,30 @@ async function registerWhatsApp(job, legacyPayload) {
     const t = await h.screenText();
     return /banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many (attempts|requests|devices)|try again later/i.test(t) ? t : null;
   };
+  // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
+  // account. WhatsApp asks to move it to Messenger (catalog/greeting/Meta-Verified
+  // get deleted, messages kept). We confirm with "Switch now" so registration can
+  // proceed (the operator chose this number knowingly). VERIFIED LIVE (mi5, +355).
+  const onSwitchDialog = async () =>
+    (await h.seen('Switch to WhatsApp Messenger', 500)) ||
+    ((await h.seen('Switch now', 400)) && (await h.seen('Use different number', 300)));
+  // "Verify <number> / Use your other phone to confirm moving WhatsApp to this one /
+  // Enter the 6-digit code we sent to WhatsApp on your OTHER PHONE." The code is NOT
+  // an SMS/voice OTP — it's pushed to the number's EXISTING WhatsApp on another
+  // device, which the agent can't read. This needs a human with that phone, so we
+  // stop at AWAITING_MANUAL. VERIFIED LIVE (mi5, +355 already-registered number).
+  const onOtherPhoneVerify = async () => {
+    const t = await h.screenText();
+    return /code we sent to WhatsApp on your other phone|other phone to confirm moving WhatsApp/i.test(t);
+  };
+  // "You tried requesting code to other phone too many times. To verify, tap
+  // 'Send SMS' in N hours." Terminal rate-limit specific to the move/other-phone
+  // flow. VERIFIED LIVE (mi5): 6h 38m lock after repeated attempts.
+  const onOtherPhoneRateLimit = async () => {
+    const t = await h.screenText();
+    const m = /requesting code to other phone too many times.*?(\d+)\s*hours?,?\s*(\d+)?\s*minutes?/i.exec(t);
+    return m ? `${m[1]} saat ${m[2] || 0} dakika` : null;
+  };
 
   // "Choose how to verify" sheet: pick the FIRST ENABLED method, preferring SMS,
   // then Voice call. A rate-limited row shows "Try again in <n> hours" (greyed) and
@@ -1560,6 +1584,41 @@ async function registerWhatsApp(job, legacyPayload) {
     // Terminal ban / integrity wall — stop and report.
     wallText = await onWall();
     if (wallText) break;
+
+    // "Switch to WhatsApp Messenger?" — number has an existing WA Business account.
+    // Confirm "Switch now" to proceed (operator picked this number on purpose).
+    if (await onSwitchDialog()) {
+      await snap('switch_dialog');
+      await h.a11yClickText('Switch now');
+      if (!(await h.tapSynIf('Switch now'))) await h.tapScaled(781, 1589).catch(() => undefined);
+      await h.sleep(2500);
+      continue;
+    }
+
+    // Move/other-phone rate-limit ("...too many times... Send SMS in N hours") —
+    // terminal. Report the wait clearly so the operator knows when to retry.
+    const otherRl = await onOtherPhoneRateLimit();
+    if (otherRl) {
+      await snap('other_phone_rate_limit');
+      await h.a11yClickText('OK'); await h.tapSynIf('OK'); await h.sleep(800);
+      return done('switch_rate_limited', {
+        status: 'RATE_LIMITED',
+        note: `WhatsApp bu numaraya "diğer telefon" doğrulama kodunu çok kez istedi — ${otherRl} sonra 'Send SMS' ile tekrar denenebilir. (Numara zaten kayıtlı bir WhatsApp hesabına ait.)`,
+        phoneNumber
+      });
+    }
+
+    // Move/other-phone verification — the 6-digit code was pushed to the number's
+    // EXISTING WhatsApp on another device (not SMS/voice). The agent can't read it;
+    // a human with that phone must supply it → AWAITING_MANUAL.
+    if (await onOtherPhoneVerify()) {
+      await snap('other_phone_verify');
+      return done('other_phone_verify', {
+        status: 'AWAITING_MANUAL',
+        note: 'Numara zaten başka bir cihazdaki WhatsApp\'a kayıtlı. Doğrulama kodu SMS/arama ile DEĞİL, o diğer telefondaki WhatsApp\'a gönderildi. Kodu o cihazdan alıp panelden girin (otpCode), ya da bu cihazda kayıtlı OLMAYAN temiz bir numara kullanın.',
+        phoneNumber
+      });
+    }
 
     // "<number> is not a valid mobile number for the country <X>" dialog (VERIFIED
     // LIVE on mi7, +1 802 683-3543 US). WhatsApp reached the OTP screen but rejected

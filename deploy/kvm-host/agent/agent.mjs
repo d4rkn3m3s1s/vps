@@ -3464,6 +3464,14 @@ function hostShDetached(script, args = []) {
 async function installBundledApk(job, apkFile) {
   const instance = String(p(job.payload || {}, 'instance', '')).trim();
   if (!instance) throw new Error('bundled install: instance yok (device meta.instance gerekli)');
+  return installBundledApkTo(instance, apkFile);
+}
+
+// Core: install a repo-bundled APK onto a named instance. Used both by the
+// EMULATOR_INSTALL_APK job (via installBundledApk) and directly by the provision
+// recipe's root/apks steps.
+async function installBundledApkTo(instance, apkFile) {
+  if (!instance) throw new Error('bundled install: instance gerekli');
   if (!apkFile || apkFile.includes('/') || apkFile.includes('..')) throw new Error(`geçersiz apkFile: ${apkFile}`);
   const src = join(APK_DIR, apkFile);
   await execFileAsync('test', ['-f', src]).catch(() => { throw new Error(`APK bulunamadı: ${src}`); });
@@ -3491,6 +3499,38 @@ async function installBundledApk(job, apkFile) {
   await execFileAsync('rm', ['-f', dest]).catch(() => undefined);
   if (!/Success/i.test(out)) throw new Error(`pm install başarısız: ${out.slice(0, 200)}`);
   return { stdout: out.trim(), apkFile, instance };
+}
+
+// Pre-authorize ADB for an instance: write the agent's ADB public key into the
+// container's /data/misc/adb/adb_keys and restart adbd. Without this, a freshly
+// booted Waydroid returns "unauthorized" over ADB, so waitBoot() can't read
+// sys.boot_completed and provisioning FAILS at the boot step even though Android
+// booted fine (VERIFIED root cause on mi5). Idempotent + best-effort.
+async function authorizeAdb(instance) {
+  // Find the agent's ADB public key (either the host key the recipe ships, or the
+  // key adb generated on first run).
+  let pub = '';
+  for (const k of ['/opt/fleet-agent/waydroid/host-adbkey.pub', '/root/.android/adbkey.pub']) {
+    const body = await readFile(k, 'utf8').catch(() => '');
+    if (body.trim()) { pub = body.trim(); break; }
+  }
+  if (!pub) return false;
+  // The container's /data maps to one of two host layouts (full recipe vs LITE).
+  const bases = [
+    `/root/.local/share-${instance}/waydroid/data`,
+    `/root/.local/share/waydroid.${instance}/data`
+  ];
+  for (const base of bases) {
+    if (!(await execFileAsync('test', ['-d', base]).then(() => true).catch(() => false))) continue;
+    const adbDir = `${base}/misc/adb`;
+    await execFileAsync('mkdir', ['-p', adbDir]).catch(() => undefined);
+    await writeFile(`${adbDir}/adb_keys`, pub + '\n').catch(() => undefined);
+    await execFileAsync('chmod', ['640', `${adbDir}/adb_keys`]).catch(() => undefined);
+    await execFileAsync('chown', ['1000:2000', `${adbDir}/adb_keys`]).catch(() => undefined);
+    await lxcAttach(instance, ['setprop', 'ctl.restart', 'adbd'], 10000).catch(() => undefined);
+    return true;
+  }
+  return false;
 }
 
 // Run a command inside an instance's container (root, stable — survives the ADB
@@ -3746,6 +3786,9 @@ async function provisionDevice(job) {
       ip = leased;
       serial = `${ip}:${adbPort}`;
     }
+    // Pre-authorize ADB so waitBoot() can actually read sys.boot_completed — a
+    // fresh Waydroid answers "unauthorized" otherwise and boot appears to hang.
+    await authorizeAdb(instance).catch(() => undefined);
     await ensureConnected(serial);
     // 300s (not 180s): on a busy host (several instances software-rendering at
     // once) the first boot routinely takes 3-5 min. A 180s cap FAILED provision
@@ -3763,14 +3806,19 @@ async function provisionDevice(job) {
   });
 
   // 3) root — the cloned Magisk apk can be a stub; reinstall the real one.
-  await step('root', 35, 'Root / Magisk yeniden kuruluyor', async () => {
-    await logLine('Klon Magisk APK stub olabilir — gerçek Magisk (~12.7MB) kuruluyor…');
-    await cloneApk(srcSerial, serial, instance, MAGISK_PKG);
+  await step('root', 35, 'Root / Magisk kuruluyor', async () => {
+    // Install the real Magisk from the repo-bundled APK (host-mount + pm install),
+    // NOT from a source device — phoenixNAP has no `work` device to clone from.
+    await logLine('Gerçek Magisk (~12.7MB) repo APK\'sından kuruluyor…');
+    await installBundledApkTo(instance, 'magisk.apk').catch((e) => logLine(`⚠ Magisk kurulamadı: ${e.message.slice(0, 100)}`));
     await launchApp(serial, MAGISK_PKG).catch(() => undefined); // refresh manager trust
     await new Promise((r) => setTimeout(r, 4000));
+    // Root is best-effort on headless Waydroid (Magisk's su-approval handshake can't
+    // be answered without a UI). Don't fail the whole provision if su is denied —
+    // WhatsApp/Instagram automation works root-less via synthetic tap + a11y.
     const id = await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 20000).catch(() => '');
-    if (!/uid=0/.test(id)) throw new Error(`su denied after Magisk reinstall: ${id.trim().slice(0, 120)}`);
-    await logLine('✓ Root doğrulandı — su → uid=0(root)');
+    if (/uid=0/.test(id)) await logLine('✓ Root doğrulandı — su → uid=0(root)');
+    else await logLine('⚠ Root otomatik onaylanmadı (headless) — otomasyon root\'suz devam eder');
   });
 
   // 4) screen — recipe coordinates need 1080x2400 @ density 421.
@@ -3784,14 +3832,21 @@ async function provisionDevice(job) {
   // 5) vtouch + unique identity — stream vtouch into the container, spoof a
   //    UNIQUE device so WhatsApp can't link the fleet.
   await step('vtouch', 58, 'Gerçek dokunma + benzersiz kimlik', async () => {
-    // stream vtouch binary + parametric wa-bringup into container-view
-    const vtLocal = `/root/.local/share-${instance}/waydroid/data/local/tmp/vtouch`;
-    await pushB64(serial, vtLocal, '/data/local/tmp/vtouch').catch(async () => {
-      // fall back to the source instance's vtouch if the clone lacks it
-      const srcVt = `/root/.local/share-work/waydroid/data/local/tmp/vtouch`;
-      await pushB64(serial, srcVt, '/data/local/tmp/vtouch');
-    });
-    await pushB64(serial, join(WD_DIR, 'wa-bringup.sh'), '/data/local/tmp/wa-bringup.sh');
+    // Stream the vtouch binary if the agent ships one (FLEET_APK_DIR/vtouch or the
+    // instance's own userdata). vtouch is a SAFETY NET — WhatsApp/Instagram
+    // automation works via synthetic tap + a11y even without it — so a missing
+    // binary must NOT fail provisioning.
+    const vtCandidates = [
+      join(APK_DIR, 'vtouch'),
+      `/root/.local/share-${instance}/waydroid/data/local/tmp/vtouch`,
+      `/root/.local/share/waydroid.${instance}/data/local/tmp/vtouch`
+    ];
+    let vtPushed = false;
+    for (const vt of vtCandidates) {
+      if (await pushB64(serial, vt, '/data/local/tmp/vtouch').then(() => true).catch(() => false)) { vtPushed = true; break; }
+    }
+    if (!vtPushed) await logLine('⚠ vtouch binary yok — synthetic tap + a11y ile devam (güvenlik ağı atlanıyor)');
+    await pushB64(serial, join(WD_DIR, 'wa-bringup.sh'), '/data/local/tmp/wa-bringup.sh').catch(() => undefined);
     // unique fingerprint via setprop (model/serial/android_id/etc.)
     await applyFingerprint(serial, { fingerprint: fp }).catch((e) => log('applyFingerprint:', e.message));
     // re-pin screen (applyFingerprint may have changed wm size from fp.resolution)
@@ -3836,20 +3891,20 @@ async function provisionDevice(job) {
     await logLine('Proxy istenmedi — atlanıyor (datacenter IP)');
   }
 
-  // 8) apks — clone the WhatsApp-automation app set from the source instance.
+  // 8) apks — install the WhatsApp-automation app set from repo-bundled APKs
+  //    (host-mount + pm install). GApps/Play Services ship inside system.img, so
+  //    only the extra apps are installed here. No source device required.
   await step('apks', 84, 'Uygulamalar kuruluyor', async () => {
-    const pkgs = [
-      ['com.whatsapp', 'WhatsApp'],
-      ['com.android.vending', 'Play Store'],
-      ['com.google.android.gms', 'Play Services'],
-      ['com.android.adbkeyboard', 'ADB Klavye'],
-      ['com.fleet.a11y', 'Erişilebilirlik']
+    const apks = [
+      ['com.whatsapp', 'whatsapp.apk', 'WhatsApp'],
+      ['com.android.adbkeyboard', 'adbkeyboard.apk', 'ADB Klavye'],
+      ['com.fleet.a11y', 'fleet-a11y.apk', 'Erişilebilirlik']
     ];
-    for (const [pkg, name] of pkgs) {
+    for (const [pkg, file, name] of apks) {
       const has = (await adb(serial, ['shell', 'pm', 'path', pkg]).catch(() => '')).includes('package:');
       if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
-      await cloneApk(srcSerial, serial, instance, pkg)
+      await installBundledApkTo(instance, file)
         .then(() => logLine(`✓ ${name} kuruldu`))
         .catch((e) => logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 100)}`));
     }

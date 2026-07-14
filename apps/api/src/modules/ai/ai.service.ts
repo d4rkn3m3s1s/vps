@@ -32,7 +32,7 @@ const BUILD_FLOW_TOOL = {
         items: {
           type: 'object',
           properties: {
-            type: { type: 'string', enum: ['tap', 'type', 'wait', 'swipe', 'openApp', 'shell', 'keyevent'] },
+            type: { type: 'string', enum: ['tap', 'type', 'wait', 'swipe', 'openApp', 'keyevent'] },
             x: { type: 'number', description: 'tap/swipe start X (px)' },
             y: { type: 'number', description: 'tap/swipe start Y (px)' },
             x2: { type: 'number', description: 'swipe end X (px)' },
@@ -40,7 +40,6 @@ const BUILD_FLOW_TOOL = {
             text: { type: 'string', description: 'text to type' },
             ms: { type: 'number', description: 'milliseconds to wait' },
             packageName: { type: 'string', description: 'app package for openApp, e.g. com.instagram.android' },
-            command: { type: 'string', description: 'raw adb shell command' },
             keycode: { type: 'number', description: 'Android keyevent code, e.g. 4=back, 3=home, 66=enter' }
           },
           required: ['type']
@@ -59,14 +58,20 @@ const SYSTEM_PROMPT = [
   '- Assume a 1080x1920 portrait screen; place taps on plausible UI locations.',
   '- Open the relevant app first with an openApp step when the task names an app.',
   '- Insert short wait steps (800–2500 ms) after launches and navigation so the UI settles.',
-  '- Prefer tap/type/swipe/keyevent over raw shell unless shell is clearly required.',
+  '- Use only tap/type/swipe/keyevent/openApp/wait — there is no raw shell step.',
   '- Keep flows humanized and minimal: do only what was asked.'
 ].join('\n');
 
-const ALLOWED = new Set(['tap', 'type', 'wait', 'swipe', 'openApp', 'shell', 'keyevent']);
+// Fail-closed: the LLM may propose these step types. `shell` is DELIBERATELY
+// excluded — a natural-language → RPA flow never needs raw shell (tap/type/swipe/
+// openApp/keyevent cover every UI action), and allowing model-authored shell is a
+// prompt-injection foothold to run arbitrary adb commands on the device. A human
+// can still add a shell step by hand in the RPA editor; the model cannot.
+const ALLOWED = new Set(['tap', 'type', 'wait', 'swipe', 'openApp', 'keyevent']);
 
 // Coerce one model-produced step into a clean RpaStep, dropping fields that
-// don't apply to its type. Returns null for an unusable step.
+// don't apply to its type. Returns null for an unusable step (including any
+// `shell` step — see ALLOWED above).
 function sanitizeStep(raw: unknown): RpaStep | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
@@ -79,7 +84,6 @@ function sanitizeStep(raw: unknown): RpaStep | null {
   else if (type === 'type') { step.text = typeof r.text === 'string' ? r.text : ''; }
   else if (type === 'wait') { step.ms = num(r.ms) ?? 1000; }
   else if (type === 'openApp') { if (typeof r.packageName !== 'string' || !r.packageName) return null; step.packageName = r.packageName; }
-  else if (type === 'shell') { if (typeof r.command !== 'string' || !r.command) return null; step.command = r.command; }
   else if (type === 'keyevent') { step.keycode = num(r.keycode) ?? 4; }
   return step;
 }

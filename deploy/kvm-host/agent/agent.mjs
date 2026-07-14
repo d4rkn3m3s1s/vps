@@ -57,6 +57,28 @@ if (!process.env.FLEET_TEST_JOB && (!API_URL || !API_KEY || !HOST_KEY)) {
 const headers = { 'x-api-key': API_KEY, 'x-agent-key': HOST_KEY, 'content-type': 'application/json' };
 const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 
+// ── Secret env-strip (defense-in-depth) ─────────────────────────────────────
+//
+// Every child we spawn (adb shell, su -c, bash host scripts) inherits process.env
+// by default — which means FLEET_API_KEY / FLEET_HOST_KEY / any *_TOKEN / *_SECRET
+// the agent runs with would leak into the device shell and any script an attacker
+// could influence. We've already copied the values the agent actually needs into
+// module constants above (API_KEY, HOST_KEY, ADB, FFMPEG…), so we now scrub the
+// sensitive names out of process.env. Children spawned afterwards no longer see
+// them. We keep FLEET_* config the host SCRIPTS legitimately read (URLs, non-secret
+// tuning) but drop credential-shaped names. Best-effort: a delete that throws
+// (frozen prop) is ignored.
+(function stripSecretEnv() {
+  const SENSITIVE = /(KEY|SECRET|TOKEN|PASSWORD|PASSWD|BEARER|AUTH|COOKIE|CREDENTIAL|PRIVATE)/i;
+  // Names we DELETE outright — the agent has already read what it needs.
+  const HARD_DROP = new Set(['FLEET_API_KEY', 'FLEET_HOST_KEY']);
+  for (const name of Object.keys(process.env)) {
+    if (HARD_DROP.has(name) || SENSITIVE.test(name)) {
+      try { delete process.env[name]; } catch { /* frozen — ignore */ }
+    }
+  }
+})();
+
 // --- ADB helpers ------------------------------------------------------------
 
 async function adb(serial, args) {
@@ -454,7 +476,7 @@ async function runJob(job) {
       return { acknowledged: true, note: 'lifecycle managed by docker compose on host' };
 
     case 'REGISTER_INSTAGRAM':
-      return registerInstagram(serial, payload);
+      return registerInstagram(serial, payload, job);
 
     case 'REGISTER_WHATSAPP':
       return registerWhatsApp(job);
@@ -520,13 +542,24 @@ async function runJob(job) {
 // payload: { email, password, fullName, birthYear?, username?, emailDomainBase? }
 // Steps that need money / a human (SMS verify, image captcha) are NOT automated
 // here — the flow stops and reports which wall it hit so the operator can act.
-async function registerInstagram(serial, payload) {
+async function registerInstagram(serial, payload, job) {
   const IG = 'com.instagram.android';
   const email = String(p(payload, 'email', ''));
   const password = String(p(payload, 'password', ''));
   const fullName = String(p(payload, 'fullName', ''));
   const birthYear = Number(p(payload, 'birthYear', 1995));
   if (!email || !password || !fullName) throw new Error('email, password, fullName gerekli');
+
+  // Live progress → the dashboard IG panel (correlated by accountId). Best-effort:
+  // grabs a downscaled screenshot for the "SS göster" toggle. Mirrors registerWhatsApp.
+  const jobId = job && job.id ? job.id : null;
+  const accountId = p(payload, 'accountId', '');
+  const igStep = async (step, percent, note, status) => {
+    if (!jobId) return;
+    let shot;
+    try { const png = await grabPng(serial, 8000); if (png) shot = await shrinkPng(png, 320); } catch { /* no shot */ }
+    await reportProgress(jobId, step, percent, note, status, { accountId, ...(shot ? { shot } : {}) }).catch(() => undefined);
+  };
 
   const dump = async () => parseUiNodes(await uiDumpXml(serial));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -575,11 +608,15 @@ async function registerInstagram(serial, payload) {
     throw new Error(`ekran gelmedi: ${q}`);
   };
 
+  await igStep('queued', 5, 'Instagram kaydı başlıyor');
+
   // 0) Launch IG fresh.
+  await igStep('launch', 18, 'Instagram açılıyor');
   await launchApp(serial, IG, null);
   await sleep(8000);
 
   // 1) Get started → 2) Sign up with email
+  await igStep('signup', 28, 'E-posta ile kayıt seçiliyor');
   const nodes = await dump();
   const startVisible = findNode(nodes, 'Get started', 'any');
   if (startVisible || nodes.length === 0) {
@@ -591,23 +628,28 @@ async function registerInstagram(serial, payload) {
   await tapBy('Sign up with email', 'any', 'the "Sign up with email" button'); await sleep(3000);
 
   // 3) Email
+  await igStep('email', 38, 'E-posta giriliyor');
   await waitFor("What's your email", 10000, 'the "What\'s your email" input screen');
   await typeInto('Email,', email, 'the email address input field'); await sleep(800);
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(4000);
 
   // 4) Confirmation code — read from catchmail, enter it.
+  await igStep('code_wait', 48, 'E-posta doğrulama kodu bekleniyor');
   await waitFor('confirmation code', 15000, 'the "Enter the confirmation code" screen');
   const code = await fetchEmailCode(email, 90000);
   if (!code) throw new Error('e-posta kodu gelmedi (catchmail)');
+  await igStep('code', 56, `Kod giriliyor (${code})`);
   await typeInto('Code input entry field', code, 'the confirmation code input field'); await sleep(1000);
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(5000);
 
   // 5) Password
+  await igStep('password', 64, 'Şifre oluşturuluyor');
   await waitFor('Create a password', 12000, 'the "Create a password" screen');
   await typeInto('Password,', password, 'the password input field'); await sleep(800);
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(4000);
 
   // 6) Birthday — open the date picker, roll the year back to birthYear, SET.
+  await igStep('birthday', 72, 'Doğum tarihi ayarlanıyor');
   await waitFor('birthday', 12000);
   // The picker may need to be opened; if a year column is visible, scroll it.
   const yearNode = (await dump()).find((n) => /^(19|20)\d\d$/.test(n.text));
@@ -623,15 +665,18 @@ async function registerInstagram(serial, payload) {
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(4000);
 
   // 7) Full name
+  await igStep('name', 80, 'İsim giriliyor');
   await waitFor("What's your name", 12000, 'the "What\'s your name" input screen');
   await typeInto('Full name,', fullName, 'the full name input field'); await sleep(800);
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(4000);
 
   // 8) Username (IG pre-fills a valid suggestion) → Next
+  await igStep('username', 88, 'Kullanıcı adı onaylanıyor');
   await waitFor('Create a username', 12000, 'the "Create a username" screen');
   await tapBy('Next', 'any', 'the "Next" button'); await sleep(5000);
 
   // 9) Terms → I agree (this actually creates the account)
+  await igStep('terms', 94, 'Şartlar kabul ediliyor (hesap oluşturuluyor)');
   const termNodes = await dump();
   if (findNode(termNodes, 'I agree', 'any') || termNodes.length === 0) {
     try { await tapBy('I agree', 'any', 'the "I agree" button on the terms/consent screen'); await sleep(10000); } catch { /* not on terms screen */ }
@@ -642,18 +687,19 @@ async function registerInstagram(serial, payload) {
   // still return a useful status instead of a blind CREATED.
   const after = await dump();
   const texts = after.map((n) => n.text).filter(Boolean).join(' | ');
-  if (/human/i.test(texts)) return { status: 'CAPTCHA_WALL', note: 'IG insan/captcha doğrulaması istedi (manuel/proxy gerekli)', screenTexts: texts.slice(0, 400) };
-  if (/mobile number|confirm.*number/i.test(texts)) return { status: 'SMS_WALL', note: 'IG SMS doğrulaması istedi (numara ücreti gerekli)', screenTexts: texts.slice(0, 400) };
+  if (/human/i.test(texts)) { await igStep('wall', 100, 'IG insan/captcha doğrulaması istedi (canlı ekrandan tamamlayın)'); return { status: 'CAPTCHA_WALL', note: 'IG insan/captcha doğrulaması istedi (manuel/proxy gerekli)', screenTexts: texts.slice(0, 400) }; }
+  if (/mobile number|confirm.*number/i.test(texts)) { await igStep('wall', 100, 'IG SMS doğrulaması istedi (canlı ekrandan tamamlayın)'); return { status: 'SMS_WALL', note: 'IG SMS doğrulaması istedi (numara ücreti gerekli)', screenTexts: texts.slice(0, 400) }; }
   if (after.length === 0) {
     const v = await visionLocate(serial, 'a phone-number verification field, a captcha/"confirm you\'re human" challenge, or the Instagram home feed', 'classify the post-signup Instagram screen');
     if (v) {
       const s = (v.screen + ' ' + v.note).toLowerCase();
-      if (/captcha|human|challenge/.test(s)) return { status: 'CAPTCHA_WALL', note: `IG insan/captcha doğrulaması istedi (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) };
-      if (/phone|sms|number|verify/.test(s)) return { status: 'SMS_WALL', note: `IG SMS doğrulaması istedi (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) };
-      if (/home|feed|profile/.test(s)) return { status: 'CREATED', note: `Hesap oluşturuldu (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) };
+      if (/captcha|human|challenge/.test(s)) { await igStep('wall', 100, `IG captcha istedi (vision: ${v.screen})`); return { status: 'CAPTCHA_WALL', note: `IG insan/captcha doğrulaması istedi (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) }; }
+      if (/phone|sms|number|verify/.test(s)) { await igStep('wall', 100, `IG SMS istedi (vision: ${v.screen})`); return { status: 'SMS_WALL', note: `IG SMS doğrulaması istedi (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) }; }
+      if (/home|feed|profile/.test(s)) { await igStep('done', 100, 'Hesap oluşturuldu'); return { status: 'CREATED', note: `Hesap oluşturuldu (vision: ${v.screen})`, screenTexts: v.note.slice(0, 400) }; }
     }
   }
 
+  await igStep('done', 100, 'Hesap oluşturuldu');
   return { status: 'CREATED', note: 'Hesap oluşturuldu', screenTexts: texts.slice(0, 400) };
 }
 
@@ -3861,8 +3907,17 @@ async function runRpaStep(serial, step) {
       return adb(serial, ['shell', 'input', 'keyevent', String(step.keycode)]);
     case 'openApp':
       return { stdout: await launchApp(serial, String(step.packageName ?? ''), step.activity ?? null) };
-    case 'shell':
+    case 'shell': {
+      // Fail-closed defense-in-depth: a raw shell step runs an arbitrary command on
+      // the device. AI-generated flows never produce these (the API strips `shell`
+      // from model output), but a flow could still carry one via an older record, a
+      // webhook, or a compromised source. Refuse by default; an operator who really
+      // needs shell in a hand-authored flow sets FLEET_RPA_ALLOW_SHELL=1 explicitly.
+      if (process.env.FLEET_RPA_ALLOW_SHELL !== '1') {
+        throw new Error('shell adımı devre dışı (güvenlik) — FLEET_RPA_ALLOW_SHELL=1 ile açılabilir');
+      }
       return adb(serial, ['shell', String(step.command ?? '')]);
+    }
     case 'wait':
       await new Promise((r) => setTimeout(r, Number(step.ms ?? 1000)));
       return { waited: Number(step.ms ?? 1000) };

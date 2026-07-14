@@ -3821,10 +3821,10 @@ async function provisionDevice(job) {
     else await logLine('⚠ Root otomatik onaylanmadı (headless) — otomasyon root\'suz devam eder');
   });
 
-  // 4) screen — recipe coordinates need 1080x2400 @ density 421.
+  // 4) screen — recipe coordinates need 1080x2400 @ density 421. Via lxc-attach
+  //    (ADB shell hangs on fresh ARM Waydroid).
   await step('screen', 47, 'Ekran ayarları (1080x2400@421)', async () => {
-    await adb(serial, ['shell', 'wm', 'size', '1080x2400']);
-    await adb(serial, ['shell', 'wm', 'density', '421']);
+    await lxcAttach(instance, ['/system/bin/sh', '-c', 'wm size 1080x2400; wm density 421'], 20000).catch((e) => log('screen step:', e.message));
     vtouchCache.delete(serial);
     await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
   });
@@ -3901,7 +3901,9 @@ async function provisionDevice(job) {
       ['com.fleet.a11y', 'fleet-a11y.apk', 'Erişilebilirlik']
     ];
     for (const [pkg, file, name] of apks) {
-      const has = (await adb(serial, ['shell', 'pm', 'path', pkg]).catch(() => '')).includes('package:');
+      // Use lxc-attach for the "already installed?" probe — ADB shell hangs on
+      // fresh ARM Waydroid (the same reason installs use host-mount + lxc-attach).
+      const has = (await lxcAttach(instance, ['pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
       if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
       await installBundledApkTo(instance, file)
@@ -3911,16 +3913,17 @@ async function provisionDevice(job) {
   });
 
   // 9) a11y + keyboard — enable the accessibility service + ADBKeyboard IME.
+  //    Via lxc-attach `sh -c` (ADB shell hangs on fresh ARM Waydroid). Also re-pin
+  //    the screen here since wd-run's boot-time size can revert to the panel default.
   await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
-    await adb(serial, ['shell', 'cmd', 'settings', 'put', 'secure', 'enabled_accessibility_services',
-      'com.fleet.a11y/com.fleet.a11y.FleetA11yService']).catch(() => undefined);
-    await adb(serial, ['shell', 'cmd', 'settings', 'put', 'secure', 'accessibility_enabled', '1']).catch(() => undefined);
-    await adb(serial, ['shell', 'ime', 'enable', 'com.android.adbkeyboard/.AdbIME']).catch(() => undefined);
-    await adb(serial, ['shell', 'ime', 'set', 'com.android.adbkeyboard/.AdbIME']).catch(() => undefined);
-    // GMS crash service that spams "Play Store keeps stopping" during registration
-    await adb(serial, ['shell', 'su', '-c',
-      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService']).catch(() => undefined);
-    await logLine('✓ Erişilebilirlik servisi + ADB klavye etkinleştirildi');
+    await lxcAttach(instance, ['/system/bin/sh', '-c',
+      'cmd settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService; ' +
+      'cmd settings put secure accessibility_enabled 1; ' +
+      'ime enable com.android.adbkeyboard/.AdbIME; ime set com.android.adbkeyboard/.AdbIME; ' +
+      'wm size 1080x2400; wm density 421; ' +
+      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService'
+    ], 30000).catch((e) => log('a11y step:', e.message));
+    await logLine('✓ Erişilebilirlik servisi + ADB klavye + ekran (1080x2400) etkinleştirildi');
   });
 
   // 10) persist — verify the full stack is up.

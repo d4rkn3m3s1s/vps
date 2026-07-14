@@ -3577,10 +3577,17 @@ async function authorizeAdb(instance) {
   for (const base of bases) {
     if (!(await execFileAsync('test', ['-d', base]).then(() => true).catch(() => false))) continue;
     const adbDir = `${base}/misc/adb`;
-    await execFileAsync('mkdir', ['-p', adbDir]).catch(() => undefined);
-    await writeFile(`${adbDir}/adb_keys`, pub + '\n').catch(() => undefined);
-    await execFileAsync('chmod', ['640', `${adbDir}/adb_keys`]).catch(() => undefined);
-    await execFileAsync('chown', ['1000:2000', `${adbDir}/adb_keys`]).catch(() => undefined);
+    const keysFile = `${adbDir}/adb_keys`;
+    // Write via `sh -c ... > file` (not fs.writeFile — which was silently landing a
+    // 0-byte file here). Verify non-empty; adbd reads adb_keys as owner 1000:2000.
+    try {
+      await execFileAsync('mkdir', ['-p', adbDir]);
+      await execFileAsync('sh', ['-c', `printf '%s\\n' ${shArg(pub)} > ${shArg(keysFile)}`]);
+      await execFileAsync('chown', ['1000:2000', keysFile]).catch(() => undefined);
+      await execFileAsync('chmod', ['644', keysFile]).catch(() => undefined);
+      const written = await readFile(keysFile, 'utf8').catch(() => '');
+      if (!written.trim()) { log(`authorizeAdb: adb_keys empty after write (${instance})`); return false; }
+    } catch (e) { log('authorizeAdb write:', e.message); return false; }
     await lxcAttach(instance, ['setprop', 'ctl.restart', 'adbd'], 10000).catch(() => undefined);
     return true;
   }
@@ -3842,7 +3849,16 @@ async function provisionDevice(job) {
     }
     // Pre-authorize ADB so waitBoot() can actually read sys.boot_completed — a
     // fresh Waydroid answers "unauthorized" otherwise and boot appears to hang.
-    await authorizeAdb(instance).catch(() => undefined);
+    // The instance /data dir (where adb_keys lives) only appears a bit after the
+    // container starts, so retry until authorizeAdb succeeds AND the device shows
+    // "device" (not "unauthorized"). Up to ~90s.
+    for (let i = 0; i < 30; i++) {
+      const ok = await authorizeAdb(instance).catch(() => false);
+      await ensureConnected(serial).catch(() => undefined);
+      const st = await adbT(serial, ['get-state'], 6000).catch(() => '');
+      if (ok && /device/.test(st)) { await logLine('✓ ADB yetkilendirildi'); break; }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
     await ensureConnected(serial);
     // 300s (not 180s): on a busy host (several instances software-rendering at
     // once) the first boot routinely takes 3-5 min. A 180s cap FAILED provision

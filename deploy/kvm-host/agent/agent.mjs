@@ -3555,14 +3555,20 @@ function pkgFor(apkFile) {
 // sys.boot_completed and provisioning FAILS at the boot step even though Android
 // booted fine (VERIFIED root cause on mi5). Idempotent + best-effort.
 async function authorizeAdb(instance) {
-  // Find the agent's ADB public key (either the host key the recipe ships, or the
-  // key adb generated on first run).
-  let pub = '';
-  for (const k of ['/opt/fleet-agent/waydroid/host-adbkey.pub', '/root/.android/adbkey.pub']) {
+  // Write ALL of the agent's candidate ADB public keys — the `adb` binary the
+  // agent shells out to may use the key it generated on first run
+  // (~/.android/adbkey.pub) rather than the recipe's host key, so if we write only
+  // one we can pick the wrong one and every `adb` call stays "unauthorized". That
+  // breaks not just waitBoot but ALL identity-bearing shell commands (settings
+  // put / am / ime), which must run over ADB (lxc-attach loses the Binder caller
+  // identity → getCallingPackage()==null → AppOpsService NPE). VERIFIED root cause.
+  const keys = [];
+  for (const k of ['/root/.android/adbkey.pub', '/opt/fleet-agent/waydroid/host-adbkey.pub']) {
     const body = await readFile(k, 'utf8').catch(() => '');
-    if (body.trim()) { pub = body.trim(); break; }
+    if (body.trim()) keys.push(body.trim());
   }
-  if (!pub) return false;
+  if (!keys.length) return false;
+  const pub = keys.join('\n');
   // The container's /data maps to one of two host layouts (full recipe vs LITE).
   const bases = [
     `/root/.local/share-${instance}/waydroid/data`,
@@ -3878,10 +3884,12 @@ async function provisionDevice(job) {
     else await logLine('⚠ Root otomatik onaylanmadı (headless) — otomasyon root\'suz devam eder');
   });
 
-  // 4) screen — recipe coordinates need 1080x2400 @ density 421. Via lxc-attach
-  //    (ADB shell hangs on fresh ARM Waydroid).
+  // 4) screen — recipe coordinates need 1080x2400 @ density 421. Over ADB (wm is
+  //    identity-bearing; lxc-attach's null caller identity makes it a no-op).
   await step('screen', 47, 'Ekran ayarları (1080x2400@421)', async () => {
-    await lxcAttach(instance, ['/system/bin/sh', '-c', 'export PATH=/system/bin:/system/xbin:$PATH; wm size 1080x2400; wm density 421; true'], 20000).catch((e) => log('screen step:', e.message));
+    await ensureConnected(serial).catch(() => undefined);
+    await adb(serial, ['shell', 'wm size 1080x2400']).catch((e) => log('screen:', e.message));
+    await adb(serial, ['shell', 'wm density 421']).catch((e) => log('screen:', e.message));
     vtouchCache.delete(serial);
     await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
   });
@@ -3986,22 +3994,26 @@ async function provisionDevice(job) {
     }
   });
 
-  // 9) a11y + keyboard — enable the accessibility service + ADBKeyboard IME.
-  //    Via lxc-attach `sh -c` (ADB shell hangs on fresh ARM Waydroid). Also re-pin
-  //    the screen here since wd-run's boot-time size can revert to the panel default.
+  // 9) a11y + keyboard — enable the accessibility service + ADBKeyboard IME + pin
+  //    screen. These are IDENTITY-BEARING commands (settings put / ime / am), which
+  //    ONLY work over ADB — lxc-attach loses the Binder caller identity, so
+  //    getCallingPackage()==null → AppOpsService NPE and the write silently fails.
+  //    ADB is already pre-authorized in the boot step (authorizeAdb). VERIFIED.
   await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
-    // export PATH — `sh -c` doesn't inherit Android's PATH so cmd/settings/ime/wm/pm
-    // would be "not found". Trailing `; true` so a non-zero last command doesn't
-    // make execFile reject and drop the whole (best-effort) step.
-    await lxcAttach(instance, ['/system/bin/sh', '-c',
-      'export PATH=/system/bin:/system/xbin:$PATH; ' +
-      'cmd settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService; ' +
-      'cmd settings put secure accessibility_enabled 1; ' +
-      'ime enable com.android.adbkeyboard/.AdbIME; ime set com.android.adbkeyboard/.AdbIME; ' +
-      'wm size 1080x2400; wm density 421; ' +
-      'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService; true'
-    ], 30000).catch((e) => log('a11y step:', e.message));
-    await logLine('✓ Erişilebilirlik servisi + ADB klavye + ekran (1080x2400) etkinleştirildi');
+    await ensureConnected(serial).catch(() => undefined);
+    const sh = async (cmd) => adb(serial, ['shell', cmd]).catch((e) => log('a11y:', cmd.slice(0, 40), e.message));
+    await sh('settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService');
+    await sh('settings put secure accessibility_enabled 1');
+    await sh('ime enable com.android.adbkeyboard/.AdbIME');
+    await sh('ime set com.android.adbkeyboard/.AdbIME');
+    await sh('wm size 1080x2400');
+    await sh('wm density 421');
+    await sh('pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService');
+    // Verify a11y actually stuck (ADB is required for this write to land).
+    const a11y = String(await adbT(serial, ['shell', 'settings', 'get', 'secure', 'enabled_accessibility_services'], 8000) || '').trim();
+    await logLine(/fleet/i.test(a11y)
+      ? '✓ Erişilebilirlik servisi + ADB klavye + ekran (1080x2400) etkinleştirildi'
+      : '⚠ a11y/IME ayarlanamadı (ADB yetkisi?) — otomasyon input-tap ile devam');
   });
 
   // 10) persist — verify the full stack is up.

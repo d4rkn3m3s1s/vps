@@ -3514,8 +3514,10 @@ async function installBundledApkTo(instance, apkFile) {
   // NOT throw before we can verify — we trust `pm path` below, not the exit code.
   let out = '';
   try {
+    // `sh -c` doesn't inherit Android's PATH, so `pm` alone is "not found" — use
+    // its absolute path. (Direct `lxc-attach -- pm` resolved it, `sh -c 'pm'` does not.)
     out = await lxcAttach(instance, ['/system/bin/sh', '-c',
-      `pm install -r -g /data/local/tmp/${apkFile} 2>&1; true`], 240000);
+      `export PATH=/system/bin:/system/xbin:$PATH; pm install -r -g /data/local/tmp/${apkFile} 2>&1; true`], 240000);
   } catch (e) {
     out = `EXC:${e.message}`;
   } finally {

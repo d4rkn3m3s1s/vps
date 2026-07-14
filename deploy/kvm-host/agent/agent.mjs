@@ -3853,13 +3853,22 @@ async function provisionDevice(job) {
     await logLine(`✓ boot_completed=1 — Android hazır (${serial})`);
   });
 
-  // 3) root — the cloned Magisk apk can be a stub; reinstall the real one.
+  // 3) root — install the real Magisk from the repo-bundled APK. This runs right
+  //    after boot when PackageManager may not accept installs yet, so wait for PM
+  //    to be ready (probe with the tiny adbkeyboard) and retry Magisk a few times.
   await step('root', 35, 'Root / Magisk kuruluyor', async () => {
-    // Install the real Magisk from the repo-bundled APK (host-mount + pm install),
-    // NOT from a source device — phoenixNAP has no `work` device to clone from.
+    await logLine('PackageManager hazırlanıyor…');
+    for (let i = 0; i < 24; i++) {
+      try { await installBundledApkTo(instance, 'adbkeyboard.apk'); break; }
+      catch { await new Promise((r) => setTimeout(r, 5000)); }
+    }
     await logLine('Gerçek Magisk (~12.7MB) repo APK\'sından kuruluyor…');
-    await installBundledApkTo(instance, 'magisk.apk').catch((e) => logLine(`⚠ Magisk kurulamadı: ${e.message.slice(0, 100)}`));
-    await launchApp(serial, MAGISK_PKG).catch(() => undefined); // refresh manager trust
+    let magiskOk = false;
+    for (let attempt = 1; attempt <= 3 && !magiskOk; attempt++) {
+      try { await installBundledApkTo(instance, 'magisk.apk'); magiskOk = true; }
+      catch (e) { if (attempt === 3) await logLine(`⚠ Magisk kurulamadı: ${e.message.slice(0, 100)}`); else await new Promise((r) => setTimeout(r, 6000)); }
+    }
+    if (magiskOk) await launchApp(serial, MAGISK_PKG).catch(() => undefined); // refresh manager trust
     await new Promise((r) => setTimeout(r, 4000));
     // Root is best-effort on headless Waydroid (Magisk's su-approval handshake can't
     // be answered without a UI). Don't fail the whole provision if su is denied —

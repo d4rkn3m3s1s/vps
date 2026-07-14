@@ -3895,19 +3895,22 @@ async function provisionDevice(job) {
   //    (host-mount + pm install). GApps/Play Services ship inside system.img, so
   //    only the extra apps are installed here. No source device required.
   await step('apks', 84, 'Uygulamalar kuruluyor', async () => {
-    // sys.boot_completed=1 fires before PackageManager is ready to install; a `pm
-    // install` here fails silently. Wait for `pm` to actually answer before we
-    // start installing (up to ~60s).
+    // sys.boot_completed=1 fires ~1 min before PackageManager will accept an
+    // install — a `pm install` right after boot returns Failure/empty. `pm path`
+    // answering is NOT enough (VERIFIED: probe passes but install still fails).
+    // Probe with a REAL install of the smallest APK, retrying until it succeeds.
     await logLine('PackageManager hazırlanıyor…');
-    for (let i = 0; i < 30; i++) {
-      const ok = (await lxcAttach(instance, ['pm', 'path', 'android'], 8000).catch(() => '')).includes('package:');
-      if (ok) break;
-      await new Promise((r) => setTimeout(r, 2000));
+    let pmReady = false;
+    for (let i = 0; i < 24 && !pmReady; i++) {
+      try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
+      catch { await new Promise((r) => setTimeout(r, 5000)); }
     }
+    await logLine(pmReady ? '✓ PackageManager hazır' : '⚠ PackageManager hazır olmadı (yine de denenecek)');
+
     const apks = [
       ['com.whatsapp', 'whatsapp.apk', 'WhatsApp'],
-      ['com.android.adbkeyboard', 'adbkeyboard.apk', 'ADB Klavye'],
       ['com.fleet.a11y', 'fleet-a11y.apk', 'Erişilebilirlik']
+      // adbkeyboard installed above as the PM-readiness probe.
     ];
     for (const [pkg, file, name] of apks) {
       // Use lxc-attach for the "already installed?" probe — ADB shell hangs on
@@ -3915,13 +3918,12 @@ async function provisionDevice(job) {
       const has = (await lxcAttach(instance, ['pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
       if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
-      // Retry once — the first install right after boot can still race PM startup.
       let done = false;
-      for (let attempt = 1; attempt <= 2 && !done; attempt++) {
+      for (let attempt = 1; attempt <= 3 && !done; attempt++) {
         try { await installBundledApkTo(instance, file); done = true; await logLine(`✓ ${name} kuruldu`); }
         catch (e) {
-          if (attempt === 2) await logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 100)}`);
-          else await new Promise((r) => setTimeout(r, 4000));
+          if (attempt === 3) await logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 120)}`);
+          else await new Promise((r) => setTimeout(r, 6000));
         }
       }
     }

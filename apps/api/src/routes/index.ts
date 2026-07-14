@@ -16,6 +16,7 @@ import { authRouter } from '../modules/auth/auth.routes';
 import { bulkRouter } from '../modules/bulk/bulk.routes';
 import { calendarRouter } from '../modules/calendar/calendar.routes';
 import { catalogRouter } from '../modules/catalog/catalog.routes';
+import { apksRouter } from '../modules/apks/apks.routes';
 import { hostsRouter } from '../modules/hosts/hosts.routes';
 import { cloudProvidersRouter } from '../modules/cloud-providers/cloud-providers.routes';
 import { emulatorRouter } from '../modules/emulators/emulator.routes';
@@ -71,6 +72,7 @@ export function registerRoutes(app: Express): void {
   app.use('/rpa', rpaRouter);
   app.use('/webhooks', webhooksRouter);
   app.use('/catalog', catalogRouter);
+  app.use('/apks', apksRouter);
   app.use('/hosts', hostsRouter);
   app.use('/cloud-providers', cloudProvidersRouter);
   app.use('/agent', agentRouter);

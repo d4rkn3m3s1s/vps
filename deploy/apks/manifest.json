@@ -1,0 +1,44 @@
+{
+  "apks": [
+    {
+      "file": "whatsapp.apk",
+      "name": "WhatsApp",
+      "packageName": "com.whatsapp",
+      "version": "2.26.25.81",
+      "sizeMB": 137,
+      "category": "Messaging",
+      "shortLabel": "WA",
+      "color": "#25D366"
+    },
+    {
+      "file": "magisk.apk",
+      "name": "Magisk",
+      "packageName": "io.github.huskydg.magisk",
+      "version": "delta",
+      "sizeMB": 12,
+      "category": "System",
+      "shortLabel": "M",
+      "color": "#00AF9C"
+    },
+    {
+      "file": "fleet-a11y.apk",
+      "name": "Fleet Erişilebilirlik",
+      "packageName": "com.fleet.a11y",
+      "version": "1.0",
+      "sizeMB": 1,
+      "category": "System",
+      "shortLabel": "A11Y",
+      "color": "#6366F1"
+    },
+    {
+      "file": "adbkeyboard.apk",
+      "name": "ADB Klavye",
+      "packageName": "com.android.adbkeyboard",
+      "version": "1.0",
+      "sizeMB": 1,
+      "category": "System",
+      "shortLabel": "KBD",
+      "color": "#F59E0B"
+    }
+  ]
+}

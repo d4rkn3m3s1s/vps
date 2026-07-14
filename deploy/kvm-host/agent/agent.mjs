@@ -40,6 +40,10 @@ const ADB = process.env.FLEET_ADB || 'adb';
 // (not an npm dep), so the agent stays dependency-free; without it we fall back
 // to the PNG path automatically.
 const FFMPEG = process.env.FLEET_FFMPEG || '';
+// Directory holding the repo's bundled APKs on this host (whatsapp.apk, magisk.apk,
+// fleet-a11y.apk, adbkeyboard.apk). The API sends only a file NAME for bundled
+// installs; the agent resolves it here so no host paths cross the API boundary.
+const APK_DIR = process.env.FLEET_APK_DIR || '/opt/fleet-agent/apks';
 const STREAM_W = Number(process.env.FLEET_STREAM_W || 540);   // capture width for h264
 const STREAM_BITRATE = process.env.FLEET_STREAM_BITRATE || '4M';
 // Live streaming: convert the API URL to its ws(s) origin. Streaming needs the
@@ -314,6 +318,12 @@ async function runJob(job) {
 
     case 'EMULATOR_INSTALL_APK':
     case 'EMULATOR_INSTALL': {
+      // Bundled path: the API sends { apkFile, bundled:true, instance }. We install
+      // the repo-shipped APK from APK_DIR via host-mount + `pm install` (adb install
+      // stalls on the 137 MB WhatsApp APK; lxc-attach pm install is robust).
+      if (p(payload, 'bundled', false)) {
+        return installBundledApk(job, String(p(payload, 'apkFile', '')));
+      }
       const apk = String(p(payload, 'apkPath', p(payload, 'apkUrl', '')));
       if (!apk) throw new Error('apkPath/apkUrl is required');
       const local = apk.startsWith('http') ? await download(apk, 'app.apk') : apk;
@@ -3444,6 +3454,43 @@ function hostShDetached(script, args = []) {
   });
   child.unref();
   return child.pid;
+}
+
+// Install a repo-bundled APK (from APK_DIR) onto this job's instance via
+// host-mount + `pm install`. The container's /data/local/tmp is directly visible
+// on the host under the instance's userdata dir; copying there (then pm install
+// via lxc-attach) is the only reliable path for the 137 MB WhatsApp APK — adb
+// push/install both stall on fresh ARM Waydroid. Mirrors the manual recipe.
+async function installBundledApk(job, apkFile) {
+  const instance = String(p(job.payload || {}, 'instance', '')).trim();
+  if (!instance) throw new Error('bundled install: instance yok (device meta.instance gerekli)');
+  if (!apkFile || apkFile.includes('/') || apkFile.includes('..')) throw new Error(`geçersiz apkFile: ${apkFile}`);
+  const src = join(APK_DIR, apkFile);
+  await execFileAsync('test', ['-f', src]).catch(() => { throw new Error(`APK bulunamadı: ${src}`); });
+
+  // The container's /data maps to one of two host layouts (full recipe vs LITE).
+  const candidates = [
+    `/root/.local/share-${instance}/waydroid/data/local/tmp`,
+    `/root/.local/share/waydroid.${instance}/data/local/tmp`
+  ];
+  let hostTmp = '';
+  for (const c of candidates) {
+    const base = c.replace(/\/local\/tmp$/, '');
+    if (await execFileAsync('test', ['-d', base]).then(() => true).catch(() => false)) { hostTmp = c; break; }
+  }
+  if (!hostTmp) throw new Error(`instance data dizini yok: ${instance}`);
+
+  const dest = join(hostTmp, apkFile);
+  await execFileAsync('mkdir', ['-p', hostTmp]);
+  await execFileAsync('cp', ['-f', src, dest]);
+  await execFileAsync('chmod', ['666', dest]).catch(() => undefined);
+  await execFileAsync('chown', ['2000:2000', dest]).catch(() => undefined);
+
+  // pm install via lxc-attach (root, stable). Big APK → generous timeout.
+  const out = await lxcAttach(instance, ['pm', 'install', '-r', '-g', `/data/local/tmp/${apkFile}`], 240000);
+  await execFileAsync('rm', ['-f', dest]).catch(() => undefined);
+  if (!/Success/i.test(out)) throw new Error(`pm install başarısız: ${out.slice(0, 200)}`);
+  return { stdout: out.trim(), apkFile, instance };
 }
 
 // Run a command inside an instance's container (root, stable — survives the ADB

@@ -199,10 +199,13 @@ async function vtouchInfo(serial) {
 async function ensureVtouch(serial) {
   const info = await vtouchInfo(serial);
   if (info.has) return true;
-  // Only try to heal on rooted devices that actually have the bring-up script.
-  const hasScript = (await adbSu(serial, `[ -f ${VT_BRINGUP} ] && echo yes`)).includes('yes');
-  if (!hasScript) return false;
-  await adbSu(serial, `sh ${VT_BRINGUP}`);
+  // Provision drops wa-bringup.sh at /data/local/tmp; a rebooted device may still
+  // have the persisted copy at /data/adb. Try both. /dev/uinput does NOT exist on
+  // a fresh Waydroid boot — vtouch can't register its node without it, so create
+  // it (major 10, minor 223) before running bring-up ("vtouch not in sysfs" fix).
+  const script = (await adbSu(serial, `[ -f /data/local/tmp/wa-bringup.sh ] && echo /data/local/tmp/wa-bringup.sh || ([ -f ${VT_BRINGUP} ] && echo ${VT_BRINGUP})`)).trim();
+  if (!script.endsWith('wa-bringup.sh')) return false;
+  await adbSu(serial, `mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh ${script}`);
   vtouchCache.delete(serial);
   const after = await vtouchInfo(serial);
   return after.has;

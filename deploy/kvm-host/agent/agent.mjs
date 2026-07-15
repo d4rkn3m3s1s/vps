@@ -4003,6 +4003,13 @@ async function provisionDevice(job) {
   if (!instance) throw new Error('provision: instance name required');
   const srcSerial = String(payload.srcSerial || process.env.FLEET_WD_SRC || '192.168.248.112:5555');
   const fp = payload.fingerprint || {};
+  // The ONE authoritative model for this device. applyIntegritySpoof writes it to
+  // waydroid.prop AND wa-bringup.sh resetprops it at runtime — they MUST agree, or
+  // wa-bringup's default (SM-G991B) silently overrides the prop file and every
+  // device ends up looking identical (fleet-linkable). Force it into fp.model so
+  // both paths read the same value even when the control-plane omitted it.
+  const DEFAULT_MODEL = 'SM-G991B';
+  if (!fp.model) fp.model = DEFAULT_MODEL;
   const proxy = payload.proxy || null;
 
   // Current step context so log() lines below carry the right step/percent.
@@ -4231,24 +4238,33 @@ async function provisionDevice(job) {
     await adb(serial, ['shell', 'wm size 1080x2400']).catch(() => undefined);
     await adb(serial, ['shell', 'wm density 421']).catch(() => undefined);
     vtouchCache.delete(serial);
-    // Run wa-bringup as ROOT with unique-identity env (resetprop spoof + vtouch node).
-    const env = [
-      fp.model ? `WA_MODEL=${shArg(fp.model)}` : '',
-      fp.brand ? `WA_BRAND=${shArg(fp.brand)}` : '',
-      fp.manufacturer ? `WA_MANUFACTURER=${shArg(fp.manufacturer)}` : '',
-      fp.buildNumber ? `WA_FINGERPRINT=${shArg(fp.buildNumber)}` : '',
-      fp.serialNo ? `WA_SERIAL=${shArg(fp.serialNo)}` : '',
-      fp.androidId ? `WA_ANDROID_ID=${shArg(fp.androidId)}` : ''
-    ].filter(Boolean).join(' ');
+    // Write the unique-identity env to a FILE that wa-bringup.sh sources, instead of
+    // inlining it into the `su -c "..."` string. ROOT CAUSE of every device ending
+    // up as SM-G991B (fleet-linkable): a model with a space ("moto g84 5G", "Pixel 8
+    // Pro") breaks the nested `su -c "WA_MODEL='moto g84 5G' ..."` quoting ("no
+    // closing quote"), so the env is dropped and wa-bringup falls back to its
+    // SM-G991B default. A sourced env file has NO quoting hazard — each value is a
+    // literal shell assignment.
+    if (hostTmp) {
+      const envFile = [
+        `WA_MODEL=${shArg(fp.model || 'SM-G991B')}`,
+        fp.brand ? `WA_BRAND=${shArg(fp.brand)}` : '',
+        fp.manufacturer ? `WA_MANUFACTURER=${shArg(fp.manufacturer)}` : '',
+        fp.buildNumber ? `WA_FINGERPRINT=${shArg(fp.buildNumber)}` : '',
+        fp.serialNo ? `WA_SERIAL=${shArg(fp.serialNo)}` : '',
+        fp.androidId ? `WA_ANDROID_ID=${shArg(fp.androidId)}` : ''
+      ].filter(Boolean).map((l) => `export ${l}`).join('\n') + '\n';
+      await writeFile(`${hostTmp}/wa-env.sh`, envFile).catch(() => undefined);
+      await execFileAsync('chmod', ['0644', `${hostTmp}/wa-env.sh`]).catch(() => undefined);
+    }
     // Create /dev/uinput (major 10, minor 223) BEFORE wa-bringup — the node doesn't
     // exist on a fresh Waydroid boot, and vtouch can't register its virtual
-    // touchscreen without it ("vtouch not in sysfs"). Then run wa-bringup as root:
-    // it starts vtouch (real touch) + applies the resetprop integrity spoof.
-    // lxc-attach su -c (root, dump-independent). `sh -c ... 2>&1` so it never throws.
-    // `/system/bin/sh -c` doesn't inherit Android's PATH → bare `su` is "not found";
-    // export PATH + call su by absolute path (same fix as the pm-install step).
+    // touchscreen without it ("vtouch not in sysfs"). Then run wa-bringup as root
+    // (sourcing wa-env.sh first): it starts vtouch (real touch) + applies the
+    // resetprop integrity spoof with the DEVICE-UNIQUE identity.
+    // `/system/bin/sh -c` doesn't inherit Android's PATH → call su by absolute path.
     await lxcAttach(instance, ['/system/bin/sh', '-c',
-      `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; ${env} sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch((e) => log('wa-bringup:', e.message));
+      `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c '. /data/local/tmp/wa-env.sh 2>/dev/null; mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh' 2>&1; true`], 40000).catch((e) => log('wa-bringup:', e.message));
     await new Promise((r) => setTimeout(r, 2000));
     // Verify vtouch registered (real touch active) via the input node.
     const vt = await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => '');
@@ -4382,7 +4398,7 @@ async function provisionDevice(job) {
       // "inaccessible or not found" (VERIFIED via debug log) even though `su -c id`
       // works when invoked directly. Export PATH + call su by absolute path.
       vtOut = await lxcAttach(instance, ['/system/bin/sh', '-c',
-        `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 45000)
+        `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c '. /data/local/tmp/wa-env.sh 2>/dev/null; mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh' 2>&1; true`], 45000)
         .catch((e) => `LXCATTACH_ERR: ${e.message}`);
     } finally { thawingVt = false; await thawVt; }
     vtouchCache.delete(serial);

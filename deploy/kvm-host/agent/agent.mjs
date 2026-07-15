@@ -3677,7 +3677,13 @@ async function applyIntegritySpoof(instance, fp = {}) {
     'ro.boot.flash.locked=1',
     'ro.boot.veritymode=enforcing',
     'ro.secure=1',
-    'ro.debuggable=0'
+    'ro.debuggable=0',
+    // ADB authorization OFF (fleet phones sit on an isolated subnet). Without this,
+    // a fresh boot answers "unauthorized" over ADB every time and the RSA-key dance
+    // is fragile — settings put/am/ime (which MUST go over ADB) then fail. Scaleway's
+    // working devices use ro.adb.secure=0 too; it does NOT affect WhatsApp integrity
+    // (that reads ro.secure/ro.debuggable/verifiedbootstate, not ro.adb.secure).
+    'ro.adb.secure=0'
   ].join('\n') + '\n';
   const dir = `/var/lib/waydroid.${instance}`;
   for (const f of [`${dir}/waydroid_base.prop`, `${dir}/waydroid.prop`]) {
@@ -3687,11 +3693,59 @@ async function applyIntegritySpoof(instance, fp = {}) {
     if (cur.includes('ro.product.model=' + model)) continue;
     // Strip any prior ro.product/ro.build override we may have added, then append.
     const cleaned = cur.split('\n').filter((l) =>
-      !/^ro\.(product\.(model|manufacturer|brand|name|device)|build\.(tags|type|fingerprint|description)|boot\.(verifiedbootstate|flash\.locked|veritymode)|secure|debuggable)=/.test(l)
+      !/^ro\.(product\.(model|manufacturer|brand|name|device)|build\.(tags|type|fingerprint|description)|boot\.(verifiedbootstate|flash\.locked|veritymode)|secure|debuggable|adb\.secure)=/.test(l)
     ).join('\n').replace(/\n+$/, '\n');
     await writeFile(f, cleaned + lines).catch((e) => log('spoof write', f, e.message));
   }
   return true;
+}
+
+// Root the instance ROOT-LESSLY from the host, BEFORE boot, by injecting Magisk the
+// way Waydroid-script does: the su binary + magisk binaries + a bootanim.rc go into
+// the OverlayFS system layer, and magisk.db/magisk dir into the instance's userdata.
+// On boot, bootanim.rc's `on post-fs-data` runs magiskpolicy + starts magiskd, so
+// `su -c …` works with NO su-approval UI handshake (which can't be answered headless).
+// This is what makes vtouch (real touch, needs uinput=root) AND wa-bringup's
+// resetprop possible. Source files live in MAGISK_DIR (shipped with the agent),
+// pulled from a working Scaleway device. Best-effort: a missing file → skip (device
+// still boots, just without root — automation degrades to synthetic-tap only).
+const MAGISK_DIR = process.env.FLEET_MAGISK_DIR || '/opt/fleet-agent/magisk';
+async function applyRoot(instance) {
+  const su = `${MAGISK_DIR}/su`;
+  const initTar = `${MAGISK_DIR}/magisk-init.tar.gz`;   // bootanim.rc + magisk/{magisk64,magiskinit,magiskpolicy}
+  const dbFile = `${MAGISK_DIR}/magisk.db`;
+  const dirTar = `${MAGISK_DIR}/magisk-dir.tar.gz`;      // /data/adb/magisk contents
+  if (!(await execFileAsync('test', ['-f', su]).then(() => true).catch(() => false))) {
+    log(`applyRoot: ${su} yok — root atlanıyor (${instance})`);
+    return false;
+  }
+  const wd = `/var/lib/waydroid.${instance}`;
+  // Instance /data host-mount (full-recipe vs LITE layouts).
+  let data = '';
+  for (const d of [`/root/.local/share-${instance}/waydroid/data`, `/root/.local/share/waydroid.${instance}/data`]) {
+    if (await execFileAsync('test', ['-d', d]).then(() => true).catch(() => false)) { data = d; break; }
+  }
+  try {
+    // 1) su → overlay/system/bin + xbin (becomes /system/bin/su at boot via OverlayFS).
+    await execFileAsync('mkdir', ['-p', `${wd}/overlay/system/bin`, `${wd}/overlay/system/xbin`]);
+    for (const dst of [`${wd}/overlay/system/bin/su`, `${wd}/overlay/system/xbin/su`]) {
+      await execFileAsync('cp', ['-f', su, dst]);
+      await execFileAsync('chmod', ['0755', dst]).catch(() => undefined);
+      await execFileAsync('chown', ['0:2000', dst]).catch(() => undefined);
+    }
+    // 2) bootanim.rc + magisk binaries → overlay/system/etc/init (boot-time magisk init).
+    await execFileAsync('mkdir', ['-p', `${wd}/overlay/system/etc/init`]);
+    await execFileAsync('tar', ['xzf', initTar, '-C', `${wd}/overlay/system/etc`]).catch((e) => log('applyRoot init tar:', e.message));
+    await execFileAsync('sh', ['-c', `chmod 0755 ${shArg(wd)}/overlay/system/etc/init/magisk/* 2>/dev/null; chmod 0644 ${shArg(wd)}/overlay/system/etc/init/bootanim.rc 2>/dev/null; chown -R 0:0 ${shArg(wd)}/overlay/system/etc/init 2>/dev/null`]).catch(() => undefined);
+    // 3) magisk.db (su policy) + /data/adb/magisk → instance userdata.
+    if (data) {
+      await execFileAsync('mkdir', ['-p', `${data}/adb`]);
+      await execFileAsync('tar', ['xzf', dirTar, '-C', `${data}/adb`]).catch(() => undefined);
+      await execFileAsync('cp', ['-f', dbFile, `${data}/adb/magisk.db`]).catch(() => undefined);
+      await execFileAsync('sh', ['-c', `chmod 660 ${shArg(data)}/adb/magisk.db 2>/dev/null; chown -R 0:0 ${shArg(data)}/adb 2>/dev/null`]).catch(() => undefined);
+    }
+    return true;
+  } catch (e) { log('applyRoot:', e.message); return false; }
 }
 
 // Pre-authorize ADB for an instance: write the agent's ADB public key into the
@@ -3974,7 +4028,11 @@ async function provisionDevice(job) {
     // Spoof device integrity into the instance's prop files BEFORE boot (root-less;
     // WhatsApp bans a device that reports model="WayDroid arm64 Device"/test-keys).
     await applyIntegritySpoof(instance, fp).catch((e) => log('integrity spoof:', e.message));
-    await logLine(`✓ Altyapı hazır — subnet 192.168.${m[1]}.0/24, kimlik: ${fp.model || 'SM-G991B'}`);
+    // Inject Magisk (su + bootanim.rc) into the overlay BEFORE boot so the container
+    // comes up rooted → enables real-touch vtouch + resetprop (WhatsApp companion
+    // menu items reject synthetic taps; only real touch works).
+    const rooted = await applyRoot(instance).catch((e) => { log('applyRoot:', e.message); return false; });
+    await logLine(`✓ Altyapı hazır — subnet 192.168.${m[1]}.0/24, kimlik: ${fp.model || 'SM-G991B'}${rooted ? ' (root)' : ''}`);
     return { subnetId: Number(m[1]), ip: m[2], adbPort: Number(m[3]) };
   });
   const subnetId = infra.subnetId;
@@ -4061,28 +4119,33 @@ async function provisionDevice(job) {
   // 5) vtouch + unique identity — stream vtouch into the container, spoof a
   //    UNIQUE device so WhatsApp can't link the fleet.
   await step('vtouch', 58, 'Gerçek dokunma + benzersiz kimlik', async () => {
-    // Stream the vtouch binary if the agent ships one (FLEET_APK_DIR/vtouch or the
-    // instance's own userdata). vtouch is a SAFETY NET — WhatsApp/Instagram
-    // automation works via synthetic tap + a11y even without it — so a missing
-    // binary must NOT fail provisioning.
-    const vtCandidates = [
-      join(APK_DIR, 'vtouch'),
-      `/root/.local/share-${instance}/waydroid/data/local/tmp/vtouch`,
-      `/root/.local/share/waydroid.${instance}/data/local/tmp/vtouch`
-    ];
-    let vtPushed = false;
-    for (const vt of vtCandidates) {
-      if (await pushB64(serial, vt, '/data/local/tmp/vtouch').then(() => true).catch(() => false)) { vtPushed = true; break; }
+    // Copy vtouch + wa-bringup.sh into the container's /data/local/tmp via HOST-MOUNT
+    // (not ADB push — that stalls/needs auth), then run wa-bringup as ROOT via
+    // lxc-attach `su -c`. wa-bringup creates the uinput vtouch node (real touch —
+    // WhatsApp's companion menu rejects synthetic taps, only real touch works) AND
+    // applies the resetprop integrity spoof. Root now exists (applyRoot in infra).
+    let hostTmp = '';
+    for (const c of [`/root/.local/share-${instance}/waydroid/data/local/tmp`, `/root/.local/share/waydroid.${instance}/data/local/tmp`]) {
+      const base = c.replace(/\/local\/tmp$/, '');
+      if (await execFileAsync('test', ['-d', base]).then(() => true).catch(() => false)) { hostTmp = c; break; }
     }
-    if (!vtPushed) await logLine('⚠ vtouch binary yok — synthetic tap + a11y ile devam (güvenlik ağı atlanıyor)');
-    await pushB64(serial, join(WD_DIR, 'wa-bringup.sh'), '/data/local/tmp/wa-bringup.sh').catch(() => undefined);
-    // unique fingerprint via setprop (model/serial/android_id/etc.)
-    await applyFingerprint(serial, { fingerprint: fp }).catch((e) => log('applyFingerprint:', e.message));
-    // re-pin screen (applyFingerprint may have changed wm size from fp.resolution)
-    await adb(serial, ['shell', 'wm', 'size', '1080x2400']);
-    await adb(serial, ['shell', 'wm', 'density', '421']);
+    if (hostTmp) {
+      await execFileAsync('mkdir', ['-p', hostTmp]).catch(() => undefined);
+      const vtSrc = join(APK_DIR, 'vtouch');
+      if (await execFileAsync('test', ['-f', vtSrc]).then(() => true).catch(() => false)) {
+        await execFileAsync('cp', ['-f', vtSrc, `${hostTmp}/vtouch`]).catch(() => undefined);
+      }
+      await execFileAsync('cp', ['-f', join(WD_DIR, 'wa-bringup.sh'), `${hostTmp}/wa-bringup.sh`]).catch(() => undefined);
+      await execFileAsync('sh', ['-c', `chmod 0755 ${shArg(hostTmp)}/vtouch ${shArg(hostTmp)}/wa-bringup.sh 2>/dev/null; chown 2000:2000 ${shArg(hostTmp)}/vtouch ${shArg(hostTmp)}/wa-bringup.sh 2>/dev/null`]).catch(() => undefined);
+    } else {
+      await logLine('⚠ instance data dizini yok — vtouch atlanıyor');
+    }
+    // Re-pin screen (over ADB — identity-bearing) and clear the vtouch cache.
+    await ensureConnected(serial).catch(() => undefined);
+    await adb(serial, ['shell', 'wm size 1080x2400']).catch(() => undefined);
+    await adb(serial, ['shell', 'wm density 421']).catch(() => undefined);
     vtouchCache.delete(serial);
-    // run wa-bringup as root with unique-identity env (resetprop + vtouch node)
+    // Run wa-bringup as ROOT with unique-identity env (resetprop spoof + vtouch node).
     const env = [
       fp.model ? `WA_MODEL=${shArg(fp.model)}` : '',
       fp.brand ? `WA_BRAND=${shArg(fp.brand)}` : '',
@@ -4091,13 +4154,20 @@ async function provisionDevice(job) {
       fp.serialNo ? `WA_SERIAL=${shArg(fp.serialNo)}` : '',
       fp.androidId ? `WA_ANDROID_ID=${shArg(fp.androidId)}` : ''
     ].filter(Boolean).join(' ');
-    await adb(serial, ['shell', 'su', '-c', shArg(`${env} sh /data/local/tmp/wa-bringup.sh`)]).catch(() => undefined);
+    // Create /dev/uinput (major 10, minor 223) BEFORE wa-bringup — the node doesn't
+    // exist on a fresh Waydroid boot, and vtouch can't register its virtual
+    // touchscreen without it ("vtouch not in sysfs"). Then run wa-bringup as root:
+    // it starts vtouch (real touch) + applies the resetprop integrity spoof.
+    // lxc-attach su -c (root, dump-independent). `sh -c ... 2>&1` so it never throws.
+    await lxcAttach(instance, ['/system/bin/sh', '-c',
+      `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; ${env} sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch((e) => log('wa-bringup:', e.message));
     await new Promise((r) => setTimeout(r, 2000));
-    const ok = await ensureVtouch(serial).catch(() => false);
+    // Verify vtouch registered (real touch active) via the input node.
+    const vt = await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => '');
     const model = fp.model || 'SM-G991B';
-    await logLine(ok
-      ? `✓ vtouch aktif + benzersiz kimlik (${model}) uygulandı`
-      : `⚠ Kimlik (${model}) uygulandı, vtouch InputReader'da henüz görünmüyor`);
+    await logLine(/event/.test(vt)
+      ? `✓ Gerçek dokunma (vtouch) aktif + kimlik (${model}) uygulandı`
+      : `⚠ Kimlik (${model}) uygulandı, vtouch node henüz görünmüyor (synthetic tap ile devam)`);
   });
 
   // 6) route — Android netstack leaves fwmark tables empty every boot.

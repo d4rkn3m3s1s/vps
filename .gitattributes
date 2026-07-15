@@ -1,2 +1,5 @@
 *.apk filter=lfs diff=lfs merge=lfs -text
 deploy/apks/vtouch filter=lfs diff=lfs merge=lfs -text
+deploy/magisk/su filter=lfs diff=lfs merge=lfs -text
+deploy/magisk/magisk.db filter=lfs diff=lfs merge=lfs -text
+deploy/magisk/*.tar.gz filter=lfs diff=lfs merge=lfs -text

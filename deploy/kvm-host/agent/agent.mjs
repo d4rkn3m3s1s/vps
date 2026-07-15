@@ -4085,6 +4085,31 @@ async function provisionDevice(job) {
       if (released && released !== ip) { ip = released; serial = `${ip}:${adbPort}`; await ensureConnected(serial); booted = await waitBoot(serial, 30000); }
     }
     if (!booted) throw new Error('boot_completed not reached within 300s');
+    // boot_completed=1 is NOT enough: on ~1 in 3 GPU-less boots hwcomposer.waydroid.so's
+    // wayland thread aborts (VERIFIED in crash logs), taking system_server down — the
+    // framework services (package/settings) then NEVER publish, so every later step
+    // (root install, APKs, a11y) silently fails and the device ships broken. Detect
+    // that half-boot HERE (before any heavy step) by waiting for `service check
+    // package`=found, and if it never comes, reboot ONCE for a clean boot. Doing it
+    // here (not in apks at 84%) keeps the whole provision inside the job timeout.
+    const svcUp = async () => {
+      for (let i = 0; i < 20; i++) {
+        const chk = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 8000).catch(() => ''));
+        if (/: found/.test(chk)) return true;
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+      return false;
+    };
+    if (!(await svcUp())) {
+      await logLine('⚠ Grafik katmanı çöktü (hwcomposer) — cihaz bir kez yeniden başlatılıyor…');
+      await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 3000));
+      hostShDetached('wd-run.sh', [instance]);
+      const reup = await waitBoot(serial, 180000).catch(() => false);
+      await ensureConnected(serial).catch(() => undefined);
+      await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+      if (reup) await svcUp();
+    }
     await logLine(`✓ boot_completed=1 — Android hazır (${serial})`);
   });
 
@@ -4208,37 +4233,13 @@ async function provisionDevice(job) {
     // answering is NOT enough (VERIFIED: probe passes but install still fails).
     // Probe with a REAL install of the smallest APK, retrying until it succeeds.
     await logLine('PackageManager hazırlanıyor…');
-    // ARM Waydroid has no GPU, so on ~1 in 3 boots hwcomposer.waydroid.so's
-    // wayland thread aborts (VERIFIED in crash logs), taking system_server down
-    // with it — sys.boot_completed=1 fires but settings/package NEVER publish, so
-    // no APK installs and a11y later throws "Can't find service". Detect that
-    // half-boot (PackageManager never answers) and REBOOT the instance up to twice
-    // to get a clean boot. This is the difference between a 1m40s good device and
-    // a 7m broken one.
+    // The boot step already healed a half-boot (hwcomposer crash) by rebooting
+    // until `service check package`=found, so framework services are up here.
+    // Just confirm PM accepts installs with a real probe install of the tiny APK.
     let pmReady = false;
-    for (let boot = 0; boot < 3 && !pmReady; boot++) {
-      if (boot > 0) {
-        await logLine(`⚠ Grafik katmanı çöktü (hwcomposer) — cihaz yeniden başlatılıyor (${boot}/2)…`);
-        await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
-        await new Promise((r) => setTimeout(r, 3000));
-        hostShDetached('wd-run.sh', [instance]);
-        const rebooted = await waitBoot(serial, 150000).catch(() => false);
-        await ensureConnected(serial).catch(() => undefined);
-        if (!rebooted) continue;
-        await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-      }
-      // Wait for the framework services to actually publish (not just boot_completed).
-      let svcUp = false;
-      for (let i = 0; i < 24 && !svcUp; i++) {
-        const chk = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 8000).catch(() => ''));
-        if (/: found/.test(chk)) svcUp = true; else await new Promise((r) => setTimeout(r, 5000));
-      }
-      if (!svcUp) continue; // half-boot — loop reboots
-      // Framework is up. Confirm PM accepts installs with a real probe install.
-      for (let i = 0; i < 12 && !pmReady; i++) {
-        try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
-        catch { await new Promise((r) => setTimeout(r, 5000)); }
-      }
+    for (let i = 0; i < 24 && !pmReady; i++) {
+      try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
+      catch { await new Promise((r) => setTimeout(r, 5000)); }
     }
     await logLine(pmReady ? '✓ PackageManager hazır' : '⚠ PackageManager hazır olmadı (yine de denenecek)');
 

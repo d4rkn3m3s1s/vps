@@ -4189,12 +4189,30 @@ async function provisionDevice(job) {
       try { await installBundledApkTo(instance, 'magisk.apk'); magiskOk = true; }
       catch (e) { if (attempt === 3) await logLine(`⚠ Magisk kurulamadı: ${e.message.slice(0, 100)}`); else await new Promise((r) => setTimeout(r, 6000)); }
     }
-    if (magiskOk) await launchApp(serial, MAGISK_PKG).catch(() => undefined); // refresh manager trust
-    await new Promise((r) => setTimeout(r, 4000));
-    // Root is best-effort on headless Waydroid (Magisk's su-approval handshake can't
-    // be answered without a UI). Don't fail the whole provision if su is denied —
-    // WhatsApp/Instagram automation works root-less via synthetic tap + a11y.
-    const id = await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 20000).catch(() => '');
+    // DO NOT leave the Magisk app in the foreground — on headless Waydroid it shows
+    // a "Requires Additional Setup / reboot?" dialog and spams "Shell was denied
+    // Superuser rights" toasts, so the device appears to boot into Magisk instead of
+    // the launcher (confuses operators watching the live screen). Force-stop it and
+    // go HOME. Also try to grant su non-interactively via magisk.db (silences the
+    // toast + makes ADB-shell su work) — but sqlite3 may be absent on the host, so
+    // this is best-effort; the force-stop below is what the operator actually sees.
+    if (magiskOk) {
+      const dbPath = `/root/.local/share/waydroid.${instance}/data/adb/magisk.db`;
+      const sql =
+        'CREATE TABLE IF NOT EXISTS policies (uid INT, policy INT, until INT, logging INT, notification INT, PRIMARY KEY(uid));' +
+        'INSERT OR REPLACE INTO policies (uid,policy,until,logging,notification) VALUES (2000,2,0,0,0);' +
+        'INSERT OR REPLACE INTO policies (uid,policy,until,logging,notification) VALUES (0,2,0,0,0);';
+      await execFileAsync('sh', ['-c', `command -v sqlite3 >/dev/null 2>&1 && sqlite3 ${shArg(dbPath)} ${shArg(sql)} 2>/dev/null; true`]).catch(() => undefined);
+      // Close Magisk + return to the launcher (VERIFIED: focus → launcher3).
+      await lxcAttach(instance, ['/system/bin/sh', '-c',
+        'am force-stop io.github.huskydg.magisk 2>/dev/null; input keyevent KEYCODE_HOME 2>/dev/null; true'], 12000).catch(() => undefined);
+      await adb(serial, ['shell', 'input keyevent KEYCODE_HOME']).catch(() => undefined);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    // Root is best-effort on headless Waydroid. Don't fail the whole provision if su
+    // is denied — WhatsApp/Instagram automation works root-less via a11y + real touch.
+    const id = await lxcAttach(instance, ['/system/bin/sh', '-c',
+      'export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c id 2>&1'], 20000).catch(() => '');
     if (/uid=0/.test(id)) await logLine('✓ Root doğrulandı — su → uid=0(root)');
     else await logLine('⚠ Root otomatik onaylanmadı (headless) — otomasyon root\'suz devam eder');
   });

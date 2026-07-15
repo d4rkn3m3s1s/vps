@@ -208,7 +208,7 @@ async function ensureVtouch(serial) {
   // wa-bringup starts vtouch + probes InputReader (~15s) — well over adbSu's 8s
   // hard timeout, which would kill it mid-bring-up and leave vtouch half-created.
   // Run it directly with a 40s budget instead.
-  await adbT(serial, ['shell', 'su', '-c',
+  await adbT(serial, ['shell', '/system/bin/su', '-c',
     `mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh ${script}`], 40000).catch(() => '');
   vtouchCache.delete(serial);
   const after = await vtouchInfo(serial);
@@ -4166,8 +4166,10 @@ async function provisionDevice(job) {
     // touchscreen without it ("vtouch not in sysfs"). Then run wa-bringup as root:
     // it starts vtouch (real touch) + applies the resetprop integrity spoof.
     // lxc-attach su -c (root, dump-independent). `sh -c ... 2>&1` so it never throws.
+    // `/system/bin/sh -c` doesn't inherit Android's PATH → bare `su` is "not found";
+    // export PATH + call su by absolute path (same fix as the pm-install step).
     await lxcAttach(instance, ['/system/bin/sh', '-c',
-      `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; ${env} sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch((e) => log('wa-bringup:', e.message));
+      `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; ${env} sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch((e) => log('wa-bringup:', e.message));
     await new Promise((r) => setTimeout(r, 2000));
     // Verify vtouch registered (real touch active) via the input node.
     const vt = await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => '');
@@ -4290,8 +4292,12 @@ async function provisionDevice(job) {
     })();
     let vtOut = '';
     try {
+      // `/system/bin/sh -c` does NOT inherit Android's PATH, so a bare `su` is
+      // "inaccessible or not found" (VERIFIED via debug log) even though `su -c id`
+      // works when invoked directly. Export PATH + call su by absolute path.
       vtOut = await lxcAttach(instance, ['/system/bin/sh', '-c',
-        `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 45000).catch(() => '');
+        `export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 45000)
+        .catch((e) => `LXCATTACH_ERR: ${e.message}`);
     } finally { thawingVt = false; await thawVt; }
     vtouchCache.delete(serial);
     let vt = /vtouch node ready|InputReader sees vtouch/.test(vtOut);

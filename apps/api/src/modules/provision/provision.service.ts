@@ -232,7 +232,7 @@ class ProvisionService {
   async createInstance(
     input: CreateInstanceInput,
     workspaceId?: string
-  ): Promise<{ jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] }> {
+  ): Promise<{ jobId: string; deviceId: string; instance: string; name: string; steps: ProvisionStep[] }> {
     const host = await prisma.host.findFirst({
       where: { ...(workspaceId ? { workspaceId } : {}), status: 'ONLINE' },
       select: { id: true }
@@ -352,7 +352,7 @@ class ProvisionService {
       workspaceId
     );
 
-    return { jobId: job.id, deviceId: device.id, instance, steps: PROVISION_STEPS };
+    return { jobId: job.id, deviceId: device.id, instance, name: device.name, steps: PROVISION_STEPS };
   }
 
   // Normalize + broadcast one agent-reported sub-step. On done/FAILED also update

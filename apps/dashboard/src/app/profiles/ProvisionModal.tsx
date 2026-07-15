@@ -23,6 +23,7 @@ type Props = {
   jobId: string;
   deviceId: string;
   instance: string;
+  name?: string;
   steps: ProvisionStep[];
   onClose: () => void;
 };
@@ -41,7 +42,7 @@ function lineColor(l: LogLine): string {
   return '#94a3b8';
 }
 
-export default function ProvisionModal({ jobId, deviceId, instance, steps, onClose }: Props) {
+export default function ProvisionModal({ jobId, deviceId, instance, name, steps, onClose }: Props) {
   const router = useRouter();
   const [current, setCurrent] = useState<ProvisionProgress>({
     deviceId,
@@ -127,7 +128,7 @@ export default function ProvisionModal({ jobId, deviceId, instance, steps, onClo
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
-          <h2><Smartphone size={16} /> Cihaz kuruluyor · {instance}</h2>
+          <h2><Smartphone size={16} /> Cihaz kuruluyor · {name || instance}{name ? <span style={{ opacity: 0.5, fontWeight: 400 }}> ({instance})</span> : null}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
             <X size={16} />
           </button>

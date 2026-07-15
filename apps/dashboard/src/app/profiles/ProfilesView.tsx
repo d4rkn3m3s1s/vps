@@ -256,7 +256,7 @@ export function ProfilesView({
   const [provisionFormOpen, setProvisionFormOpen] = useState(false);
   // One-click provisioning: builds a brand-new isolated Waydroid instance from
   // scratch and shows a live step-by-step wizard.
-  const [provisioning, setProvisioning] = useState<{ jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] } | null>(null);
+  const [provisioning, setProvisioning] = useState<{ jobId: string; deviceId: string; instance: string; name?: string; steps: ProvisionStep[] } | null>(null);
   const [provisionBusy, setProvisionBusy] = useState(false);
   // Provisioning catalog (device models + hardware tiers), lazy-loaded.
   const [catalog, setCatalog] = useState<ProvisioningCatalog | null>(null);
@@ -812,10 +812,10 @@ export function ProfilesView({
         setError(body?.data?.message || body?.error || 'Cihaz oluşturulamadı');
         return;
       }
-      const d = body.data as { jobId: string; deviceId: string; instance: string; steps: ProvisionStep[] };
+      const d = body.data as { jobId: string; deviceId: string; instance: string; name?: string; steps: ProvisionStep[] };
       setCreateOpen(false);
       setProvisionFormOpen(false);
-      setProvisioning({ jobId: d.jobId, deviceId: d.deviceId, instance: d.instance, steps: d.steps });
+      setProvisioning({ jobId: d.jobId, deviceId: d.deviceId, instance: d.instance, ...(d.name ? { name: d.name } : {}), steps: d.steps });
     } catch {
       setError('Cihaz oluşturulamadı (ağ hatası)');
     } finally {
@@ -836,7 +836,7 @@ export function ProfilesView({
     } catch {
       /* modal will still open; it fetches history itself on mount */
     }
-    setProvisioning({ jobId, deviceId: device.id, instance, steps });
+    setProvisioning({ jobId, deviceId: device.id, instance, name: device.name, steps });
   }
   function closeCreate() {
     if (busy) return;
@@ -1750,6 +1750,7 @@ export function ProfilesView({
           jobId={provisioning.jobId}
           deviceId={provisioning.deviceId}
           instance={provisioning.instance}
+          {...(provisioning.name ? { name: provisioning.name } : {})}
           steps={provisioning.steps}
           onClose={() => setProvisioning(null)}
         />

@@ -4255,7 +4255,7 @@ async function provisionDevice(job) {
     const model = fp.model || 'SM-G991B';
     await logLine(/event/.test(vt)
       ? `✓ Gerçek dokunma (vtouch) aktif + kimlik (${model}) uygulandı`
-      : `⚠ Kimlik (${model}) uygulandı, vtouch node henüz görünmüyor (synthetic tap ile devam)`);
+      : `• Kimlik (${model}) uygulandı — vtouch son adımda (persist) yeniden kurulacak`);
   });
 
   // 6) route — Android netstack leaves fwmark tables empty every boot.
@@ -4355,7 +4355,11 @@ async function provisionDevice(job) {
   // 10) persist — verify the full stack is up.
   const checks = await step('persist', 97, 'Kalıcılık doğrulanıyor', async () => {
     const boot = String(await adbT(serial, ['shell', 'getprop', 'sys.boot_completed'], 8000) || '').trim() === '1';
-    const rootOk = /uid=0/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 15000).catch(() => ''));
+    // `/system/bin/sh -c` doesn't inherit Android's PATH → bare `su` is "not found",
+    // which made this read root=✗ even though `su -c id`=uid=0 (the log then lied).
+    // Call su by absolute path with PATH exported (same fix as the bring-up sites).
+    const rootOk = /uid=0/.test(await lxcAttach(instance, ['/system/bin/sh', '-c',
+      'export PATH=/system/bin:/system/xbin:$PATH; /system/bin/su -c id 2>&1'], 15000).catch(() => ''));
     // Re-assert vtouch LAST — the a11y step's `wm size/density` resets SurfaceFlinger
     // and drops the vtouch input node created back in step 5. Re-run bring-up via
     // lxc-attach (the proven path — ADB `su -c` may hang on Magisk manager approval).

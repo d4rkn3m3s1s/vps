@@ -4208,10 +4208,37 @@ async function provisionDevice(job) {
     // answering is NOT enough (VERIFIED: probe passes but install still fails).
     // Probe with a REAL install of the smallest APK, retrying until it succeeds.
     await logLine('PackageManager hazırlanıyor…');
+    // ARM Waydroid has no GPU, so on ~1 in 3 boots hwcomposer.waydroid.so's
+    // wayland thread aborts (VERIFIED in crash logs), taking system_server down
+    // with it — sys.boot_completed=1 fires but settings/package NEVER publish, so
+    // no APK installs and a11y later throws "Can't find service". Detect that
+    // half-boot (PackageManager never answers) and REBOOT the instance up to twice
+    // to get a clean boot. This is the difference between a 1m40s good device and
+    // a 7m broken one.
     let pmReady = false;
-    for (let i = 0; i < 24 && !pmReady; i++) {
-      try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
-      catch { await new Promise((r) => setTimeout(r, 5000)); }
+    for (let boot = 0; boot < 3 && !pmReady; boot++) {
+      if (boot > 0) {
+        await logLine(`⚠ Grafik katmanı çöktü (hwcomposer) — cihaz yeniden başlatılıyor (${boot}/2)…`);
+        await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 3000));
+        hostShDetached('wd-run.sh', [instance]);
+        const rebooted = await waitBoot(serial, 150000).catch(() => false);
+        await ensureConnected(serial).catch(() => undefined);
+        if (!rebooted) continue;
+        await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+      }
+      // Wait for the framework services to actually publish (not just boot_completed).
+      let svcUp = false;
+      for (let i = 0; i < 24 && !svcUp; i++) {
+        const chk = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 8000).catch(() => ''));
+        if (/: found/.test(chk)) svcUp = true; else await new Promise((r) => setTimeout(r, 5000));
+      }
+      if (!svcUp) continue; // half-boot — loop reboots
+      // Framework is up. Confirm PM accepts installs with a real probe install.
+      for (let i = 0; i < 12 && !pmReady; i++) {
+        try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
+        catch { await new Promise((r) => setTimeout(r, 5000)); }
+      }
     }
     await logLine(pmReady ? '✓ PackageManager hazır' : '⚠ PackageManager hazır olmadı (yine de denenecek)');
 

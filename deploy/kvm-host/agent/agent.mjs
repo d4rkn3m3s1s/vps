@@ -4285,7 +4285,7 @@ async function provisionDevice(job) {
     const thawVt = (async () => {
       while (thawingVt) {
         await execFileAsync('lxc-unfreeze', ['-n', 'waydroid', '-P', lxcpVt]).catch(() => undefined);
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 3000));
       }
     })();
     let vtOut = '';

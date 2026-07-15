@@ -18,6 +18,7 @@ import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { WA_REGISTER_STEPS, waRegisterService } from './wa-register.service';
 import { IG_REGISTER_STEPS } from './ig-register.service';
+import { autoAttachCountryProxy, autoAttachCountryProxyByCountry } from './auto-proxy';
 import { accountsService } from './accounts.service';
 import * as fivesim from './providers/fivesim.provider';
 
@@ -340,10 +341,27 @@ export class BatchService {
     // Verify the target device belongs to this workspace before dispatching a job
     // to it (closes cross-tenant device control via a client-supplied deviceId).
     await assertDeviceReady(deviceId, workspaceId);
+    // Load the device's Waydroid instance so we can country-match a proxy below.
+    const dev = await prisma.device.findFirst({
+      where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { metadata: true }
+    });
 
     if (acc.platform === 'instagram') {
       if (!acc.emailAddress || !acc.passwordEnc || !acc.firstName) {
         throw new AppError('Önce hesabı hazırlayın (kimlik+e-posta+şifre)', 400, 'NOT_PROVISIONED');
+      }
+      // Country-match the exit IP to the account's country (Instagram also flags a
+      // mismatched exit region). Prefer the phone country if a number is set, else
+      // the account's countryCode. Best-effort; never blocks the register.
+      const igInstance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+      if (typeof igInstance === 'string' && igInstance) {
+        const igCc = acc.phoneNumber ? undefined : (acc.countryCode ?? undefined);
+        if (acc.phoneNumber) {
+          await autoAttachCountryProxy(deviceId, igInstance, acc.phoneNumber, workspaceId).catch(() => null);
+        } else if (igCc) {
+          await autoAttachCountryProxyByCountry(deviceId, igInstance, igCc, workspaceId).catch(() => null);
+        }
       }
       const payload = {
         accountId: acc.id,
@@ -364,6 +382,12 @@ export class BatchService {
     if (acc.platform === 'whatsapp') {
       if (!acc.phoneNumber || !acc.firstName) {
         throw new AppError('Önce hesabı hazırlayın (kimlik + numara)', 400, 'NOT_PROVISIONED');
+      }
+      // Country-match the exit IP to the number BEFORE registering — WhatsApp bans a
+      // mismatch ("Login not available"). Best-effort; never blocks the register.
+      const waInstance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+      if (typeof waInstance === 'string' && waInstance) {
+        await autoAttachCountryProxy(deviceId, waInstance, acc.phoneNumber, workspaceId).catch(() => null);
       }
       // The OTP may already be in hand (pollOtp stored it); pass it so the agent
       // can complete in one shot. If absent, the agent stops at OTP_WAIT and the

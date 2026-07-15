@@ -802,6 +802,7 @@ export function ProfilesView({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          ...(form.name.trim() ? { name: form.name.trim() } : {}),
           ...(form.countryCode ? { countryCode: form.countryCode, proxyCountry: form.countryCode } : {}),
           ...(form.deviceModel ? { deviceModel: form.deviceModel } : {}),
           ...(form.androidVersion ? { androidVersion: form.androidVersion } : {})
@@ -1611,6 +1612,16 @@ export function ProfilesView({
               Sıfırdan izole bir Waydroid cihazı kurulur (root + parmak izi + proxy + APK&apos;lar — WhatsApp&apos;a hazır).
               WhatsApp hesabı açmak ayrı bir adımdır: cihaz hazır olduktan sonra profil menüsünden &quot;WhatsApp Aç&quot;.
             </p>
+            <label className="field">
+              <span>Cihaz adı</span>
+              <input
+                className="field-input"
+                type="text"
+                placeholder="Örn: Instagram-1, WA-Albania…"
+                value={form.name}
+                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              />
+            </label>
             <label className="field">
               <span>Ülke (proxy eşleşmesi için)</span>
               <input

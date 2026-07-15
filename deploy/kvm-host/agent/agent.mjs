@@ -205,7 +205,11 @@ async function ensureVtouch(serial) {
   // it (major 10, minor 223) before running bring-up ("vtouch not in sysfs" fix).
   const script = (await adbSu(serial, `[ -f /data/local/tmp/wa-bringup.sh ] && echo /data/local/tmp/wa-bringup.sh || ([ -f ${VT_BRINGUP} ] && echo ${VT_BRINGUP})`)).trim();
   if (!script.endsWith('wa-bringup.sh')) return false;
-  await adbSu(serial, `mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh ${script}`);
+  // wa-bringup starts vtouch + probes InputReader (~15s) — well over adbSu's 8s
+  // hard timeout, which would kill it mid-bring-up and leave vtouch half-created.
+  // Run it directly with a 40s budget instead.
+  await adbT(serial, ['shell', 'su', '-c',
+    `mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh ${script}`], 40000).catch(() => '');
   vtouchCache.delete(serial);
   const after = await vtouchInfo(serial);
   return after.has;
@@ -4268,7 +4272,15 @@ async function provisionDevice(job) {
   const checks = await step('persist', 97, 'Kalıcılık doğrulanıyor', async () => {
     const boot = String(await adbT(serial, ['shell', 'getprop', 'sys.boot_completed'], 8000) || '').trim() === '1';
     const rootOk = /uid=0/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'su -c id'], 15000).catch(() => ''));
-    const vt = await ensureVtouch(serial).catch(() => false);
+    // Re-assert vtouch LAST — the a11y step's `wm size/density` resets SurfaceFlinger
+    // and drops the vtouch input node created back in step 5. Re-run bring-up via
+    // lxc-attach (the proven path — ADB `su -c` may hang on Magisk manager approval).
+    // /dev/uinput is gone after the reset, so recreate it first.
+    const vtOut = await lxcAttach(instance, ['/system/bin/sh', '-c',
+      `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch(() => '');
+    vtouchCache.delete(serial);
+    let vt = /vtouch node ready|InputReader sees vtouch/.test(vtOut);
+    if (!vt) vt = /event/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => ''));
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
   });

@@ -4275,9 +4275,24 @@ async function provisionDevice(job) {
     // Re-assert vtouch LAST — the a11y step's `wm size/density` resets SurfaceFlinger
     // and drops the vtouch input node created back in step 5. Re-run bring-up via
     // lxc-attach (the proven path — ADB `su -c` may hang on Magisk manager approval).
-    // /dev/uinput is gone after the reset, so recreate it first.
-    const vtOut = await lxcAttach(instance, ['/system/bin/sh', '-c',
-      `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 40000).catch(() => '');
+    // /dev/uinput is gone after the reset, so recreate it first. CRITICAL: keep the
+    // container THAWED for the whole bring-up — Waydroid's suspend_action=freeze
+    // freezes an idle container, and a frozen container makes wa-bringup (~15s of
+    // InputReader probing) silently no-op. This is exactly why the manual run works
+    // (I unfreeze first) but the in-provision run left vtouch=0.
+    const lxcpVt = `/var/lib/waydroid.${instance}/lxc`;
+    let thawingVt = true;
+    const thawVt = (async () => {
+      while (thawingVt) {
+        await execFileAsync('lxc-unfreeze', ['-n', 'waydroid', '-P', lxcpVt]).catch(() => undefined);
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    })();
+    let vtOut = '';
+    try {
+      vtOut = await lxcAttach(instance, ['/system/bin/sh', '-c',
+        `su -c "mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh /data/local/tmp/wa-bringup.sh" 2>&1; true`], 45000).catch(() => '');
+    } finally { thawingVt = false; await thawVt; }
     vtouchCache.delete(serial);
     let vt = /vtouch node ready|InputReader sees vtouch/.test(vtOut);
     if (!vt) vt = /event/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => ''));

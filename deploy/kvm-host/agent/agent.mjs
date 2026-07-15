@@ -4028,6 +4028,20 @@ async function provisionDevice(job) {
   //    best-guess (.112); the container actually gets its address from DHCP, so
   //    we resolve the REAL ip from the dnsmasq lease after boot (step 2).
   const infra = await step('infra', 8, 'İzole altyapı kuruluyor', async () => {
+    // Clean up any leftovers from a previous instance of the SAME name first. A
+    // stale bridge (waydroid-<name> on the wrong subnet), a dangling DHCP lease, or
+    // a stale subnet-map entry makes the fresh container lease an address on a
+    // mismatched subnet, so it never binds IPv4 and ADB can't reach it (VERIFIED:
+    // map said "mi5 2" but the bridge was gone → eth0 IPv6-only → boot timeout).
+    // Best-effort; harmless when already clean. Then wd-provision.sh re-creates the
+    // bridge + a fresh subnet-map entry from scratch.
+    await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
+    await execFileAsync('ip', ['link', 'delete', `waydroid-${instance}`]).catch(() => undefined);
+    await execFileAsync('rm', ['-f', `/var/lib/misc/dnsmasq.waydroid-${instance}.leases`]).catch(() => undefined);
+    // Drop this instance's stale subnet-map line so net-head.sh assigns a fresh,
+    // conflict-free subnet and wd-provision.sh rebuilds the matching bridge.
+    await execFileAsync('sh', ['-c',
+      `f=/var/lib/waydroid-subnets.map; [ -f "$f" ] && grep -v "^${instance} " "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; true`]).catch(() => undefined);
     await logLine(`Instance "${instance}" için izole altyapı kuruluyor (binderfs + bridge + userdata klon ~4GB)…`);
     const { stdout } = await hostSh('wd-provision.sh', [instance], 600000);
     const m = /PROVISION_RESULT\s+subnet=(\d+)\s+ip=(\S+)\s+port=(\d+)/.exec(stdout);
@@ -4054,11 +4068,32 @@ async function provisionDevice(job) {
     hostShDetached('wd-run.sh', [instance]); // fire-and-forget: keeps session alive
     // Give the container a moment to come up + lease an address.
     await new Promise((r) => setTimeout(r, 8000));
-    const leased = await resolveLeaseIp(instance, subnetId).catch(() => null);
-    if (leased && leased !== ip) {
-      await logLine(`DHCP → ${leased} (container adresini aldı)`);
-      ip = leased;
-      serial = `${ip}:${adbPort}`;
+    // Wait for eth0 to actually get an IPv4 address bound INSIDE the container.
+    // ROOT CAUSE of "boot_completed not reached within 300s" on a healthy-looking
+    // container: Android's netd sometimes leaves eth0 with only an IPv6 link-local
+    // address (no IPv4), so the DHCP lease exists on the host but the container is
+    // unreachable — ADB can't connect, waitBoot reads nothing, provision FAILS at
+    // 300s even though `getprop sys.boot_completed`=1 over lxc-attach. Give it up to
+    // ~90s to bind IPv4; if it never does, kick netd's dhcp client from inside.
+    let eth0Ip = '';
+    for (let i = 0; i < 30; i++) {
+      eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
+        "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 8000).catch(() => '')).trim();
+      if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
+      if (i === 10 || i === 20) {
+        // Kick the DHCP client — re-run Android's dhcp request on eth0.
+        await lxcAttach(instance, ['/system/bin/sh', '-c',
+          'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
+        await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) {
+      if (eth0Ip !== ip) { await logLine(`DHCP → ${eth0Ip} (container eth0 IPv4)`); ip = eth0Ip; serial = `${ip}:${adbPort}`; }
+    } else {
+      // Fall back to the host-side lease file if the in-container read failed.
+      const leased = await resolveLeaseIp(instance, subnetId).catch(() => null);
+      if (leased && leased !== ip) { await logLine(`DHCP → ${leased} (lease dosyası)`); ip = leased; serial = `${ip}:${adbPort}`; }
     }
     // Pre-authorize ADB so waitBoot() can actually read sys.boot_completed — a
     // fresh Waydroid answers "unauthorized" otherwise and boot appears to hang.

@@ -169,6 +169,8 @@ Cihaz-içi komut iki yolla çalışır — **hangisinin kullanılacağı KRİTİ
 | 16 | **★`su: not found`** (elle çalışıp provision'da çalışmama muamması) | 3 yerde `/system/bin/su` + `export PATH` |
 | 17 | a11y "Can't find service" provision'ı düşürüyordu | `service check` bekle + fatal-değil |
 | 18 | hwcomposer half-boot (APK=0, servis yok) | boot adımında tespit + 1 kez erken reboot |
+| 19 | **eth0 IPv4 almıyor** (IPv6-only → ADB bağlanamaz → boot 300s timeout) | boot'ta eth0 IPv4 bind bekle (~90s) + gerekirse DHCP client kick |
+| 20 | **stale subnet-map** (`mi5 2` ama bridge yok → yanlış subnet → IPv4 yok) | infra'da aynı-isim instance'ın bridge+lease+map satırını temizle → wd-provision bridge'i sıfırdan kurar |
 
 **★En gizli kök (16)**: `su: not found`. Elle `lxc-attach -- su -c id` çalışıyordu
 (doğrudan çağrı) ama agent'ın `lxc-attach -- /system/bin/sh -c "su -c ..."`'ında sh
@@ -199,3 +201,12 @@ vtOut yazdırma) ile teşhis edildi.
   → token **`data.accessToken`** içinde. HOST id `cmrjldxje000oazryfdeo5d48`.
 - **Deploy**: `scp agent.mjs → /tmp; sudo cp → /opt/agent.mjs; node --check;
   systemctl restart fleet-agent`. API: `scp src → /opt/fleet/apps/api; npx tsc; restart`.
+- **★Host aşırı yükü PG/API'yi düşürür**: art arda çok provision/temizlik host yükünü
+  fırlatır (load 5+) → Docker port-forward hıçkırır → API `Can't reach 127.0.0.1:5432`
+  ile crash-loop'a girer (`restart counter at N`, port 4000 kapalı, health=000).
+  ÇÖZÜM: `docker restart fleet-postgres fleet-redis; systemctl reset-failed fleet-api;
+  systemctl start fleet-api`. PG container zaten Up ama docker-proxy bağlantısı tazelenir.
+- **Ağ tamamen bozulursa** (bridge yok, subnet-map kirli): `rm -f
+  /var/lib/waydroid-subnets.map /var/lib/misc/dnsmasq.waydroid-*.leases`; tüm
+  `waydroid-*`/`veth*` link'leri sil; instance'ları rm -rf. Sonra taze provision
+  bridge'i + map'i sıfırdan kurar (infra adımı artık bunu otomatik yapar).

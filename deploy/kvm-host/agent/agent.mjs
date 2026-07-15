@@ -4028,20 +4028,23 @@ async function provisionDevice(job) {
   //    best-guess (.112); the container actually gets its address from DHCP, so
   //    we resolve the REAL ip from the dnsmasq lease after boot (step 2).
   const infra = await step('infra', 8, 'İzole altyapı kuruluyor', async () => {
-    // Clean up any leftovers from a previous instance of the SAME name first. A
-    // stale bridge (waydroid-<name> on the wrong subnet), a dangling DHCP lease, or
-    // a stale subnet-map entry makes the fresh container lease an address on a
-    // mismatched subnet, so it never binds IPv4 and ADB can't reach it (VERIFIED:
-    // map said "mi5 2" but the bridge was gone → eth0 IPv6-only → boot timeout).
-    // Best-effort; harmless when already clean. Then wd-provision.sh re-creates the
-    // bridge + a fresh subnet-map entry from scratch.
+    // Stop any leftover session of the SAME name first so wd-provision starts clean.
+    // ★DO NOT delete the waydroid-<name> bridge — Waydroid's waydroid-net.sh creates
+    // it once during session bring-up and does NOT recreate it if removed; deleting
+    // it leaves the container with no IPv4 forever (VERIFIED: manual `ip link delete`
+    // broke every subsequent provision → LXC "bridge interface doesn't exist").
     await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
-    await execFileAsync('ip', ['link', 'delete', `waydroid-${instance}`]).catch(() => undefined);
     await execFileAsync('rm', ['-f', `/var/lib/misc/dnsmasq.waydroid-${instance}.leases`]).catch(() => undefined);
-    // Drop this instance's stale subnet-map line so net-head.sh assigns a fresh,
-    // conflict-free subnet and wd-provision.sh rebuilds the matching bridge.
+    // ★Clear the stale `network_up` marker. waydroid-net.sh short-circuits with
+    // "already running" when it exists, so if the bridge is somehow gone the script
+    // never rebuilds it and every boot fails at "bridge doesn't exist". Removing the
+    // marker forces waydroid-net.sh to (re)create the bridge on the next session
+    // start — cheap and idempotent, the marker is rewritten immediately after.
+    await execFileAsync('rm', ['-f', `/run/waydroid-${instance}-lxc/network_up`]).catch(() => undefined);
+    // net-head.sh needs to WRITE the subnet map; a root-only map file makes it fall
+    // back to subnet 240 for every instance (collisions). Ensure it's writable.
     await execFileAsync('sh', ['-c',
-      `f=/var/lib/waydroid-subnets.map; [ -f "$f" ] && grep -v "^${instance} " "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"; true`]).catch(() => undefined);
+      'f=/var/lib/waydroid-subnets.map; touch "$f" 2>/dev/null; chmod 666 "$f" 2>/dev/null; true']).catch(() => undefined);
     await logLine(`Instance "${instance}" için izole altyapı kuruluyor (binderfs + bridge + userdata klon ~4GB)…`);
     const { stdout } = await hostSh('wd-provision.sh', [instance], 600000);
     const m = /PROVISION_RESULT\s+subnet=(\d+)\s+ip=(\S+)\s+port=(\d+)/.exec(stdout);
@@ -4075,18 +4078,24 @@ async function provisionDevice(job) {
     // unreachable — ADB can't connect, waitBoot reads nothing, provision FAILS at
     // 300s even though `getprop sys.boot_completed`=1 over lxc-attach. Give it up to
     // ~90s to bind IPv4; if it never does, kick netd's dhcp client from inside.
+    // With the bridge+dnsmasq healthy (wd-run.sh clears the stale network_up marker
+    // and any orphan dnsmasq), eth0 binds IPv4 within a few seconds, so this loop
+    // normally exits on the first or second probe. The DHCP-kick only fires if it's
+    // genuinely stuck (~16s in), so a clean boot is NOT slowed down.
     let eth0Ip = '';
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 20; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
-        "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 8000).catch(() => '')).trim();
+        "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 6000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
-      if (i === 10 || i === 20) {
-        // Kick the DHCP client — re-run Android's dhcp request on eth0.
+      if (i === 12) {
+        // Only kick if still no IPv4 after ~24s — a clean boot binds IPv4 well
+        // before this, so the kick (and its warning) never shows on a good boot.
+        // re-run Android's dhcp request.
         await lxcAttach(instance, ['/system/bin/sh', '-c',
           'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
         await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
       }
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
     }
     if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) {
       if (eth0Ip !== ip) { await logLine(`DHCP → ${eth0Ip} (container eth0 IPv4)`); ip = eth0Ip; serial = `${ip}:${adbPort}`; }
@@ -4127,11 +4136,21 @@ async function provisionDevice(job) {
     // that half-boot HERE (before any heavy step) by waiting for `service check
     // package`=found, and if it never comes, reboot ONCE for a clean boot. Doing it
     // here (not in apks at 84%) keeps the whole provision inside the job timeout.
+    // On a clean boot the package service publishes within ~10s, so this exits
+    // almost immediately. A single missed probe (container in a transient state)
+    // must NOT trigger a needless reboot — require TWO consecutive misses across
+    // the whole window before declaring the boot dead, and check over ADB too
+    // (lxc-attach can time out spuriously and read as a false "not found").
+    const pkgUp = async () => {
+      const viaLxc = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 6000).catch(() => ''));
+      if (/: found/.test(viaLxc)) return true;
+      const viaAdb = String(await adbT(serial, ['shell', 'service', 'check', 'package'], 6000).catch(() => ''));
+      return /: found/.test(viaAdb);
+    };
     const svcUp = async () => {
-      for (let i = 0; i < 20; i++) {
-        const chk = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 8000).catch(() => ''));
-        if (/: found/.test(chk)) return true;
-        await new Promise((r) => setTimeout(r, 4000));
+      for (let i = 0; i < 24; i++) {
+        if (await pkgUp()) return true;
+        await new Promise((r) => setTimeout(r, 3000));
       }
       return false;
     };
@@ -4140,7 +4159,7 @@ async function provisionDevice(job) {
       await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
       await new Promise((r) => setTimeout(r, 3000));
       hostShDetached('wd-run.sh', [instance]);
-      const reup = await waitBoot(serial, 180000).catch(() => false);
+      const reup = await waitBoot(serial, 150000).catch(() => false);
       await ensureConnected(serial).catch(() => undefined);
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
       if (reup) await svcUp();

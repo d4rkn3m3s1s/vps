@@ -4238,6 +4238,15 @@ async function provisionDevice(job) {
   //    ADB is already pre-authorized in the boot step (authorizeAdb). VERIFIED.
   await step('a11y', 92, 'Erişilebilirlik + klavye', async () => {
     await ensureConnected(serial).catch(() => undefined);
+    // sys.boot_completed=1 fires BEFORE system_server publishes settings/window/
+    // package/input_method. Running `settings put`/`wm`/`ime` too early throws
+    // "Can't find service: settings". Wait for the settings service to answer
+    // (up to ~60s) before touching any of them, so this step never has to fail.
+    for (let i = 0; i < 30; i++) {
+      const ready = String(await adb(serial, ['shell', 'service check settings']).catch(() => '') || '');
+      if (/: found/.test(ready)) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
     const sh = async (cmd) => adb(serial, ['shell', cmd]).catch((e) => log('a11y:', cmd.slice(0, 40), e.message));
     await sh('settings put secure enabled_accessibility_services com.fleet.a11y/com.fleet.a11y.FleetA11yService');
     await sh('settings put secure accessibility_enabled 1');
@@ -4247,7 +4256,9 @@ async function provisionDevice(job) {
     await sh('wm density 421');
     await sh('pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService');
     // Verify a11y actually stuck (ADB is required for this write to land).
-    const a11y = String(await adbT(serial, ['shell', 'settings', 'get', 'secure', 'enabled_accessibility_services'], 8000) || '').trim();
+    // NEVER throw here — a verification read failing must not fail the whole
+    // provision (the device is already usable; automation falls back to tap).
+    const a11y = String(await adbT(serial, ['shell', 'settings', 'get', 'secure', 'enabled_accessibility_services'], 8000).catch(() => '') || '').trim();
     await logLine(/fleet/i.test(a11y)
       ? '✓ Erişilebilirlik servisi + ADB klavye + ekran (1080x2400) etkinleştirildi'
       : '⚠ a11y/IME ayarlanamadı (ADB yetkisi?) — otomasyon input-tap ile devam');

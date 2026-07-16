@@ -92,7 +92,7 @@ export function HoloHeader({
       className="holo-header"
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ type: 'spring', stiffness: 240, damping: 26, mass: 0.9, opacity: { duration: 0.3 } }}
     >
       <div className="holo-header-text">
         {eyebrow ? <div className="holo-eyebrow"><span className="holo-eyebrow-dot" />{eyebrow}</div> : null}
@@ -112,7 +112,7 @@ export function Reveal({ children, className, delay = 0 }: { children: ReactNode
       initial={{ opacity: 0, y: 16 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-60px' }}
-      transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1], delay }}
+      transition={{ type: 'spring', stiffness: 260, damping: 26, mass: 0.9, delay, opacity: { duration: 0.3, delay } }}
     >
       {children}
     </motion.div>

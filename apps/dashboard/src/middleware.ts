@@ -50,6 +50,10 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Run on all routes except Next internals and static assets.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)']
+  // Run on all routes except Next internals and PUBLIC static assets. Self-hosted
+  // fonts under /fonts (and other static files by extension) must be exempt —
+  // otherwise a logged-out request for a .woff2 gets redirected to /welcome (307)
+  // and the display face never loads, so headings silently fall back to the
+  // system font. Excluding `fonts/` + common asset extensions keeps them public.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|fonts/|.*\\.(?:woff2?|ttf|otf|png|jpg|jpeg|gif|svg|webp|ico)$).*)']
 };

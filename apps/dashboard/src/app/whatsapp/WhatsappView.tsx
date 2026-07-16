@@ -265,7 +265,11 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
   useEffect(() => {
     setConversations([]); setNextCursor(null);
     void loadConversations();
-    const t = setInterval(() => void loadConversations(), LIST_POLL_MS);
+    // Pause polling while the tab is hidden — no point refreshing a list nobody's looking at.
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadConversations();
+    }, LIST_POLL_MS);
     return () => clearInterval(t);
   }, [loadConversations]);
 
@@ -319,7 +323,10 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
   useEffect(() => {
     if (!activePeer) return;
     void loadThread();
-    const t = setInterval(() => void loadThread({ silent: true }), THREAD_POLL_MS);
+    const t = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void loadThread({ silent: true });
+    }, THREAD_POLL_MS);
     return () => clearInterval(t);
   }, [activePeer, loadThread]);
 

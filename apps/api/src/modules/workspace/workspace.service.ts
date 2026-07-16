@@ -132,7 +132,7 @@ export class WorkspaceService {
     if (!ws) throw new AppError('Workspace not found', 404, 'WORKSPACE_NOT_FOUND');
     const w = { workspaceId };
     await prisma.$transaction([
-      // Devices cascade to fingerprints/usage/snapshots/grants/agentRuns/appMaps/farmAccount.
+      // Devices cascade to fingerprints/snapshots/grants/agentRuns/appMaps/farmAccount.
       prisma.device.deleteMany({ where: w }),
       prisma.deviceGroup.deleteMany({ where: w }),
       prisma.proxy.deleteMany({ where: w }),
@@ -144,9 +144,7 @@ export class WorkspaceService {
       prisma.job.deleteMany({ where: w }),
       prisma.alertEvent.deleteMany({ where: w }),
       prisma.alertRule.deleteMany({ where: w }),
-      prisma.webhook.deleteMany({ where: w }),
-      prisma.libraryAsset.deleteMany({ where: w }),
-      prisma.metricSnapshot.deleteMany({ where: w })
+      prisma.webhook.deleteMany({ where: w })
     ]);
     return { ok: true };
   }

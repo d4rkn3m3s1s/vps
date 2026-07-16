@@ -100,8 +100,23 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
   const done = current.status === 'COMPLETED' || current.percent >= 100;
   const failed = current.status === 'FAILED';
-  // OTP box appears when the flow parks at the SMS-code step.
-  const awaitingOtp = !done && !failed && current.step === 'otp_wait';
+  // OTP box appears when the flow parks at the code step. The agent parks here for
+  // every "operator enters the code" case (plain SMS, code-on-other-phone, or a
+  // rate-limit wait) and always reports step 'otp_wait'; keep the legacy alias too.
+  const awaitingOtp = !done && !failed && (current.step === 'otp_wait' || current.step === 'otp_wait_manual');
+  // Distinguish the 4 code-wait scenarios from the agent's note so the box shows the
+  // right instruction instead of a generic "SMS". The note is the single source of
+  // truth (agent emits a 📲 note; API mirrors it into the account).
+  const otpNote = current.note ?? '';
+  const otpIsOtherPhone = /diğer telefon|other phone|başka bir cihaz/i.test(otpNote);
+  // Rate-limit'e ÖZGÜ kalıplar. NOT: geniş "bekle" KULLANMA — normal SMS note'u
+  // ("SMS kodu bekleniyor") "bekleniyor" içerir ve yanlışlıkla rate-limit sanılırdı.
+  const otpIsRateLimit = /\d+\s*(saat|hours?|dakika|minutes?)|Send SMS in|kısıtl|too many|geçici (olarak )?bekle|N saat/i.test(otpNote);
+  const otpHint = otpIsOtherPhone
+    ? { icon: '📲', title: 'Kod DİĞER TELEFONDA', body: `${phoneNumber} numarası zaten bir WhatsApp hesabına kayıtlı. 6 haneli kod SMS'e DEĞİL, o numaranın kayıtlı olduğu telefondaki WhatsApp'a gönderildi. Kodu o cihazdan okuyup buraya girin.` }
+    : otpIsRateLimit
+      ? { icon: '⏳', title: 'Geçici bekleme (rate-limit)', body: otpNote || `${phoneNumber} için WhatsApp geçici bekleme koydu. Süre dolunca kod gelir; geldiğinde buraya girin.` }
+      : { icon: '📲', title: 'SMS doğrulama kodu bekleniyor', body: `${phoneNumber} numarasına SMS ile 6 haneli kod gelecek. Kod gelince buraya girin, ajan otomatik girer.` };
 
   useEffect(() => {
     if (done || failed) return;
@@ -174,11 +189,13 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           <span className="health-bar-fill" style={{ width: `${current.percent}%`, background: barColor }} />
         </span>
 
-        {/* OTP box — appears when the flow parks at the SMS-code step */}
+        {/* OTP box — appears when the flow parks at the code step. The instruction
+            adapts to the scenario (plain SMS / code-on-other-phone / rate-limit). */}
         {awaitingOtp && (
-          <div style={{ border: '1px solid rgba(56,189,248,0.4)', borderLeft: '3px solid #38bdf8', background: 'rgba(56,189,248,0.08)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+          <div style={{ border: `1px solid ${otpIsRateLimit ? 'rgba(251,191,36,0.45)' : 'rgba(56,189,248,0.4)'}`, borderLeft: `3px solid ${otpIsRateLimit ? '#fbbf24' : '#38bdf8'}`, background: otpIsRateLimit ? 'rgba(251,191,36,0.08)' : 'rgba(56,189,248,0.08)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
             <div style={{ fontSize: 13, marginBottom: 8 }}>
-              📲 <strong>SMS doğrulama kodu bekleniyor</strong> — {phoneNumber}. Kod gelince buraya girin, ajan otomatik girer.
+              {otpHint.icon} <strong>{otpHint.title}</strong>
+              <div style={{ opacity: 0.85, marginTop: 4, lineHeight: 1.4 }}>{otpHint.body}</div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <input

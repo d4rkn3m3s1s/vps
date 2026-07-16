@@ -1,5 +1,5 @@
 import { prisma } from '../../db/prisma';
-import { encryptString, decryptString } from '../../lib/crypto';
+import { encryptString } from '../../lib/crypto';
 import type { Prisma, SocialProvider } from '@prisma/client';
 
 export async function upsertSocialAccount(opts: {
@@ -71,12 +71,3 @@ export async function listSocialAccountsForUser(userId: string) {
   }));
 }
 
-export async function getAccessTokenForAccount(id: string): Promise<string | null> {
-  const row = await prisma.socialAccount.findUnique({ where: { id } });
-  if (!row) return null;
-  try {
-    return decryptString(row.accessTokenEnc);
-  } catch (err) {
-    return null;
-  }
-}

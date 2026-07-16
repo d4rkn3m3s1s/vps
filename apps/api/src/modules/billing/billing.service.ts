@@ -15,7 +15,6 @@ import { env } from '../../config/env';
 import { AppError } from '../../lib/errors';
 import { PLANS, planFromKey, planFromPriceId, type PlanKey } from './billing.plans';
 import { alertsService } from '../alerts/alerts.service';
-import { REFERRAL_REWARD_RATE } from '../referral/referral.service';
 
 // Lazily construct the Stripe client so the app boots without billing configured.
 type StripeClient = InstanceType<typeof Stripe>;
@@ -205,42 +204,22 @@ export class BillingService {
 
     const periodEnd = (sub as unknown as { current_period_end?: number }).current_period_end;
 
-    await prisma.subscription.update({
+    // upsert, not update: a Stripe subscription lifecycle webhook can arrive for a
+    // workspace whose Subscription row doesn't exist (e.g. it was deleted, or the
+    // event races ahead of createCheckout). update() would throw P2025 → unhandled
+    // 500 → Stripe retries the webhook forever and the DB never syncs. upsert makes
+    // the sync idempotent and self-healing.
+    const subData = {
+      plan: effectivePlan,
+      status,
+      stripeSubscriptionId: sub.id,
+      cancelAtPeriodEnd: sub.cancel_at_period_end ?? false,
+      ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000) } : {})
+    };
+    await prisma.subscription.upsert({
       where: { workspaceId },
-      data: {
-        plan: effectivePlan,
-        status,
-        stripeSubscriptionId: sub.id,
-        cancelAtPeriodEnd: sub.cancel_at_period_end ?? false,
-        ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000) } : {})
-      }
-    });
-
-    // Referral conversion: when this workspace's first paid plan goes live, mark
-    // the referral that brought its owner in as CONVERTED and credit the referrer
-    // a share of the actual first payment. Best-effort — never block the webhook.
-    if (status === 'ACTIVE' || status === 'TRIALING') {
-      const amountCents = sub.items.data[0]?.price?.unit_amount ?? 0;
-      await this.convertReferralForWorkspace(workspaceId, amountCents).catch(() => undefined);
-    }
-  }
-
-  // Find the referral that brought this workspace's owner in and mark it
-  // CONVERTED + compute the reward, once.
-  private async convertReferralForWorkspace(workspaceId: string, paidCents: number): Promise<void> {
-    const owner = await prisma.workspaceMember.findFirst({
-      where: { workspaceId, role: 'admin' },
-      include: { user: { select: { email: true } } }
-    });
-    if (!owner?.user?.email) return;
-    const referral = await prisma.referral.findFirst({
-      where: { referredEmail: owner.user.email, status: 'SIGNED_UP' }
-    });
-    if (!referral) return;
-    const rewardCents = Math.round(paidCents * REFERRAL_REWARD_RATE);
-    await prisma.referral.update({
-      where: { id: referral.id },
-      data: { status: 'CONVERTED', rewardCents }
+      update: subData,
+      create: { workspaceId, ...subData }
     });
   }
 }

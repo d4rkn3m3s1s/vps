@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { getWorkspaceId } from '../../lib/workspaceContext';
+import { requireWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { installBundledApk, listBundledApks } from './apks.service';
 
@@ -18,7 +18,10 @@ export async function listApksHandler(_req: Request, res: Response): Promise<voi
 // POST /apks/install — queue an install of a bundled APK onto devices.
 export async function installApkHandler(req: Request, res: Response): Promise<void> {
   const input = installSchema.parse(req.body);
-  const workspaceId = getWorkspaceId(req);
+  // Fail-CLOSED: require a concrete workspace so the ownership guard inside
+  // installBundledApk can't be bypassed by a workspace-less token (which made the
+  // device filter drop, passing the check for ANY device ids — cross-tenant install).
+  const workspaceId = requireWorkspaceId(req);
   const result = await installBundledApk(input.apkFile, input.deviceIds, workspaceId);
   await writeAuditLog({
     userId: req.auth?.userId,

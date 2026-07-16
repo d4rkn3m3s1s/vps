@@ -9,7 +9,6 @@
 // sticky -country-<CC> login.
 
 import { prisma } from '../../db/prisma';
-import { decryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 
@@ -81,14 +80,26 @@ export async function autoAttachCountryProxyByCountry(
         host: provider.host,
         port: provider.port,
         username: provider.username ?? '',
-        password: provider.password ? decryptString(provider.password) : ''
+        // Carry the ciphertext (not plaintext): agent.service.materializePayload
+        // decrypts passwordEnc at claim time, so the stored payload / GET /jobs/:id
+        // never expose the residential-proxy password. Matches the SET_PROXY pattern
+        // in proxy.service / bulk.service / provision.service.
+        ...(provider.password ? { passwordEnc: provider.password } : {})
       } as unknown as JobPayload,
       deviceId,
       workspaceId
     );
-    // Persist the chosen country on the device so the panel shows it.
+    // Persist the chosen country on the device so the panel shows it. MERGE into
+    // the existing metadata — a bare `{ proxyCountry: cc }` write would REPLACE the
+    // whole JSON column and wipe the load-bearing `metadata.instance` (the Waydroid
+    // instance name), which the proxy/register/sleep/wake flows all read. Losing it
+    // mid one-click register breaks the very flow that called this. Spread first,
+    // matching proxy.service.assignCountryProxy.
+    const cur = (await prisma.device
+      .findUnique({ where: { id: deviceId }, select: { metadata: true } })
+      .catch(() => null))?.metadata as Record<string, unknown> | null | undefined;
     await prisma.device
-      .update({ where: { id: deviceId }, data: { metadata: { proxyCountry: cc } as never } })
+      .update({ where: { id: deviceId }, data: { metadata: { ...(cur ?? {}), proxyCountry: cc } as never } })
       .catch(() => undefined);
     return { country: cc };
   } catch {

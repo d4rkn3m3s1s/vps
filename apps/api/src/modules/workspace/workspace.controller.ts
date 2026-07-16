@@ -86,6 +86,12 @@ export async function inviteMemberHandler(req: Request, res: Response): Promise<
     );
   }
   const { email, role: memberRole } = inviteSchema.parse(req.body);
+  // Privilege-escalation guard: only an admin may grant the 'admin' role. Without
+  // this an operator (who can invite when restrictInvites=off) could invite a second
+  // account as admin and gain powers above their own (delete workspace, remove members).
+  if (memberRole === 'admin' && role !== 'admin') {
+    throw new AppError('Yalnızca yöneticiler yönetici rolü atayabilir', 403, 'FORBIDDEN');
+  }
   const member = await workspaceService.inviteMember(workspaceId, email, memberRole);
 
   // Notify the new member by email (best-effort; never blocks the invite). We

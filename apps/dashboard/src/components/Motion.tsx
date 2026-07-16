@@ -4,10 +4,17 @@ import { motion, useMotionValue, useSpring, useTransform, type Variants } from '
 import { useRef, type ReactNode, type PointerEvent } from 'react';
 
 // Shared motion primitives so every page animates consistently.
+//
+// Transitions use a SPRING (stiffness/damping) rather than a fixed-duration ease:
+// motion settles naturally with a hint of physical weight instead of a mechanical
+// timed slide. Tuned tasteful (low stiffness, high-ish damping) — no bouncy
+// overshoot on a data dashboard, just a "settles into place" feel. Opacity keeps a
+// short tween so text never flickers with the spring.
+const SPRING = { type: 'spring', stiffness: 260, damping: 26, mass: 0.9 } as const;
 
 export const fadeUp: Variants = {
   hidden: { opacity: 0, y: 18 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] } }
+  show: { opacity: 1, y: 0, transition: { ...SPRING, opacity: { duration: 0.3 } } }
 };
 
 export const stagger: Variants = {
@@ -17,7 +24,7 @@ export const stagger: Variants = {
 
 export const scaleIn: Variants = {
   hidden: { opacity: 0, scale: 0.96, y: 10 },
-  show: { opacity: 1, scale: 1, y: 0, transition: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } }
+  show: { opacity: 1, scale: 1, y: 0, transition: { ...SPRING, opacity: { duration: 0.28 } } }
 };
 
 // Page wrapper: fades + slides content in on mount.
@@ -52,7 +59,7 @@ export function MotionItem({
     <motion.div
       variants={scaleIn}
       className={className}
-      {...(lift ? { whileHover: { y: -4, transition: { duration: 0.18 } } } : {})}
+      {...(lift ? { whileHover: { y: -4, transition: { type: 'spring', stiffness: 400, damping: 28 } } } : {})}
     >
       {children}
     </motion.div>
@@ -103,7 +110,7 @@ export function TiltCard({
       onPointerLeave={onLeave}
       className={className}
       style={{ rotateX: rotX, rotateY: rotY, transformPerspective: 1000, transformStyle: 'preserve-3d' }}
-      whileHover={{ y: -4, transition: { duration: 0.2, ease: [0.22, 1, 0.36, 1] } }}
+      whileHover={{ y: -4, transition: { type: 'spring', stiffness: 400, damping: 28 } }}
     >
       {children}
       {glare ? (

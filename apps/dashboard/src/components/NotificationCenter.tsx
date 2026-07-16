@@ -39,6 +39,10 @@ export function NotificationCenter() {
   useEffect(() => {
     let alive = true;
     async function poll() {
+      // Skip the poll while the tab is hidden — the primary channel is the WS push
+      // (job.updated/alert.fired); this 5s /api/jobs poll is only a fallback and just
+      // wastes requests in background tabs.
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const res = await fetch('/api/jobs', { cache: 'no-store' });
         const json = await res.json();

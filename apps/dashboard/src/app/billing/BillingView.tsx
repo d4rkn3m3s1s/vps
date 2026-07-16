@@ -42,23 +42,8 @@ function UsageBar({ label, used, limit, icon }: { label: string; used: number; l
   );
 }
 
-type Usage = {
-  days: number;
-  ratePerMinuteCents: number;
-  totalMinutes: number;
-  totalHours: number;
-  estimatedCostCents: number;
-  series: { date: string; minutes: number }[];
-  topDevices: { deviceId: string; name: string; minutes: number; costCents: number }[];
-};
-
-function fmtCost(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 export function BillingView() {
   const [billing, setBilling] = useState<Billing | null>(null);
-  const [usage, setUsage] = useState<Usage | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,10 +52,6 @@ export function BillingView() {
       .then((r) => r.json())
       .then((j) => setBilling(j.data ?? null))
       .catch(() => setError('Faturalama bilgileri yüklenemedi'));
-    fetch('/api/usage/summary?days=30')
-      .then((r) => r.json())
-      .then((j) => setUsage(j.data ?? null))
-      .catch(() => undefined);
   }, []);
 
   async function upgrade(plan: string) {
@@ -162,15 +143,6 @@ export function BillingView() {
                 tone="info"
                 icon={<CreditCard size={16} />}
               />
-              {usage ? (
-                <HoloStat
-                  label="Tahmini maliyet"
-                  value={<span className="mono">{fmtCost(usage.estimatedCostCents)}</span>}
-                  sub={`Son ${usage.days} gün`}
-                  tone="success"
-                  icon={<DollarSign size={16} />}
-                />
-              ) : null}
             </div>
           </Reveal>
 
@@ -182,8 +154,6 @@ export function BillingView() {
               </div>
             </HoloPanel>
           </Reveal>
-
-          {usage ? <UsageMeterPanel usage={usage} /> : null}
 
           <Reveal delay={0.1}>
             <HoloPanel title="Planlar" icon={<Receipt size={16} />} scan={false}>
@@ -225,71 +195,3 @@ export function BillingView() {
   );
 }
 
-// Pay-as-you-go usage: total online time, estimated cost, a daily bar chart, and
-// the top devices by minutes. Fed by the /usage/summary endpoint.
-function UsageMeterPanel({ usage }: { usage: Usage }) {
-  const max = Math.max(1, ...usage.series.map((s) => s.minutes));
-  return (
-    <Reveal delay={0.08}>
-      <HoloPanel title={`Kullanım sayacı (son ${usage.days} gün)`} icon={<Activity size={16} />} tilt>
-        <div className="holo-stats-grid">
-          <HoloStat
-            label="Toplam süre"
-            value={<span className="mono">{usage.totalHours} sa</span>}
-            sub={`${usage.totalMinutes} dk`}
-            tone="cyan"
-            icon={<Clock size={16} />}
-          />
-          <HoloStat
-            label="Tahmini maliyet"
-            value={<span className="mono">{fmtCost(usage.estimatedCostCents)}</span>}
-            sub="Dönem toplamı"
-            tone="success"
-            icon={<DollarSign size={16} />}
-          />
-          <HoloStat
-            label="Dakika ücreti"
-            value={<span className="mono">{fmtCost(usage.ratePerMinuteCents)}</span>}
-            sub="/dk"
-            tone="violet"
-            icon={<Gauge size={16} />}
-          />
-        </div>
-
-        {usage.series.length > 0 ? (
-          <div className="meter-chart" role="img" aria-label="Günlük kullanım">
-            {usage.series.map((s) => (
-              <span key={s.date} className="meter-bar-wrap" title={`${s.date}: ${s.minutes} dk`}>
-                <span className="meter-bar" style={{ height: `${Math.round((s.minutes / max) * 100)}%` }} />
-              </span>
-            ))}
-          </div>
-        ) : <p className="helper">Henüz ölçülen kullanım yok — cihazlar çalıştıkça birikir.</p>}
-
-        {usage.topDevices.length > 0 ? (
-          <div className="profile-table-wrap" style={{ marginTop: 16 }}>
-            <h3 className="meter-top-head">En çok kullanan cihazlar</h3>
-            <table className="profile-table">
-              <thead>
-                <tr>
-                  <th>Cihaz</th>
-                  <th>Süre</th>
-                  <th>Maliyet</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usage.topDevices.map((d) => (
-                  <tr key={d.deviceId}>
-                    <td className="meter-top-name">{d.name}</td>
-                    <td className="mono">{Math.round(d.minutes / 60 * 10) / 10} sa</td>
-                    <td className="mono">{fmtCost(d.costCents)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </HoloPanel>
-    </Reveal>
-  );
-}

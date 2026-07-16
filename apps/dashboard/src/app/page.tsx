@@ -66,7 +66,7 @@ export default async function HomePage() {
 
   // ── Onboarding checklist (real, data-driven progress) ──────────────────────
   const onboardingDismissed = (await cookies()).get('fleet_onboarding_dismissed')?.value === '1';
-  const totalJobs = sys?.database.jobs ?? 0;
+  const totalJobs = sys?.database?.jobs ?? 0;
   const has2fa = Boolean(meRes?.data?.twoFactorEnabled);
   // Any workspace with more than the single owner means a teammate was invited.
   const hasTeam = (wsRes?.data ?? []).some((w) => w.members > 1);
@@ -114,9 +114,9 @@ export default async function HomePage() {
   ];
 
   // ── Live infrastructure (real system metrics) ──────────────────────────────
-  const memPct = sys?.memory.usagePercent ?? 0;
-  const totalJobsAll = sys?.database.jobs ?? 0;
-  const queueLoad = sys
+  const memPct = sys?.memory?.usagePercent ?? 0;
+  const totalJobsAll = sys?.database?.jobs ?? 0;
+  const queueLoad = sys?.queue
     ? Math.min(100, Math.round(((sys.queue.active + sys.queue.waiting) / Math.max(totalJobsAll, 1)) * 100))
     : 0;
   // Real device CPU/disk: average the per-device metrics the agent reports
@@ -141,7 +141,7 @@ export default async function HomePage() {
   const infraMetrics: InfraMetric[] = [
     { key: 'cpu', label: 'Cihaz CPU (ort.)', percent: cpuPct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(cpuPct) },
     { key: 'memory', label: 'Cihaz Bellek (ort.)', percent: deviceMemPct, detail: meteredDevices.length > 0 ? `${meteredDevices.length} cihaz ortalaması` : 'çevrimiçi cihaz yok', tone: tone(deviceMemPct) },
-    { key: 'network', label: 'Kuyruk Verimi', percent: queueLoad, detail: `${sys?.queue.waiting ?? 0} bekliyor · ${sys?.queue.active ?? 0} aktif`, tone: tone(queueLoad) },
+    { key: 'network', label: 'Kuyruk Verimi', percent: queueLoad, detail: `${sys?.queue?.waiting ?? 0} bekliyor · ${sys?.queue?.active ?? 0} aktif`, tone: tone(queueLoad) },
     { key: 'storage', label: 'Cihaz Disk (ort.)', percent: storagePct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(storagePct) }
   ];
 
@@ -181,7 +181,7 @@ export default async function HomePage() {
           { key: 'phones', label: 'Bulut telefon', value: d?.total ?? 0, icon: 'phone' },
           { key: 'jobs', label: 'Aktif iş', value: pendingJobs, icon: 'live' },
           { key: 'proxies', label: 'Proxy uç noktası', value: proxyCount, icon: 'globe' },
-          { key: 'plugins', label: 'Sosyal modül', value: sys?.plugins.length ?? 0, icon: 'ai' }
+          { key: 'plugins', label: 'Sosyal modül', value: sys?.plugins?.length ?? 0, icon: 'ai' }
         ]}
       />
 
@@ -194,13 +194,13 @@ export default async function HomePage() {
           errors: d?.error ?? 0,
           healthPct: (d?.total ?? 0) > 0 ? Math.round(((d?.online ?? 0) / (d!.total)) * 100) : 100,
           jobsRunning: pendingJobs,
-          queueWaiting: sys?.queue.waiting ?? 0
+          queueWaiting: sys?.queue?.waiting ?? 0
         }}
         kpis={[
           { key: 'phones', label: 'Bulut Telefonlar', value: d?.total ?? 0, sub: `${d?.online ?? 0} çevrimiçi · ${d?.offline ?? 0} çevrimdışı`, tone: 'cyan', icon: 'phone', spark: deckSpark(d?.online ?? 0) },
           { key: 'proxies', label: 'Proxyler', value: proxyCount, sub: 'Yapılandırılmış uç noktalar', tone: 'cyan', icon: 'proxy', spark: deckSpark(proxyCount) },
-          { key: 'jobs', label: 'Toplam İş', value: sys?.database.jobs ?? 0, sub: `${pendingJobs} devam ediyor`, tone: 'violet', icon: 'jobs', spark: deckSpark(sys?.database.jobs ?? 0) },
-          { key: 'plugins', label: 'Eklentiler', value: sys?.plugins.length ?? 0, sub: 'Sosyal modüller', tone: 'success', icon: 'plugins' }
+          { key: 'jobs', label: 'Toplam İş', value: sys?.database?.jobs ?? 0, sub: `${pendingJobs} devam ediyor`, tone: 'violet', icon: 'jobs', spark: deckSpark(sys?.database?.jobs ?? 0) },
+          { key: 'plugins', label: 'Eklentiler', value: sys?.plugins?.length ?? 0, sub: 'Sosyal modüller', tone: 'success', icon: 'plugins' }
         ]}
         devices={deviceList.map((dev) => ({
           id: dev.id,
@@ -212,9 +212,9 @@ export default async function HomePage() {
         jobs={jobs.map((j) => ({ id: j.id, type: j.type, status: j.status, createdAt: j.createdAt }))}
         servicesOffline={!sysRes}
         services={[
-          { label: 'PostgreSQL', status: sys?.database.status, icon: 'db' },
-          { label: 'Redis Kuyruğu', status: sys?.queue.status, icon: 'queue' },
-          { label: 'Docker', status: sys?.docker.status, icon: 'docker' }
+          { label: 'PostgreSQL', status: sys?.database?.status, icon: 'db' },
+          { label: 'Redis Kuyruğu', status: sys?.queue?.status, icon: 'queue' },
+          { label: 'Docker', status: sys?.docker?.status, icon: 'docker' }
         ]}
       />
     </PageMotion>

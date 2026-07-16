@@ -13,7 +13,6 @@ import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
 import { ProxyService } from './modules/proxies/proxy.service';
-import { tickTrendsRollup } from './modules/trends/trends.service';
 import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
 import { webhooksService } from './modules/webhooks/webhooks.service';
@@ -99,14 +98,6 @@ async function main(): Promise<void> {
       .finally(() => { farmTickRunning = false; });
   }, 60_000).unref();
 
-  // Metrics rollup: snapshot today's fleet metrics into the MetricSnapshot
-  // time-series so the Trends page can show historical charts. Every 5 min.
-  setInterval(() => {
-    tickTrendsRollup().catch((error) => {
-      logger.error('Trends rollup failed', { error: error instanceof Error ? error.message : String(error) });
-    });
-  }, 300_000).unref();
-
   // Proxy revalidation: periodically re-check proxies whose health check is due,
   // updating their rolling score so autoAssign always prefers healthy exits.
   const proxyService = new ProxyService();
@@ -177,6 +168,19 @@ async function main(): Promise<void> {
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
+
+  // A stray rejected promise (e.g. a fire-and-forget webhook/notification dispatch
+  // whose caller forgot .catch()) is recoverable — LOG and keep serving.
+  process.on('unhandledRejection', (reason) => {
+    logger.error('unhandledRejection', { error: reason instanceof Error ? reason.message : String(reason) });
+  });
+  // An uncaughtException leaves Node in an UNDEFINED state (Node docs) — resuming can
+  // corrupt data. Log, then exit so systemd (Restart=always) restarts cleanly, which
+  // is what happened before this handler existed. Do NOT log-and-continue here.
+  process.on('uncaughtException', (err) => {
+    logger.error('uncaughtException — exiting for a clean restart', { error: err instanceof Error ? err.stack ?? err.message : String(err) });
+    process.exit(1);
+  });
 }
 
 void main().catch((error) => {

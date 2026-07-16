@@ -5,12 +5,10 @@ import { AppError } from '../../lib/errors';
 import { generateFingerprintData, decryptFingerprint } from '../fingerprint/fingerprint.service';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
-import { usageService } from '../usage/usage.service';
 import type {
   DeviceCreateInput,
   DeviceGroupCreateInput,
   DeviceGroupUpdateInput,
-  DeviceHeartbeatInput,
   DeviceUpdateInput
 } from './device.types';
 
@@ -248,40 +246,14 @@ export class DeviceService {
     const { instance } = await this.instanceOf(id, workspaceId);
     // Reboot = sleep then wake, chained by the agent as two jobs. We enqueue SLEEP
     // then WAKE; the agent processes them in order (sleep completes, then wake).
+    // The WAKE job is a deliberate continuation of the SAME operator action, so it
+    // MUST pass skipBusyCheck: otherwise assertDeviceIdle sees the just-created
+    // (still PENDING) SLEEP job and throws DEVICE_BUSY — leaving the device asleep
+    // and never woken. (Same reasoning as OTP-continuation jobs.)
     await createJobRecord('DEVICE_SLEEP', { deviceId: id, instance } as JobPayload, id, workspaceId);
-    const wake = await createJobRecord('DEVICE_WAKE', { deviceId: id, instance } as JobPayload, id, workspaceId);
+    const wake = await createJobRecord('DEVICE_WAKE', { deviceId: id, instance } as JobPayload, id, workspaceId, { skipBusyCheck: true });
     await prisma.device.update({ where: { id }, data: { status: 'REBOOTING' } });
     return { jobId: wake.id, deviceId: id, instance };
-  }
-
-  async heartbeat(id: string, input: DeviceHeartbeatInput) {
-    // Read prior lastSeen/status/workspace so we can meter online minutes before
-    // overwriting lastSeen.
-    const prev = await prisma.device.findUnique({
-      where: { id },
-      select: { lastSeen: true, status: true, workspaceId: true }
-    });
-    if (!prev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
-    const now = toDate(input.lastSeen) ?? new Date();
-
-    const updated = await prisma.device.update({
-      where: { id },
-      data: {
-        ...(input.status ? { status: input.status } : {}),
-        ...(typeof input.cpuUsage === 'number' ? { cpuUsage: input.cpuUsage } : {}),
-        ...(typeof input.memoryUsage === 'number' ? { memoryUsage: input.memoryUsage } : {}),
-        ...(typeof input.diskUsage === 'number' ? { diskUsage: input.diskUsage } : {}),
-        lastSeen: now
-      },
-      include: { group: true }
-    });
-
-    // Meter usage only while the device is (and was) effectively online.
-    const effectiveStatus = input.status ?? prev.status;
-    if (effectiveStatus === 'ONLINE') {
-      void usageService.accrue(id, prev.lastSeen, now, prev.workspaceId ?? undefined);
-    }
-    return updated;
   }
 
   async deleteDevice(id: string, workspaceId?: string) {
@@ -323,18 +295,23 @@ export class DeviceService {
   }
 
   async countByStatus(workspaceId?: string) {
-    const ws = workspaceId ? { workspaceId } : {};
-    const [online, offline, starting, stopping, error, updating, rebooting, total] = await Promise.all([
-      prisma.device.count({ where: { ...ws, status: 'ONLINE' } }),
-      prisma.device.count({ where: { ...ws, status: 'OFFLINE' } }),
-      prisma.device.count({ where: { ...ws, status: 'STARTING' } }),
-      prisma.device.count({ where: { ...ws, status: 'STOPPING' } }),
-      prisma.device.count({ where: { ...ws, status: 'ERROR' } }),
-      prisma.device.count({ where: { ...ws, status: 'UPDATING' } }),
-      prisma.device.count({ where: { ...ws, status: 'REBOOTING' } }),
-      prisma.device.count({ where: { ...ws } })
-    ]);
-
+    // One groupBy instead of 8 separate count() round-trips (7 per-status + total).
+    // Postgres buckets by status in a single index scan; we map the buckets back and
+    // default any missing status to 0, deriving the total by summing.
+    const groups = await prisma.device.groupBy({
+      by: ['status'],
+      where: { ...(workspaceId ? { workspaceId } : {}) },
+      _count: { _all: true }
+    });
+    const by = (s: string) => groups.find((g) => g.status === s)?._count._all ?? 0;
+    const online = by('ONLINE');
+    const offline = by('OFFLINE');
+    const starting = by('STARTING');
+    const stopping = by('STOPPING');
+    const error = by('ERROR');
+    const updating = by('UPDATING');
+    const rebooting = by('REBOOTING');
+    const total = groups.reduce((sum, g) => sum + g._count._all, 0);
     return { online, offline, starting, stopping, error, updating, rebooting, total };
   }
 
@@ -346,13 +323,6 @@ export class DeviceService {
     });
   }
 
-  // Group/host existence checks are workspace-scoped so a device can't be attached
-  // to ANOTHER tenant's group or host by id. (assertDeviceExists is unused now that
-  // delete/update scope inline, but kept scoped for safety if reused.)
-  private async assertDeviceExists(id: string, workspaceId?: string): Promise<void> {
-    const device = await prisma.device.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
-    if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
-  }
 
   private async assertGroupExists(id: string, workspaceId?: string): Promise<void> {
     const group = await prisma.deviceGroup.findFirst({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });

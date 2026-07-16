@@ -55,7 +55,9 @@ accountsRouter.get('/providers/status', requireApiKey, authenticateJwt, asyncHan
 accountsRouter.get('/sms/balance', requireApiKey, authenticateJwt, asyncHandler(smsBalanceHandler));
 accountsRouter.get('/sms/countries', requireApiKey, authenticateJwt, asyncHandler(smsCountriesHandler));
 accountsRouter.get('/sms/projects', requireApiKey, authenticateJwt, asyncHandler(smsProjectsHandler));
-accountsRouter.post('/sms/number', requireApiKey, authenticateJwt, asyncHandler(smsGetNumberHandler));
+// Rate-limited: each call rents a PAID number from the shared sms-bus balance, so an
+// unbounded loop could drain the platform's SMS credit for all tenants (cost/DoS).
+accountsRouter.post('/sms/number', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(smsGetNumberHandler));
 accountsRouter.get('/sms/number/:requestId/otp', requireApiKey, authenticateJwt, asyncHandler(smsOtpHandler));
 accountsRouter.post('/sms/number/:requestId/cancel', requireApiKey, authenticateJwt, asyncHandler(smsCancelHandler));
 

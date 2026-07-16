@@ -68,14 +68,20 @@ export class BulkService {
     // NOTE: do not overwrite the device's ipAddress/adbPort here — those are the
     // phone's own ADB endpoint, not the proxy. The proxy is applied inside the
     // phone via the SET_PROXY job payload below (real redsocks routing for Waydroid).
+    // Fetch every device's metadata (for the Waydroid instance name) in ONE query
+    // up front (N+1 findUnique → 1 findMany), then read it from a Map in the loop.
+    const metaRows = await prisma.device.findMany({
+      where: { id: { in: input.deviceIds } },
+      select: { id: true, metadata: true }
+    });
+    const metaById = new Map(metaRows.map((r) => [r.id, r.metadata]));
     const jobs = await Promise.all(
       input.deviceIds.map(async (deviceId) => {
         // Persist the device↔proxy link so the panel can show + change it.
         await prisma.device.update({ where: { id: deviceId }, data: { proxyId: proxy.id } }).catch(() => undefined);
         // Fold the Waydroid instance name so the agent can drive wd-proxy.sh
         // (real country-matched redsocks routing, not the ignored global http_proxy).
-        const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
-        const instance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+        const instance = ((metaById.get(deviceId) ?? {}) as Record<string, unknown>).instance;
         return createJobRecord('EMULATOR_SET_PROXY', {
           deviceId,
           proxyId: proxy.id,

@@ -93,11 +93,16 @@ export class EmulatorService {
     const containers = await this.dockerService.listContainers();
     await Promise.all(
       containers.map(async (container) => {
+        // container.id here is the `vps.emulator.id` LABEL (see listContainers),
+        // i.e. the Emulator row id — NOT the real Docker container id. Matching on
+        // it is correct, but writing it into `containerId` corrupted that column
+        // (later code that addresses the real container via Emulator.containerId got
+        // an emulator id and failed). Only sync the status; leave containerId, which
+        // is set to the true Docker id/name at create time, untouched.
         await prisma.emulator.updateMany({
           where: { id: container.id },
           data: {
-            status: container.state === 'running' ? 'RUNNING' : 'STOPPED',
-            containerId: container.id
+            status: container.state === 'running' ? 'RUNNING' : 'STOPPED'
           }
         });
       })

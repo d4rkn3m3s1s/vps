@@ -2,6 +2,7 @@ import type { Prisma, WebhookEvent } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { assertSafePublicUrl } from '../../lib/urlGuard';
+import { logger } from '../../lib/logger';
 import { enqueueDelivery } from './webhook.queue';
 
 // Concrete (non-ALL) events that can actually fire. ALL is a subscription filter
@@ -89,36 +90,43 @@ export class WebhooksService {
     payload: Record<string, unknown>,
     workspaceId?: string
   ): Promise<void> {
-    const hooks = await prisma.webhook.findMany({
-      where: {
-        active: true,
-        event: { in: [event, 'ALL'] },
-        // Workspace-scoped events only reach that workspace's hooks. Events with
-        // no workspace context (rare) reach all hooks.
-        ...(workspaceId ? { workspaceId } : {})
-      }
-    });
-    if (hooks.length === 0) return;
-
-    const envelope = { event, firedAt: new Date().toISOString(), data: payload };
-
-    await Promise.all(
-      hooks.map(async (hook) => {
-        const delivery = await prisma.webhookDelivery.create({
-          data: {
-            webhookId: hook.id,
-            event,
-            payload: envelope as unknown as Prisma.InputJsonValue
-          }
-        });
-        await enqueueDelivery(delivery.id);
-        // If this hook has been failing persistently, auto-disable it so it stops
-        // accumulating dead deliveries until an admin re-enables it.
-        if (hook.failCount >= MAX_CONSECUTIVE_FAILURES) {
-          await prisma.webhook.update({ where: { id: hook.id }, data: { active: false } });
+    // Honour the "never throws (fire-and-forget)" contract: callers void this
+    // without a .catch(), so a DB/Redis hiccup here would otherwise surface as an
+    // unhandledRejection and crash the process. Swallow + log instead.
+    try {
+      const hooks = await prisma.webhook.findMany({
+        where: {
+          active: true,
+          event: { in: [event, 'ALL'] },
+          // Workspace-scoped events only reach that workspace's hooks. Events with
+          // no workspace context (rare) reach all hooks.
+          ...(workspaceId ? { workspaceId } : {})
         }
-      })
-    );
+      });
+      if (hooks.length === 0) return;
+
+      const envelope = { event, firedAt: new Date().toISOString(), data: payload };
+
+      await Promise.all(
+        hooks.map(async (hook) => {
+          const delivery = await prisma.webhookDelivery.create({
+            data: {
+              webhookId: hook.id,
+              event,
+              payload: envelope as unknown as Prisma.InputJsonValue
+            }
+          });
+          await enqueueDelivery(delivery.id);
+          // If this hook has been failing persistently, auto-disable it so it stops
+          // accumulating dead deliveries until an admin re-enables it.
+          if (hook.failCount >= MAX_CONSECUTIVE_FAILURES) {
+            await prisma.webhook.update({ where: { id: hook.id }, data: { active: false } });
+          }
+        })
+      );
+    } catch (e) {
+      logger.warn(`webhook dispatch failed for ${event}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // Sends a synthetic test event to a single webhook (admin "Send test" button).
@@ -128,6 +136,11 @@ export class WebhooksService {
       where: { id, ...(workspaceId ? { workspaceId } : {}) }
     });
     if (!hook) throw new AppError('Webhook not found', 404, 'WEBHOOK_NOT_FOUND');
+    // Fail fast on an inactive hook. Otherwise we'd create a delivery + return a
+    // deliveryId (looks like success), but the worker immediately marks it FAILED
+    // ('Webhook is inactive') without ever POSTing — a silent no-op the UI reported
+    // as sent. Give the operator an actionable error instead.
+    if (!hook.active) throw new AppError('Webhook pasif — test göndermek için önce etkinleştirin', 409, 'WEBHOOK_INACTIVE');
     const delivery = await prisma.webhookDelivery.create({
       data: {
         webhookId: hook.id,

@@ -401,6 +401,16 @@ export const farmService = {
       }
       return existing;
     }
+    // Before lazily creating a row, the deviceId (taken raw from the URL param) MUST
+    // belong to the caller's workspace. Without this a tenant could POST a foreign
+    // device id and plant encrypted credentials/TOTP onto another tenant's device —
+    // and permanently deny the victim (the row would carry the attacker's workspaceId,
+    // so the victim's own ensureAccount would then 404). Mirror the ownership check
+    // that scheduler/catalog/permissions do.
+    if (workspaceId) {
+      const owned = await prisma.device.findFirst({ where: { id: deviceId, workspaceId }, select: { id: true } });
+      if (!owned) throw new AppError('Hesap bulunamadı', 404, 'FARM_ACCOUNT_NOT_FOUND');
+    }
     return prisma.farmAccount.create({
       data: { deviceId, ...(workspaceId ? { workspaceId } : {}) }
     });

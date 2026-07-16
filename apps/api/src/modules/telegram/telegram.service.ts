@@ -400,10 +400,14 @@ async function renderLabels(workspaceId: string): Promise<{ text: string; button
 async function renderStatus(workspaceId: string): Promise<string> {
   const devices = await deviceService.listDevices(workspaceId);
   const online = devices.filter((d) => d.status === 'ONLINE').length;
-  let unread = 0;
-  for (const d of devices) {
-    unread += await whatsappService.unreadTotal(workspaceId, d.id).catch(() => 0);
-  }
+  // Sum unread across ALL of this workspace's devices in ONE grouped query instead
+  // of a per-device aggregate (N+1 → 1). Scoped to the workspace's device ids.
+  const grouped = await prisma.whatsappConversation.groupBy({
+    by: ['deviceId'],
+    where: { deviceId: { in: devices.map((d) => d.id) }, archived: false, unreadCount: { gt: 0 } },
+    _sum: { unreadCount: true }
+  }).catch(() => [] as Array<{ _sum: { unreadCount: number | null } }>);
+  const unread = grouped.reduce((sum, g) => sum + (g._sum.unreadCount ?? 0), 0);
   return [
     '<b>📊 Durum</b>',
     '',
@@ -491,9 +495,13 @@ async function handleCommand(
     const to = state.to!;
     state.mode = 'idle';
     try {
+      // sendFromDevice only QUEUES a WHATSAPP_SEND job (PENDING); the message hasn't
+      // left the phone yet. Report "sending…" like the media flow does — the real
+      // SENT/FAILED outcome arrives via the WHATSAPP_SENT/FAILED completion notify.
+      // Saying "✅ Yanıt gönderildi" here was a false success (offline/busy device).
       await batchService.sendFromDevice(workspaceId, { deviceId, to, message });
       const { text: t, buttons } = await renderThread(workspaceId, deviceId, to);
-      await sendMessage(token, chatId, `✅ Yanıt gönderildi.\n\n${t}`, buttons);
+      await sendMessage(token, chatId, `📤 <b>${esc(to)}</b> kişisine yanıt gönderiliyor…\n<i>(Sonuç işlem bitince bildirilecek.)</i>\n\n${t}`, buttons);
     } catch (e) {
       await sendMessage(token, chatId, `❌ Gönderilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }

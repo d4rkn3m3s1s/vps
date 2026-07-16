@@ -271,8 +271,10 @@ export class ProxyService {
         host: provider.host,
         port: provider.port,
         username: provider.username ?? '',
-        // password is decrypted here (the agent can't); wd-proxy.sh gets plaintext.
-        password: provider.password ? decryptString(provider.password) : ''
+        // Carry the ciphertext (not plaintext): materializePayload decrypts it at
+        // agent-claim time, so the stored payload and GET /jobs/:id never expose
+        // the residential-proxy password. Matches bulk.service.ts.
+        ...(provider.password ? { passwordEnc: provider.password } : {})
       } as unknown as JobPayload,
       undefined,
       workspaceId
@@ -387,11 +389,6 @@ export class ProxyService {
       }
     }
     return { checked: due.length, ok, failed };
-  }
-
-  private async assertExists(id: string): Promise<void> {
-    const proxy = await prisma.proxy.findUnique({ where: { id } });
-    if (!proxy) throw new AppError('Proxy not found', 404, 'PROXY_NOT_FOUND');
   }
 
   // Workspace-scoped ownership check: returns the proxy only if the caller owns

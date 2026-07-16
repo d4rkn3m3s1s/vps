@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { prisma } from '../../db/prisma';
+import { AppError } from '../../lib/errors';
 import { createJobRecord } from '../jobs/jobs.service';
 
 // Bundled APKs live in the repo under deploy/apks (Git LFS). On a deployed host
@@ -48,6 +50,19 @@ export async function installBundledApk(
   const apks = await listBundledApks();
   const apk = apks.find((a) => a.file === apkFile);
   if (!apk) throw new Error(`bilinmeyen APK: ${apkFile}`);
+
+  // Ownership guard AT DISPATCH TIME (defense-in-depth): verify every target device
+  // belongs to the caller's workspace BEFORE queueing install jobs, instead of relying
+  // on the agent's claim-time workspace guard (which is fail-open for a workspace-less
+  // token). Matches catalog/files/snapshots. A foreign deviceId → 404, no job created.
+  const uniqueIds = [...new Set(deviceIds)];
+  const owned = await prisma.device.findMany({
+    where: { id: { in: uniqueIds }, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true }
+  });
+  if (owned.length !== uniqueIds.length) {
+    throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+  }
 
   let queued = 0;
   for (const deviceId of deviceIds) {

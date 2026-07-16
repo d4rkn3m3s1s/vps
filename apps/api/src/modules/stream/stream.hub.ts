@@ -240,7 +240,11 @@ export class StreamHub {
     // Authorize: the device must exist and (when scoped) belong to the viewer's
     // workspace. Cross-workspace peeking is rejected.
     const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { id: true, hostId: true, workspaceId: true, ipAddress: true, adbPort: true } }).catch(() => null);
-    if (!device || (workspaceId && device.workspaceId && device.workspaceId !== workspaceId)) {
+    // FAIL-CLOSED workspace check. The old guard `(workspaceId && device.workspaceId
+    // && ...)` skipped entirely when EITHER side was null → a workspace-less token
+    // (issueTokens omits the claim when the user has no active workspace) could view
+    // AND control any device. Require BOTH sides present and matching, else reject.
+    if (!device || !device.workspaceId || !workspaceId || device.workspaceId !== workspaceId) {
       logger.warn(`[stream] viewer rejected: device=${device ? 'found' : 'MISSING'} dws=${device?.workspaceId} vws=${workspaceId}`);
       rawSocket.destroy();
       return;
@@ -335,7 +339,10 @@ export class StreamHub {
       .findMany({ where: { id: { in: followers } }, select: { id: true, hostId: true, workspaceId: true, ipAddress: true, adbPort: true } })
       .catch(() => []);
     v.mirror = devices
-      .filter((d) => !v.workspaceId || !d.workspaceId || d.workspaceId === v.workspaceId)
+      // FAIL-CLOSED: only mirror to a follower in the SAME workspace as the viewer.
+      // (Old `!v.workspaceId || !d.workspaceId || ...` let a workspace-less viewer,
+      // or a null-workspace device, be controlled cross-tenant.)
+      .filter((d) => Boolean(v.workspaceId) && d.workspaceId === v.workspaceId)
       .map((d) => ({
         deviceId: d.id,
         hostId: d.hostId,

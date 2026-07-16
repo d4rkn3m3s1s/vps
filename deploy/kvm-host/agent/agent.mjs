@@ -1047,6 +1047,17 @@ async function registerWhatsApp(job, legacyPayload) {
     if (!apkUrl) return done('not_installed', { status: 'NOT_INSTALLED', note: 'WhatsApp kurulu değil ve apkUrl verilmedi' });
     const local = await download(String(apkUrl), 'whatsapp.apk');
     try { await adb(serial, ['install', '-r', '-g', local]); } finally { await safeRm(local); }
+  } else {
+    // WA already installed — WIPE ITS DATA so every register starts on a factory-fresh
+    // WhatsApp. ROOT CAUSE (VERIFIED LIVE, mi10): when a device instance is reused (or
+    // a register is retried), the previous number's session lingers — WA reopens on
+    // that number's "Verify …" / "You've tried to register <old#> recently" / rate-limit
+    // screen, so the NEW number is never entered and the run stalls. `pm clear` resets
+    // WA to first-run (EULA → number) so the new number always takes. force-stop first
+    // so no live WA process survives the clear.
+    await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+    await adb(serial, ['shell', 'pm', 'clear', WA_PKG]).catch(() => undefined);
+    await h.sleep(1200);
   }
 
   // The signup screen sequence below was mapped LIVE on a real device (WhatsApp
@@ -1202,7 +1213,17 @@ async function registerWhatsApp(job, legacyPayload) {
     if (!picked && !menuOpen) {
       picked = await h.tapVision('the "Register new account" menu item in the overflow popup', 'WhatsApp companion/link-device screen, overflow menu is open');
     }
-    if (!picked) await h.tapScaled(812, 430).catch(() => undefined);
+    // Measured-coordinate fallback. VERIFIED LIVE (mi10, WA 2.25.x): the popup's
+    // "Register new account" TextView is clickable=false at bounds [596,402][1028,459]
+    // (center 812,430), but its clickable row parent is [554,211][1070,525]
+    // (center 812,368). A synthetic tap on the ROW CENTER (812,368) reliably moves
+    // companion → RegisterPhone; 812,430 (the text baseline) can miss the row. Tap
+    // the row center first, then the text center as a second shot.
+    if (!picked) {
+      await h.tapScaled(812, 368).catch(() => undefined);
+      await h.sleep(500);
+      await h.tapScaled(812, 430).catch(() => undefined);
+    }
     return menuOpen;
   };
 
@@ -1248,8 +1269,14 @@ async function registerWhatsApp(job, legacyPayload) {
       await h.sleep(1000); continue;
     }
 
-    // Companion / QR page (activity signal) — go through ⋮ → "Register new account".
-    if (/companionmode|RegisterAsCompanion/i.test(foc)) {
+    // Companion / QR page — go through ⋮ → "Register new account". Newer WhatsApp
+    // builds render "Link as companion device" (QR page, incl. the "QR code timed
+    // out / Reload" state) INSIDE the registration activity, so the activity string
+    // is NOT companionmode/RegisterAsCompanion. VERIFIED LIVE (mi10): a registration
+    // that landed here stalled because the activity-signal branch never fired and the
+    // page fell through to "unknown screen". So detect it by the text signal too
+    // (onCompanion() already reads "Link as companion"/"companion device"/registration_qr).
+    if (/companionmode|RegisterAsCompanion/i.test(foc) || await onCompanion()) {
       await openRegisterMenu();
       menuTaps++;
       for (let w = 0; w < 5; w++) { await h.sleep(800); if (await onPhoneScreen()) { reachedPhone = true; break; } }
@@ -1279,14 +1306,22 @@ async function registerWhatsApp(job, legacyPayload) {
     }
     if (await onPhoneScreen()) { reachedPhone = true; break; }
 
-    // Unknown/rendering screen. If EULA was already accepted, the number screen may
-    // just be slow to paint — settle and re-observe. After several idle rounds with
-    // no recognized screen, try the register menu once (covers a missed companion
-    // detection) before giving up. VERIFIED bug this guards: a build that opened on
-    // an unrecognized screen used to limp into number entry with no field.
+    // Unknown/rendering screen. On a GPU-less device `dumpsys window` focus reads are
+    // slow/flaky and the companion (QR) page's activity often isn't recognised, so the
+    // register-menu attempt must NOT be gated on eulaTaps — a device can open straight
+    // onto companion (no EULA). After a couple idle rounds with nothing recognised, try
+    // ⋮ → "Register new account" (harmless if we're actually on a plain screen), and
+    // RETRY it every few rounds up to 3 times — the popup tap is intermittent on a
+    // GPU-less phone (VERIFIED: temiz2 got through first try, temiz3 needed retries).
+    // Also re-check the phone screen right after, so a successful menu tap exits fast.
     idleRounds++;
-    if (idleRounds >= 3 && eulaTaps > 0 && menuTaps === 0) { await openRegisterMenu(); menuTaps++; await h.sleep(1500); }
-    else await h.sleep(1200);
+    if (idleRounds >= 2 && menuTaps < 3) {
+      await openRegisterMenu(); menuTaps++;
+      for (let w = 0; w < 4; w++) { await h.sleep(800); if (await onPhoneScreen()) { reachedPhone = true; break; } }
+      if (reachedPhone) break;
+    } else {
+      await h.sleep(1200);
+    }
   }
   await snap('first_run');
   if (reachedPhone) {
@@ -1608,21 +1643,35 @@ async function registerWhatsApp(job, legacyPayload) {
     if (otherRl) {
       await snap('other_phone_rate_limit');
       await h.a11yClickText('OK'); await h.tapSynIf('OK'); await h.sleep(800);
-      return done('switch_rate_limited', {
-        status: 'RATE_LIMITED',
-        note: `WhatsApp bu numaraya "diğer telefon" doğrulama kodunu çok kez istedi — ${otherRl} sonra 'Send SMS' ile tekrar denenebilir. (Numara zaten kayıtlı bir WhatsApp hesabına ait.)`,
-        phoneNumber
-      });
+      // Set step 'otp_wait' + emit progress so the panel's OTP box (which triggers on
+      // step==='otp_wait') opens with the wait note (API maps RATE_LIMITED→AWAITING_OTP).
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      const rlNote = `⏳ WhatsApp bu numaraya "diğer telefon" kodunu çok kez istedi — ${otherRl} sonra tekrar denenebilir. (Numara zaten kayıtlı bir WhatsApp hesabına ait.)`;
+      await waProgress('otp_wait', curPct, rlNote);
+      return done('otp_wait', { status: 'RATE_LIMITED', note: rlNote, phoneNumber });
     }
 
     // Move/other-phone verification — the 6-digit code was pushed to the number's
-    // EXISTING WhatsApp on another device (not SMS/voice). The agent can't read it;
-    // a human with that phone must supply it → AWAITING_MANUAL.
+    // EXISTING WhatsApp on another device (not SMS/voice). The agent can't READ it,
+    // but the operator CAN read it off that phone and type it in — the code goes into
+    // the SAME verify_sms_code_input field onOtp() already handles. So this is an
+    // OTP-wait (panel shows the code modal), NOT AWAITING_MANUAL (which hides the
+    // modal → operator has nowhere to enter the code). otpChannel tells the panel to
+    // show the right hint. VERIFIED LIVE (mi10, +90 already-registered number: the
+    // verify screen accepts a code typed into the field).
     if (await onOtherPhoneVerify()) {
-      await snap('other_phone_verify');
-      return done('other_phone_verify', {
-        status: 'AWAITING_MANUAL',
-        note: 'Numara zaten başka bir cihazdaki WhatsApp\'a kayıtlı. Doğrulama kodu SMS/arama ile DEĞİL, o diğer telefondaki WhatsApp\'a gönderildi. Kodu o cihazdan alıp panelden girin (otpCode), ya da bu cihazda kayıtlı OLMAYAN temiz bir numara kullanın.',
+      // OTP-wait (NOT a failure): the operator reads the code off the number's other
+      // phone and types it into the SAME field. Use step 'otp_wait' + status OTP_WAIT
+      // so done()'s OK_STATUSES keeps it out of the FAILED path AND the panel's OTP box
+      // (which triggers on step==='otp_wait') appears. The 📲 note tells the operator
+      // WHERE the code is (other phone, not SMS) — the modal shows it verbatim.
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      const otherNote = '📲 Kod diğer telefondaki WhatsApp\'a gönderildi (numara zaten kayıtlı) — o cihazdan okuyup panele girin.';
+      await waProgress('otp_wait', curPct, otherNote);
+      return done('otp_wait', {
+        status: 'OTP_WAIT',
+        otpChannel: 'other_phone',
+        note: otherNote,
         phoneNumber
       });
     }
@@ -1706,7 +1755,10 @@ async function registerWhatsApp(job, legacyPayload) {
   }
   if (bothLockedNote && !(await onOtp())) {
     await snap('verify_rate_limited');
-    return done('sms_rate_limited', { status: 'OTP_WAIT', note: bothLockedNote, phoneNumber });
+    // step 'otp_wait' + progress so the panel opens the OTP box with the wait note.
+    curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+    await waProgress('otp_wait', curPct, bothLockedNote);
+    return done('otp_wait', { status: 'OTP_WAIT', note: bothLockedNote, phoneNumber });
   }
 
   // 8) OTP. The state machine above already handled ban walls and rate-limits. Now

@@ -13,21 +13,6 @@ export type MailMessage = {
 // is configured — dev/unconfigured installs never touch it).
 type Transport = { sendMail(opts: Record<string, unknown>): Promise<unknown> };
 
-// A small ring buffer of recently sent emails. Useful in dev (and tests) to
-// confirm an email "went out" without a real inbox. Never holds secrets.
-export type SentRecord = { to: string; subject: string; at: string; via: 'smtp' | 'console' };
-const recent: SentRecord[] = [];
-const RECENT_MAX = 50;
-
-function remember(rec: SentRecord): void {
-  recent.unshift(rec);
-  if (recent.length > RECENT_MAX) recent.length = RECENT_MAX;
-}
-
-export function recentEmails(): SentRecord[] {
-  return recent;
-}
-
 export function isSmtpConfigured(): boolean {
   return Boolean(env.smtpHost);
 }
@@ -61,7 +46,6 @@ export async function sendMail(msg: MailMessage): Promise<{ delivered: boolean; 
         text: msg.text,
         html: msg.html
       });
-      remember({ to: msg.to, subject: msg.subject, at: new Date().toISOString(), via: 'smtp' });
       logger.info('Email sent', { to: msg.to, subject: msg.subject, via: 'smtp' });
       return { delivered: true, via: 'smtp' };
     }
@@ -72,7 +56,6 @@ export async function sendMail(msg: MailMessage): Promise<{ delivered: boolean; 
       subject: msg.subject,
       text: msg.text
     });
-    remember({ to: msg.to, subject: msg.subject, at: new Date().toISOString(), via: 'console' });
     return { delivered: false, via: 'console' };
   } catch (error) {
     logger.error('Email send failed', {

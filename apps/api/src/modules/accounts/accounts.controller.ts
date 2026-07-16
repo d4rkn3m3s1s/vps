@@ -1,6 +1,8 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { getWorkspaceId } from '../../lib/workspaceContext';
+import { prisma } from '../../db/prisma';
 import { accountsService } from './accounts.service';
 
 // Phase 1: provider connectivity + primitive operations (number/OTP/mail/
@@ -54,11 +56,26 @@ function requireRequestId(req: Request): string {
   if (typeof id !== 'string' || !id) throw new AppError('request_id gereklidir', 400, 'INVALID_REQUEST_ID');
   return id;
 }
+// SECURITY: the provider's request_id is a shared, guessable global id and the SMS
+// provider key is platform-wide, so reading/cancelling by raw request_id is a
+// cross-tenant IDOR (another tenant's WhatsApp/IG OTP could be read → account
+// takeover). Only allow a request_id that maps to a GeneratedAccount IN THE CALLER'S
+// workspace (the rented number's requestId is persisted there at rental time).
+async function assertOwnsRequestId(req: Request): Promise<string> {
+  const requestId = requireRequestId(req);
+  const workspaceId = getWorkspaceId(req);
+  const owned = await prisma.generatedAccount.findFirst({
+    where: { smsRequestId: requestId, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true }
+  });
+  if (!owned) throw new AppError('İstek bulunamadı', 404, 'REQUEST_NOT_FOUND');
+  return requestId;
+}
 export async function smsOtpHandler(req: Request, res: Response): Promise<void> {
-  res.json({ data: await accountsService.smsReadOtp(requireRequestId(req)) });
+  res.json({ data: await accountsService.smsReadOtp(await assertOwnsRequestId(req)) });
 }
 export async function smsCancelHandler(req: Request, res: Response): Promise<void> {
-  res.json({ data: await accountsService.smsCancel(requireRequestId(req)) });
+  res.json({ data: await accountsService.smsCancel(await assertOwnsRequestId(req)) });
 }
 
 // ── Mail (catchmail) ─────────────────────────────────────────────────────────

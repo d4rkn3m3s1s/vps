@@ -33,7 +33,7 @@ export class AnalyticsService {
     const wsJob = workspaceId ? { workspaceId } : {};
     const wsFarm = workspaceId ? { workspaceId } : {};
 
-    const [devices, onlineDevices, jobs, farmAccounts, usage] = await Promise.all([
+    const [devices, onlineDevices, jobs, farmAccounts] = await Promise.all([
       prisma.device.count(workspaceId ? { where: { workspaceId } } : undefined),
       prisma.device.count({ where: { status: 'ONLINE', ...(workspaceId ? { workspaceId } : {}) } }),
       // Only the createdAt slice is materialized (needed for the per-day
@@ -47,16 +47,14 @@ export class AnalyticsService {
       prisma.farmAccount.findMany({
         where: wsFarm,
         select: { platform: true, healthScore: true, warmupStage: true, deviceId: true }
-      }),
-      prisma.deviceUsage.findMany({
-        where: { day: { gte: since }, ...(workspaceId ? { device: { workspaceId } } : {}) },
-        select: { deviceId: true, onlineMinutes: true, device: { select: { name: true } } }
       })
     ]);
 
     const jobsCompleted = jobs.filter((j) => j.status === 'COMPLETED').length;
     const jobsFailed = jobs.filter((j) => j.status === 'FAILED').length;
-    const onlineMinutes = usage.reduce((s, u) => s + u.onlineMinutes, 0);
+    // Online-minute metering was removed with the usage module; there is no live
+    // per-device online-minute rollup to aggregate, so this is 0 for now.
+    const onlineMinutes = 0;
     const avgHealthScore =
       farmAccounts.length > 0
         ? Math.round(farmAccounts.reduce((s, a) => s + a.healthScore, 0) / farmAccounts.length)
@@ -125,19 +123,9 @@ export class AnalyticsService {
       avgWarmupStage: v.accounts > 0 ? Number((v.warmup / v.accounts).toFixed(1)) : 0
     }));
 
-    // Top devices by online minutes + job count.
-    const jobsByDevice = new Map<string, number>();
-    // jobs don't carry deviceId in this lightweight select; derive activity from usage.
-    const deviceAgg = new Map<string, { name: string; onlineMinutes: number }>();
-    for (const u of usage) {
-      const cur = deviceAgg.get(u.deviceId) ?? { name: u.device?.name ?? u.deviceId, onlineMinutes: 0 };
-      cur.onlineMinutes += u.onlineMinutes;
-      deviceAgg.set(u.deviceId, cur);
-    }
-    const topDevices = Array.from(deviceAgg.entries())
-      .map(([deviceId, v]) => ({ deviceId, name: v.name, onlineMinutes: v.onlineMinutes, jobs: jobsByDevice.get(deviceId) ?? 0 }))
-      .sort((a, b) => b.onlineMinutes - a.onlineMinutes)
-      .slice(0, 5);
+    // Top-devices-by-online-minutes went away with the usage module (no live
+    // online-minute rollup to rank on), so this list is empty for now.
+    const topDevices: AnalyticsSummary['topDevices'] = [];
 
     return { totals, byJobType, timeline, farmByProvider, topDevices };
   }

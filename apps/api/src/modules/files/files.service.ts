@@ -5,9 +5,8 @@ import { createJobRecord } from '../jobs/jobs.service';
 
 export type PushFileInput = {
   deviceIds: string[];
-  // Either a direct URL or a Library asset id.
-  url?: string | undefined;
-  libraryAssetId?: string | undefined;
+  // Direct URL to the file the host agent should fetch + push.
+  url: string;
   // Destination on the phone: gallery (DCIM), downloads, or a raw path.
   destination?: 'gallery' | 'downloads' | undefined;
   fileName?: string | undefined;
@@ -20,23 +19,12 @@ export class FilesService {
       throw new AppError('At least one device is required', 400, 'NO_DEVICES');
     }
 
-    let url = input.url;
-    let fileName = input.fileName;
+    const url = input.url;
+    const fileName = input.fileName;
 
-    if (input.libraryAssetId) {
-      // Workspace-scoped: cannot pull another tenant's library asset by id.
-      const asset = await prisma.libraryAsset.findFirst({
-        where: { id: input.libraryAssetId, ...(workspaceId ? { workspaceId } : {}) }
-      });
-      if (!asset) throw new AppError('Library asset not found', 404, 'ASSET_NOT_FOUND');
-      url = asset.url ?? url;
-      fileName = fileName ?? asset.name;
-    }
-
-    if (!url) throw new AppError('A file URL or library asset is required', 400, 'NO_SOURCE');
-    // SSRF guard: the host agent fetches this URL server-side. Skip the check for
-    // library-asset URLs (those are operator-curated, not arbitrary user input).
-    if (input.url && !input.libraryAssetId) await assertSafePublicUrl(input.url);
+    if (!url) throw new AppError('A file URL is required', 400, 'NO_SOURCE');
+    // SSRF guard: the host agent fetches this URL server-side.
+    await assertSafePublicUrl(url);
 
     // Validate devices exist AND belong to the caller's workspace (prevents
     // pushing files onto another tenant's devices).

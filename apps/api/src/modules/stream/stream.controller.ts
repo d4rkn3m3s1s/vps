@@ -14,10 +14,14 @@ export async function streamTokenHandler(req: Request, res: Response): Promise<v
   const workspaceId = getWorkspaceId(req);
   const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { id: true, hostId: true, workspaceId: true } });
   if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
-  if (workspaceId && device.workspaceId && device.workspaceId !== workspaceId) {
+  if (!req.auth?.userId) throw new AppError('Unauthorized', 401, 'UNAUTHORIZED');
+  // FAIL-CLOSED: mint a stream token only when the caller has a workspace, the device
+  // has one, and they match. The old `workspaceId && device.workspaceId && ...` guard
+  // skipped entirely when either was null → a workspace-less token could stream+control
+  // any (or any null-workspace) device. Same fix as stream.hub handleViewerUpgrade.
+  if (!workspaceId || !device.workspaceId || device.workspaceId !== workspaceId) {
     throw new AppError('Device not in your workspace', 403, 'FORBIDDEN');
   }
-  if (!req.auth?.userId) throw new AppError('Unauthorized', 401, 'UNAUTHORIZED');
 
   const token = signAccessToken({
     sub: req.auth.userId,

@@ -42,14 +42,6 @@ const deviceUpdateSchema = deviceCreateSchema.partial().extend({
   tags: z.array(z.string().max(32)).max(20).optional()
 });
 
-const deviceHeartbeatSchema = z.object({
-  status: z.enum(['ONLINE', 'OFFLINE', 'STARTING', 'STOPPING', 'ERROR', 'UPDATING', 'REBOOTING']).optional(),
-  cpuUsage: z.coerce.number().min(0).max(100).optional(),
-  memoryUsage: z.coerce.number().min(0).max(100).optional(),
-  diskUsage: z.coerce.number().min(0).max(100).optional(),
-  lastSeen: z.string().datetime().optional()
-});
-
 const groupCreateSchema = z.object({
   name: z.string().min(2),
   description: z.string().optional()
@@ -320,14 +312,6 @@ export async function deleteDeviceHandler(req: Request, res: Response): Promise<
     userAgent: req.get('user-agent') ?? undefined
   });
   res.status(204).send();
-}
-
-export async function heartbeatDeviceHandler(req: Request, res: Response): Promise<void> {
-  const input = deviceHeartbeatSchema.parse(req.body);
-  const id = requireDeviceId(req);
-  const data = await deviceService.heartbeat(id, input);
-  deviceHub.broadcast({ type: 'device.heartbeat', deviceId: id, payload: data, timestamp: new Date().toISOString() });
-  res.json({ data });
 }
 
 export async function listGroupsHandler(req: Request, res: Response): Promise<void> {

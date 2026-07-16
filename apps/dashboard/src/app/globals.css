@@ -2,12 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Display typeface — SELF-HOSTED Space Grotesk ──────────────────────────────
+   The dev server runs offline (WSL, no internet) so next/font/google + external
+   <link> stylesheets can't load. We self-host a variable Space Grotesk (400–700,
+   latin + latin-ext for full Turkish glyphs: ş ğ ı ç ö ü) from /public/fonts, so
+   headings get a real geometric-technical DISPLAY face — the ".holo-title looks
+   like Segoe UI" problem is gone — with zero network dependency. Body copy stays
+   on the system stack (fast, native, perfectly legible); only titles/brand/eyebrows
+   use --font-display. ~41 KB total, cached forever. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/space-grotesk-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/space-grotesk-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
-  /* ── Font stacks — SYSTEM fonts, no network dependency ─────────────────────
-     The dev server runs offline (WSL, no internet) so Google Fonts can't load.
-     These modern OS font stacks render natively everywhere (Segoe UI on Windows,
-     SF on macOS, etc.) with crisp quality and zero load time. CSS rules that name
-     'Inter'/'Manrope' fall through to --font-sans automatically. */
+  /* ── Font stacks — DISPLAY = self-hosted Space Grotesk, BODY = system ─────────
+     --font-display drives titles/brand/eyebrows (real geometric display face).
+     --font-sans is a modern OS stack for body copy — always renders, offline, with
+     native quality. Legacy CSS naming 'Inter'/'Manrope' now resolves to
+     --font-display where it meant a display face, --font-sans otherwise. */
+  --font-display: 'Space Grotesk', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
   --font-sans: 'Segoe UI Variable Display', 'Segoe UI', system-ui, -apple-system,
     'Helvetica Neue', 'Roboto', 'Inter', Arial, sans-serif;
   --font-mono: ui-monospace, 'Cascadia Code', 'Cascadia Mono', 'SFMono-Regular',
@@ -89,8 +115,27 @@
   /* The signature double-bezel: top inner highlight + bottom inner shade + lift */
   --bezel: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -1px 0 rgba(0, 0, 0, 0.55);
 
+  /* Radius scale — was just two values (18/12) while the code used 10/14/16/22/24/28px
+     ad-hoc. These give new code a consistent corner ladder to pull from. --radius and
+     --radius-sm keep their original values so nothing existing shifts. */
   --radius: 18px;
   --radius-sm: 12px;
+  --radius-xs: 8px;
+  --radius-md: 14px;
+  --radius-lg: 22px;
+  --radius-pill: 999px;
+
+  /* Spacing scale — 4px base. The codebase writes raw rem everywhere (0.4/0.5/0.85/
+     1.25rem…); this ladder is here so NEW code keeps a predictable vertical rhythm.
+     Adopt gradually — no need to rewrite existing rules. */
+  --space-1: 0.25rem;   /* 4  */
+  --space-2: 0.5rem;    /* 8  */
+  --space-3: 0.75rem;   /* 12 */
+  --space-4: 1rem;      /* 16 */
+  --space-5: 1.25rem;   /* 20 */
+  --space-6: 1.5rem;    /* 24 */
+  --space-8: 2rem;      /* 32 */
+  --space-10: 2.5rem;   /* 40 */
 
   /* Motion tokens — custom curves only, GPU props only (transform/opacity) */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -557,7 +602,7 @@ main {
   height: 38px;
   border-radius: 12px;
   font-weight: 800;
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   color: #fff;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   box-shadow: 0 8px 24px rgba(239, 35, 60, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
@@ -1189,8 +1234,8 @@ main {
   white-space: nowrap;
 }
 .card-action-btn:hover:not(:disabled) {
-  background: rgba(99, 102, 241, 0.14);
-  border-color: rgba(99, 102, 241, 0.5);
+  background: var(--fill-accent-soft);
+  border-color: var(--border-accent-strong);
   transform: translateY(-1px);
 }
 .card-action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -1246,7 +1291,7 @@ main {
   cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .proxy-tab:hover { color: var(--text, #e2e8f0); }
-.proxy-tab.is-active { color: var(--accent, #818cf8); border-bottom-color: var(--accent, #6366f1); }
+.proxy-tab.is-active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* Country picker grid (provider tab). */
 .proxy-country-grid {
@@ -1265,8 +1310,8 @@ main {
   cursor: pointer; font: inherit; text-align: left;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
-.proxy-country-cell:hover { border-color: rgba(99,102,241,0.45); transform: translateY(-1px); }
-.proxy-country-cell.is-selected { border-color: var(--accent, #6366f1); background: rgba(99,102,241,0.14); }
+.proxy-country-cell:hover { border-color: var(--border-accent); transform: translateY(-1px); }
+.proxy-country-cell.is-selected { border-color: var(--accent); background: var(--fill-accent-soft); }
 .proxy-country-cell .proxy-flag { font-size: 1.2rem; }
 .proxy-country-name { flex: 1; font-size: 0.8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-country-code { font-size: 0.66rem; color: var(--muted); }
@@ -1303,15 +1348,15 @@ main {
   background: rgba(255,255,255,0.015); cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
-.proxy-row:hover { border-color: rgba(99,102,241,0.4); }
-.proxy-row.is-selected { border-color: var(--accent, #6366f1); background: rgba(99,102,241,0.1); }
-.proxy-row input[type="radio"] { accent-color: var(--accent, #6366f1); }
+.proxy-row:hover { border-color: var(--border-accent); }
+.proxy-row.is-selected { border-color: var(--accent); background: var(--fill-accent-soft); }
+.proxy-row input[type="radio"] { accent-color: var(--accent); }
 .proxy-row-main { flex: 1; min-width: 0; }
 .proxy-row-label { font-size: 0.86rem; display: flex; align-items: center; gap: 0.4rem; }
 .proxy-row-sub { font-size: 0.72rem; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .proxy-current-tag {
   font-size: 0.62rem; font-weight: 700; padding: 0.02rem 0.35rem; border-radius: 4px;
-  background: rgba(99,102,241,0.2); color: #a5b4fc;
+  background: var(--fill-accent-med); color: var(--accent-3);
 }
 .proxy-status {
   display: inline-flex; align-items: center; gap: 0.25rem;
@@ -1323,9 +1368,9 @@ main {
 .proxy-verify-btn {
   font: inherit; font-size: 0.7rem; padding: 0.2rem 0.5rem;
   border: 1px solid var(--panel-border); border-radius: 6px;
-  background: transparent; color: var(--accent, #818cf8); cursor: pointer; white-space: nowrap;
+  background: transparent; color: var(--accent); cursor: pointer; white-space: nowrap;
 }
-.proxy-verify-btn:hover { background: rgba(99,102,241,0.12); }
+.proxy-verify-btn:hover { background: var(--fill-accent-soft); }
 .proxy-verify-res {
   display: inline-flex; align-items: center; gap: 0.25rem;
   font-size: 0.68rem; white-space: nowrap; max-width: 150px;
@@ -3418,7 +3463,7 @@ input[type='date'] {
 }
 
 .font-podium {
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   font-weight: 800;
   letter-spacing: -0.03em;
 }
@@ -3503,7 +3548,7 @@ input[type='date'] {
   letter-spacing: 0.22em;
 }
 .ov-metric .metric-value {
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   font-size: clamp(2.2rem, 4vw, 3rem);
   line-height: 1;
   letter-spacing: 0;
@@ -3516,7 +3561,7 @@ input[type='date'] {
 
 /* Panel headings: PODIUM display, tighter and more "branded". */
 .ov-panel h2 {
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   font-size: 1.15rem;
   letter-spacing: 0.04em;
   color: var(--text);
@@ -5166,7 +5211,7 @@ textarea:focus-visible {
    ════════════════════════════════════════════════════════════════════════════ */
 .page-title,
 .hero-title {
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: -0.02em;
@@ -5175,7 +5220,7 @@ textarea:focus-visible {
   animation: fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Manrope ExtraBold display — give page titles a touch more size + a faint
+/* Space Grotesk display — give page titles a touch more size + a faint
    crimson-gradient ink so they read as the page's banner, like the hero's H1. */
 .page-title {
   font-size: clamp(1.8rem, 2.8vw, 2.5rem);
@@ -6248,10 +6293,10 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
   overflow: hidden;
   transform-style: preserve-3d;
 }
-/* holographic sheen along the top edge */
+/* holographic sheen along the top edge — single crimson signature (was blue+crimson) */
 .holo-panel::before {
   content: ''; position: absolute; inset: 0 0 auto 0; height: 1px; z-index: 2;
-  background: linear-gradient(90deg, transparent, rgba(120, 170, 255, 0.5), rgba(239, 35, 60, 0.4), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 77, 94, 0.55), rgba(239, 35, 60, 0.35), transparent);
   opacity: 0.7;
 }
 /* faint holo gradient wash */
@@ -6261,20 +6306,20 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 }
 .holo-panel > * { position: relative; z-index: 1; }
 
-/* corner brackets */
+/* corner brackets — crimson HUD (single-signature RED NOIR, was blue) */
 .holo-corner {
   position: absolute; width: 13px; height: 13px; z-index: 3; pointer-events: none;
-  border-color: rgba(120, 170, 255, 0.55); border-style: solid; border-width: 0;
+  border-color: rgba(239, 35, 60, 0.55); border-style: solid; border-width: 0;
 }
 .holo-corner-tl { top: 7px; left: 7px; border-top-width: 1.5px; border-left-width: 1.5px; border-top-left-radius: 4px; }
 .holo-corner-tr { top: 7px; right: 7px; border-top-width: 1.5px; border-right-width: 1.5px; border-top-right-radius: 4px; }
 .holo-corner-bl { bottom: 7px; left: 7px; border-bottom-width: 1.5px; border-left-width: 1.5px; border-bottom-left-radius: 4px; }
 .holo-corner-br { bottom: 7px; right: 7px; border-bottom-width: 1.5px; border-right-width: 1.5px; border-bottom-right-radius: 4px; }
 
-/* scan sweep */
+/* scan sweep — crimson tint (was blue) */
 .holo-scan {
   position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: 0.6;
-  background: linear-gradient(115deg, transparent 40%, rgba(120, 170, 255, 0.05) 50%, transparent 60%);
+  background: linear-gradient(115deg, transparent 40%, rgba(239, 35, 60, 0.055) 50%, transparent 60%);
   background-size: 300% 100%;
   animation: holo-scan 7s linear infinite;
 }
@@ -6313,11 +6358,24 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 }
 .holo-title {
   margin: 0;
-  font-family: 'Manrope', var(--font-sans), sans-serif;
+  font-family: var(--font-display);
   font-size: clamp(1.7rem, 2.6vw, 2.4rem);
+  font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.01em; line-height: 0.98;
-  background: linear-gradient(120deg, var(--text) 35%, var(--accent-3) 75%, var(--accent-cyan));
-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  /* Single-signature crimson holograph: text → coral-red highlight → deep crimson,
+     with a wide gradient that drifts slowly for a subtle holographic shimmer.
+     Restrained (18s, low travel) so it reads as premium sheen, not a light show. */
+  background: linear-gradient(110deg, var(--text) 20%, var(--accent-3) 50%, var(--accent) 68%, var(--text) 90%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  animation: holo-title-sheen 18s ease-in-out infinite;
+}
+@keyframes holo-title-sheen {
+  0%, 100% { background-position: 0% 0; }
+  50% { background-position: 100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .holo-title { animation: none; background-position: 0% 0; }
 }
 .holo-subtitle { margin: 0.5rem 0 0; color: var(--muted); font-size: 0.9rem; }
 .holo-header-actions { display: inline-flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
@@ -6365,6 +6423,24 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 }
 .holo-stat-sub { position: relative; z-index: 1; margin-top: 0.45rem; font-size: 0.72rem; color: var(--text-faint); }
 .holo-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1.1rem; }
+/* Staggered entrance for KPI tiles — each tile rises in just after the previous,
+   so a metric row "assembles" instead of popping all at once. GPU-only (opacity+
+   transform), one-shot (forwards), and fully disabled under reduced-motion. Delays
+   are capped at the 6th tile so a wide grid never feels slow. */
+.holo-stats-grid > * { animation: tile-rise 0.5s var(--ease-out) both; }
+.holo-stats-grid > *:nth-child(1) { animation-delay: 0.02s; }
+.holo-stats-grid > *:nth-child(2) { animation-delay: 0.07s; }
+.holo-stats-grid > *:nth-child(3) { animation-delay: 0.12s; }
+.holo-stats-grid > *:nth-child(4) { animation-delay: 0.17s; }
+.holo-stats-grid > *:nth-child(5) { animation-delay: 0.22s; }
+.holo-stats-grid > *:nth-child(n+6) { animation-delay: 0.27s; }
+@keyframes tile-rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .holo-stats-grid > * { animation: none; }
+}
 
 /* ── holo tabs ── */
 .holo-tabs {
@@ -7236,7 +7312,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 }
 .rn-brand { display: flex; align-items: center; gap: 0.5rem; text-decoration: none; color: #fff; }
 .rn-brand-mark { width: 20px; height: 20px; background: #ef233c; border-radius: 4px; transform: rotate(45deg); }
-.rn-brand-name { font-family: 'Manrope', sans-serif; font-size: 1.125rem; font-weight: 700; letter-spacing: -0.02em; color: #fff; }
+.rn-brand-name { font-family: var(--font-display); font-size: 1.125rem; font-weight: 700; letter-spacing: -0.02em; color: #fff; }
 .rn-brand-name-lg { font-size: 1.5rem; }
 .rn-nav-links { display: none; align-items: center; gap: 2rem; }
 .rn-nav-link { font-size: 0.875rem; font-weight: 500; color: #a1a1aa; text-decoration: none; transition: color 0.2s; }
@@ -7273,9 +7349,9 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-badge-pulse { position: relative; display: flex; height: 8px; width: 8px; }
 .rn-badge-ping { position: absolute; inline-size: 100%; block-size: 100%; border-radius: 9999px; background: #ff4d5e; opacity: 0.75; animation: rn-ping 1.4s cubic-bezier(0,0,0.2,1) infinite; }
 .rn-badge-dot { position: relative; display: inline-flex; height: 8px; width: 8px; border-radius: 9999px; background: #ef233c; }
-.rn-badge-text { font-family: 'Manrope', sans-serif; font-size: 0.75rem; font-weight: 500; letter-spacing: 0.02em; color: rgba(255,220,224,0.9); }
+.rn-badge-text { font-family: var(--font-display); font-size: 0.75rem; font-weight: 500; letter-spacing: 0.02em; color: rgba(255,220,224,0.9); }
 .rn-badge-arrow { color: #ff4d5e; }
-.rn-hero-title { font-family: 'Manrope', sans-serif; font-size: clamp(2.75rem, 8vw, 6rem); font-weight: 600; letter-spacing: -0.04em; line-height: 1.08; margin: 0 0 2rem; }
+.rn-hero-title { font-family: var(--font-display); font-size: clamp(2.75rem, 8vw, 6rem); font-weight: 600; letter-spacing: -0.04em; line-height: 1.08; margin: 0 0 2rem; }
 .rn-hero-line { display: block; color: transparent; background-clip: text; -webkit-background-clip: text;
   background-image: linear-gradient(to bottom, #fff, #fff 60%, rgba(255,255,255,0.4)); }
 .rn-hero-accent { color: #ef233c; display: inline-block; position: relative; }
@@ -7304,13 +7380,13 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-logos-inner { max-width: 80rem; margin: 0 auto; padding: 0 1.5rem; display: flex; flex-direction: column; align-items: center; gap: 2rem; }
 .rn-logos-label { font-size: 0.875rem; font-weight: 700; letter-spacing: 0.1em; color: #71717a; text-transform: uppercase; flex-shrink: 0; }
 .rn-logos-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 2rem; align-items: center; width: 100%; }
-.rn-logo-item { display: flex; align-items: center; gap: 0.5rem; font-family: 'Manrope', sans-serif; font-weight: 600; color: #d4d4d8; }
+.rn-logo-item { display: flex; align-items: center; gap: 0.5rem; font-family: var(--font-display); font-weight: 600; color: #d4d4d8; }
 .rn-logo-dot { width: 24px; height: 24px; background: rgba(255,255,255,0.2); border-radius: 9999px; }
 
 /* Sections */
 .rn-section { padding: 8rem 1.5rem; max-width: 80rem; margin: 0 auto; }
 .rn-section-head { margin-bottom: 5rem; text-align: center; max-width: 48rem; margin-left: auto; margin-right: auto; }
-.rn-h2 { font-family: 'Manrope', sans-serif; font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; color: #fff; letter-spacing: -0.02em; margin: 0 0 1.5rem; line-height: 1.15; }
+.rn-h2 { font-family: var(--font-display); font-size: clamp(2rem, 5vw, 3rem); font-weight: 600; color: #fff; letter-spacing: -0.02em; margin: 0 0 1.5rem; line-height: 1.15; }
 .rn-accent { color: #ef233c; }
 .rn-section-sub { font-size: 1.125rem; color: #a1a1aa; font-weight: 300; margin: 0; }
 
@@ -7324,11 +7400,11 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-card-icon { margin-bottom: 1.5rem; display: inline-flex; align-self: flex-start; padding: 0.75rem; border-radius: 0.5rem;
   background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); }
 .rn-icon-red { color: #ef233c; } .rn-icon-blue { color: #ff6b7a; } .rn-icon-yellow { color: #ffb020; } .rn-icon-violet { color: #ff4d5e; }
-.rn-card-title-lg { font-family: 'Manrope', sans-serif; font-size: 1.875rem; font-weight: 600; color: #fff; letter-spacing: -0.02em; margin: 0 0 1rem; }
+.rn-card-title-lg { font-family: var(--font-display); font-size: 1.875rem; font-weight: 600; color: #fff; letter-spacing: -0.02em; margin: 0 0 1rem; }
 .rn-card-text-lg { color: #a1a1aa; font-size: 1.125rem; line-height: 1.6; margin: 0; }
-.rn-card-title { font-family: 'Manrope', sans-serif; font-size: 1.5rem; font-weight: 600; color: #fff; margin: 0 0 0.5rem; }
+.rn-card-title { font-family: var(--font-display); font-size: 1.5rem; font-weight: 600; color: #fff; margin: 0 0 0.5rem; }
 .rn-card-text { color: #a1a1aa; margin: 0; }
-.rn-card-title-sm { font-family: 'Manrope', sans-serif; font-size: 1.25rem; font-weight: 600; color: #fff; margin: 0 0 0.5rem; }
+.rn-card-title-sm { font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; color: #fff; margin: 0 0 0.5rem; }
 .rn-card-text-sm { font-size: 0.875rem; color: #a1a1aa; margin: 0; }
 .rn-card-go { margin-top: auto; display: flex; align-items: center; justify-content: space-between; opacity: 0; transform: translateY(8px); transition: all 0.3s; padding-top: 1.5rem; }
 .rn-card-go span { font-family: ui-monospace, monospace; font-size: 0.75rem; color: #ef233c; letter-spacing: 0.05em; }
@@ -7343,7 +7419,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-testimonial { width: 100%; background: #ef233c; padding: 5rem 1.5rem; }
 .rn-testimonial-inner { max-width: 56rem; margin: 0 auto; text-align: center; }
 .rn-stars-row { display: flex; justify-content: center; gap: 0.25rem; color: #000; margin-bottom: 1.5rem; }
-.rn-testimonial-quote { font-family: 'Manrope', sans-serif; font-size: clamp(1.5rem, 4vw, 3rem); font-weight: 700; color: #000; line-height: 1.25; margin: 0 0 2rem; }
+.rn-testimonial-quote { font-family: var(--font-display); font-size: clamp(1.5rem, 4vw, 3rem); font-weight: 700; color: #000; line-height: 1.25; margin: 0 0 2rem; }
 .rn-testimonial-author { display: flex; align-items: center; justify-content: center; gap: 1rem; }
 .rn-testimonial-avatar { width: 48px; height: 48px; background: #000; border-radius: 9999px; display: flex; align-items: center; justify-content: center; color: #fff; }
 .rn-testimonial-meta { text-align: left; }
@@ -7357,7 +7433,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-plan:hover { border-color: #3f3f46; }
 .rn-plan-pro { position: relative; border-color: #ef233c; background: rgba(24,24,27,0.4); box-shadow: 0 0 30px rgba(239,35,60,0.12); }
 .rn-plan-badge { position: absolute; top: -0.75rem; left: 50%; transform: translateX(-50%); background: #ef233c; color: #fff; font-size: 0.625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; padding: 0.25rem 0.75rem; border-radius: 9999px; }
-.rn-plan-name { font-family: 'Manrope', sans-serif; font-size: 1.25rem; font-weight: 700; color: #fff; margin: 0 0 0.5rem; }
+.rn-plan-name { font-family: var(--font-display); font-size: 1.25rem; font-weight: 700; color: #fff; margin: 0 0 0.5rem; }
 .rn-plan-desc { color: #71717a; font-size: 0.875rem; margin: 0 0 2rem; min-height: 2.5rem; }
 .rn-plan-price { margin-bottom: 2rem; display: flex; align-items: baseline; gap: 0.25rem; }
 .rn-plan-cur { color: #71717a; }
@@ -7374,7 +7450,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 /* Waitlist */
 .rn-waitlist { padding: 8rem 1.5rem; text-align: center; background: rgba(9,9,11,0.4); }
 .rn-waitlist-inner { max-width: 48rem; margin: 0 auto; }
-.rn-waitlist-title { font-family: 'Manrope', sans-serif; font-size: clamp(2.5rem, 7vw, 4.5rem); font-weight: 700; letter-spacing: -0.04em; margin: 0 0 2rem; color: #fff; }
+.rn-waitlist-title { font-family: var(--font-display); font-size: clamp(2.5rem, 7vw, 4.5rem); font-weight: 700; letter-spacing: -0.04em; margin: 0 0 2rem; color: #fff; }
 .rn-waitlist-sub { font-size: 1.25rem; color: #a1a1aa; margin: 0 0 3rem; }
 .rn-waitlist-form { max-width: 28rem; margin: 0 auto; display: flex; flex-direction: column; gap: 1rem; }
 .rn-waitlist-input { flex: 1; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 9999px; padding: 1rem 1.5rem; color: #fff; outline: none; transition: border-color 0.2s; }
@@ -7393,7 +7469,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .rn-footer-col a { color: #a1a1aa; font-size: 0.875rem; text-decoration: none; transition: color 0.2s; }
 .rn-footer-col a:hover { color: #fff; }
 .rn-footer-mega { display: flex; justify-content: center; align-items: center; padding: 2.5rem 0; opacity: 0.2; pointer-events: none; }
-.rn-footer-wordmark { font-family: 'Manrope', sans-serif; font-size: 15vw; line-height: 1; font-weight: 700; letter-spacing: -0.04em; -webkit-text-stroke: 1px rgba(255,255,255,0.1); color: transparent; margin: 0; user-select: none; white-space: nowrap; }
+.rn-footer-wordmark { font-family: var(--font-display); font-size: 15vw; line-height: 1; font-weight: 700; letter-spacing: -0.04em; -webkit-text-stroke: 1px rgba(255,255,255,0.1); color: transparent; margin: 0; user-select: none; white-space: nowrap; }
 .rn-footer-bar { max-width: 80rem; margin: 0 auto; padding: 2rem 1.5rem 0; border-top: 1px solid #18181b; display: flex; flex-direction: column; gap: 1rem; align-items: center; justify-content: space-between; color: #52525b; font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.1em; }
 .rn-footer-social { display: flex; gap: 1.5rem; }
 .rn-footer-social a { color: #52525b; text-decoration: none; }
@@ -7464,7 +7540,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
   display: inline-flex; align-items: center; gap: 0.6rem; margin-bottom: 1.75rem;
   font-size: 0.7rem; font-weight: 600; letter-spacing: 0.18em; color: rgba(255,200,205,0.85);
 }
-.lg-title { font-family: 'Manrope', sans-serif; font-size: clamp(3rem, 6vw, 5rem); font-weight: 700; letter-spacing: -0.04em; line-height: 0.95; margin: 0; }
+.lg-title { font-family: var(--font-display); font-size: clamp(3rem, 6vw, 5rem); font-weight: 700; letter-spacing: -0.04em; line-height: 0.95; margin: 0; }
 .lg-lead { margin: 1.75rem 0 0; max-width: 28rem; font-size: 1.05rem; line-height: 1.65; color: #a1a1aa; }
 .lg-lead strong { color: #fff; font-weight: 700; }
 .lg-pills { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 2rem; }
@@ -7487,7 +7563,7 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
   position: absolute; top: -40%; right: -30%; width: 380px; height: 380px; border-radius: 50%;
   background: radial-gradient(circle, rgba(239,35,60,0.18), transparent 70%); pointer-events: none;
 }
-.lg-card-title { position: relative; font-family: 'Manrope', sans-serif; font-size: 1.75rem; font-weight: 700; color: #fff; margin: 0; }
+.lg-card-title { position: relative; font-family: var(--font-display); font-size: 1.75rem; font-weight: 700; color: #fff; margin: 0; }
 .lg-card-sub { position: relative; margin: 0.5rem 0 0; font-size: 0.875rem; color: #a1a1aa; }
 
 .lg-field { position: relative; display: block; margin-top: 1.25rem; }

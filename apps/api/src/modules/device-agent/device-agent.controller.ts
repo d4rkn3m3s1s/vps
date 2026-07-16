@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { getWorkspaceId } from '../../lib/workspaceContext';
+import { getWorkspaceId, requireWorkspaceId } from '../../lib/workspaceContext';
+import { prisma } from '../../db/prisma';
 import { writeAuditLog } from '../audit/audit.service';
 import { getJob } from '../jobs/jobs.service';
 import { deviceAgentService } from './device-agent.service';
@@ -28,7 +29,11 @@ export async function statusHandler(_req: Request, res: Response): Promise<void>
 
 export async function startRunHandler(req: Request, res: Response): Promise<void> {
   const parsed = runSchema.parse(req.body);
-  const workspaceId = getWorkspaceId(req);
+  // Fail-CLOSED: a device-scoped AI run REQUIRES a workspace. With getWorkspaceId a
+  // workspace-less token yielded workspaceId=undefined, and the service then dropped
+  // the workspace filter on the device lookup — letting such a token start an agent
+  // that taps/types on ANOTHER tenant's phone. requireWorkspaceId rejects that.
+  const workspaceId = requireWorkspaceId(req);
   const data = await deviceAgentService.startRun({
     deviceId: parsed.deviceId,
     goal: parsed.goal,
@@ -79,7 +84,9 @@ export async function cancelRunHandler(req: Request, res: Response): Promise<voi
 
 export async function exploreHandler(req: Request, res: Response): Promise<void> {
   const parsed = exploreSchema.parse(req.body);
-  const workspaceId = getWorkspaceId(req);
+  // Fail-CLOSED like startRun: dispatching an APP_EXPLORE crawl at a device requires
+  // a workspace, so a workspace-less token can't target another tenant's phone.
+  const workspaceId = requireWorkspaceId(req);
   const data = await deviceAgentService.explore({
     deviceId: parsed.deviceId,
     packageName: parsed.packageName,
@@ -108,10 +115,18 @@ export async function saveMapHandler(req: Request, res: Response): Promise<void>
     res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'deviceId ve jobId gerekli' } });
     return;
   }
-  // Ensure the job belongs to this workspace before persisting.
+  // Ensure the job belongs to this workspace before persisting (fail-closed: reject
+  // when either the job or the caller has no workspace, not just on a mismatch).
   const job = await getJob(jobId);
-  if (!job || (workspaceId && job.workspaceId && job.workspaceId !== workspaceId)) {
+  if (!job || !workspaceId || !job.workspaceId || job.workspaceId !== workspaceId) {
     res.status(404).json({ error: { code: 'JOB_NOT_FOUND', message: 'İş bulunamadı' } });
+    return;
+  }
+  // The AppMap is keyed by deviceId — verify that device is in the caller's workspace
+  // too, so a foreign deviceId can't be written under this workspace's map.
+  const ownedDevice = await prisma.device.findFirst({ where: { id: deviceId, workspaceId }, select: { id: true } });
+  if (!ownedDevice) {
+    res.status(404).json({ error: { code: 'DEVICE_NOT_FOUND', message: 'Cihaz bulunamadı' } });
     return;
   }
   const data = await deviceAgentService.saveMapFromJob(workspaceId, deviceId, jobId);

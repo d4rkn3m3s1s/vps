@@ -207,21 +207,27 @@ async function postToChannel(
 }
 
 // Broadcast a message to every ACTIVE channel of a workspace. Best-effort:
-// per-channel failures are swallowed so alert firing is never blocked.
+// per-channel failures are swallowed so alert firing is never blocked. The OUTER
+// findMany is wrapped too — callers void this without a .catch(), so a DB hiccup
+// here would otherwise surface as an unhandledRejection and crash the process.
 export async function dispatch(workspaceId: string, message: DispatchMessage): Promise<void> {
-  const rows = await prisma.notificationChannel.findMany({
-    where: { active: true, ...(workspaceId ? { workspaceId } : {}) }
-  });
-  await Promise.all(
-    rows.map(async (row) => {
-      try {
-        const config = JSON.parse(decryptString(row.configEnc)) as ChannelConfig;
-        await postToChannel(row.type as ChannelType, config, message);
-      } catch {
-        // swallow — best effort
-      }
-    })
-  );
+  try {
+    const rows = await prisma.notificationChannel.findMany({
+      where: { active: true, ...(workspaceId ? { workspaceId } : {}) }
+    });
+    await Promise.all(
+      rows.map(async (row) => {
+        try {
+          const config = JSON.parse(decryptString(row.configEnc)) as ChannelConfig;
+          await postToChannel(row.type as ChannelType, config, message);
+        } catch {
+          // swallow — best effort
+        }
+      })
+    );
+  } catch {
+    // swallow — notification dispatch must never break the caller (alerts/agent)
+  }
 }
 
 export async function sendTest(

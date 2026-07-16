@@ -285,7 +285,10 @@ class ProvisionService {
         ? {
             country: input.proxyCountry.toUpperCase(),
             username: PROXY_USER,
-            password: PROXY_PASS,
+            // Carry the proxy password ENCRYPTED in the job payload; agent.service
+            // .materializePayload decrypts payload.proxy.passwordEnc at claim time, so
+            // the stored payload / GET /jobs/:id never expose the plaintext env secret.
+            passwordEnc: encryptString(PROXY_PASS),
             host: PROXY_HOST,
             port: PROXY_PORT
           }
@@ -309,7 +312,9 @@ class ProvisionService {
               host: proxy.host,
               port: proxy.port,
               username: proxy.username,
-              password: encryptString(proxy.password),
+              // proxy.passwordEnc is ALREADY AES-encrypted (the Proxy.password column
+              // stores ciphertext), so store it as-is — no double-encryption.
+              password: proxy.passwordEnc,
               group: 'residential',
               countryCode: proxy.country,
               ...(workspaceId ? { workspace: { connect: { id: workspaceId } } } : {})

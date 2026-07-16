@@ -4,15 +4,12 @@ import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { filesService } from './files.service';
 
-const pushSchema = z
-  .object({
-    deviceIds: z.array(z.string()).min(1),
-    url: z.string().url().optional(),
-    libraryAssetId: z.string().optional(),
-    destination: z.enum(['gallery', 'downloads']).optional(),
-    fileName: z.string().optional()
-  })
-  .refine((v) => v.url || v.libraryAssetId, { message: 'url or libraryAssetId is required' });
+const pushSchema = z.object({
+  deviceIds: z.array(z.string()).min(1),
+  url: z.string().url(),
+  destination: z.enum(['gallery', 'downloads']).optional(),
+  fileName: z.string().optional()
+});
 
 export async function pushFileHandler(req: Request, res: Response): Promise<void> {
   const input = pushSchema.parse(req.body);

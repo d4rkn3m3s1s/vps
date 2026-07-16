@@ -3,23 +3,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Send,
-  FolderDown,
   Link2,
   CheckSquare,
   Square,
   Smartphone,
   Target,
   Crosshair,
-  Library,
   Filter,
   HardDriveDownload
 } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
-import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
+import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 
 type Device = { id: string; name: string; status?: string; groupId?: string | null };
 type Group = { id: string; name: string };
-type Asset = { id: string; name: string; url?: string | null; type?: string };
 
 const STATUS_LABELS: Record<string, string> = {
   online: 'Çevrimiçi',
@@ -32,14 +29,11 @@ const STATUS_LABELS: Record<string, string> = {
 export function DistributeView() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
-  const [assets, setAssets] = useState<Asset[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
-  // Source: a library asset or a raw URL.
-  const [source, setSource] = useState<'library' | 'url'>('library');
-  const [assetId, setAssetId] = useState('');
+  // Source is a raw file URL that the host agent fetches + pushes.
   const [url, setUrl] = useState('');
   const [fileName, setFileName] = useState('');
   const [destination, setDestination] = useState<'gallery' | 'downloads'>('gallery');
@@ -53,21 +47,15 @@ export function DistributeView() {
   useEffect(() => {
     (async () => {
       try {
-        const [dRes, gRes, aRes] = await Promise.all([
+        const [dRes, gRes] = await Promise.all([
           fetch('/api/devices'),
-          fetch('/api/groups'),
-          fetch('/api/library')
+          fetch('/api/groups')
         ]);
-        const [dJson, gJson, aJson] = await Promise.all([dRes.json(), gRes.json(), aRes.json()]);
+        const [dJson, gJson] = await Promise.all([dRes.json(), gRes.json()]);
         if (Array.isArray(dJson.data)) setDevices(dJson.data);
         if (Array.isArray(gJson.data)) setGroups(gJson.data);
-        if (Array.isArray(aJson.data)) {
-          const onlyWithUrl = (aJson.data as Asset[]).filter((a) => a.url);
-          setAssets(onlyWithUrl);
-          if (onlyWithUrl[0]) setAssetId(onlyWithUrl[0].id);
-        }
       } catch {
-        flash('Cihazlar, gruplar veya kütüphane yüklenemedi.');
+        flash('Cihazlar veya gruplar yüklenemedi.');
       }
     })();
   }, []);
@@ -99,15 +87,9 @@ export function DistributeView() {
   async function distribute() {
     const deviceIds = Array.from(selected);
     if (deviceIds.length === 0) return flash('En az bir cihaz seçin.');
-    const body: Record<string, unknown> = { deviceIds, destination };
-    if (source === 'library') {
-      if (!assetId) return flash('Bir kütüphane öğesi seçin.');
-      body.libraryAssetId = assetId;
-    } else {
-      if (!url.trim()) return flash('Bir dosya URL adresi girin.');
-      body.url = url.trim();
-      if (fileName.trim()) body.fileName = fileName.trim();
-    }
+    if (!url.trim()) return flash('Bir dosya URL adresi girin.');
+    const body: Record<string, unknown> = { deviceIds, destination, url: url.trim() };
+    if (fileName.trim()) body.fileName = fileName.trim();
     setBusy(true);
     try {
       const res = await fetch('/api/files/push', {
@@ -133,7 +115,7 @@ export function DistributeView() {
       <HoloHeader
         eyebrow="DAĞITIM"
         title="Dosya dağıtımı"
-        subtitle="Bir dosyayı kütüphanenizden veya herhangi bir URL'den birçok bulut telefona aynı anda gönderin."
+        subtitle="Bir dosyayı herhangi bir URL'den birçok bulut telefona aynı anda gönderin."
       />
 
       <Reveal>
@@ -158,13 +140,6 @@ export function DistributeView() {
             sub="teslimat için kilitlendi"
             tone={selected.size > 0 ? 'success' : 'warning'}
             icon={<Crosshair size={16} />}
-          />
-          <HoloStat
-            label="Kütüphane öğesi"
-            value={<span className="mono">{assets.length}</span>}
-            sub="URL'li hazır varlık"
-            tone="violet"
-            icon={<Library size={16} />}
           />
         </div>
       </Reveal>
@@ -253,40 +228,17 @@ export function DistributeView() {
         {/* Source + send */}
         <Reveal delay={0.1}>
           <HoloPanel title="Gönderilecek dosya" icon={<Send size={16} />} tilt>
-            <HoloTabs<'library' | 'url'>
-              tabs={[
-                { key: 'library', label: 'Kütüphane', icon: <FolderDown size={14} /> },
-                { key: 'url', label: 'URL', icon: <Link2 size={14} /> }
-              ]}
-              active={source}
-              onChange={setSource}
-            />
-
-            {source === 'library' ? (
-              <div className="field distribute-field">
-                <label className="helper">Kütüphane öğesi</label>
-                {assets.length === 0 ? (
-                  <p className="helper">Henüz URL'si olan kütüphane öğesi yok. Kütüphaneye bir tane ekleyin veya bir URL kullanın.</p>
-                ) : (
-                  <select className="field-input" value={assetId} onChange={(e) => setAssetId(e.target.value)}>
-                    {assets.map((a) => (
-                      <option key={a.id} value={a.id}>{a.name}{a.type ? ` (${a.type})` : ''}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="field distribute-field">
-                  <label className="helper">Dosya URL</label>
-                  <input className="field-input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/photo.jpg" />
-                </div>
-                <div className="field distribute-field">
-                  <label className="helper">Dosya adı (isteğe bağlı)</label>
-                  <input className="field-input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="photo.jpg" />
-                </div>
-              </>
-            )}
+            <div className="field distribute-field">
+              <label className="helper">
+                <Link2 size={13} style={{ marginRight: 5, verticalAlign: 'middle', opacity: 0.8 }} />
+                Dosya URL
+              </label>
+              <input className="field-input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/photo.jpg" />
+            </div>
+            <div className="field distribute-field">
+              <label className="helper">Dosya adı (isteğe bağlı)</label>
+              <input className="field-input" value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="photo.jpg" />
+            </div>
 
             <div className="field distribute-field">
               <label className="helper">

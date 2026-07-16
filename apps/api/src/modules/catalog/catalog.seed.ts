@@ -1,6 +1,5 @@
-// Seed data for the Applications catalog, Automation templates, and FleetHub
-// marketplace. These are real DB rows (seeded once on first read) — not
-// hardcoded UI lists — so they can be edited/extended via the API later.
+// Seed data for the Applications catalog. Real DB rows (seeded once on first read)
+// — not a hardcoded UI list — so they can be edited/extended via the API later.
 
 export const APP_CATALOG = [
   { name: 'TikTok (Global)', packageName: 'com.zhiliaoapp.musically', version: '45.0.3', category: 'Social', shortLabel: 'TT', color: '#111111' },
@@ -21,30 +20,3 @@ export const APP_CATALOG = [
   { name: 'Wells Fargo', packageName: 'com.wf.wellsfargomobile', version: '25.12.01.65', category: 'Finance', shortLabel: 'WF', color: '#d71e28' }
 ];
 
-export const AUTOMATION_TEMPLATES = [
-  { title: 'TikTok video posting', description: 'Automatically publish videos to your TikTok account. Batch editing, mentions and tags supported.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: true },
-  { title: 'Publish YouTube Shorts', description: 'Batch publish YouTube Shorts using video URLs to improve operational efficiency.', platform: 'YouTube', color: '#ff0000', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.google.android.youtube' }, recommended: true },
-  { title: 'Post Reels on Instagram', description: 'Publish short Reels with one click on Instagram to improve operational efficiency.', platform: 'Instagram', color: '#d6249f', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.instagram.android' }, recommended: true },
-  { title: 'Publish video on Reddit', description: 'Publish video content to improve operational efficiency.', platform: 'Reddit', color: '#ff4500', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.reddit.frontpage' }, recommended: true },
-  { title: 'Delete all TikTok videos', description: 'Remove all videos from your account in one click, quickly resetting your channel.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false },
-  { title: 'Hide all TikTok videos', description: 'Keep pinned videos while setting all others to private in bulk.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false },
-  { title: 'Random follow on TikTok', description: 'Browse videos and follow users based on custom probability to increase visibility.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false },
-  { title: 'Send private message on TikTok', description: 'Search for usernames and send private messages in bulk.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false },
-  { title: 'TikTok account warmup', description: 'Simulate human actions. Each action item is paired with an interval to stay natural.', platform: 'TikTok', color: '#111111', jobType: 'EMULATOR_OPEN_APP' as const, payload: { packageName: 'com.zhiliaoapp.musically' }, recommended: false }
-];
-
-// Marketplace listings. Items with an `apkUrl` + `packageName` are real,
-// installable APKs — installing one dispatches an EMULATOR_INSTALL_APK job per
-// selected device. Items without (templates/integrations) are not installable
-// apps and only bump the counter when "installed".
-//
-// install counts start at 0 and grow from REAL installs (installListing bumps
-// them) — we don't seed fabricated popularity numbers.
-export const MARKETPLACE_LISTINGS = [
-  { title: 'Warm-up Routine', category: 'TEMPLATE' as const, icon: '◫', description: 'Auto-scrolls feeds and likes to age fresh accounts naturally.', price: 'Free', installs: 0 },
-  { title: 'Bulk Account Creator', category: 'AUTOMATION' as const, icon: '✦', description: 'Provisions accounts across phones with unique fingerprints.', price: '$19', installs: 0 },
-  { title: 'Residential Proxy Pack', category: 'INTEGRATION' as const, icon: '⇄', description: 'Rotating residential IPs across 40+ countries, per-phone binding.', price: '$29/mo', installs: 0 },
-  { title: 'TikTok Engager', category: 'AUTOMATION' as const, icon: '▤', description: 'Follows, comments and DMs on a schedule with human-like timing.', price: '$24', installs: 0 },
-  { title: 'Profile Fingerprint Kit', category: 'TEMPLATE' as const, icon: '◈', description: 'Realistic device, locale and sensor profiles to avoid detection.', price: 'Free', installs: 0 },
-  { title: 'Cookie Importer', category: 'INTEGRATION' as const, icon: '❏', description: 'Bulk-imports session cookies into matching cloud phones.', price: '$9', installs: 0 }
-];

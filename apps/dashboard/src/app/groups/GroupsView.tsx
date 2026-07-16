@@ -126,19 +126,18 @@ export function GroupsView() {
     }
   }
 
-  // Run a bulk job across every device in the active group.
-  async function groupAction(jobType: string, label: string) {
+  // Real Waydroid lifecycle across every device in the active group — wake/sleep/
+  // reboot each actually start/stop/restart the instance host-side (unlike the old
+  // EMULATOR_START/STOP jobs, which the agent only no-op ack'd on Waydroid).
+  async function groupLifecycle(endpoint: 'wake' | 'sleep' | 'reboot', label: string) {
     if (!selected || inGroup.length === 0) return;
     setBusy(true);
     try {
-      const res = await fetch('/api/bulk/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds: inGroup.map((d) => d.id), jobType })
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message ?? `${label} başarısız`);
-      flash(`${label} ${json.data?.created ?? inGroup.length} cihaz için sıraya alındı.`);
+      await Promise.all(
+        inGroup.map((d) => fetch(`/api/devices/${d.id}/${endpoint}`, { method: 'POST' }).catch(() => undefined))
+      );
+      flash(`${label} ${inGroup.length} cihaz için gönderildi.`);
+      await loadAll();
     } catch (e) {
       flash(e instanceof Error ? e.message : `${label} başarısız`);
     } finally {
@@ -254,13 +253,13 @@ export function GroupsView() {
             <>
               {/* Group bulk actions */}
               <div className="group-actions">
-                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupAction('EMULATOR_START', 'Başlatma')}>
-                  <Play size={14} /> Tümünü başlat
+                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupLifecycle('wake', 'Uyandırma')}>
+                  <Play size={14} /> Tümünü uyandır
                 </button>
-                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupAction('EMULATOR_STOP', 'Durdurma')}>
-                  <Square size={14} /> Tümünü durdur
+                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupLifecycle('sleep', 'Uyutma')}>
+                  <Square size={14} /> Tümünü uyut
                 </button>
-                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupAction('EMULATOR_START', 'Yeniden başlatma')}>
+                <button type="button" className="btn-ghost" disabled={busy || inGroup.length === 0} onClick={() => groupLifecycle('reboot', 'Yeniden başlatma')}>
                   <RotateCcw size={14} /> Tümünü yeniden başlat
                 </button>
               </div>

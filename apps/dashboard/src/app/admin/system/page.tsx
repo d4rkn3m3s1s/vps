@@ -59,7 +59,9 @@ function statusLabel(status?: string | null): string {
 
 export default async function AdminSystemPage() {
   const [sysRes, hostsRes] = await Promise.all([
-    apiCall<SystemOverview>('/system/overview', { auth: false }),
+    // /system/overview is admin-gated (JWT + admin) — must be called with auth, and
+    // every field access is optional-chained since data:null is a valid outcome.
+    apiCall<SystemOverview>('/system/overview', { auth: true }),
     serverFetch<Host[]>('/hosts')
   ]);
 
@@ -71,7 +73,7 @@ export default async function AdminSystemPage() {
   const plugins = sys?.plugins ?? [];
 
   const healthy = (status?: string) => status === 'healthy';
-  const coreHealthy = healthy(sys?.database.status) && healthy(sys?.queue.status) && healthy(sys?.docker.status);
+  const coreHealthy = healthy(sys?.database?.status) && healthy(sys?.queue?.status) && healthy(sys?.docker?.status);
 
   return (
     <section className="admin-stack">
@@ -100,8 +102,8 @@ export default async function AdminSystemPage() {
           />
           <HoloStat
             label="API çalışma süresi"
-            value={<span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>}
-            sub={sys?.service.nodeEnv ?? '—'}
+            value={<span className="mono">{fmtUptime(sys?.service?.uptimeSeconds)}</span>}
+            sub={sys?.service?.nodeEnv ?? '—'}
             tone="cyan"
             icon={<Timer size={16} />}
           />
@@ -152,11 +154,11 @@ export default async function AdminSystemPage() {
             <div className="panel-stack">
               <div className="row">
                 <span className="helper">Ortam</span>
-                <span className="mono">{sys?.service.nodeEnv ?? '—'}</span>
+                <span className="mono">{sys?.service?.nodeEnv ?? '—'}</span>
               </div>
               <div className="row">
                 <span className="helper">API çalışma süresi</span>
-                <span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>
+                <span className="mono">{fmtUptime(sys?.service?.uptimeSeconds)}</span>
               </div>
               <div className="row">
                 <span className="helper">Bölge</span>

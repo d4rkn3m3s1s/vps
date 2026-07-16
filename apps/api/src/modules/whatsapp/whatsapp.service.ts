@@ -660,27 +660,35 @@ export async function createBroadcast(
   // Fire-and-forget dispatcher: spaces the sends out with jitter so we don't slam
   // the device (and WhatsApp) with a burst. Runs in the background.
   void (async () => {
-    let sent = 0;
-    let failed = 0;
+    let dispatched = 0;
+    let dispatchFailed = 0;
     for (const to of peers) {
       try {
         const payload = { deviceId: input.deviceId, to, message, broadcastId: bc.id } as unknown as JobPayload;
-        await createJobRecord('WHATSAPP_SEND', payload, input.deviceId, workspaceId ?? undefined);
-        sent++;
+        // skipBusyCheck: every WHATSAPP_SEND here targets the SAME device and is part
+        // of the SAME broadcast, serialized by design (the agent runs one job per
+        // device at a time). Without this, an on-device send (15-30s) still PENDING
+        // when the next one is dispatched (~6s gap) trips assertDeviceIdle → DEVICE_BUSY,
+        // so every recipient past the first was silently dropped. The gap below still
+        // paces creation; the agent still executes them one at a time.
+        await createJobRecord('WHATSAPP_SEND', payload, input.deviceId, workspaceId ?? undefined, { skipBusyCheck: true });
+        dispatched++;
       } catch (e) {
-        failed++;
+        dispatchFailed++;
         logger.warn('broadcast dispatch failed', { error: String(e), to });
       }
-      await prisma.whatsappBroadcast.update({
-        where: { id: bc.id },
-        data: { sentCount: sent, failCount: failed }
-      }).catch(() => undefined);
-      const gap = minGap + Math.floor((maxGap - minGap) * ((sent * 2654435761) % 1000) / 1000);
+      const gap = minGap + Math.floor((maxGap - minGap) * ((dispatched * 2654435761) % 1000) / 1000);
       await new Promise((r) => setTimeout(r, gap));
     }
+    // NOTE: sentCount / failCount are NOT written here. They are the ACTUAL on-device
+    // outcome, incremented by agent.service.complete when each WHATSAPP_SEND finishes
+    // (SENT → sentCount, failure → failCount). Writing them here (job merely queued)
+    // was a double lie: it counted "dispatched" as "sent", and its absolute write
+    // clobbered the real per-send increments back to ~0. We only record how many jobs
+    // failed to even enqueue, so the operator can see a dispatch-level problem.
     await prisma.whatsappBroadcast.update({
       where: { id: bc.id },
-      data: { status: 'COMPLETED', sentCount: sent, failCount: failed }
+      data: { status: 'COMPLETED', ...(dispatchFailed > 0 ? { failCount: { increment: dispatchFailed } } : {}) }
     }).catch(() => undefined);
   })();
 

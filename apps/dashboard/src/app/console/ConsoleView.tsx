@@ -92,6 +92,27 @@ export function ConsoleView() {
     }
   }
 
+  // Real Waydroid lifecycle for the selected device — wake/sleep actually
+  // start/stop the instance host-side (unlike the old EMULATOR_START/STOP jobs,
+  // which the agent only no-op ack'd on the Waydroid stack).
+  async function lifecycle(endpoint: 'wake' | 'sleep', label: string) {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/devices/${selected}/${endpoint}`, { method: 'POST' });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        push({ kind: 'err', text: json.message ?? `${label} başarısız` });
+        return;
+      }
+      push({ kind: 'info', text: `${label} isteği gönderildi — sunucu aracısı cihazı ${endpoint === 'wake' ? 'başlatıyor' : 'durduruyor'}.` });
+    } catch {
+      push({ kind: 'err', text: `${label} başarısız` });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Fleet-wide quick action via the bulk job fan-out (executed by the host agent).
   async function quickAction(jobType: string, label: string, payload?: Record<string, unknown>) {
     if (!selected) return;
@@ -210,11 +231,11 @@ export function ConsoleView() {
       {/* Action toolbar */}
       <HoloPanel title="Komut güvertesi" icon={<Zap size={16} />} scan={false}>
         <div className="console-toolbar">
-          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_START', 'Başlatma')}>
-            <Play size={14} /> Başlat
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => lifecycle('wake', 'Uyandırma')}>
+            <Play size={14} /> Uyandır
           </button>
-          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => quickAction('EMULATOR_STOP', 'Durdurma')}>
-            <Square size={14} /> Durdur
+          <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={() => lifecycle('sleep', 'Uyutma')}>
+            <Square size={14} /> Uyut
           </button>
           <button type="button" className="btn-ghost btn-xs" disabled={busy || !selected} onClick={reboot}>
             <RotateCcw size={14} /> Yeniden başlat
@@ -264,8 +285,8 @@ export function ConsoleView() {
             />
           </div>
           <p className="helper console-hint">
-            Cihaz köprüsü üzerinden canlı <span className="mono">adb shell</span>. Geçmiş için ↑/↓. Başlat/Durdur/Yükle
-            işlemleri sunucu aracısı görev kuyruğu üzerinden çalışır.
+            Cihaz köprüsü üzerinden canlı <span className="mono">adb shell</span>. Geçmiş için ↑/↓. Uyandır/Uyut
+            cihazı gerçekten başlatır/durdurur; APK yükleme sunucu aracısı görev kuyruğu üzerinden çalışır.
           </p>
         </HoloPanel>
 

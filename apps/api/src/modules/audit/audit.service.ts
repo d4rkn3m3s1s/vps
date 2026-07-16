@@ -41,27 +41,34 @@ export type AuditFilter = {
 
 // Builds the Prisma `where` shared by list + export so both apply identical
 // filters (the only difference is the row cap).
+//
+// Every clause is collected under a SINGLE `AND` array. This is deliberate: the
+// workspace-scoping filter and the free-text search filter each need their own
+// `OR`, and two `OR` keys in one object literal silently collapse to the last one
+// (a JS duplicate-key), which used to let the search `OR` overwrite the workspace
+// `OR` — leaking every tenant's audit rows the moment anything was typed in search.
+// AND-of-ORs keeps both constraints. Workspace scoping is now STRICT (only this
+// workspace's rows); the old `{ workspaceId: null }` branch is dropped because it
+// exposed pre-multi-tenancy auth rows (emails/IPs) to every tenant.
 function buildWhere(filter: AuditFilter) {
   const { workspaceId, action, search, actorEmail, from, to } = filter;
   const createdAt: { gte?: Date; lte?: Date } = {};
   if (from) createdAt.gte = from;
   if (to) createdAt.lte = to;
-  return {
-    // Workspace scoping: show this workspace's logs PLUS legacy/global logs
-    // that predate multi-tenancy (workspaceId null).
-    ...(workspaceId ? { OR: [{ workspaceId }, { workspaceId: null }] } : {}),
-    ...(action ? { action: { contains: action, mode: 'insensitive' as const } } : {}),
-    ...(actorEmail ? { user: { email: { contains: actorEmail, mode: 'insensitive' as const } } } : {}),
-    ...(from || to ? { createdAt } : {}),
-    ...(search
-      ? {
-          OR: [
-            { action: { contains: search, mode: 'insensitive' as const } },
-            { resourceType: { contains: search, mode: 'insensitive' as const } }
-          ]
-        }
-      : {})
-  };
+  const and: Record<string, unknown>[] = [];
+  if (workspaceId) and.push({ workspaceId });
+  if (action) and.push({ action: { contains: action, mode: 'insensitive' as const } });
+  if (actorEmail) and.push({ user: { email: { contains: actorEmail, mode: 'insensitive' as const } } });
+  if (from || to) and.push({ createdAt });
+  if (search) {
+    and.push({
+      OR: [
+        { action: { contains: search, mode: 'insensitive' as const } },
+        { resourceType: { contains: search, mode: 'insensitive' as const } }
+      ]
+    });
+  }
+  return and.length ? { AND: and } : {};
 }
 
 export async function listAuditLogs(filter: AuditFilter = {}) {

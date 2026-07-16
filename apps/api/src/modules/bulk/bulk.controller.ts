@@ -2,12 +2,25 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
-import { JobTypes } from '../jobs/job.types';
 import { bulkService } from './bulk.service';
+
+// The bulk endpoint may ONLY fan out device-lifecycle + install/proxy actions.
+// Sensitive per-device operations (EMULATOR_SHELL, RPA_RUN, AGENT_RUN, the register
+// flows, …) are intentionally excluded: those have dedicated single-device routes
+// that enforce a per-device RBAC 'control' check + a command-level audit trail. The
+// bulk router only does workspace-ownership scoping, so allowing arbitrary job types
+// here let a granted VIEW-only member run adb shell on their own devices, bypassing
+// the control gate and the shell audit. Allow-list, not the full JobTypes enum.
+const BULK_ALLOWED_JOB_TYPES = [
+  'DEVICE_WAKE', 'DEVICE_SLEEP',
+  'EMULATOR_START', 'EMULATOR_STOP',
+  'EMULATOR_OPEN_APP', 'EMULATOR_CLOSE_APP',
+  'EMULATOR_INSTALL_APK', 'EMULATOR_SET_PROXY', 'APPLY_FINGERPRINT'
+] as const;
 
 const bulkJobSchema = z.object({
   deviceIds: z.array(z.string()).min(1),
-  jobType: z.enum(JobTypes),
+  jobType: z.enum(BULK_ALLOWED_JOB_TYPES),
   payload: z.record(z.any()).optional()
 });
 

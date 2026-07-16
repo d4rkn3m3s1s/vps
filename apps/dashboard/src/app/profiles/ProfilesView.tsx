@@ -136,6 +136,30 @@ export type Country = { countryCode: string; country: string; timezone: string }
 export type ProxyOption = { id: string; label: string; host: string; port: number; type: string };
 export type AppOption = { id: string; name: string; packageName: string; version: string; apkUrl: string | null };
 
+// Compact fingerprint of the fields a profile card actually renders, so the 5s
+// poll can short-circuit when nothing visible changed and avoid re-rendering the
+// whole grid. Covers status/name/network/group/tags + the WA/IG register badges
+// (which live in metadata) — the only per-device values the card reads live.
+function deviceFingerprint(d: DeviceProfile): string {
+  const m = d.metadata ?? {};
+  return [
+    d.id, d.status, d.name, d.ipAddress ?? '', d.adbPort ?? '', d.group?.id ?? '',
+    (d.tags ?? []).join(','),
+    m.provisionStatus ?? '', m.waRegisterStatus ?? '', m.igRegisterStatus ?? ''
+  ].join('|');
+}
+
+// True when two device lists render identically (same order, same visible fields).
+// A fresh array reference from the poll with identical data returns true → skip.
+function sameDeviceList(a: DeviceProfile[], b: DeviceProfile[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (deviceFingerprint(a[i]!) !== deviceFingerprint(b[i]!)) return false;
+  }
+  return true;
+}
+
 type ViewMode = 'card' | 'list';
 
 // CPU pressure payload from GET /provision/cpu-pressure.
@@ -219,7 +243,12 @@ export function ProfilesView({
         if (!res.ok) return;
         const json = await res.json();
         const next = (json?.data ?? null) as DeviceProfile[] | null;
-        if (alive && Array.isArray(next)) setDevices(next);
+        if (!alive || !Array.isArray(next)) return;
+        // Skip the state update (and the whole-grid re-render it triggers) when the
+        // poll returns a list that is materially unchanged from what we already show.
+        // Cheap identity+status+meta fingerprint — avoids re-rendering every card
+        // every 5s just because a new array reference arrived with identical data.
+        setDevices((prev) => (sameDeviceList(prev, next) ? prev : next));
       } catch { /* keep last good list */ }
     };
     const id = setInterval(tick, 5000);

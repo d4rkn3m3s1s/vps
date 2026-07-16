@@ -41,7 +41,6 @@ export async function ensureDefaultWorkspace(): Promise<string> {
     prisma.scheduledTask.updateMany({ where: { workspaceId: null }, data: { workspaceId: wid } }),
     prisma.webhook.updateMany({ where: { workspaceId: null }, data: { workspaceId: wid } }),
     prisma.host.updateMany({ where: { workspaceId: null }, data: { workspaceId: wid } }),
-    prisma.libraryAsset.updateMany({ where: { workspaceId: null }, data: { workspaceId: wid } }),
     prisma.socialAccount.updateMany({ where: { workspaceId: null }, data: { workspaceId: wid } })
   ]);
 

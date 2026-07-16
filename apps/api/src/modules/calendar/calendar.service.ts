@@ -202,15 +202,19 @@ export const calendarService = {
           }
         }
 
-        // HONEST status: when a posting flow is attached, the RPA jobs are only
-        // QUEUED on the device(s) now — the agent runs them afterwards and may
-        // still fail. So this is "POSTING" (in progress), NOT a confirmed "POSTED".
-        // Without a flow there is nothing to execute on-device, so the dispatch
-        // itself is the terminal action → a real POSTED.
+        // HONEST status:
+        //  - a posting flow → RPA jobs are only QUEUED now; agent runs them later and
+        //    may fail → "POSTING" (agent.complete settles it to POSTED/FAILED).
+        //  - no flow but media → the PUSH_FILE job IS the terminal action → POSTED.
+        //  - NEITHER flow NOR media → nothing was dispatched to any device, so marking
+        //    it POSTED would be a lie (green "Gönderildi" with zero action). FAIL it.
         if (flow) {
           await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'POSTING' } });
-        } else {
+        } else if (post.mediaUrl) {
           await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'POSTED', postedAt: now } });
+        } else {
+          await prisma.scheduledPost.update({ where: { id: post.id }, data: { status: 'FAILED', error: 'Yayın için RPA akışı veya medya gerekli — yalnızca caption ile cihazda hiçbir işlem yapılamaz' } });
+          continue;
         }
         dispatched += 1;
       } catch (e) {

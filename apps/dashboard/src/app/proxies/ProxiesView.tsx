@@ -1,13 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Network,
   Upload,
   Plus,
-  ListChecks,
-  SlidersHorizontal,
   ShieldCheck,
   Globe2,
   Server,
@@ -16,7 +14,7 @@ import {
   Crosshair
 } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
-import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Reveal } from '../../components/hud';
+import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
 
 export type Proxy = {
   id: string;
@@ -45,7 +43,6 @@ function StatusDot({ status }: { status: string }) {
 
 export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   const router = useRouter();
-  const [tab, setTab] = useState<'list' | 'config'>('list');
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');
@@ -74,28 +71,6 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
     if (busy) return;
     setError(null);
     setAddOpen(false);
-  }
-
-  // Default proxy mode for newly-created phones. Persisted as a real workspace
-  // preference in localStorage and read back when the proxy form opens.
-  const [proxyMode, setProxyMode] = useState('direct');
-  const [savedMode, setSavedMode] = useState(false);
-  useEffect(() => {
-    try {
-      const m = localStorage.getItem('fleet.defaultProxyMode');
-      if (m) setProxyMode(m);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-  function saveProxyMode() {
-    try {
-      localStorage.setItem('fleet.defaultProxyMode', proxyMode);
-      setSavedMode(true);
-      setTimeout(() => setSavedMode(false), 2500);
-    } catch {
-      /* ignore */
-    }
   }
 
   async function addProxy() {
@@ -241,20 +216,8 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
         </div>
       ) : null}
 
-      <Reveal delay={0.05}>
-        <HoloTabs
-          tabs={[
-            { key: 'list', label: 'Proxy listesi', icon: <ListChecks size={15} /> },
-            { key: 'config', label: 'Proxy yapılandırması', icon: <SlidersHorizontal size={15} /> }
-          ]}
-          active={tab}
-          onChange={setTab}
-        />
-      </Reveal>
-
-      {tab === 'list' ? (
-        <Reveal delay={0.1}>
-          <HoloPanel title="Proxy havuzu" icon={<Globe2 size={16} />} scan>
+      <Reveal delay={0.1}>
+        <HoloPanel title="Proxy havuzu" icon={<Globe2 size={16} />} scan>
             <div className="profile-table-wrap">
               <table className="profile-table">
                 <thead>
@@ -321,27 +284,6 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
             </div>
           </HoloPanel>
         </Reveal>
-      ) : (
-        <Reveal delay={0.1}>
-          <HoloPanel title="Varsayılan proxy modu" icon={<SlidersHorizontal size={16} />} tilt>
-            <p className="helper">Yeni bulut telefonların internete nasıl bağlanacağını seçin.</p>
-            <div className="radio-stack">
-              <label className="radio-row">
-                <input type="radio" name="proxymode" checked={proxyMode === 'direct'} onChange={() => setProxyMode('direct')} /> Doğrudan (sunucu ağı)
-              </label>
-              <label className="radio-row">
-                <input type="radio" name="proxymode" checked={proxyMode === 'residential'} onChange={() => setProxyMode('residential')} /> Konut proxy havuzu
-              </label>
-              <label className="radio-row">
-                <input type="radio" name="proxymode" checked={proxyMode === 'mobile'} onChange={() => setProxyMode('mobile')} /> Mobil (4G/5G) proxy
-              </label>
-            </div>
-            <button type="button" className="btn-primary" onClick={saveProxyMode}>
-              {savedMode ? 'Kaydedildi ✓' : 'Yapılandırmayı kaydet'}
-            </button>
-          </HoloPanel>
-        </Reveal>
-      )}
 
       {addOpen ? (
         <div className="modal-overlay" onClick={closeAdd}>

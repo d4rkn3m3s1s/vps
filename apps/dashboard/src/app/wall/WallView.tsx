@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Grid3x3, Play, Square, Link2, Crown, ChevronLeft, Circle, Square as SquareIcon,
   Radio, MonitorPlay, Layers, Maximize2, X, GripVertical, Keyboard
@@ -14,6 +14,10 @@ export type WallGroup = { id: string; name: string };
 
 const KEY = { BACK: 4, HOME: 3, RECENTS: 187 } as const;
 const ORDER_KEY = 'wall.order.v1';
+// Stable empty array so non-leader cells receive the SAME reference every render
+// — otherwise a fresh `[]` literal would defeat WallCell's memo on every parent
+// re-render (there is one per stream frame / poll tick across the whole wall).
+const NO_FOLLOWERS: string[] = [];
 
 export function WallView({ devices, groups }: { devices: WallDevice[]; groups: WallGroup[] }) {
   const [groupFilter, setGroupFilter] = useState('all');
@@ -180,7 +184,7 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
                 bulk={bulk}
                 syncMode={syncMode}
                 isLeader={leader === d.id}
-                followers={leader === d.id ? followers : []}
+                followers={leader === d.id ? followers : NO_FOLLOWERS}
                 dragOver={dragOverId === d.id}
                 onMakeLeader={() => setLeader(d.id)}
                 onFocus={() => setFocusId(d.id)}
@@ -205,7 +209,10 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
   );
 }
 
-function WallCell({
+// Memoized so a wall of N cells doesn't all re-render when one cell's stream
+// frame bumps the parent — each cell only re-renders when ITS own props change.
+// (The `followers` prop uses the stable NO_FOLLOWERS sentinel for non-leaders.)
+const WallCell = memo(function WallCell({
   device, bulk, syncMode, isLeader, followers, dragOver,
   onMakeLeader, onFocus, onLiveChange, onDragStart, onDragOver, onDrop, onDragEnd
 }: {
@@ -362,7 +369,7 @@ function WallCell({
     </Holo3D>
     </div>
   );
-}
+});
 
 // Focus overlay (tekli açma + odak): a single device blown up large, auto-started,
 // with full touch + physical-keyboard input and a back/home/recents bar.

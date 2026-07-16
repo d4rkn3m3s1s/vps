@@ -33,14 +33,6 @@ export type DeviceUpdateInput = {
   tags?: string[] | undefined;
 };
 
-export type DeviceHeartbeatInput = {
-  status?: DeviceStatus | undefined;
-  cpuUsage?: number | undefined;
-  memoryUsage?: number | undefined;
-  diskUsage?: number | undefined;
-  lastSeen?: string | Date | undefined;
-};
-
 export type DeviceGroupCreateInput = {
   name: string;
   description?: string | undefined;

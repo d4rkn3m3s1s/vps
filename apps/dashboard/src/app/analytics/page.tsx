@@ -106,13 +106,6 @@ export default async function AnalyticsPage() {
               tone="violet"
               icon={<Sprout size={16} />}
             />
-            <HoloStat
-              label="Çevrimiçi süre (14g)"
-              value={<span className="mono">{fmt(s.totals.onlineMinutes)}</span>}
-              sub="dakika"
-              tone="success"
-              icon={<Timer size={16} />}
-            />
           </Reveal>
 
           <Reveal className="holo-grid-2" delay={0.05}>

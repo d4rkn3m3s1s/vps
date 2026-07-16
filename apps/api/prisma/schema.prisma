@@ -86,27 +86,27 @@ enum HostStatus {
 // A registered KVM/emulator host that runs cloud phones. The install.sh agent
 // registers and heartbeats; the dashboard shows capacity and health.
 model Host {
-  id          String     @id @default(cuid())
-  name        String
-  address     String
-  region      String?
-  status      HostStatus @default(OFFLINE)
-  capacity    Int        @default(0)
-  runningPhones Int      @default(0)
-  cpuCores    Int?
-  memoryGb    Int?
+  id             String     @id @default(cuid())
+  name           String
+  address        String
+  region         String?
+  status         HostStatus @default(OFFLINE)
+  capacity       Int        @default(0)
+  runningPhones  Int        @default(0)
+  cpuCores       Int?
+  memoryGb       Int?
   // Live capacity from the agent heartbeat (df / free). Used to show "how many
   // more devices fit" — each Waydroid instance needs ~8GB disk + ~1.5GB RAM.
-  diskTotalGb Int?
-  diskFreeGb  Int?
-  ramFreeGb   Int?
+  diskTotalGb    Int?
+  diskFreeGb     Int?
+  ramFreeGb      Int?
   // 1-minute load average from the agent heartbeat. Combined with cpuCores it
   // gives CPU saturation (load / cores) — the dashboard warns when this is high
   // so an operator can sleep idle devices (software-rendered Waydroid pins CPU).
-  loadAvg1m   Float?
-  kvm         Boolean    @default(true)
-  agentKeyHash String?
-  lastSeenAt  DateTime?
+  loadAvg1m      Float?
+  kvm            Boolean    @default(true)
+  agentKeyHash   String?
+  lastSeenAt     DateTime?
   // Cloud provider this host was provisioned from (e.g. "vast"), and the
   // provider-side instance/contract id so we can manage (destroy) it later.
   provider       String?
@@ -114,14 +114,18 @@ model Host {
   // Hourly USD cost locked at provision time (e.g. Vast.ai dph_total) so the cost
   // panel can compute total GPU spend without re-querying the provider.
   costPerHour    Float?
-  workspaceId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  devices     Device[]
-  claimedJobs Job[]
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId    String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  devices        Device[]
+  claimedJobs    Job[]
+  workspace      Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
+  // agentKeyHash is resolved on the hottest auth path: every /agent/jobs/next
+  // long-poll (~2s/host), every heartbeat, and every agent WS connect look the host
+  // up by sha256(agentKey). Without this index each was a sequential Host scan.
+  @@index([agentKeyHash])
 }
 
 enum DeviceStatus {
@@ -132,42 +136,6 @@ enum DeviceStatus {
   ERROR
   UPDATING
   REBOOTING
-}
-
-// Which kind of backend a cloud phone runs on. SELF = our own KVM/host-agent
-// fleet (the original architecture). The rest are external cloud-phone vendors
-// reached over their HTTP API via a provider adapter — so the panel can resell
-// rented ARM phones without owning hardware. One workspace can mix providers.
-enum CloudProviderKind {
-  SELF
-  GEELARK
-  VMOS
-  DUOPLUS
-  UGPHONE
-}
-
-// A configured external cloud-phone vendor account. Credentials are AES-256-GCM
-// encrypted at rest (apiKeyEnc/apiSecretEnc) and never returned to clients. The
-// provider adapter (modules/cloud-providers) uses these to create/start/stop and
-// control rented phones, which then appear as normal Device rows (provider!=SELF).
-model CloudPhoneProvider {
-  id           String            @id @default(cuid())
-  name         String            // operator-facing label
-  kind         CloudProviderKind
-  baseUrl      String?           // override the vendor's default API base
-  apiKeyEnc    String?           // AES-GCM encrypted
-  apiSecretEnc String?           // AES-GCM encrypted (vendors that sign requests)
-  enabled      Boolean           @default(true)
-  // Last connectivity check result, for the providers admin page.
-  lastCheckAt  DateTime?
-  lastCheckOk  Boolean?
-  lastCheckMsg String?
-  workspaceId  String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
-  workspace    Workspace?        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
-  @@index([workspaceId])
 }
 
 enum SocialProvider {
@@ -189,120 +157,70 @@ enum ProxyStatus {
 }
 
 model User {
-  id             String          @id @default(cuid())
-  email          String          @unique
-  passwordHash   String
-  role           String          @default("admin")
+  id                   String            @id @default(cuid())
+  email                String            @unique
+  passwordHash         String
+  role                 String            @default("admin")
   // Two-factor auth (TOTP). Secret is stored AES-256-GCM encrypted; backup
   // codes are stored as sha256 hashes (one-time use).
-  twoFactorEnabled     Boolean   @default(false)
+  twoFactorEnabled     Boolean           @default(false)
   twoFactorSecret      String?
-  twoFactorBackupCodes String[]  @default([])
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  // Stable, human-friendly referral code (generated on first visit to /referral).
-  referralCode   String?         @unique
-  refreshTokens  RefreshToken[]
-  apiKeys        ApiKey[]
-  auditLogs      AuditLog[]
-  socialAccounts SocialAccount[]
-  memberships    WorkspaceMember[]
-  referrals      Referral[]      @relation("Referrer")
-}
-
-// One row per person invited via a referral link. Created when a referred user
-// signs up; status advances to CONVERTED (and a reward is credited) when they
-// start a paid plan.
-enum ReferralStatus {
-  INVITED
-  SIGNED_UP
-  CONVERTED
-}
-
-model Referral {
-  id            String         @id @default(cuid())
-  referrerId    String
-  referredEmail String
-  status        ReferralStatus @default(SIGNED_UP)
-  rewardCents   Int            @default(0)
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
-  referrer      User           @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
-
-  @@index([referrerId])
+  twoFactorBackupCodes String[]          @default([])
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  refreshTokens        RefreshToken[]
+  apiKeys              ApiKey[]
+  auditLogs            AuditLog[]
+  socialAccounts       SocialAccount[]
+  memberships          WorkspaceMember[]
 }
 
 // A tenant boundary. Every fleet resource (devices, proxies, jobs, …) belongs to
 // exactly one workspace; members access only their workspaces.
 model Workspace {
-  id          String            @id @default(cuid())
-  name        String
-  slug        String            @unique
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-  members     WorkspaceMember[]
-  subscription Subscription?
-  devices       Device[]
-  deviceGroups  DeviceGroup[]
-  proxies       Proxy[]
-  jobs          Job[]
-  rpaFlows      RpaFlow[]
-  schedules     ScheduledTask[]
-  farmCampaigns FarmCampaign[]
-  farmAccounts  FarmAccount[]
-  webhooks      Webhook[]
-  hosts         Host[]
-  libraryAssets LibraryAsset[]
-  resourceGuides ResourceGuide[]
-  socialAccounts SocialAccount[]
-  alertRules    AlertRule[]
-  alertEvents   AlertEvent[]
-  snapshots     DeviceSnapshot[]
-  scheduledPosts ScheduledPost[]
-  generatedAccounts GeneratedAccount[]
-  settings      WorkspaceSettings?
-  metricSnapshots MetricSnapshot[]
-  notificationChannels NotificationChannel[]
-  agentRuns     AgentRun[]
-  appMaps       AppMap[]
-  cloudProviders CloudPhoneProvider[]
-  whatsappLabels WhatsappLabel[]
+  id                    String                @id @default(cuid())
+  name                  String
+  slug                  String                @unique
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  members               WorkspaceMember[]
+  subscription          Subscription?
+  devices               Device[]
+  deviceGroups          DeviceGroup[]
+  proxies               Proxy[]
+  jobs                  Job[]
+  rpaFlows              RpaFlow[]
+  schedules             ScheduledTask[]
+  farmCampaigns         FarmCampaign[]
+  farmAccounts          FarmAccount[]
+  webhooks              Webhook[]
+  hosts                 Host[]
+  resourceGuides        ResourceGuide[]
+  socialAccounts        SocialAccount[]
+  alertRules            AlertRule[]
+  alertEvents           AlertEvent[]
+  snapshots             DeviceSnapshot[]
+  scheduledPosts        ScheduledPost[]
+  generatedAccounts     GeneratedAccount[]
+  settings              WorkspaceSettings?
+  notificationChannels  NotificationChannel[]
+  agentRuns             AgentRun[]
+  appMaps               AppMap[]
+  whatsappLabels        WhatsappLabel[]
   whatsappCannedReplies WhatsappCannedReply[]
-}
-
-// Daily time-series rollup of fleet metrics — one row per workspace per UTC day.
-// Written by the metrics rollup ticker; read by the trend-analytics endpoint.
-model MetricSnapshot {
-  id                String   @id @default(cuid())
-  workspaceId       String?
-  day               DateTime @db.Date
-  devices           Int      @default(0)
-  onlineDevices     Int      @default(0)
-  jobs              Int      @default(0)
-  jobsCompleted     Int      @default(0)
-  jobsFailed        Int      @default(0)
-  farmAccounts      Int      @default(0)
-  avgHealthScore    Int      @default(0)
-  onlineMinutes     Int      @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  workspace         Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
-  @@unique([workspaceId, day])
-  @@index([workspaceId, day])
 }
 
 // Per-workspace outbound notification channel (Telegram / Slack / Discord).
 // The config (bot token / webhook url / chat id) is AES-encrypted at rest.
 model NotificationChannel {
-  id           String   @id @default(cuid())
+  id           String    @id @default(cuid())
   workspaceId  String
-  type         String   // "telegram" | "slack" | "discord"
-  configEnc    String   // AES-256-GCM encrypted JSON
-  active       Boolean  @default(true)
+  type         String // "telegram" | "slack" | "discord"
+  configEnc    String // AES-256-GCM encrypted JSON
+  active       Boolean   @default(true)
   lastTestedAt DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([workspaceId, type])
@@ -364,7 +282,7 @@ model AlertRule {
   trigger     AlertTrigger
   // Optional threshold (e.g. quota percent for QUOTA_HIGH). 0 = not used.
   threshold   Int          @default(0)
-  notify      Boolean      @default(true)  // push to the notification center
+  notify      Boolean      @default(true) // push to the notification center
   webhook     Boolean      @default(false) // also fire outbound webhooks
   email       Boolean      @default(false) // also email workspace admins
   active      Boolean      @default(true)
@@ -380,15 +298,15 @@ model AlertRule {
 
 // A recorded firing of an alert rule.
 model AlertEvent {
-  id          String     @id @default(cuid())
-  ruleId      String
-  workspaceId String
-  title       String
-  detail      String
+  id           String    @id @default(cuid())
+  ruleId       String
+  workspaceId  String
+  title        String
+  detail       String
   acknowledged Boolean   @default(false)
-  createdAt   DateTime   @default(now())
-  rule        AlertRule  @relation(fields: [ruleId], references: [id], onDelete: Cascade)
-  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt    DateTime  @default(now())
+  rule         AlertRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([ruleId])
@@ -412,64 +330,64 @@ model Subscription {
 }
 
 model RefreshToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  createdAt  DateTime @default(now())
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ApiKey {
-  id          String   @id @default(cuid())
-  userId      String?
-  workspaceId String?
-  keyPrefix   String   @unique
-  keyHash     String   @unique
-  name        String
-  scopes      String[] @default([])
+  id           String    @id @default(cuid())
+  userId       String?
+  workspaceId  String?
+  keyPrefix    String    @unique
+  keyHash      String    @unique
+  name         String
+  scopes       String[]  @default([])
   // AES-256-GCM encrypted plaintext of the key. Populated ONLY for the special
   // per-workspace "API Dokümantasyonu" key, so the docs page can show a real,
   // copy-pasteable key in its curl examples. Never set for user-created keys —
   // those remain hash-only and are shown in plaintext exactly once at creation.
   docPlaintext String?
-  lastUsedAt  DateTime?
-  revokedAt   DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  lastUsedAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
 }
 
 model Emulator {
-  id            String         @id @default(cuid())
-  name          String
-  image         String
-  status        EmulatorStatus  @default(PENDING)
-  containerId   String?         @unique
-  adbHost       String?
-  adbPort       Int?
-  metadata      Json?
-  createdById   String?
-  workspaceId   String?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  jobs          Job[]
+  id          String         @id @default(cuid())
+  name        String
+  image       String
+  status      EmulatorStatus @default(PENDING)
+  containerId String?        @unique
+  adbHost     String?
+  adbPort     Int?
+  metadata    Json?
+  createdById String?
+  workspaceId String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  jobs        Job[]
 
   @@index([workspaceId])
 }
 
 model DeviceGroup {
-  id          String    @id @default(cuid())
+  id          String         @id @default(cuid())
   name        String
   description String?
   workspaceId String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
   devices     Device[]
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   campaigns   FarmCampaign[]
 
   @@unique([workspaceId, name])
@@ -477,20 +395,20 @@ model DeviceGroup {
 }
 
 model Device {
-  id             String        @id @default(cuid())
-  uuid           String        @unique @default(cuid())
+  id             String       @id @default(cuid())
+  uuid           String       @unique @default(cuid())
   name           String
-  status         DeviceStatus  @default(OFFLINE)
+  status         DeviceStatus @default(OFFLINE)
   ipAddress      String?
   adbPort        Int?
   androidVersion String?
-  cpuUsage       Float         @default(0)
-  memoryUsage    Float         @default(0)
-  diskUsage      Float         @default(0)
+  cpuUsage       Float        @default(0)
+  memoryUsage    Float        @default(0)
+  diskUsage      Float        @default(0)
   lastSeen       DateTime?
   metadata       Json?
   // Free-form operator labels for smart filtering (e.g. "warmup", "us-geo", "vip").
-  tags           String[]      @default([])
+  tags           String[]     @default([])
   groupId        String?
   hostId         String?
   workspaceId    String?
@@ -498,37 +416,31 @@ model Device {
   // Persisted so the panel can show + change a device's proxy; the actual routing
   // is applied host-side by wd-proxy.sh via an EMULATOR_SET_PROXY job.
   proxyId        String?
-  // Cloud-phone backend. null/"SELF" = our own KVM host-agent fleet. Otherwise the
-  // device is a rented phone from an external vendor: `cloudProvider` names the
-  // vendor kind, `cloudProviderId` links the CloudPhoneProvider credential row,
-  // and `externalId` is the vendor-side phone id used to control it via the API.
-  cloudProvider   String?
-  cloudProviderId String?
-  externalId      String?
+  // Optional vendor-side phone id (retained for external references).
+  externalId     String?
   // External ADB access (TCP bridge). When exposed, the host agent forwards the
   // device's ADB to a public host:port, optionally restricted to an IP allowlist.
-  adbExposed     Boolean       @default(false)
+  adbExposed     Boolean      @default(false)
   adbPublicHost  String?
   adbPublicPort  Int?
-  adbAllowlist   String[]      @default([])
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  group          DeviceGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  host           Host?         @relation(fields: [hostId], references: [id], onDelete: SetNull)
-  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  proxy          Proxy?        @relation(fields: [proxyId], references: [id], onDelete: SetNull)
+  adbAllowlist   String[]     @default([])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  group          DeviceGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  host           Host?        @relation(fields: [hostId], references: [id], onDelete: SetNull)
+  workspace      Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  proxy          Proxy?       @relation(fields: [proxyId], references: [id], onDelete: SetNull)
 
   // Anti-detection device fingerprint (one per cloud phone).
-  fingerprint    DeviceFingerprint?
-  schedules      ScheduledTask[]
-  farmAccount    FarmAccount?
-  snapshots      DeviceSnapshot[] @relation("DeviceSnapshotSource")
-  grants         DeviceGrant[]    @relation("DeviceGrants")
-  usage          DeviceUsage[]
-  agentRuns      AgentRun[]
-  appMaps        AppMap[]
-  metricPoints   DeviceMetricPoint[]
-  whatsappMessages WhatsappMessage[]
+  fingerprint           DeviceFingerprint?
+  schedules             ScheduledTask[]
+  farmAccount           FarmAccount?
+  snapshots             DeviceSnapshot[]       @relation("DeviceSnapshotSource")
+  grants                DeviceGrant[]          @relation("DeviceGrants")
+  agentRuns             AgentRun[]
+  appMaps               AppMap[]
+  metricPoints          DeviceMetricPoint[]
+  whatsappMessages      WhatsappMessage[]
   whatsappConversations WhatsappConversation[]
 
   @@index([workspaceId])
@@ -615,81 +527,63 @@ model AppMap {
   @@index([deviceId])
 }
 
-// Per-device, per-day online-minute rollup for usage metering / pay-as-you-go
-// billing. Accrued from heartbeats: when a device reports ONLINE, the minutes
-// since its last heartbeat are added to today's bucket (capped so a long gap
-// from a crashed agent doesn't over-bill).
-model DeviceUsage {
-  id            String   @id @default(cuid())
-  deviceId      String
-  day           DateTime @db.Date         // calendar day (UTC midnight)
-  onlineMinutes Int      @default(0)
-  workspaceId   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-
-  @@unique([deviceId, day])
-  @@index([workspaceId, day])
-}
-
 // A randomized hardware/identity fingerprint bound to a single cloud phone so
 // each profile looks like a distinct physical device.
 model DeviceFingerprint {
-  id            String   @id @default(cuid())
-  deviceId      String   @unique
-  imei          String
-  androidId     String
-  serialNo      String
-  macAddress    String
-  manufacturer  String
-  model         String
-  brand         String
-  osVersion     String
-  buildNumber   String
-  resolution    String
-  dpi           Int
-  carrier       String
-  mcc           String
-  mnc           String
-  phoneNumber   String?
-  language      String   @default("en")
+  id           String   @id @default(cuid())
+  deviceId     String   @unique
+  imei         String
+  androidId    String
+  serialNo     String
+  macAddress   String
+  manufacturer String
+  model        String
+  brand        String
+  osVersion    String
+  buildNumber  String
+  resolution   String
+  dpi          Int
+  carrier      String
+  mcc          String
+  mnc          String
+  phoneNumber  String?
+  language     String   @default("en")
   // GPS / SIM geolocation simulation.
-  country       String   @default("US")
-  countryCode   String   @default("US")
-  timezone      String   @default("America/New_York")
-  latitude      Float?
-  longitude     Float?
-  gpsEnabled    Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  country      String   @default("US")
+  countryCode  String   @default("US")
+  timezone     String   @default("America/New_York")
+  latitude     Float?
+  longitude    Float?
+  gpsEnabled   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  device       Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 }
 
 model Job {
-  id          String     @id @default(cuid())
-  emulatorId  String?
+  id              String     @id @default(cuid())
+  emulatorId      String?
   // First-class copy of payload.deviceId. The device a job targets was only ever
   // stored inside the JSON payload, so the device-idle guard + agent claim had to
   // filter on a JSON path (payload.deviceId) that no index can serve. This column
   // is populated by createJobRecord and indexed so those hot paths use an index
   // seek instead of scanning PENDING/RUNNING jobs.
-  deviceId    String?
-  type        JobType
-  status      JobStatus  @default(PENDING)
-  payload     Json
-  result      Json?
-  error       String?
-  startedAt   DateTime?
-  finishedAt  DateTime?
+  deviceId        String?
+  type            JobType
+  status          JobStatus  @default(PENDING)
+  payload         Json
+  result          Json?
+  error           String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
   claimedByHostId String?
-  claimedAt   DateTime?
-  workspaceId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  emulator    Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
-  claimedBy   Host?      @relation(fields: [claimedByHostId], references: [id], onDelete: SetNull)
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  claimedAt       DateTime?
+  workspaceId     String?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  emulator        Emulator?  @relation(fields: [emulatorId], references: [id], onDelete: SetNull)
+  claimedBy       Host?      @relation(fields: [claimedByHostId], references: [id], onDelete: SetNull)
+  workspace       Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   // The host agent polls for claimable work (status=PENDING, claimedByHostId=null,
@@ -705,18 +599,18 @@ model Job {
 }
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  userId      String?
-  action      String
+  id           String   @id @default(cuid())
+  userId       String?
+  action       String
   resourceType String
-  resourceId  String?
-  requestId   String?
-  ip          String?
-  userAgent   String?
-  metadata    Json?
-  workspaceId String?
-  createdAt   DateTime  @default(now())
-  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  resourceId   String?
+  requestId    String?
+  ip           String?
+  userAgent    String?
+  metadata     Json?
+  workspaceId  String?
+  createdAt    DateTime @default(now())
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   // Audit list is workspace-scoped and ordered by createdAt desc.
@@ -724,96 +618,75 @@ model AuditLog {
 }
 
 model SocialAccount {
-  id                 String         @id @default(cuid())
-  provider           SocialProvider
-  providerAccountId  String
-  userId             String
-  displayName        String?
-  username           String?
-  accessTokenEnc     String
-  refreshTokenEnc    String?
-  tokenExpiresAt     DateTime?
-  scopes             String[]       @default([])
-  metadata           Json?
-  workspaceId        String?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id                String         @id @default(cuid())
+  provider          SocialProvider
+  providerAccountId String
+  userId            String
+  displayName       String?
+  username          String?
+  accessTokenEnc    String
+  refreshTokenEnc   String?
+  tokenExpiresAt    DateTime?
+  scopes            String[]       @default([])
+  metadata          Json?
+  workspaceId       String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
 
-  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace          Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@unique([provider, providerAccountId])
   @@index([workspaceId])
-}
-
-enum LibraryAssetType {
-  IMAGE
-  VIDEO
-  APK
-  COOKIE
-  OTHER
-}
-
-model LibraryAsset {
-  id          String           @id @default(cuid())
-  name        String
-  type        LibraryAssetType @default(OTHER)
-  sizeBytes   Int              @default(0)
-  url         String?
-  tags        String[]         @default([])
-  metadata    Json?
-  workspaceId String?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  workspace   Workspace?       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-
-  @@index([workspaceId])
+  // listSocialAccountsForUser filters by userId — the model's primary access
+  // pattern — which had no leading index (only workspaceId + the composite unique).
+  @@index([userId])
 }
 
 // FAQ / how-to entries shown on the Resources page. DB-backed so operators can
 // curate their own help content per workspace instead of it being hardcoded.
 model ResourceGuide {
-  id          String   @id @default(cuid())
+  id          String     @id @default(cuid())
   question    String
   answer      String
-  sortOrder   Int      @default(0)
+  sortOrder   Int        @default(0)
   workspaceId String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
 }
 
 model Proxy {
-  id          String       @id @default(cuid())
-  label       String
-  type        ProxyType    @default(HTTP)
-  host        String
-  port        Int
-  username    String?
+  id            String      @id @default(cuid())
+  label         String
+  type          ProxyType   @default(HTTP)
+  host          String
+  port          Int
+  username      String?
   // Encrypted at rest (AES-256-GCM). Never returned to clients in plaintext.
-  password    String?
-  group       String?
-  isp         String?
-  remarks     String?
-  exportIp    String?
+  password      String?
+  group         String?
+  isp           String?
+  remarks       String?
+  exportIp      String?
   // ISO country code for geo-matching a proxy to a device's locale (e.g. assign
   // a US exit to a US-fingerprinted phone). Set on import or detected on check.
-  countryCode String?
-  status      ProxyStatus  @default(UNKNOWN)
+  countryCode   String?
+  status        ProxyStatus @default(UNKNOWN)
   // Rolling health: 0-100 score (decays on failure, recovers on success),
   // consecutive failCount, and when the next periodic re-check is due. autoAssign
   // prefers higher-scored proxies; the revalidation ticker re-checks checksDue ones.
-  score       Int          @default(50)
-  failCount   Int          @default(0)
-  checksDue   DateTime?
+  score         Int         @default(50)
+  failCount     Int         @default(0)
+  checksDue     DateTime?
   lastCheckedAt DateTime?
-  workspaceId String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  devices     Device[]
+  workspaceId   String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  workspace     Workspace?  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  devices       Device[]
 
   @@index([workspaceId])
   @@index([checksDue])
@@ -857,17 +730,17 @@ model ScheduledTask {
 
 // Per-account engagement metrics powering the AI Analytics dashboard.
 model ContentMetric {
-  id          String   @id @default(cuid())
-  accountId   String?
-  provider    String
-  date        DateTime @default(now())
-  posts       Int      @default(0)
-  likes       Int      @default(0)
-  comments    Int      @default(0)
-  shares      Int      @default(0)
-  followers   Int      @default(0)
-  reach       Int      @default(0)
-  createdAt   DateTime @default(now())
+  id        String   @id @default(cuid())
+  accountId String?
+  provider  String
+  date      DateTime @default(now())
+  posts     Int      @default(0)
+  likes     Int      @default(0)
+  comments  Int      @default(0)
+  shares    Int      @default(0)
+  followers Int      @default(0)
+  reach     Int      @default(0)
+  createdAt DateTime @default(now())
 
   @@index([provider, date])
 }
@@ -888,59 +761,20 @@ model AppCatalogItem {
   updatedAt   DateTime @updatedAt
 }
 
-// A pre-built automation template shown in the Automation marketplace.
-model AutomationTemplate {
-  id          String   @id @default(cuid())
-  title       String
-  description String
-  platform    String
-  color       String   @default("#3a4256")
-  jobType     JobType  @default(EMULATOR_OPEN_APP)
-  payload     Json     @default("{}")
-  recommended Boolean  @default(false)
-  uses        Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-enum ListingCategory {
-  TEMPLATE
-  AUTOMATION
-  INTEGRATION
-}
-
-// A FleetHub marketplace listing.
-model MarketplaceListing {
-  id          String          @id @default(cuid())
-  title       String
-  description String
-  category    ListingCategory @default(TEMPLATE)
-  icon        String          @default("◈")
-  price       String          @default("Free")
-  // When set, installing the listing dispatches an EMULATOR_INSTALL_APK job per
-  // selected device (same path as the app catalog). Listings without an apkUrl
-  // are non-installable templates/integrations and only bump the counter.
-  apkUrl      String?
-  packageName String?
-  installs    Int             @default(0)
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-}
-
 // A visual RPA automation flow: an ordered list of steps (tap/type/wait/swipe/
 // open-app/shell) that can be dispatched as a job to one or more cloud phones.
 model RpaFlow {
-  id          String   @id @default(cuid())
-  name        String
-  description String?
-  steps       Json     @default("[]")
-  runCount    Int      @default(0)
-  lastRunAt   DateTime?
-  workspaceId String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  campaigns   FarmCampaign[]
+  id              String         @id @default(cuid())
+  name            String
+  description     String?
+  steps           Json           @default("[]")
+  runCount        Int            @default(0)
+  lastRunAt       DateTime?
+  workspaceId     String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  workspace       Workspace?     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  campaigns       FarmCampaign[]
   earlyCampaigns  FarmCampaign[] @relation("FarmEarlyFlow")
   midCampaigns    FarmCampaign[] @relation("FarmMidFlow")
   matureCampaigns FarmCampaign[] @relation("FarmMatureFlow")
@@ -958,43 +792,43 @@ enum FarmStatus {
 }
 
 model FarmCampaign {
-  id            String     @id @default(cuid())
-  name          String
-  status        FarmStatus @default(ACTIVE)
-  rpaFlowId     String?
-  groupId       String?
+  id                 String          @id @default(cuid())
+  name               String
+  status             FarmStatus      @default(ACTIVE)
+  rpaFlowId          String?
+  groupId            String?
   // Humanization: each device runs the flow at a random interval between these
   // bounds, capped at maxActionsPerDay, only within [activeFromHour, activeToHour).
-  minIntervalMin Int       @default(45)
-  maxIntervalMin Int       @default(180)
-  maxActionsPerDay Int     @default(20)
-  activeFromHour Int       @default(8)
-  activeToHour   Int       @default(23)
-  jitterPct      Int       @default(25)
+  minIntervalMin     Int             @default(45)
+  maxIntervalMin     Int             @default(180)
+  maxActionsPerDay   Int             @default(20)
+  activeFromHour     Int             @default(8)
+  activeToHour       Int             @default(23)
+  jitterPct          Int             @default(25)
   // Safety: rotate a proxy from the pool onto the device before each run, and
   // auto-pause a device whose health drops below this threshold (ban defense).
-  rotateProxy        Boolean @default(false)
-  autoPauseThreshold Int     @default(40)
+  rotateProxy        Boolean         @default(false)
+  autoPauseThreshold Int             @default(40)
   // Stage-aware warmup: optional override flows for early/mid/mature accounts.
   // When set, the engine picks the flow that matches a device's warmup stage
   // instead of the default rpaFlow (gentle behavior early, richer behavior late).
-  earlyFlowId   String?    // stages 1-2 (new / warming)
-  midFlowId     String?    // stage 3 (developing)
-  matureFlowId  String?    // stages 4-5 (active / mature)
+  earlyFlowId        String? // stages 1-2 (new / warming)
+  midFlowId          String? // stage 3 (developing)
+  matureFlowId       String? // stages 4-5 (active / mature)
   // Engine bookkeeping.
-  nextRunAt     DateTime   @default(now())
-  lastRunAt     DateTime?
-  runCount      Int        @default(0)
-  workspaceId   String?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  rpaFlow       RpaFlow?   @relation(fields: [rpaFlowId], references: [id], onDelete: SetNull)
-  earlyFlow     RpaFlow?   @relation("FarmEarlyFlow", fields: [earlyFlowId], references: [id], onDelete: SetNull)
-  midFlow       RpaFlow?   @relation("FarmMidFlow", fields: [midFlowId], references: [id], onDelete: SetNull)
-  matureFlow    RpaFlow?   @relation("FarmMatureFlow", fields: [matureFlowId], references: [id], onDelete: SetNull)
-  group         DeviceGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  logs          FarmActionLog[]
+  nextRunAt          DateTime        @default(now())
+  lastRunAt          DateTime?
+  runCount           Int             @default(0)
+  workspaceId        String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  rpaFlow            RpaFlow?        @relation(fields: [rpaFlowId], references: [id], onDelete: SetNull)
+  earlyFlow          RpaFlow?        @relation("FarmEarlyFlow", fields: [earlyFlowId], references: [id], onDelete: SetNull)
+  midFlow            RpaFlow?        @relation("FarmMidFlow", fields: [midFlowId], references: [id], onDelete: SetNull)
+  matureFlow         RpaFlow?        @relation("FarmMatureFlow", fields: [matureFlowId], references: [id], onDelete: SetNull)
+  group              DeviceGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  workspace          Workspace?      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs               FarmActionLog[]
 
   @@index([workspaceId])
   // farm.tick scans ACTIVE campaigns whose nextRunAt has passed every 60s.
@@ -1004,42 +838,42 @@ model FarmCampaign {
 // Per-device warmup / account-maturity tracking. One row per cloud phone that
 // participates in farming.
 model FarmAccount {
-  id            String   @id @default(cuid())
-  deviceId      String   @unique
-  warmupStage   Int      @default(1)     // 1=new … 5=mature
-  daysActive    Int      @default(0)
-  actionsToday  Int      @default(0)
-  totalActions  Int      @default(0)
-  healthScore   Int      @default(100)   // 0-100; drops on errors
-  consecutiveErrors Int  @default(0)      // resets on a clean run
-  paused        Boolean  @default(false)  // auto-paused by ban defense
-  pausedReason  String?
-  lastActionAt  DateTime?
-  dayAnchor     DateTime @default(now()) // when actionsToday was last reset
+  id                String          @id @default(cuid())
+  deviceId          String          @unique
+  warmupStage       Int             @default(1) // 1=new … 5=mature
+  daysActive        Int             @default(0)
+  actionsToday      Int             @default(0)
+  totalActions      Int             @default(0)
+  healthScore       Int             @default(100) // 0-100; drops on errors
+  consecutiveErrors Int             @default(0) // resets on a clean run
+  paused            Boolean         @default(false) // auto-paused by ban defense
+  pausedReason      String?
+  lastActionAt      DateTime?
+  dayAnchor         DateTime        @default(now()) // when actionsToday was last reset
   // ── Proactive ban-risk scoring ──
   // 0-100 leading indicator (errors, velocity, proxy/stage mismatch). Persisted
   // so the engine can detect a *rising* trend and alert once per cooldown rather
   // than re-firing every tick while the device stays risky.
-  riskScore     Int      @default(0)
-  riskAlertedAt DateTime?
+  riskScore         Int             @default(0)
+  riskAlertedAt     DateTime?
   // ── Account identity (the credentials being warmed up) ──
   // Which platform this account lives on, the public handle, and the secrets.
   // Secrets are AES-256-GCM encrypted at rest and NEVER returned to clients raw.
-  platform      String?  // x | instagram | meta | tiktok | other
-  username      String?
-  emailAddress  String?
-  passwordEnc   String?  // encrypted
-  emailPasswordEnc String? // encrypted (recovery mailbox)
-  totpSecretEnc String?  // encrypted 2FA seed
+  platform          String? // x | instagram | meta | tiktok | other
+  username          String?
+  emailAddress      String?
+  passwordEnc       String? // encrypted
+  emailPasswordEnc  String? // encrypted (recovery mailbox)
+  totpSecretEnc     String? // encrypted 2FA seed
   // Operator notes + free-form tags for filtering ("aged", "buyer", "us-geo").
-  notes         String?
-  tags          String[] @default([])
-  workspaceId   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  logs          FarmActionLog[]
+  notes             String?
+  tags              String[]        @default([])
+  workspaceId       String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  device            Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  workspace         Workspace?      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  logs              FarmActionLog[]
 
   @@index([workspaceId])
 }
@@ -1048,7 +882,7 @@ model FarmAccount {
 // engine (dispatch) and the job pipeline (outcome), and rendered as a per-account
 // audit trail so a ban can be traced back to "what were the last N actions".
 model FarmActionLog {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
   deviceId    String
   campaignId  String?
   flowId      String?
@@ -1056,10 +890,10 @@ model FarmActionLog {
   // dispatch | success | failure | paused | resumed | proxy_rotated | manual
   kind        String
   detail      String?
-  warmupStage Int      @default(0)
+  warmupStage Int           @default(0)
   healthAfter Int?
   workspaceId String?
-  createdAt   DateTime @default(now())
+  createdAt   DateTime      @default(now())
   account     FarmAccount?  @relation(fields: [deviceId], references: [deviceId], onDelete: Cascade)
   campaign    FarmCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
 
@@ -1114,47 +948,47 @@ model WhatsappMessage {
 // denormalised last-message preview + unread count so the 200+ chat list renders
 // without scanning WhatsappMessage. Labels/favourite/archive are operator state.
 model WhatsappConversation {
-  id             String   @id @default(cuid())
-  workspaceId    String?
-  deviceId       String
+  id              String    @id @default(cuid())
+  workspaceId     String?
+  deviceId        String
   // The other party (same value as WhatsappMessage.peer).
-  peer           String
+  peer            String
   // Denormalised preview of the newest message in this thread.
-  lastMessageBody String  @default("")
+  lastMessageBody String    @default("")
   // 'IN' | 'OUT' — direction of the last message (for the ✓ / arrow in the list).
-  lastDirection  String   @default("IN")
-  lastMessageAt  DateTime @default(now())
+  lastDirection   String    @default("IN")
+  lastMessageAt   DateTime  @default(now())
   // Denormalised delivery state of the last OUTbound message (for the list tick).
-  lastStatus     String   @default("SENT")
+  lastStatus      String    @default("SENT")
   // Unread inbound count; reset to 0 when the operator opens the thread.
-  unreadCount    Int      @default(0)
-  favorite       Boolean  @default(false)
-  archived       Boolean  @default(false)
+  unreadCount     Int       @default(0)
+  favorite        Boolean   @default(false)
+  archived        Boolean   @default(false)
   // Pinned threads sort to the very top of the list (distinct from favourite).
-  pinned         Boolean  @default(false)
-  pinnedAt       DateTime?
+  pinned          Boolean   @default(false)
+  pinnedAt        DateTime?
   // Operator-set contact info: a friendly name shown instead of the raw number,
   // and free-text notes (a lightweight CRM). displayName is plaintext (shown in
   // lists); notes are AES-256-GCM encrypted at rest like message bodies.
-  displayName    String?
-  notes          String?
+  displayName     String?
+  notes           String?
   // Operator-assigned label ids (see WhatsappLabel). Postgres text[].
-  labelIds       String[] @default([])
+  labelIds        String[]  @default([])
   // Whether this contact is currently blocked on the device (set by WHATSAPP_BLOCK
   // and reconciled from WHATSAPP_BLOCKLIST). The list dims blocked threads and the
   // action toggles to "Engeli kaldır".
-  blocked        Boolean  @default(false)
+  blocked         Boolean   @default(false)
   // Cropped avatar as a data-URI ("data:image/png;base64,…"), captured by
   // WHATSAPP_PROFILE off the contact-info screen. Null = fall back to initials.
-  avatarBase64   String?
+  avatarBase64    String?
   // When the avatar was last refreshed (so the UI can re-fetch stale ones).
-  avatarAt       DateTime?
+  avatarAt        DateTime?
   // Scraped profile text: { profileName?, about?, phone?, lastSeen? }. Plaintext
   // (not secret) — shown in the contact-info panel.
-  profileInfo    Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  device         Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  profileInfo     Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  device          Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@unique([deviceId, peer])
   @@index([workspaceId, deviceId, lastMessageAt])
@@ -1167,12 +1001,12 @@ model WhatsappConversation {
 // conversations by id (WhatsappConversation.labelIds). Deleting a label leaves
 // stale ids on conversations — the service filters them out on read.
 model WhatsappLabel {
-  id          String   @id @default(cuid())
+  id          String     @id @default(cuid())
   workspaceId String?
   name        String
   // A short colour token the UI maps to a chip style (e.g. "emerald", "rose").
-  color       String   @default("slate")
-  createdAt   DateTime @default(now())
+  color       String     @default("slate")
+  createdAt   DateTime   @default(now())
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
@@ -1182,16 +1016,16 @@ model WhatsappLabel {
 // send them straight from Telegram) with one tap. `shortcut` lets a "/fiyat"
 // style trigger expand to the body. Body is plaintext (not a secret).
 model WhatsappCannedReply {
-  id          String   @id @default(cuid())
+  id          String     @id @default(cuid())
   workspaceId String?
   // Optional "/slug" trigger; unique-ish per workspace but not DB-enforced.
   shortcut    String?
   title       String
   body        String
   // Ordering hint for the picker (lower = higher).
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  sortOrder   Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
   workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
@@ -1240,18 +1074,18 @@ enum WebhookDeliveryStatus {
 
 // Outbound webhook: POSTs a JSON payload to `url` when a matching event fires.
 model Webhook {
-  id          String       @id @default(cuid())
+  id          String            @id @default(cuid())
   label       String
   url         String
-  event       WebhookEvent @default(ALL)
+  event       WebhookEvent      @default(ALL)
   secret      String?
-  active      Boolean      @default(true)
+  active      Boolean           @default(true)
   lastFiredAt DateTime?
-  failCount   Int          @default(0)
+  failCount   Int               @default(0)
   workspaceId String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  workspace   Workspace?        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   deliveries  WebhookDelivery[]
 
   @@index([workspaceId])
@@ -1279,14 +1113,14 @@ model WebhookDelivery {
 
 // Restricts a member's access to specific device groups (profile-level perms).
 model ProfilePermission {
-  id          String   @id @default(cuid())
-  userId      String
-  groupId     String?
-  deviceId    String?
-  canView     Boolean  @default(true)
-  canControl  Boolean  @default(false)
-  canDelete   Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  id         String   @id @default(cuid())
+  userId     String
+  groupId    String?
+  deviceId   String?
+  canView    Boolean  @default(true)
+  canControl Boolean  @default(false)
+  canDelete  Boolean  @default(false)
+  createdAt  DateTime @default(now())
 
   @@unique([userId, groupId, deviceId])
 }
@@ -1296,39 +1130,39 @@ model ProfilePermission {
 // that can be restored onto the same device, cloned onto a new one, or published
 // to the image market for the whole workspace (or publicly) to provision from.
 enum SnapshotVisibility {
-  PRIVATE    // only the creator
-  WORKSPACE  // anyone in the workspace
-  PUBLIC     // listed in the public image market
+  PRIVATE // only the creator
+  WORKSPACE // anyone in the workspace
+  PUBLIC // listed in the public image market
 }
 
 enum SnapshotStatus {
-  PENDING    // capture job dispatched, not yet ready
-  READY      // captured and restorable
-  FAILED     // capture failed
+  PENDING // capture job dispatched, not yet ready
+  READY // captured and restorable
+  FAILED // capture failed
 }
 
 model DeviceSnapshot {
-  id            String             @id @default(cuid())
-  name          String
-  description   String?
+  id             String             @id @default(cuid())
+  name           String
+  description    String?
   // Where the captured artifact lives on the host (tarball path or docker image
   // tag). The agent writes this back when the capture job completes.
-  artifactRef   String?
-  sizeBytes     BigInt             @default(0)
+  artifactRef    String?
+  sizeBytes      BigInt             @default(0)
   androidVersion String?
   // Snapshot of the source device's fingerprint/app set for the market card.
-  metadata      Json?
-  tags          String[]           @default([])
-  visibility    SnapshotVisibility @default(PRIVATE)
-  status        SnapshotStatus     @default(PENDING)
-  installs      Int                @default(0)  // how many devices provisioned from it
+  metadata       Json?
+  tags           String[]           @default([])
+  visibility     SnapshotVisibility @default(PRIVATE)
+  status         SnapshotStatus     @default(PENDING)
+  installs       Int                @default(0) // how many devices provisioned from it
   sourceDeviceId String?
-  workspaceId   String?
-  createdById   String?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
-  sourceDevice  Device?            @relation("DeviceSnapshotSource", fields: [sourceDeviceId], references: [id], onDelete: SetNull)
-  workspace     Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId    String?
+  createdById    String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  sourceDevice   Device?            @relation("DeviceSnapshotSource", fields: [sourceDeviceId], references: [id], onDelete: SetNull)
+  workspace      Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([visibility])
@@ -1339,17 +1173,17 @@ model DeviceSnapshot {
 // phone to a teammate for 24h"). Distinct from ProfilePermission (which is a
 // standing workspace ACL); a grant is temporary, revocable, and audited.
 enum GrantAccess {
-  VIEW     // live screen only
-  CONTROL  // screen + remote input + jobs
+  VIEW // live screen only
+  CONTROL // screen + remote input + jobs
 }
 
 model DeviceGrant {
   id          String      @id @default(cuid())
   deviceId    String
-  grantedToId String      // user receiving access
-  grantedById String      // user who issued it
+  grantedToId String // user receiving access
+  grantedById String // user who issued it
   access      GrantAccess @default(VIEW)
-  expiresAt   DateTime?   // null = no expiry (until revoked)
+  expiresAt   DateTime? // null = no expiry (until revoked)
   revokedAt   DateTime?
   workspaceId String?
   createdAt   DateTime    @default(now())
@@ -1374,8 +1208,8 @@ enum ScheduledPostStatus {
 model ScheduledPost {
   id           String              @id @default(cuid())
   caption      String
-  platform     String              // tiktok | instagram | x | meta | youtube | other
-  mediaUrl     String?             // image/video asset to push then post
+  platform     String // tiktok | instagram | x | meta | youtube | other
+  mediaUrl     String? // image/video asset to push then post
   // Target: a device group (fan out to all) and/or explicit device ids, plus the
   // RPA flow that performs the actual posting steps on each device.
   groupId      String?
@@ -1400,51 +1234,51 @@ model ScheduledPost {
 // number + the OTP, then the on-device registration via RPA. Secrets are
 // AES-256-GCM encrypted at rest and never returned raw to clients.
 enum GeneratedAccountStatus {
-  PENDING          // queued, nothing done yet
-  IDENTITY_READY   // fake identity generated
-  CONTACT_READY    // email + phone number provisioned
-  AWAITING_OTP     // number rented, waiting for the SMS code
-  REGISTERING      // on-device RPA registration in progress
-  ACTIVE           // account created successfully
-  AWAITING_MANUAL  // created but blocked on a human step (IG captcha / SMS wall)
-  FAILED           // gave up (no OTP, RPA error, etc.)
+  PENDING // queued, nothing done yet
+  IDENTITY_READY // fake identity generated
+  CONTACT_READY // email + phone number provisioned
+  AWAITING_OTP // number rented, waiting for the SMS code
+  REGISTERING // on-device RPA registration in progress
+  ACTIVE // account created successfully
+  AWAITING_MANUAL // created but blocked on a human step (IG captcha / SMS wall)
+  FAILED // gave up (no OTP, RPA error, etc.)
 }
 
 model GeneratedAccount {
-  id            String   @id @default(cuid())
-  batchId       String?  // groups accounts created in one batch run
-  platform      String   // whatsapp | instagram | facebook
-  status        GeneratedAccountStatus @default(PENDING)
+  id       String                 @id @default(cuid())
+  batchId  String? // groups accounts created in one batch run
+  platform String // whatsapp | instagram | facebook
+  status   GeneratedAccountStatus @default(PENDING)
 
   // Identity (from the identity provider).
-  firstName     String?
-  lastName      String?
-  gender        String?
-  birthDate     String?  // ISO date
-  countryCode   String?  // 2-letter
+  firstName   String?
+  lastName    String?
+  gender      String?
+  birthDate   String? // ISO date
+  countryCode String? // 2-letter
 
   // Contact + secrets (encrypted where sensitive).
-  emailAddress  String?
-  username      String?
-  passwordEnc   String?  // encrypted
-  phoneNumber   String?
-  smsRequestId  String?  // provider's rental id (poll/cancel)
-  otpCodeEnc    String?  // encrypted once received
+  emailAddress String?
+  username     String?
+  passwordEnc  String? // encrypted
+  phoneNumber  String?
+  smsRequestId String? // provider's rental id (poll/cancel)
+  otpCodeEnc   String? // encrypted once received
 
   // Where it ran + free-form notes.
-  deviceId      String?
-  error         String?
-  notes         String?
+  deviceId String?
+  error    String?
+  notes    String?
 
   // Live WhatsApp-registration progress: { log: [...], lastProgress: {...} }.
   // Persisted here (not on the Job) because Job.result is overwritten wholesale on
   // completion; keyed by account so the two register jobs share one panel history.
-  registerLog   Json?
+  registerLog Json?
 
-  workspaceId   String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  workspace     Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspaceId String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  workspace   Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId])
   @@index([batchId])

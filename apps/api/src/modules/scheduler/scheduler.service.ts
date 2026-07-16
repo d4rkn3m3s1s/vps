@@ -1,6 +1,7 @@
 import { Prisma, type JobType, type ScheduleRepeat } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { logger } from '../../lib/logger';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { deviceAgentService } from '../device-agent/device-agent.service';
@@ -48,6 +49,14 @@ export class SchedulerService {
       const device = await prisma.device.findFirst({ where: { id: input.deviceId, ...(workspaceId ? { workspaceId } : {}) } });
       if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     }
+    // Same cross-tenant WRITE guard as POST /jobs: a payload.accountId is written back
+    // at completion time, so verify it belongs to the caller's workspace.
+    const acctId = typeof (input.payload as { accountId?: unknown } | undefined)?.accountId === 'string'
+      ? (input.payload as { accountId: string }).accountId : undefined;
+    if (acctId && workspaceId) {
+      const ownedAcc = await prisma.generatedAccount.findFirst({ where: { id: acctId, workspaceId }, select: { id: true } });
+      if (!ownedAcc) throw new AppError('Account not found', 404, 'ACCOUNT_NOT_FOUND');
+    }
 
     const data: Prisma.ScheduledTaskCreateInput = {
       name: input.name,
@@ -81,10 +90,21 @@ export class SchedulerService {
   // schedule based on its repeat interval. Returns how many tasks ran.
   async runDue(now: Date = new Date()): Promise<number> {
     const due = await prisma.scheduledTask.findMany({
-      where: { status: 'ACTIVE', nextRunAt: { lte: now } }
+      where: { status: 'ACTIVE', nextRunAt: { lte: now } },
+      // Cap per-tick work: after downtime hundreds of tasks can be due at once and
+      // would lock a single 60s tick. Process the oldest 200; the rest run next tick.
+      orderBy: { nextRunAt: 'asc' },
+      take: 200
     });
 
     for (const task of due) {
+     // Isolate each task: a dispatch failure (e.g. createJobRecord throwing
+     // DEVICE_BUSY when the target device already has an active exclusive job) must
+     // NOT abort the whole tick. Without this, one busy device's failing task threw
+     // out of the loop, skipped every remaining due task, AND skipped its own
+     // nextRunAt advance below — so it stayed ACTIVE with a past nextRunAt and
+     // re-threw first on every subsequent tick, permanently wedging the scheduler.
+     try {
       // Job.emulatorId is a FK to the Emulator table, not Device — so we carry
       // the target device id inside the payload instead of as the FK.
       const payload = { ...(task.payload as JobPayload), deviceId: task.deviceId ?? undefined };
@@ -107,7 +127,10 @@ export class SchedulerService {
             .catch(() => undefined);
         }
       } else {
-        await createJobRecord(task.jobType, payload);
+        // Pass the task's workspaceId so the agent's cross-tenant claim guard applies
+        // and the job shows up in that workspace's Jobs list (the AGENT_RUN branch above
+        // already threads it; this non-agent path silently dropped it).
+        await createJobRecord(task.jobType, payload, undefined, task.workspaceId ?? undefined);
       }
 
       if (task.repeat === 'ONCE') {
@@ -122,6 +145,22 @@ export class SchedulerService {
           data: { lastRunAt: now, nextRunAt: next, runCount: { increment: 1 } }
         });
       }
+     } catch (err) {
+       // Dispatch failed for THIS task. Advance/complete it anyway so it can't wedge
+       // the batch by staying overdue and re-throwing first on every tick. A ONCE
+       // task is marked COMPLETED (its single run is spent); a repeating task rolls
+       // to its next slot. Best-effort: if even this update throws, swallow so the
+       // loop continues to the next task.
+       await prisma.scheduledTask
+         .update({
+           where: { id: task.id },
+           data: task.repeat === 'ONCE'
+             ? { status: 'COMPLETED', lastRunAt: now, runCount: { increment: 1 } }
+             : { lastRunAt: now, nextRunAt: new Date(now.getTime() + REPEAT_MS[task.repeat]), runCount: { increment: 1 } }
+         })
+         .catch(() => undefined);
+       logger.warn('Scheduled task dispatch failed', { taskId: task.id, jobType: task.jobType, error: err instanceof Error ? err.message : String(err) });
+     }
     }
 
     return due.length;

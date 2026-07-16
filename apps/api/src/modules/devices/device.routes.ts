@@ -23,7 +23,6 @@ import {
   deviceStatusSummaryHandler,
   getDeviceHandler,
   getDeviceMetricsHandler,
-  heartbeatDeviceHandler,
   listDevicesHandler,
   listGroupsHandler,
   provisioningCatalogHandler,
@@ -50,7 +49,10 @@ deviceRouter.get('/:id', requireApiKey, optionalJwt, asyncHandler(getDeviceHandl
 deviceRouter.get('/:id/metrics', requireApiKey, authenticateJwt, asyncHandler(getDeviceMetricsHandler));
 deviceRouter.put('/:id', requireApiKey, authenticateJwt, asyncHandler(updateDeviceHandler));
 deviceRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteDeviceHandler));
-deviceRouter.post('/:id/heartbeat', requireApiKey, asyncHandler(heartbeatDeviceHandler));
+// (Removed POST /:id/heartbeat — it was a cross-tenant IDOR: requireApiKey-only, no
+// JWT/workspace scope, so any tenant's key could overwrite another tenant's device
+// status/metrics. Dead code too: the host agent reports via POST /agent/heartbeat
+// (host-scoped) + /agent/device-metrics, never this per-device route.)
 deviceRouter.post('/:id/shell', requireApiKey, authenticateJwt, asyncHandler(deviceShellHandler));
 // Real Waydroid lifecycle (wake/sleep/reboot) — starts/stops the instance host-side.
 deviceRouter.post('/:id/wake', requireApiKey, authenticateJwt, asyncHandler(wakeDeviceHandler));

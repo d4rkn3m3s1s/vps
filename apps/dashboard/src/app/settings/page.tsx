@@ -47,16 +47,22 @@ function fmtUptime(seconds?: number): string {
 export default async function SettingsPage() {
   const [meRes, sysRes] = await Promise.all([
     apiCall<CurrentUser>('/auth/me', { auth: true }),
-    apiCall<SystemOverview>('/system/overview', { auth: false })
+    // /system/overview is admin-gated (JWT + admin), so it MUST be called with auth.
+    // The server-side service identity is admin, so the token carries admin scope.
+    // A non-admin/unavailable response yields data:null, handled defensively below.
+    apiCall<SystemOverview>('/system/overview', { auth: true })
   ]);
 
   const me = meRes.data;
   const sys = sysRes.data;
 
+  // Defensive: sys (or any of its sub-objects) can be null when the overview call
+  // returns nothing (non-admin, endpoint down). Optional-chain EVERY access so the
+  // Server Component can never throw "Cannot read properties of undefined".
   const services = [
-    { status: sys?.database.status },
-    { status: sys?.queue.status },
-    { status: sys?.docker.status }
+    { status: sys?.database?.status },
+    { status: sys?.queue?.status },
+    { status: sys?.docker?.status }
   ];
   const healthyCount = services.filter((s) => s.status === 'healthy').length;
   const healthTone = healthyCount === services.length ? 'success' : healthyCount === 0 ? 'error' : 'warning';
@@ -81,14 +87,14 @@ export default async function SettingsPage() {
           />
           <HoloStat
             label="Ortam"
-            value={sys?.service.nodeEnv ?? '—'}
+            value={sys?.service?.nodeEnv ?? '—'}
             sub="çalışma ortamı"
             tone="cyan"
             icon={<Server size={16} />}
           />
           <HoloStat
             label="API çalışma süresi"
-            value={<span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>}
+            value={<span className="mono">{fmtUptime(sys?.service?.uptimeSeconds)}</span>}
             sub="kesintisiz"
             tone="violet"
             icon={<Clock size={16} />}
@@ -134,11 +140,11 @@ export default async function SettingsPage() {
               </div>
               <div className="row">
                 <span className="helper">Ortam</span>
-                <span className="mono">{sys?.service.nodeEnv ?? '—'}</span>
+                <span className="mono">{sys?.service?.nodeEnv ?? '—'}</span>
               </div>
               <div className="row">
                 <span className="helper">API çalışma süresi</span>
-                <span className="mono">{fmtUptime(sys?.service.uptimeSeconds)}</span>
+                <span className="mono">{fmtUptime(sys?.service?.uptimeSeconds)}</span>
               </div>
               <div className="row">
                 <span className="helper">Bölge</span>
@@ -167,8 +173,8 @@ export default async function SettingsPage() {
                   PostgreSQL
                 </span>
                 <span className="status-chip">
-                  <span className={sys?.database.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                  {sys?.database.status ?? 'bilinmiyor'}
+                  <span className={sys?.database?.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
+                  {sys?.database?.status ?? 'bilinmiyor'}
                 </span>
               </div>
               <div className="row">
@@ -177,8 +183,8 @@ export default async function SettingsPage() {
                   Redis kuyruğu
                 </span>
                 <span className="status-chip">
-                  <span className={sys?.queue.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                  {sys?.queue.status ?? 'bilinmiyor'}
+                  <span className={sys?.queue?.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
+                  {sys?.queue?.status ?? 'bilinmiyor'}
                 </span>
               </div>
               <div className="row">
@@ -187,8 +193,8 @@ export default async function SettingsPage() {
                   Docker
                 </span>
                 <span className="status-chip">
-                  <span className={sys?.docker.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
-                  {sys?.docker.status ?? 'bilinmiyor'}
+                  <span className={sys?.docker?.status === 'healthy' ? 'dot dot-online' : 'dot dot-error'} />
+                  {sys?.docker?.status ?? 'bilinmiyor'}
                 </span>
               </div>
             </div>

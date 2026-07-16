@@ -1,9 +1,8 @@
-import type { JobType, ListingCategory, Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { createJobRecord } from '../jobs/jobs.service';
-import { APP_CATALOG, AUTOMATION_TEMPLATES, MARKETPLACE_LISTINGS } from './catalog.seed';
+import { APP_CATALOG } from './catalog.seed';
 
 export class CatalogService {
   // Verify every requested device belongs to the caller's workspace before we
@@ -64,96 +63,10 @@ export class CatalogService {
     return { installed: jobs.length, jobIds: jobs.map((j) => j.id) };
   }
 
-  // ---------- Automation templates ----------
-  async listTemplates() {
-    await this.seedTemplates();
-    return prisma.automationTemplate.findMany({ orderBy: [{ recommended: 'desc' }, { title: 'asc' }] });
-  }
-
-  private async seedTemplates(): Promise<void> {
-    if ((await prisma.automationTemplate.count()) > 0) return;
-    await prisma.automationTemplate.createMany({
-      data: AUTOMATION_TEMPLATES.map((t) => ({
-        title: t.title,
-        description: t.description,
-        platform: t.platform,
-        color: t.color,
-        jobType: t.jobType as JobType,
-        payload: t.payload as Prisma.InputJsonValue,
-        recommended: t.recommended
-      }))
-    });
-  }
-
-  // Runs a template against devices: one job per device using the template's
-  // job type + payload, plus a uses counter.
-  async useTemplate(templateId: string, deviceIds: string[], workspaceId?: string) {
-    const tpl = await prisma.automationTemplate.findUnique({ where: { id: templateId } });
-    if (!tpl) return { used: 0, jobIds: [] as string[] };
-    await this.assertDevicesOwned(deviceIds, workspaceId);
-    const jobs = await Promise.all(
-      deviceIds.map((deviceId) =>
-        createJobRecord(tpl.jobType, { ...(tpl.payload as Record<string, unknown>), deviceId }, undefined, workspaceId)
-      )
-    );
-    await prisma.automationTemplate.update({ where: { id: tpl.id }, data: { uses: { increment: deviceIds.length } } });
-    return { used: jobs.length, jobIds: jobs.map((j) => j.id), template: tpl.title };
-  }
-
-  // ---------- Marketplace ----------
-  async listListings() {
-    await this.seedListings();
-    return prisma.marketplaceListing.findMany({ orderBy: { installs: 'desc' } });
-  }
-
-  private async seedListings(): Promise<void> {
-    if ((await prisma.marketplaceListing.count()) > 0) return;
-    await prisma.marketplaceListing.createMany({
-      data: MARKETPLACE_LISTINGS.map((l) => ({
-        title: l.title,
-        description: l.description,
-        category: l.category as ListingCategory,
-        icon: l.icon,
-        price: l.price,
-        installs: l.installs,
-        ...('apkUrl' in l && l.apkUrl ? { apkUrl: l.apkUrl as string } : {}),
-        ...('packageName' in l && l.packageName ? { packageName: l.packageName as string } : {})
-      }))
-    });
-  }
-
-  // Installs a marketplace listing onto each selected device. When the listing
-  // carries an APK (apkUrl + packageName) this records one EMULATOR_INSTALL_APK
-  // job per device — the same agent path the app catalog uses — so a "Kur" click
-  // actually puts the app on the phones, not just bumps a counter. Listings with
-  // no APK (pure templates/integrations) just increment the counter.
-  async installListing(id: string, deviceIds: string[], workspaceId?: string) {
-    const listing = await prisma.marketplaceListing.findUnique({ where: { id } });
-    if (!listing) return null;
-    if (!listing.apkUrl || !listing.packageName || deviceIds.length === 0) {
-      // Template/integration listings (no bundled APK) aren't device installs —
-      // record interest via the counter and report honestly that nothing was
-      // pushed to a phone (installed:0), so the UI can message it correctly.
-      const updated = await prisma.marketplaceListing.update({
-        where: { id },
-        data: { installs: { increment: 1 } }
-      });
-      return { ...updated, installed: 0, jobIds: [] as string[], noApk: true };
-    }
-    const apkPath = listing.apkUrl;
-    const packageName = listing.packageName;
-    // Seeded listing APK URLs are also fetched by the agent → SSRF guard.
-    await assertSafePublicUrl(apkPath);
-    await this.assertDevicesOwned(deviceIds, workspaceId);
-    const jobs = await Promise.all(
-      deviceIds.map((deviceId) => createJobRecord('EMULATOR_INSTALL_APK', { deviceId, packageName, apkPath }, undefined, workspaceId))
-    );
-    const updated = await prisma.marketplaceListing.update({
-      where: { id },
-      data: { installs: { increment: deviceIds.length } }
-    });
-    return { ...updated, installed: jobs.length, jobIds: jobs.map((j) => j.id) };
-  }
+  // (Automation templates + Marketplace listings were removed — the seeded templates
+  // were all "just open the app" no-ops and the marketplace listings were APK-less
+  // placeholders whose "Kur" only bumped a counter. Real app installs go through
+  // installApp / the /apks Fleet-APK path instead.)
 }
 
 export const catalogService = new CatalogService();

@@ -52,28 +52,8 @@ const WHATSAPP_CHEAP_COUNTRIES: Array<{ id: number; code: string; cc: string }> 
   { id: 195, code: 'tr', cc: '90' }  // Turkey — LAST (takes number, no WA OTP)
 ];
 
-// Map a phone's calling code → ISO-3166 country, so "WhatsApp Aç" can auto-assign a
-// country-matched proxy (WhatsApp needs number-country == exit-IP country). Longest
-// calling-code prefix wins. Covers the countries we actually farm; unknown → null.
-const CC_TO_ISO: Array<[string, string]> = [
-  ['355', 'AL'], ['90', 'TR'], ['1', 'US'], ['44', 'GB'], ['49', 'DE'], ['33', 'FR'],
-  ['31', 'NL'], ['48', 'PL'], ['62', 'ID'], ['91', 'IN'], ['63', 'PH'], ['84', 'VN'],
-  ['880', 'BD'], ['7', 'RU'], ['380', 'UA'], ['34', 'ES'], ['39', 'IT'], ['351', 'PT'],
-  ['30', 'GR'], ['40', 'RO'], ['359', 'BG'], ['36', 'HU'], ['420', 'CZ'], ['46', 'SE'],
-  ['47', 'NO'], ['358', 'FI'], ['45', 'DK'], ['43', 'AT'], ['41', 'CH'], ['32', 'BE'],
-  ['353', 'IE'], ['60', 'MY'], ['66', 'TH'], ['65', 'SG'], ['852', 'HK'], ['61', 'AU'],
-  ['64', 'NZ'], ['55', 'BR'], ['52', 'MX'], ['54', 'AR'], ['20', 'EG'], ['27', 'ZA'],
-  ['234', 'NG'], ['254', 'KE'], ['971', 'AE'], ['966', 'SA'], ['92', 'PK'], ['98', 'IR']
-];
-function isoFromPhone(digits: string): string | null {
-  // Try longest prefix first so "355" beats "35"/"3".
-  for (let len = 4; len >= 1; len--) {
-    const pre = digits.slice(0, len);
-    const hit = CC_TO_ISO.find(([cc]) => cc === pre);
-    if (hit) return hit[1];
-  }
-  return null;
-}
+// (Calling-code → ISO mapping lives in auto-proxy.ts (countryFromPhone); the
+// country-matched proxy auto-assign here routes through autoAttachCountryProxy.)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -837,37 +817,19 @@ export class BatchService {
     // the device has no instance, we skip and let registration proceed (the
     // operator can assign one manually). We fold the instance + decrypted
     // credentials into the payload directly (claimNext doesn't do it for us).
-    const iso = isoFromPhone(digits);
-    let proxyAssigned: { proxyId: string; country: string } | null = null;
-    if (iso) {
-      const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
-      const meta = (device?.metadata ?? {}) as Record<string, unknown>;
-      const instance = typeof meta.instance === 'string' ? meta.instance : '';
-      if (instance) {
-        const pick = await prisma.proxy.findFirst({
-          where: { ...(workspaceId ? { workspaceId } : {}), countryCode: iso, status: { not: 'FAILED' } },
-          orderBy: [{ score: 'desc' }, { lastCheckedAt: 'asc' }]
-        });
-        if (pick) {
-          await createJobRecord(
-            'EMULATOR_SET_PROXY',
-            {
-              deviceId,
-              instance,
-              country: iso,
-              host: pick.host,
-              port: pick.port,
-              username: pick.username ?? '',
-              password: pick.password ? decryptString(pick.password) : ''
-            } as unknown as JobPayload,
-            undefined,
-            workspaceId
-          );
-          // Persist the assignment so the device↔proxy link is visible in the UI.
-          await prisma.device.update({ where: { id: deviceId }, data: { proxyId: pick.id } }).catch(() => undefined);
-          proxyAssigned = { proxyId: pick.id, country: iso };
-        }
-      }
+    // Use the SAME country-matched proxy path as the batch register (registerAccount)
+    // and Instagram: autoAttachCountryProxy picks the workspace's 'provider' proxy and
+    // routes the device's instance through a sticky "-cc-<CC>" login (thordata), so a
+    // single provider entry covers every country. The previous inline lookup required a
+    // per-country proxy row with status≠FAILED, which never matched when only a generic
+    // provider proxy existed → registration silently ran on the datacenter IP and got
+    // "Login not available"-banned. Best-effort; never blocks the register.
+    const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
+    const meta = (device?.metadata ?? {}) as Record<string, unknown>;
+    const instance = typeof meta.instance === 'string' ? meta.instance : '';
+    let proxyAssigned: { country: string } | null = null;
+    if (instance) {
+      proxyAssigned = await autoAttachCountryProxy(deviceId, instance, phoneE164, workspaceId).catch(() => null);
     }
 
     // The REGISTER_WHATSAPP dispatch is the point of no return. If it fails (e.g.

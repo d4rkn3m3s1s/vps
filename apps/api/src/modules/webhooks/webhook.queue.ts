@@ -3,6 +3,7 @@ import { Queue, Worker, type Job as BullJob } from 'bullmq';
 import { env } from '../../config/env';
 import { prisma } from '../../db/prisma';
 import { logger } from '../../lib/logger';
+import { assertSafePublicUrl } from '../../lib/urlGuard';
 
 // Connection config mirrors the jobs queue so both share the same Redis. Redis is
 // OPTIONAL infrastructure: the primary job path is the host agent, and webhooks
@@ -100,7 +101,13 @@ async function attemptDelivery(job: BullJob<WebhookJobData>): Promise<void> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const res = await fetch(hook.url, { method: 'POST', headers, body, signal: controller.signal });
+    // SSRF guard AT DELIVERY TIME (not just create): the URL is re-resolved here, so
+    // re-validate right before the request to defeat DNS-rebinding (a hostname that
+    // was public at create time can be re-pointed to 169.254.169.254 / an internal IP).
+    // redirect:'manual' stops a 3xx from bouncing us into an internal service — the
+    // non-2xx branch below treats it as a failed attempt instead of following it.
+    await assertSafePublicUrl(hook.url);
+    const res = await fetch(hook.url, { method: 'POST', headers, body, redirect: 'manual', signal: controller.signal });
     clearTimeout(timer);
     if (res.ok) {
       await prisma.$transaction([

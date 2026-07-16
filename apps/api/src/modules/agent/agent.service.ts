@@ -18,7 +18,6 @@ import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
-import { usageService } from '../usage/usage.service';
 import { calendarService } from '../calendar/calendar.service';
 import { notificationsService } from '../notifications/notifications.service';
 import { whatsappService, normalizePeer } from '../whatsapp/whatsapp.service';
@@ -227,10 +226,16 @@ export class AgentService {
           { deviceId: pl.deviceId, to: outPeer, status, ...(failReason ? { failReason: String(failReason) } : {}), ts: outAt.toISOString() },
           updated.workspaceId ?? undefined
         );
-        // Update the parent broadcast's fail counter if this send belonged to one.
-        if (pl.broadcastId && !ok) {
+        // Update the parent broadcast's counters if this send belonged to one. These
+        // are the SINGLE source of truth for sent/fail — counted on the ACTUAL device
+        // outcome here, not when the job was merely queued (the dispatcher no longer
+        // writes them). Success advances sentCount; failure advances failCount.
+        if (pl.broadcastId) {
           void prisma.whatsappBroadcast
-            .update({ where: { id: pl.broadcastId }, data: { failCount: { increment: 1 } } })
+            .update({
+              where: { id: pl.broadcastId },
+              data: ok ? { sentCount: { increment: 1 } } : { failCount: { increment: 1 } }
+            })
             .catch(() => undefined);
         }
       }
@@ -254,8 +259,11 @@ export class AgentService {
               // RATE_LIMITED: number temporarily locked ("Send SMS in N hours"). Not
               // a hard failure — the operator can retry later, so surface it like an
               // OTP wait (panel shows the code box) with the wait note in `error`.
+              // OTP_WAIT: also carry the agent's note (it distinguishes the channel —
+              // plain SMS vs "code went to your other phone" vs a rate-limit wait) so
+              // the panel's OTP box shows the RIGHT instruction, not a generic "SMS".
               nextStatus = 'AWAITING_OTP';
-              if (res.status === 'RATE_LIMITED') error = String(res.note ?? 'geçici olarak kısıtlandı');
+              if (res.note) error = String(res.note);
               break;
             case 'AWAITING_MANUAL':
               // e.g. the number is already on another phone's WhatsApp and the code
@@ -653,23 +661,19 @@ export class AgentService {
       },
       select: { id: true, name: true, status: true, lastSeen: true, workspaceId: true, ipAddress: true, adbPort: true }
     });
-    for (const d of affected) {
+    // Each device needs a DIFFERENT status/lastSeen, so a single bulk updateMany
+    // can't express this. But the per-device updates are independent, so run them
+    // concurrently instead of serially — a host with many phones no longer blocks
+    // the heartbeat response on N sequential round-trips.
+    await Promise.all(affected.map(async (d) => {
       const serial = d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null;
       const isUp = hasSerials ? Boolean(serial && reachable.has(serial)) : true;
 
       if (isUp) {
-        // Advance lastSeen FIRST and let it throw on failure. Only after the
-        // window has been committed do we bill it, so a failed lastSeen write
-        // aborts before accrue — otherwise accrue(lastSeen→now) could succeed
-        // while lastSeen stays put, and the next heartbeat would bill the same
-        // minutes again (double-billing). The status/lastSeen write is idempotent.
-        const prevLastSeen = d.lastSeen;
+        // Keep the device marked ONLINE and advance lastSeen. (Online-minute metering
+        // was removed with the usage module — it fed a pay-as-you-go bill that was
+        // never actually submitted to Stripe.) The status/lastSeen write is idempotent.
         await prisma.device.update({ where: { id: d.id }, data: { status: 'ONLINE', lastSeen: now } });
-        // Credit online time only for devices that were already ONLINE (a freshly
-        // promoted device has no measurable online slice yet).
-        if (d.status === 'ONLINE') {
-          await usageService.accrue(d.id, prevLastSeen, now, d.workspaceId ?? undefined).catch(() => undefined);
-        }
         // Fire DEVICE_ONLINE only on a real transition into ONLINE.
         if (d.status !== 'ONLINE') {
           void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
@@ -679,7 +683,7 @@ export class AgentService {
         // a stuck REBOOTING/STARTING). Don't touch lastSeen so "last seen" stays meaningful.
         await prisma.device.update({ where: { id: d.id }, data: { status: 'OFFLINE' } }).catch(() => undefined);
       }
-    }
+    }));
 
     return updated;
   }
@@ -847,15 +851,25 @@ export class AgentService {
 
   // Decrypt any secret fields so the agent receives ready-to-use values. The
   // proxy password is stored AES-256-GCM encrypted; the agent never sees the key.
+  // Handles BOTH the top-level SET_PROXY payload (payload.passwordEnc) and the
+  // nested PROVISION_DEVICE proxy object (payload.proxy.passwordEnc) so neither ever
+  // stores/serves plaintext (GET /jobs/:id) — the plaintext exists only in the
+  // materialized copy the agent claims.
   private materializePayload(payload: Record<string, unknown>): Record<string, unknown> {
-    const out = { ...payload };
-    if (typeof out.passwordEnc === 'string' && out.passwordEnc) {
-      try {
-        out.password = decryptString(out.passwordEnc);
-      } catch {
-        /* leave it absent if decryption fails */
+    const decEnc = (obj: Record<string, unknown>): Record<string, unknown> => {
+      if (typeof obj.passwordEnc === 'string' && obj.passwordEnc) {
+        try {
+          obj.password = decryptString(obj.passwordEnc);
+        } catch {
+          /* leave it absent if decryption fails */
+        }
+        delete obj.passwordEnc;
       }
-      delete out.passwordEnc;
+      return obj;
+    };
+    const out = decEnc({ ...payload });
+    if (out.proxy && typeof out.proxy === 'object') {
+      out.proxy = decEnc({ ...(out.proxy as Record<string, unknown>) });
     }
     return out;
   }

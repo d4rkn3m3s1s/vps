@@ -387,6 +387,7 @@ async function runJob(job) {
       }
       const clear = Boolean(p(payload, 'clear', false));
       if (clear) {
+        log(`SET_PROXY[${instance}] clear`);
         const out = await hostSh('wd-proxy.sh', [instance, 'clear'], 60000).catch((e) => ({ stdout: '', stderr: e.message }));
         return { cleared: true, note: out.stdout || out.stderr || 'proxy cleared' };
       }
@@ -396,8 +397,13 @@ async function runJob(job) {
       const user = String(p(payload, 'username', ''));
       const pass = String(p(payload, 'password', ''));
       if (!country || !host || !user) throw new Error('country, host and username are required for redsocks proxy');
+      // Log which country/host is being routed so proxy problems are diagnosable
+      // from the agent log (the password is never logged). Previously the log only
+      // showed "claimed/completed" with no country, making "US vs TR" bugs invisible.
+      log(`SET_PROXY[${instance}] country=${country} host=${host}:${port} user=${user.slice(0, 24)}…`);
       const out = await hostSh('wd-proxy.sh', [instance, country, user, pass, host, String(port)], 60000);
       const ok = /PROXY_RESULT/.test(out.stdout);
+      log(`SET_PROXY[${instance}] country=${country} → ${ok ? 'APPLIED' : 'FAILED'}`);
       return { applied: ok, country, note: out.stdout.trim().split('\n').pop() || 'proxy applied' };
     }
 

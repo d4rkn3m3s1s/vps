@@ -26,6 +26,7 @@ type Props = {
   deviceId: string;
   phoneNumber: string;
   steps: WaStep[];
+  proxyCountry?: string | null;
   onClose: () => void;
 };
 
@@ -43,7 +44,23 @@ function lineColor(l: LogLine): string {
   return '#94a3b8';
 }
 
-export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber, steps, onClose }: Props) {
+// Map an E.164 number's calling code to an ISO-2 country (mirrors the API's
+// CC_TO_ISO) so the modal can show whether the proxy exit matches the number.
+const CC_TO_ISO: Record<string, string> = {
+  '355': 'AL', '90': 'TR', '49': 'DE', '44': 'GB', '33': 'FR', '39': 'IT', '34': 'ES',
+  '31': 'NL', '351': 'PT', '30': 'GR', '359': 'BG', '40': 'RO', '48': 'PL', '380': 'UA',
+  '7': 'RU', '46': 'SE', '47': 'NO', '45': 'DK', '358': 'FI', '43': 'AT', '41': 'CH',
+  '32': 'BE', '353': 'IE', '1': 'US', '55': 'BR', '52': 'MX', '54': 'AR', '91': 'IN',
+  '971': 'AE', '966': 'SA', '20': 'EG', '27': 'ZA', '234': 'NG', '61': 'AU', '81': 'JP'
+};
+function numberCountry(phone: string): string | null {
+  const d = String(phone || '').replace(/[^\d]/g, '');
+  if (!d) return null;
+  for (const len of [3, 2, 1]) { const cc = d.slice(0, len); if (CC_TO_ISO[cc]) return CC_TO_ISO[cc]; }
+  return null;
+}
+
+export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber, steps, proxyCountry, onClose }: Props) {
   const router = useRouter();
   const [current, setCurrent] = useState<WaProgress>({
     accountId,
@@ -180,6 +197,30 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
             <X size={16} />
           </button>
         </header>
+
+        {/* Proxy exit vs number-country check. WhatsApp bans a mismatch ("Login not
+            available"), so surface it up front: green when the exit country matches the
+            number, red when it doesn't, neutral when no proxy is attached yet. */}
+        {(() => {
+          const numCc = numberCountry(phoneNumber);
+          const exit = (proxyCountry ?? '').toUpperCase() || null;
+          if (!exit) {
+            return (
+              <div className="proxy-check proxy-check-warn">
+                <AlertTriangle size={14} /> Proxy çıkış ülkesi atanmadı — WhatsApp numara ülkesiyle eşleşen bir proxy ister.
+              </div>
+            );
+          }
+          const match = numCc ? exit === numCc : true;
+          return (
+            <div className={`proxy-check ${match ? 'proxy-check-ok' : 'proxy-check-err'}`}>
+              {match ? <Check size={14} /> : <AlertTriangle size={14} />}
+              {match
+                ? <>Proxy çıkışı <b>{exit}</b> · numara ({numCc ?? '—'}) ile eşleşiyor ✓</>
+                : <>UYUMSUZLUK: proxy çıkışı <b>{exit}</b> ama numara <b>{numCc}</b> — WhatsApp banlar!</>}
+            </div>
+          );
+        })()}
 
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
           <span>{current.label}</span>

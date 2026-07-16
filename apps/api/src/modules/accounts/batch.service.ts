@@ -335,12 +335,19 @@ export class BatchService {
       // mismatched exit region). Prefer the phone country if a number is set, else
       // the account's countryCode. Best-effort; never blocks the register.
       const igInstance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+      // Track whether auto-proxy just enqueued an EMULATOR_SET_PROXY job. If it did,
+      // that job is a deliberate PRE-STEP of this same one-click flow (the agent runs
+      // it before the register, in order, since it serializes per device). We must
+      // then create the register with skipBusyCheck — otherwise assertDeviceIdle sees
+      // the still-PENDING SET_PROXY and rejects the register with DEVICE_BUSY ("Cihaz
+      // meşgul — Proxy ayarlama sürüyor"), which is exactly the one-click stall.
+      let proxyQueued = false;
       if (typeof igInstance === 'string' && igInstance) {
         const igCc = acc.phoneNumber ? undefined : (acc.countryCode ?? undefined);
         if (acc.phoneNumber) {
-          await autoAttachCountryProxy(deviceId, igInstance, acc.phoneNumber, workspaceId).catch(() => null);
+          proxyQueued = Boolean(await autoAttachCountryProxy(deviceId, igInstance, acc.phoneNumber, workspaceId).catch(() => null));
         } else if (igCc) {
-          await autoAttachCountryProxyByCountry(deviceId, igInstance, igCc, workspaceId).catch(() => null);
+          proxyQueued = Boolean(await autoAttachCountryProxyByCountry(deviceId, igInstance, igCc, workspaceId).catch(() => null));
         }
       }
       const payload = {
@@ -351,7 +358,7 @@ export class BatchService {
         ...(acc.birthDate ? { birthYear: Number(acc.birthDate.slice(0, 4)) } : {}),
         ...(acc.username ? { username: acc.username } : {})
       } as unknown as JobPayload;
-      const job = await createJobRecord('REGISTER_INSTAGRAM', payload, deviceId, workspaceId);
+      const job = await createJobRecord('REGISTER_INSTAGRAM', payload, deviceId, workspaceId, proxyQueued ? { skipBusyCheck: true } : undefined);
       const updated = await prisma.generatedAccount.update({
         where: { id },
         data: { status: 'REGISTERING', deviceId }
@@ -365,9 +372,13 @@ export class BatchService {
       }
       // Country-match the exit IP to the number BEFORE registering — WhatsApp bans a
       // mismatch ("Login not available"). Best-effort; never blocks the register.
+      // If auto-proxy enqueues the SET_PROXY job, the register below must skip the
+      // busy-check (that job is this flow's own pre-step, run in order by the agent);
+      // otherwise the register is rejected DEVICE_BUSY ("Proxy ayarlama sürüyor").
       const waInstance = ((dev?.metadata ?? {}) as Record<string, unknown>).instance;
+      let proxyQueued = false;
       if (typeof waInstance === 'string' && waInstance) {
-        await autoAttachCountryProxy(deviceId, waInstance, acc.phoneNumber, workspaceId).catch(() => null);
+        proxyQueued = Boolean(await autoAttachCountryProxy(deviceId, waInstance, acc.phoneNumber, workspaceId).catch(() => null));
       }
       // The OTP may already be in hand (pollOtp stored it); pass it so the agent
       // can complete in one shot. If absent, the agent stops at OTP_WAIT and the
@@ -380,7 +391,7 @@ export class BatchService {
         ...(otpCode ? { otpCode } : {}),
         ...(acc.countryCode ? { countryCode: acc.countryCode } : {})
       } as unknown as JobPayload;
-      const job = await createJobRecord('REGISTER_WHATSAPP', payload, deviceId, workspaceId);
+      const job = await createJobRecord('REGISTER_WHATSAPP', payload, deviceId, workspaceId, proxyQueued ? { skipBusyCheck: true } : undefined);
       const updated = await prisma.generatedAccount.update({
         where: { id },
         data: { status: 'REGISTERING', deviceId }
@@ -843,7 +854,14 @@ export class BatchService {
         'REGISTER_WHATSAPP',
         { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
         undefined,
-        workspaceId
+        workspaceId,
+        // If auto-proxy just queued a SET_PROXY job, skip the busy-check: that job is
+        // THIS flow's own pre-step (agent runs it before the register, per-device
+        // serialized). Without this, assertDeviceIdle sees the still-PENDING SET_PROXY
+        // and rejects with DEVICE_BUSY "Proxy ayarlama sürüyor" — the exact one-click
+        // stall the operator hit. This is the operator-OTP path (startOperatorRegister),
+        // separate from registerAccount which was fixed the same way.
+        proxyAssigned ? { skipBusyCheck: true } : undefined
       );
     } catch (e) {
       await prisma.generatedAccount

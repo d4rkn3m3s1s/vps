@@ -2679,6 +2679,42 @@ input[type='date'] {
   color: var(--accent);
 }
 
+/* Proxy exit-vs-number check banner in the WhatsApp register modal. Traffic-light
+   coded so a country mismatch (which WhatsApp bans) is impossible to miss. */
+.proxy-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.9rem;
+  border: 1px solid transparent;
+}
+.proxy-check b { font-weight: 700; }
+.proxy-check-ok { background: rgba(44, 226, 154, 0.1); color: var(--success); border-color: rgba(44, 226, 154, 0.28); }
+.proxy-check-err { background: rgba(255, 90, 95, 0.1); color: var(--danger); border-color: rgba(255, 90, 95, 0.3); }
+.proxy-check-warn { background: rgba(255, 176, 32, 0.1); color: var(--warn); border-color: rgba(255, 176, 32, 0.28); }
+
+/* Real proxy exit-country pill — green (success) because a set exit country means
+   the device routes through a country-matched residential IP, which is the healthy
+   state for WhatsApp/Instagram registration. */
+.proxy-country-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 0.4rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(44, 226, 154, 0.16);
+  color: var(--success);
+  border: 1px solid rgba(44, 226, 154, 0.3);
+  vertical-align: middle;
+}
+
 .modal-wide {
   max-width: 640px;
   width: 92vw;

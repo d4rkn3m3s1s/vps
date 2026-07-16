@@ -47,6 +47,7 @@ import DeviceProxyModal from './DeviceProxyModal';
 // WA_REGISTER_STEPS). The modal also refetches these via getStatus on mount.
 const WA_REGISTER_STEPS_CLIENT: WaStep[] = [
   { key: 'queued', label: 'Kuyruğa alındı', percent: 3 },
+  { key: 'proxy', label: 'Ülke proxy\'si atanıyor (numaraya göre)', percent: 6 },
   { key: 'perms', label: 'İzinler veriliyor', percent: 8 },
   { key: 'a11y', label: 'Erişilebilirlik + klavye', percent: 15 },
   { key: 'launch', label: 'WhatsApp açılıyor', percent: 25 },
@@ -202,6 +203,15 @@ function flag(metadata?: Record<string, unknown> | null): string {
   return country || 'Küresel';
 }
 
+// The country that actually matters for WhatsApp/Instagram: the proxy EXIT country
+// (real traffic origin), not the fingerprint's cosmetic country. `metadata.proxyCountry`
+// is set by auto-proxy when a country-matched exit is attached. Returns the exit
+// country code (e.g. "TR") when present, else null so callers fall back to fingerprint.
+function proxyExitCountry(metadata?: Record<string, unknown> | null): string | null {
+  const pc = (metadata?.proxyCountry as string) || '';
+  return pc.trim() ? pc.trim().toUpperCase() : null;
+}
+
 const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'Dosya gönder', 'Sil'] as const;
 
 const BULK_ICONS: Record<string, ReactNode> = {
@@ -315,7 +325,7 @@ export function ProfilesView({
   const [waBusy, setWaBusy] = useState(false);
   const [waMsg, setWaMsg] = useState<string | null>(null);
   // Live WhatsApp-registration panel (opens after "Başlat"), like `provisioning`.
-  const [waRegistering, setWaRegistering] = useState<{ accountId: string; deviceId: string; phoneNumber: string; steps: WaStep[] } | null>(null);
+  const [waRegistering, setWaRegistering] = useState<{ accountId: string; deviceId: string; phoneNumber: string; steps: WaStep[]; proxyCountry?: string | null } | null>(null);
   // "Tek Tık Instagram" — open Instagram registration on ONE device. Email-based
   // and fully autonomous (agent reads the email code). igOpen = confirm dialog;
   // igRegistering = the live progress panel.
@@ -708,7 +718,10 @@ export function ProfilesView({
           accountId: d.accountId,
           deviceId: d.deviceId || waOpen.id,
           phoneNumber: d.phoneNumber || num,
-          steps: d.steps
+          steps: d.steps,
+          // Show the real proxy exit country the number was matched to, so the operator
+          // sees "TR proxy atandı ✓" right when registration starts.
+          proxyCountry: proxyExitCountry(waOpen.metadata)
         });
         setWaOpen(null);
         setWaPhone('');
@@ -1121,6 +1134,13 @@ export function ProfilesView({
                       <span className="meta-icon"><MapPin size={13} /></span>
                       {device.fingerprint?.country ?? flag(device.metadata)}
                       {device.fingerprint?.gpsEnabled ? <span className="gps-pill">GPS</span> : null}
+                      {/* Real proxy exit country — what WhatsApp actually sees. Shown as a
+                          distinct pill so a fingerprint/proxy mismatch is obvious at a glance. */}
+                      {proxyExitCountry(device.metadata) ? (
+                        <span className="proxy-country-pill" title="Gerçek proxy çıkış ülkesi (WhatsApp bunu görür)">
+                          <Wifi size={10} /> {proxyExitCountry(device.metadata)} çıkış
+                        </span>
+                      ) : null}
                     </li>
                     <li>
                       <span className="meta-icon"><Smartphone size={13} /></span>
@@ -1168,7 +1188,8 @@ export function ProfilesView({
                                 accountId: accId,
                                 deviceId: device.id,
                                 phoneNumber: (device.metadata?.waRegisterPhone as string) || '',
-                                steps: WA_REGISTER_STEPS_CLIENT
+                                steps: WA_REGISTER_STEPS_CLIENT,
+                                proxyCountry: proxyExitCountry(device.metadata)
                               });
                             }}
                           >
@@ -1802,6 +1823,7 @@ export function ProfilesView({
           deviceId={waRegistering.deviceId}
           phoneNumber={waRegistering.phoneNumber}
           steps={waRegistering.steps}
+          proxyCountry={waRegistering.proxyCountry ?? null}
           onClose={() => setWaRegistering(null)}
         />
       ) : null}

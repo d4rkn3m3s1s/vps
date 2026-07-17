@@ -90,6 +90,13 @@ function stepFor(key: string): ProvisionStep {
 // Third octet of a Waydroid instance's subnet, matching the host's net-head.sh:
 // md5(name) -> 192.168.<241..256>.x. Used to avoid subnet collisions with the
 // existing instances when picking the next instance name.
+// Map an instance name → its /24 subnet id (192.168.<N>.0). Historically this hashed
+// the name into just 16 buckets (241-256), which CAPPED the host at ~16 devices (and
+// worse: md5 collisions meant two names could want the same subnet, so the "no free
+// slot" wall hit well before 16 on a host with plenty of RAM/CPU). We keep the SAME
+// mapping for the original instances so their existing 192.168.<N>.0 networks/redsocks
+// rules don't move — but the allocator below now assigns fresh instances a free subnet
+// sequentially across the full 2..254 range instead of this narrow hash.
 function subnetIdFor(instance: string): number {
   const hex = createHash('md5').update(instance).digest('hex').slice(0, 8);
   return (parseInt(hex, 16) % 16) + 241;
@@ -203,25 +210,22 @@ class ProvisionService {
       select: { metadata: true }
     });
     const usedNames = new Set<string>();
-    const usedSubnets = new Set<number>([240]); // 240 = default instance (#1)
     for (const d of devices) {
       const meta = (d.metadata ?? {}) as Record<string, unknown>;
       const inst = typeof meta.instance === 'string' ? meta.instance : null;
-      if (inst) {
-        usedNames.add(inst);
-        usedSubnets.add(subnetIdFor(inst));
-      }
+      if (inst) usedNames.add(inst);
     }
-    // The bootstrap instances the fleet was built on (not always in DB).
-    for (const seed of ['work', 'mi3']) usedSubnets.add(subnetIdFor(seed));
-
-    for (let n = 2; n < 200; n++) {
+    // Only the NAME needs to be unique. The /24 subnet is assigned by the host agent's
+    // net-head.sh, which hands out a FREE sequential subnet (2..239) per instance and
+    // records it in /var/lib/waydroid-subnets.map — so subnets never collide there.
+    // The old code additionally rejected any name whose md5-hashed subnetIdFor() bucket
+    // (only 16 values, 241-256) was taken, which capped a host at ~16 devices and threw
+    // "No free instance slot" long before the real capacity (RAM/CPU) or the agent's
+    // 238-subnet range were anywhere near full. Dropping that phantom limit — a powerful
+    // host now scales to hundreds of instances, bounded only by real resources.
+    for (let n = 2; n < 400; n++) {
       const name = `${prefix}${n}`;
-      if (usedNames.has(name)) continue;
-      const sub = subnetIdFor(name);
-      if (sub > 254) continue; // invalid /24 host range
-      if (usedSubnets.has(sub)) continue;
-      return name;
+      if (!usedNames.has(name)) return name;
     }
     throw new AppError('No free instance slot on this host', 409, 'NO_INSTANCE_SLOT');
   }
@@ -420,7 +424,7 @@ class ProvisionService {
   async getStatus(
     jobId: string,
     workspaceId?: string
-  ): Promise<{ jobId: string; deviceId: string; status: string; phase: 'provisioning' | 'ready' | 'failed'; percent: number; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[] }> {
+  ): Promise<{ jobId: string; deviceId: string; status: string; phase: 'provisioning' | 'ready' | 'failed'; percent: number; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[]; startedAt: string | null }> {
     const job = await prisma.job.findFirst({
       where: { id: jobId, ...(workspaceId ? { workspaceId } : {}) },
       select: { id: true, status: true, result: true, payload: true }
@@ -432,15 +436,23 @@ class ProvisionService {
     // Coarse phase for integrations: provisioning → ready (WhatsApp-ready) / failed.
     const phase: 'provisioning' | 'ready' | 'failed' =
       job.status === 'FAILED' ? 'failed' : job.status === 'COMPLETED' || last?.step === 'done' ? 'ready' : 'provisioning';
+    // First log line's ts = when provisioning actually began, so the modal shows the
+    // true elapsed time regardless of when the operator (re)opens it.
+    const log = Array.isArray(result.provisionLog) ? (result.provisionLog as unknown[]) : [];
+    const first = log[0] as { ts?: string } | undefined;
     return {
       jobId: job.id,
       deviceId,
       status: job.status,
       phase,
-      percent: last?.percent ?? 0,
+      // Keep percent consistent with phase: a COMPLETED/ready job reports 100 even if
+      // no lastProgress landed (avoids the "phase: ready + percent: 0" contradiction a
+      // polling integrator would see). A failed job keeps its last percent.
+      percent: phase === 'ready' ? Math.max(last?.percent ?? 0, 100) : (last?.percent ?? 0),
       steps: PROVISION_STEPS,
       lastProgress: last,
-      log: Array.isArray(result.provisionLog) ? (result.provisionLog as unknown[]) : []
+      log,
+      startedAt: (first?.ts as string) ?? null
     };
   }
 

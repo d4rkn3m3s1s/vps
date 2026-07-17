@@ -39,7 +39,9 @@ const deviceUpdateSchema = deviceCreateSchema.partial().extend({
   groupId: z.string().nullable().optional(),
   hostId: z.string().nullable().optional(),
   lastSeen: z.string().datetime().optional(),
-  tags: z.array(z.string().max(32)).max(20).optional()
+  tags: z.array(z.string().max(32)).max(20).optional(),
+  // Protect a valuable device (active account) from delete/reset/restore.
+  protected: z.boolean().optional()
 });
 
 const groupCreateSchema = z.object({

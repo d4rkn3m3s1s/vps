@@ -401,6 +401,169 @@ paths:
                 pinned: { type: boolean }
       responses:
         '200': { description: '{ data: { ok: true } }' }
+
+  # ── One-click provision + WhatsApp autonomous registration (write scope, heavily
+  # throttled). Async, two-phase: register drives to the SMS screen and parks
+  # (AWAITING_OTP); submit the code to /register/{id}/otp to finish. Poll the
+  # matching /status endpoint (same data as the dashboard's live modal). ──
+  /public/v1/devices/provision:
+    post:
+      summary: One-click provision — build a brand-new isolated cloud phone (write scope)
+      description: >
+        Spins up a fresh Waydroid instance from scratch (boot → root → unique
+        identity → country-matched proxy → apps → WhatsApp-ready), exactly like the
+        dashboard's "Tek Tıkla Cihaz Oluştur". Async: returns immediately with the
+        deviceId + jobId; poll GET /public/v1/devices/provision/{jobId}/status until
+        it comes online. Heavy operation → strictly rate-limited (per API key).
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 60, description: device name (blank → auto "Cihaz miN") }
+                countryCode: { type: string, minLength: 2, maxLength: 2, description: fingerprint country (ISO-2, e.g. US) }
+                deviceModel: { type: string, maxLength: 60, description: catalog model (e.g. Samsung Galaxy S21) }
+                androidVersion: { type: string, maxLength: 10, description: Android version (e.g. 13) }
+                proxyCountry: { type: string, minLength: 2, maxLength: 2, description: country-matched residential proxy (ISO-2; WhatsApp needs number-country == exit-IP country) }
+      responses:
+        '201':
+          description: Provisioning started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicProvisionResponse'
+  /public/v1/devices/provision/{jobId}/status:
+    get:
+      summary: Live step-by-step provision progress
+      description: >
+        Same data the dashboard's live install modal shows — phase, percent, current
+        step and full step log. Poll every few seconds. Any valid key (read).
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Provision status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicProvisionStatusResponse'
+  /public/v1/whatsapp/register:
+    post:
+      summary: One-click WhatsApp autonomous registration (write scope)
+      description: >
+        Starts an autonomous WhatsApp signup on a device with the caller's OWN
+        number. The agent grants permissions, accepts the EULA, enters the number and
+        parks on the SMS-code screen (status AWAITING_OTP). Submit the code to
+        /register/{id}/otp to finish. A country-matched residential proxy is
+        auto-attached when available. Heavy operation → strictly rate-limited (per API key).
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, phoneNumber]
+              properties:
+                deviceId: { type: string, description: online device with a live agent }
+                phoneNumber: { type: string, description: E.164 with country code, e.g. +15551234567 }
+      responses:
+        '201':
+          description: Registration started (account → REGISTERING)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicRegisterResponse'
+  /public/v1/whatsapp/register/{id}/otp:
+    post:
+      summary: Submit the SMS verification code (write scope)
+      description: >
+        id = accountId from the register response. Forwards the code to the agent,
+        which enters it and finishes the profile. Account flips to ACTIVE or FAILED.
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otpCode]
+              properties:
+                otpCode: { type: string, minLength: 4, maxLength: 8 }
+      responses:
+        '200':
+          description: Code accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicRegisterAccountResponse'
+  /public/v1/whatsapp/register/{id}/verify-method:
+    post:
+      summary: Pick the verification method when parked on the "Choose how to verify" sheet (write scope)
+      description: >
+        id = accountId. Used when registration parks on WhatsApp's method sheet
+        (status AWAITING_OTP with phase method_select). The agent applies the choice
+        and continues to the code step.
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method]
+              properties:
+                method: { type: string, enum: [sms, voice, missed_call] }
+      responses:
+        '200':
+          description: Method applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicRegisterAccountResponse'
+  /public/v1/whatsapp/register/{id}/status:
+    get:
+      summary: Live WhatsApp registration progress
+      description: >
+        id = accountId. Live step-by-step progress (current step, percent, full step
+        log) — the same data as the dashboard modal. Poll every few seconds. Any valid
+        key (read).
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Registration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicRegisterStatusResponse'
+  /public/v1/jobs/{jobId}:
+    get:
+      summary: Read the result/status of any on-device job (read)
+      description: >
+        Universal poll target for the jobId every on-device write endpoint returns
+        (send, broadcast, profile, block, blocklist, mynumber, send-media,
+        delete-message, clear-chat). status flows PENDING → RUNNING → COMPLETED (or
+        FAILED); the outcome lands on result. Any valid key (read). Workspace-scoped —
+        a foreign jobId 404s (JOB_NOT_FOUND). The job payload is deliberately NOT
+        returned (it can hold decrypted identity/proxy secrets).
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Job status + result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicJobResponse'
+        '404':
+          description: '{ error: JOB_NOT_FOUND }'
 components:
   securitySchemes:
     bearerAuth:
@@ -411,6 +574,118 @@ components:
       type: apiKey
       in: header
       name: x-api-key
+  schemas:
+    # ── Public one-click provision / registration / job schemas ──
+    PublicProvisionResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            deviceId: { type: string }
+            jobId: { type: string }
+            instance: { type: string, description: 'Waydroid instance name (e.g. mi8)' }
+            status: { type: string, example: PROVISIONING }
+    PublicProvisionStatusResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            jobId: { type: string }
+            deviceId: { type: string }
+            status: { type: string, enum: [PENDING, RUNNING, COMPLETED, FAILED] }
+            phase: { type: string, enum: [provisioning, ready, failed] }
+            percent: { type: integer }
+            lastProgress:
+              type: object
+              properties:
+                step: { type: string }
+                percent: { type: integer }
+                status: { type: string }
+                note: { type: string }
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  percent: { type: integer }
+            log:
+              type: array
+              items:
+                type: object
+    PublicRegisterResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            accountId: { type: string }
+            deviceId: { type: string }
+            phoneNumber: { type: string }
+            status: { type: string, example: REGISTERING }
+            proxyAssigned:
+              type: object
+              description: 'Country-matched proxy attached for this number (when available).'
+              properties:
+                country: { type: string, description: 'ISO-2 exit country (e.g. US)' }
+    PublicRegisterAccountResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id: { type: string }
+            status: { type: string, enum: [REGISTERING, AWAITING_OTP, ACTIVE, FAILED] }
+            phoneNumber: { type: string }
+    PublicRegisterStatusResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            accountId: { type: string }
+            deviceId: { type: string }
+            status: { type: string, enum: [REGISTERING, AWAITING_OTP, ACTIVE, FAILED] }
+            phase: { type: string, enum: [starting, waiting_phone, waiting_sms, method_select, opened, failed] }
+            percent: { type: integer }
+            lastProgress:
+              type: object
+              properties:
+                step: { type: string }
+                percent: { type: integer }
+                status: { type: string }
+                note: { type: string }
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  key: { type: string }
+                  label: { type: string }
+                  percent: { type: integer }
+            log:
+              type: array
+              items:
+                type: object
+    PublicJobResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id: { type: string }
+            type: { type: string, description: 'Job type, e.g. WHATSAPP_MYNUMBER / WHATSAPP_BLOCKLIST' }
+            status: { type: string, enum: [PENDING, RUNNING, COMPLETED, FAILED] }
+            result:
+              description: 'Outcome when COMPLETED (shape varies by type), else null. e.g. mynumber → { status, number }; blocklist → { status, count, blocked }.'
+              nullable: true
+              type: object
+            error: { type: string, nullable: true, description: 'Failure reason when FAILED, else null.' }
+            createdAt: { type: string, format: date-time }
+            updatedAt: { type: string, format: date-time }
 security:
   - bearerAuth: []
   - apiKeyAuth: []

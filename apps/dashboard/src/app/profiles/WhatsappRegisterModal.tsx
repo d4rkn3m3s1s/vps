@@ -73,6 +73,9 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [elapsed, setElapsed] = useState(0);
+  // The real registration start (first log line's ts). We count elapsed from THIS,
+  // not from modal-open — otherwise reopening a background run reset the clock to 00:00.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [shot, setShot] = useState<string | null>(null); // latest downscaled screenshot
   const [showShot, setShowShot] = useState(false); // "SS göster" toggle (off by default)
@@ -80,6 +83,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   const [otp, setOtp] = useState('');
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpMsg, setOtpMsg] = useState<string | null>(null);
+  const [cancelBusy, setCancelBusy] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted history on open (covers "arka plana al" → reopen).
@@ -93,6 +97,13 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
         if (cancelled || !d) return;
         if (Array.isArray(d.log) && d.log.length) setLogs(d.log as LogLine[]);
         if (d.lastProgress) setCurrent(d.lastProgress as WaProgress);
+        // Anchor the elapsed clock to the real start (API's startedAt, else the first
+        // log line's ts). Falls back to modal-open only if there's no history at all.
+        const firstTs = d.startedAt ?? (Array.isArray(d.log) && d.log[0]?.ts) ?? null;
+        if (firstTs) {
+          const ms = Date.parse(firstTs);
+          if (!Number.isNaN(ms)) setStartedAt(ms);
+        }
       } catch {
         /* no history yet — live events will fill it */
       }
@@ -109,6 +120,10 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     if (!p || p.accountId !== accountId) return;
     setCurrent(p);
     if (p.shot) setShot(p.shot);
+    // First live event we ever see also anchors the clock (covers a brand-new run
+    // with no persisted history yet). Only set it once — never let a later event push
+    // the start forward.
+    setStartedAt((prev) => prev ?? (e.timestamp ? Date.parse(e.timestamp) : Date.now()));
     if (p.note) {
       const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: p.note };
       setLogs((prev) => [...prev, line]);
@@ -120,11 +135,34 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // OTP box appears when the flow parks at the code step. The agent parks here for
   // every "operator enters the code" case (plain SMS, code-on-other-phone, or a
   // rate-limit wait) and always reports step 'otp_wait'; keep the legacy alias too.
-  const awaitingOtp = !done && !failed && (current.step === 'otp_wait' || current.step === 'otp_wait_manual');
+  const otpNote = current.note ?? '';
+  // "Choose how to verify" — the agent paused on WhatsApp's method sheet and wants the
+  // operator to pick SMS / Voice / Missed call (instead of the old blind guess). The
+  // agent emits a "🔀 Doğrulama yöntemi seçin: …" note listing each option and whether
+  // it's rate-limited ("(kısıtlı — 24 hours)"). We detect that note and, instead of the
+  // OTP code box, show tappable method buttons.
+  const isMethodSelect = !done && !failed && current.step === 'otp_wait' && /Doğrulama yöntemi seçin/i.test(otpNote);
+  // Parse the option list out of the note so we can disable rate-limited ones.
+  const methodOptions = useMemo(() => {
+    if (!isMethodSelect) return [] as { kind: 'sms' | 'voice' | 'missed_call'; label: string; locked: boolean; wait: string | null }[];
+    const defs: { kind: 'sms' | 'voice' | 'missed_call'; label: string; re: RegExp }[] = [
+      { kind: 'sms', label: 'SMS ile kod', re: /Receive SMS/i },
+      { kind: 'voice', label: 'Sesli arama', re: /Voice call/i },
+      { kind: 'missed_call', label: 'Cevapsız çağrı', re: /Missed call/i }
+    ];
+    return defs
+      .filter((d) => d.re.test(otpNote))
+      .map((d) => {
+        const seg = (otpNote.split(d.re)[1] || '').slice(0, 40);
+        const lockM = /kısıtlı(?:\s*—\s*([^)·]+))?/i.exec(seg);
+        return { kind: d.kind, label: d.label, locked: Boolean(lockM), wait: lockM?.[1]?.trim() ?? null };
+      });
+  }, [isMethodSelect, otpNote]);
+
+  const awaitingOtp = !done && !failed && !isMethodSelect && (current.step === 'otp_wait' || current.step === 'otp_wait_manual');
   // Distinguish the 4 code-wait scenarios from the agent's note so the box shows the
   // right instruction instead of a generic "SMS". The note is the single source of
   // truth (agent emits a 📲 note; API mirrors it into the account).
-  const otpNote = current.note ?? '';
   const otpIsOtherPhone = /diğer telefon|other phone|başka bir cihaz/i.test(otpNote);
   // Rate-limit'e ÖZGÜ kalıplar. NOT: geniş "bekle" KULLANMA — normal SMS note'u
   // ("SMS kodu bekleniyor") "bekleniyor" içerir ve yanlışlıkla rate-limit sanılırdı.
@@ -135,11 +173,20 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
       ? { icon: '⏳', title: 'Geçici bekleme (rate-limit)', body: otpNote || `${phoneNumber} için WhatsApp geçici bekleme koydu. Süre dolunca kod gelir; geldiğinde buraya girin.` }
       : { icon: '📲', title: 'SMS doğrulama kodu bekleniyor', body: `${phoneNumber} numarasına SMS ile 6 haneli kod gelecek. Kod gelince buraya girin, ajan otomatik girer.` };
 
+  // Tick the elapsed clock off the REAL start (startedAt) so it reflects true wall-time
+  // since the registration began — surviving modal close/reopen and page reloads. When
+  // we don't know the start yet (very first render before any event/history), fall back
+  // to a local +1 counter so the timer still moves.
   useEffect(() => {
     if (done || failed) return;
-    const t = setInterval(() => setElapsed((v) => v + 1), 1000);
+    const tick = () => {
+      if (startedAt) setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      else setElapsed((v) => v + 1);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [done, failed]);
+  }, [done, failed, startedAt]);
 
   useEffect(() => {
     if (done) router.refresh();
@@ -154,7 +201,32 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     [steps, current.step]
   );
 
-  const barColor = failed ? '#ef4444' : done ? '#22c55e' : awaitingOtp ? '#38bdf8' : 'var(--accent, #6366f1)';
+  const barColor = failed ? '#ef4444' : done ? '#22c55e' : isMethodSelect ? '#8b5cf6' : awaitingOtp ? '#38bdf8' : 'var(--accent, #6366f1)';
+
+  // Cancel a stuck/blocked registration: flips the account to FAILED and clears the
+  // device's WA-registration badge (API cancel handler), so the card stops showing
+  // "Kod bekleniyor" and the WhatsApp button unlocks. Needed for terminal cases the
+  // operator can't act on (number blocked / wall / wrong number) where there's no code
+  // to enter.
+  async function cancelRegistration() {
+    if (cancelBusy) return;
+    if (!window.confirm(`${phoneNumber} için WhatsApp kaydını iptal etmek istediğinize emin misiniz?`)) return;
+    setCancelBusy(true);
+    try {
+      const res = await fetch(`/api/accounts/batch/accounts/${accountId}/cancel`, { method: 'POST' });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        setOtpMsg(b?.data?.message || b?.error || 'İptal edilemedi');
+        return;
+      }
+      router.refresh();
+      onClose();
+    } catch {
+      setOtpMsg('İptal edilemedi (ağ hatası)');
+    } finally {
+      setCancelBusy(false);
+    }
+  }
 
   function copyLogs() {
     const text = logs.map((l) => `${l.step}▸ ${l.note ?? l.step}`).join('\n');
@@ -188,6 +260,29 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     }
   }
 
+  // Operator picked a verification method (SMS / Voice / Missed call). Re-dispatch so
+  // the agent selects that row on the sheet and continues.
+  async function submitMethod(kind: 'sms' | 'voice' | 'missed_call') {
+    if (otpBusy) return;
+    setOtpBusy(true);
+    setOtpMsg(null);
+    try {
+      const res = await fetch(`/api/accounts/whatsapp/register/${accountId}/verify-method`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: kind })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { setOtpMsg(body?.data?.message || body?.error || 'Yöntem gönderilemedi'); return; }
+      setOtpMsg('Yöntem seçildi — ajan devam ediyor…');
+      setCurrent((c) => ({ ...c, step: 'verify', label: 'Doğrulama yöntemi uygulanıyor', percent: 80, status: 'RUNNING' }));
+    } catch {
+      setOtpMsg('Yöntem gönderilemedi (ağ hatası)');
+    } finally {
+      setOtpBusy(false);
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
@@ -203,11 +298,18 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
             number, red when it doesn't, neutral when no proxy is attached yet. */}
         {(() => {
           const numCc = numberCountry(phoneNumber);
-          const exit = (proxyCountry ?? '').toUpperCase() || null;
+          // Prefer the agent's LIVE verified exit country over the static proxyCountry
+          // prop. The agent tests the real exit IP at register-start and logs e.g.
+          // "✓ Çıkış IP: 5.27.42.25 (TR, Istanbul) — numara ülkesiyle eşleşti"; the prop
+          // is only the provision-time hint and is often empty on a fresh device, which
+          // made the modal wrongly say "atanmadı" even though the agent DID route TR.
+          const liveLine = [...logs].reverse().find((l) => /Çıkış IP/i.test(l.note ?? ''));
+          const liveExit = liveLine ? (liveLine.note?.match(/\(([A-Z]{2})(?:,|\))/)?.[1] ?? null) : null;
+          const exit = liveExit || ((proxyCountry ?? '').toUpperCase() || null);
           if (!exit) {
             return (
               <div className="proxy-check proxy-check-warn">
-                <AlertTriangle size={14} /> Proxy çıkış ülkesi atanmadı — WhatsApp numara ülkesiyle eşleşen bir proxy ister.
+                <AlertTriangle size={14} /> Proxy çıkışı henüz doğrulanmadı — kayıt başlayınca agent gerçek çıkış IP'sini kontrol eder.
               </div>
             );
           }
@@ -216,7 +318,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
             <div className={`proxy-check ${match ? 'proxy-check-ok' : 'proxy-check-err'}`}>
               {match ? <Check size={14} /> : <AlertTriangle size={14} />}
               {match
-                ? <>Proxy çıkışı <b>{exit}</b> · numara ({numCc ?? '—'}) ile eşleşiyor ✓</>
+                ? <>Proxy çıkışı <b>{exit}</b>{liveExit ? ' (doğrulandı)' : ''} · numara ({numCc ?? '—'}) ile eşleşiyor ✓</>
                 : <>UYUMSUZLUK: proxy çıkışı <b>{exit}</b> ama numara <b>{numCc}</b> — WhatsApp banlar!</>}
             </div>
           );
@@ -232,6 +334,34 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
         {/* OTP box — appears when the flow parks at the code step. The instruction
             adapts to the scenario (plain SMS / code-on-other-phone / rate-limit). */}
+        {isMethodSelect && (
+          <div style={{ border: '1px solid rgba(139,92,246,0.4)', borderLeft: '3px solid #8b5cf6', background: 'rgba(139,92,246,0.08)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+            <div style={{ fontSize: 13, marginBottom: 10 }}>
+              🔀 <strong>Doğrulama yöntemi seçin</strong>
+              <div style={{ opacity: 0.85, marginTop: 4, lineHeight: 1.4 }}>
+                {phoneNumber} için WhatsApp bir yöntem seçmenizi istiyor. Erişebildiğiniz kanalı seçin — ajan onu uygulayıp devam eder.
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {methodOptions.map((o) => (
+                <button
+                  key={o.kind}
+                  type="button"
+                  className="btn-primary"
+                  disabled={otpBusy || o.locked}
+                  title={o.locked ? `Kısıtlı${o.wait ? ` — ${o.wait}` : ''}` : `${o.label} ile doğrula`}
+                  onClick={() => void submitMethod(o.kind)}
+                  style={{ opacity: o.locked ? 0.5 : 1 }}
+                >
+                  {o.kind === 'sms' ? '💬' : o.kind === 'voice' ? '📞' : '📱'} {o.label}
+                  {o.locked ? ` (kısıtlı${o.wait ? ` — ${o.wait}` : ''})` : ''}
+                </button>
+              ))}
+            </div>
+            {otpMsg ? <div style={{ fontSize: 12, marginTop: 8, color: otpMsg.startsWith('Yöntem seçildi') ? '#4ade80' : '#f87171' }}>{otpMsg}</div> : null}
+          </div>
+        )}
+
         {awaitingOtp && (
           <div style={{ border: `1px solid ${otpIsRateLimit ? 'rgba(251,191,36,0.45)' : 'rgba(56,189,248,0.4)'}`, borderLeft: `3px solid ${otpIsRateLimit ? '#fbbf24' : '#38bdf8'}`, background: otpIsRateLimit ? 'rgba(251,191,36,0.08)' : 'rgba(56,189,248,0.08)', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
             <div style={{ fontSize: 13, marginBottom: 8 }}>
@@ -387,7 +517,19 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
               <button type="button" className="btn-ghost" onClick={onClose}>Kapat</button>
             </>
           ) : (
-            <button type="button" className="btn-ghost" onClick={onClose}>Arka planda devam et</button>
+            <div style={{ display: 'flex', gap: 8, width: '100%', justifyContent: 'space-between' }}>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}
+                disabled={cancelBusy}
+                onClick={cancelRegistration}
+                title="Kaydı iptal et — hesabı başarısız işaretler ve kart kilidini açar"
+              >
+                {cancelBusy ? 'İptal ediliyor…' : 'Kaydı İptal Et'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={onClose}>Arka planda devam et</button>
+            </div>
           )}
         </footer>
       </div>

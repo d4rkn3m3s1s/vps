@@ -41,6 +41,7 @@ import {
   autoRegisterWhatsAppHandler,
   startRegisterHandler,
   provideOtpHandler,
+  provideVerifyMethodHandler,
   waRegisterStatusHandler,
   startInstagramRegisterHandler,
   igRegisterStatusHandler
@@ -76,6 +77,7 @@ accountsRouter.post('/whatsapp/auto-register', requireApiKey, authenticateJwt, h
 // Operator-OTP one-click registration (operator's own number; enter OTP by hand).
 accountsRouter.post('/whatsapp/register', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(startRegisterHandler));
 accountsRouter.post('/whatsapp/register/:id/otp', requireApiKey, authenticateJwt, asyncHandler(provideOtpHandler));
+accountsRouter.post('/whatsapp/register/:id/verify-method', requireApiKey, authenticateJwt, asyncHandler(provideVerifyMethodHandler));
 // Live registration progress (log + last step) for the dashboard modal to restore.
 accountsRouter.get('/whatsapp/register/:id/status', requireApiKey, authenticateJwt, asyncHandler(waRegisterStatusHandler));
 

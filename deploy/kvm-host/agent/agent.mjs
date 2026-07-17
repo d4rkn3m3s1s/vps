@@ -120,6 +120,38 @@ async function adbSu(serial, cmd) {
   }
 }
 
+// Map an E.164 phone number's calling code → ISO-2 country (mirrors the API's
+// CC_TO_ISO). Used to check whether the proxy exit country matches the number before
+// registration, so a +90 number on a US exit is flagged instead of silently burned.
+const CC_TO_ISO = {
+  '355': 'AL', '90': 'TR', '49': 'DE', '44': 'GB', '33': 'FR', '39': 'IT', '34': 'ES',
+  '31': 'NL', '351': 'PT', '30': 'GR', '359': 'BG', '40': 'RO', '48': 'PL', '380': 'UA',
+  '7': 'RU', '46': 'SE', '47': 'NO', '45': 'DK', '358': 'FI', '43': 'AT', '41': 'CH',
+  '32': 'BE', '353': 'IE', '1': 'US', '55': 'BR', '52': 'MX', '54': 'AR', '91': 'IN',
+  '971': 'AE', '966': 'SA', '20': 'EG', '27': 'ZA', '234': 'NG', '61': 'AU', '81': 'JP'
+};
+function ccToIso(phone) {
+  const d = String(phone || '').replace(/[^\d]/g, '');
+  if (!d) return null;
+  for (const len of [3, 2, 1]) { const cc = d.slice(0, len); if (CC_TO_ISO[cc]) return CC_TO_ISO[cc]; }
+  return null;
+}
+
+// Verify the device's REAL internet exit country the way an app (WhatsApp) sees it.
+// Runs curl from the plain adb shell UID — NOT `su` — because redsocks' transparent
+// iptables REDIRECT only rewrites app-UID traffic; a root curl bypasses it and would
+// return the host's datacenter IP, masking a proxy that isn't actually routing. Best
+// effort + short timeout so it never blocks provisioning; returns null on any failure.
+async function verifyExitCountry(serial) {
+  const raw = await adbT(serial, ['shell', 'curl', '-s', '--max-time', '12', 'https://ipinfo.io/json'], 15000).catch(() => '');
+  const text = String(raw || '');
+  const country = (text.match(/"country"\s*:\s*"([A-Z]{2})"/) || [])[1] || null;
+  if (!country) return null;
+  const ip = (text.match(/"ip"\s*:\s*"([^"]+)"/) || [])[1] || null;
+  const city = (text.match(/"city"\s*:\s*"([^"]+)"/) || [])[1] || null;
+  return { country, ip, city };
+}
+
 // Wrap an arbitrary string so it survives the DEVICE-side /system/bin/sh re-parse.
 // `adb(serial, ['shell', 'input', 'text', s])` looks argv-safe on the host, but
 // adbd joins the args and re-parses them through the phone's sh — so a value like
@@ -402,9 +434,29 @@ async function runJob(job) {
       // showed "claimed/completed" with no country, making "US vs TR" bugs invisible.
       log(`SET_PROXY[${instance}] country=${country} host=${host}:${port} user=${user.slice(0, 24)}…`);
       const out = await hostSh('wd-proxy.sh', [instance, country, user, pass, host, String(port)], 60000);
-      const ok = /PROXY_RESULT/.test(out.stdout);
+      // Success requires the verified PROXY_RESULT marker AND no PROXY_FAIL. wd-proxy.sh
+      // now only prints PROXY_RESULT after confirming the iptables REDIRECT rule really
+      // landed, and prints PROXY_FAIL (need-root / redirect-not-installed) otherwise —
+      // so a routing that didn't take no longer reports a false "APPLIED".
+      const stdout = String(out.stdout || '');
+      const failed = /PROXY_FAIL/.test(stdout);
+      const ok = /PROXY_RESULT[^\n]*redsocks=\d+/.test(stdout) && !failed;
       log(`SET_PROXY[${instance}] country=${country} → ${ok ? 'APPLIED' : 'FAILED'}`);
-      return { applied: ok, country, note: out.stdout.trim().split('\n').pop() || 'proxy applied' };
+      if (!ok) {
+        throw new Error(`proxy apply failed: ${stdout.trim().split('\n').pop() || 'wd-proxy.sh did not confirm REDIRECT'}`);
+      }
+      // Confirm the REAL exit country the way WhatsApp sees it (app-uid through redsocks).
+      // A mismatch here is the single best early signal that a TR number is about to
+      // register on a non-TR IP → surface it in the result note (non-fatal: the routing
+      // rule IS installed; the upstream proxy's geo may just differ).
+      const exit = await verifyExitCountry(serial).catch(() => null);
+      let note = stdout.trim().split('\n').pop() || 'proxy applied';
+      if (exit && exit.country) {
+        const match = exit.country.toUpperCase() === country.toUpperCase();
+        note = `${match ? '✓' : '⚠'} exit ${exit.ip || '?'} (${exit.country})${match ? '' : ` ≠ ${country}`}`;
+        log(`SET_PROXY[${instance}] verified exit=${exit.country} ip=${exit.ip || '?'} match=${match}`);
+      }
+      return { applied: true, country, ...(exit ? { exitCountry: exit.country, exitIp: exit.ip, exitCity: exit.city, exitMatch: exit.country.toUpperCase() === country.toUpperCase() } : {}), note };
     }
 
     case 'EMULATOR_SNAPSHOT_CREATE': {
@@ -732,15 +784,33 @@ async function registerInstagram(serial, payload, job) {
 // element-based flow needs (dump, tap-by-content, type-into-field, wait-for).
 // registerWhatsApp / whatsappSend / whatsappRead all build on this.
 function waHelpers(serial) {
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const dump = async () => parseUiNodes(await uiDumpXml(serial));
+  // ★PERF (FIRSAT 1): the verify/first-run state machines call ~15-25 detectors per
+  // round, and EVERY on*()/seen()/screenText()/find() ends in a dump() — each an
+  // ~1-2s uiautomator dump on this GPU-less build (that's why "Yes/verify took forever"
+  // — a single round could cost 20-40s). A short TTL cache collapses all the dumps in
+  // ONE round into a single real dump: the first dump() in this ~700ms window pays the
+  // cost, the rest reuse it. Any sleep INVALIDATES it (screen may have changed), so a
+  // detector after an action still reads a fresh screen — behavior is unchanged, only
+  // the redundant same-screen re-dumps are removed.
+  let _dumpCache = null;
+  let _dumpAt = 0;
+  const DUMP_TTL = 700;
+  const clearDumpCache = () => { _dumpCache = null; _dumpAt = 0; };
+  // sleep() invalidates the cache: after any wait the screen may differ.
+  const sleep = (ms) => { clearDumpCache(); return new Promise((r) => setTimeout(r, ms)); };
+  const dump = async () => {
+    if (_dumpCache && (Date.now() - _dumpAt) < DUMP_TTL) return _dumpCache;
+    _dumpCache = parseUiNodes(await uiDumpXml(serial));
+    _dumpAt = Date.now();
+    return _dumpCache;
+  };
   // Real touch (uinput vtouch) when available, else synthetic input tap. This
   // is the single tap primitive every WA flow (register/send/read) routes
   // through, so all of them get genuine touch events on hardened apps.
-  const tapNode = async (n) => { if (n) await tapReal(serial, n.tapX ?? n.cx, n.tapY ?? n.cy); };
+  const tapNode = async (n) => { if (n) { clearDumpCache(); await tapReal(serial, n.tapX ?? n.cx, n.tapY ?? n.cy); } };
   // Tap at raw Android-logical coordinates (for buttons found outside the node
   // model, e.g. by screenshot inspection).
-  const tapXY = async (x, y) => tapReal(serial, x, y);
+  const tapXY = async (x, y) => { clearDumpCache(); return tapReal(serial, x, y); };
   const find = async (q, field = 'any') => findNode(await dump(), q, field);
   // Whether ADBKeyboard is the active IME (set by ensureAdbKeyboard). When true,
   // typeText/clearField inject via its broadcast instead of `input text`.
@@ -780,6 +850,7 @@ function waHelpers(serial) {
   // `ADB_INPUT_TEXT` broadcast (injects via a real IME) when it's the default
   // keyboard; fall back to `input text` otherwise.
   const typeText = async (text) => {
+    clearDumpCache(); // text entry changes the field without a tap/sleep
     const s = String(text);
     if (adbKeyboardActive) {
       await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', shArg(s)]);
@@ -788,6 +859,7 @@ function waHelpers(serial) {
     }
   };
   const clearField = async () => {
+    clearDumpCache();
     if (adbKeyboardActive) { await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT']); return; }
     await adb(serial, ['shell', 'input', 'keyevent', '123']); // move-end
     for (let i = 0; i < 24; i++) await adb(serial, ['shell', 'input', 'keyevent', '67']); // del
@@ -847,7 +919,7 @@ function waHelpers(serial) {
   // FIFO tap — the vtouch press opens then instantly dismisses the popup (VERIFIED
   // with screenshots: input tap → menu stays open; vtouch tap → menu never shows).
   // Long-press still needs vtouch; taps on menus need synthetic. Keep them separate.
-  const tapSyn = async (x, y) => { await adb(serial, ['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]); };
+  const tapSyn = async (x, y) => { clearDumpCache(); await adb(serial, ['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]); };
   // Tap a node's center with a synthetic tap. Returns whether the node was truthy.
   const tapSynNode = async (n) => { if (!n) return false; await tapSyn(n.cx, n.cy); return true; };
   // Synthetic-tap the first node matching q; returns whether it was found.
@@ -893,13 +965,19 @@ function waHelpers(serial) {
   //   com.fleet.a11y.CLICK     extras id=<viewId>  OR  text=<visible text>
   // Both are best-effort broadcasts; we don't get a return value, so callers
   // verify the on-screen result with a follow-up dump/seen.
+  // These a11y broadcasts change the screen WITHOUT a tap/sleep, so they must
+  // invalidate the dump cache — otherwise a following screenText()/nameLanded() could
+  // read the stale pre-action tree (e.g. see the field empty after SET_TEXT filled it).
   const a11ySetText = async (id, text) => {
+    clearDumpCache();
     await adb(serial, ['shell', 'am', 'broadcast', '-a', 'com.fleet.a11y.SET_TEXT', '--es', 'id', id, '--es', 'text', String(text)]).catch(() => undefined);
   };
   const a11yClickId = async (id) => {
+    clearDumpCache();
     await adb(serial, ['shell', 'am', 'broadcast', '-a', 'com.fleet.a11y.CLICK', '--es', 'id', id]).catch(() => undefined);
   };
   const a11yClickText = async (text) => {
+    clearDumpCache();
     await adb(serial, ['shell', 'am', 'broadcast', '-a', 'com.fleet.a11y.CLICK', '--es', 'text', String(text)]).catch(() => undefined);
   };
   // Vision fallback (see visionLocate). Ask the control-plane where to tap for a
@@ -977,6 +1055,11 @@ async function registerWhatsApp(job, legacyPayload) {
   const phoneNumber = String(p(payload, 'phoneNumber', '')).trim();
   const fullName = String(p(payload, 'fullName', '')).trim();
   const otpCode = String(p(payload, 'otpCode', '')).trim();
+  // Operator-chosen verification method for the "Choose how to verify" sheet
+  // ('sms' | 'voice' | 'missed_call'). When absent, the flow PAUSES on that sheet and
+  // asks the operator via the panel (status VERIFY_METHOD) instead of blindly guessing
+  // — the user asked for this so they control SMS-vs-voice per number/attempt.
+  const verifyMethod = String(p(payload, 'verifyMethod', '')).trim().toLowerCase();
   const apkUrl = p(payload, 'apkUrl', '');
   // accountId correlates the two register jobs (number-entry, then OTP) into one
   // continuous progress panel on the dashboard.
@@ -1000,7 +1083,7 @@ async function registerWhatsApp(job, legacyPayload) {
     curStep = key; curPct = stepPct[key] ?? curPct;
     await waProgress(key, curPct, note);
     try { return await fn(); }
-    catch (e) { await waProgress(key, curPct, `❌ HATA: ${e.message}`, 'FAILED'); throw new Error(`register ${key}: ${e.message}`); }
+    catch (e) { stopHeartbeat(); await waProgress(key, curPct, `❌ HATA: ${e.message}`, 'FAILED'); throw new Error(`register ${key}: ${e.message}`); }
   };
   const logLine = (text) => waProgress(curStep, curPct, text);
 
@@ -1030,9 +1113,33 @@ async function registerWhatsApp(job, legacyPayload) {
   // the panel as a FAILED step so the operator sees where + why it stalled instead
   // of a green "COMPLETED" lie.
   const OK_STATUSES = new Set(['CREATED', 'OTP_WAIT']);
+
+  // Live heartbeat screenshots: push a downscaled frame every ~10s for the WHOLE run,
+  // not just at step boundaries. The old flow only snapped on step changes, so long
+  // stretches (companion → verify) went dark and the operator couldn't tell a stall
+  // from slow progress. This ticker keeps the modal's live view fresh throughout. It
+  // only pushes the thumbnail to the panel (does NOT grow the persisted `shots` array,
+  // which stays step-anchored + bounded). Stopped in done()/finally.
+  let heartbeat = null;
+  const startHeartbeat = () => {
+    if (heartbeat || !jobId) return;
+    heartbeat = setInterval(async () => {
+      try {
+        const png = await grabPng(serial, 8000).catch(() => null);
+        if (!png) return;
+        const thumb = await shrinkPng(png, 300).catch(() => null);
+        if (thumb) await waProgress(curStep, curPct, '🎥 canlı', undefined, thumb);
+      } catch { /* best-effort; never let a frame error break the flow */ }
+    }, 10000);
+    if (heartbeat.unref) heartbeat.unref(); // don't keep the test-job process alive
+  };
+  const stopHeartbeat = () => { if (heartbeat) { clearInterval(heartbeat); heartbeat = null; } };
+  startHeartbeat();
+
   // Wrap a return so it always carries the collected screenshots + a final shot,
   // and emits a terminal progress event reflecting the TRUE outcome.
   const done = async (label, obj) => {
+    stopHeartbeat();
     await snap(label);
     const st = obj && obj.status;
     if (st && !OK_STATUSES.has(st)) {
@@ -1052,18 +1159,45 @@ async function registerWhatsApp(job, legacyPayload) {
   if (!installed) {
     if (!apkUrl) return done('not_installed', { status: 'NOT_INSTALLED', note: 'WhatsApp kurulu değil ve apkUrl verilmedi' });
     const local = await download(String(apkUrl), 'whatsapp.apk');
-    try { await adb(serial, ['install', '-r', '-g', local]); } finally { await safeRm(local); }
-  } else {
-    // WA already installed — WIPE ITS DATA so every register starts on a factory-fresh
-    // WhatsApp. ROOT CAUSE (VERIFIED LIVE, mi10): when a device instance is reused (or
-    // a register is retried), the previous number's session lingers — WA reopens on
-    // that number's "Verify …" / "You've tried to register <old#> recently" / rate-limit
-    // screen, so the NEW number is never entered and the run stalls. `pm clear` resets
-    // WA to first-run (EULA → number) so the new number always takes. force-stop first
-    // so no live WA process survives the clear.
+    // stopHeartbeat on failure: this is the one throw-path after startHeartbeat() that
+    // does NOT go through done()/step() (their catch clears it), so without this the
+    // 10s heartbeat ticker would leak in the long-lived agent if the install throws.
+    try { await adb(serial, ['install', '-r', '-g', local]); }
+    catch (e) { stopHeartbeat(); throw e; }
+    finally { await safeRm(local); }
+  } else if (!otpCode && !verifyMethod) {
+    // FIRST register only — WIPE WA data so it starts factory-fresh. ROOT CAUSE
+    // (VERIFIED LIVE, mi10): a reused instance keeps the previous number's session and
+    // WA reopens on that number's "Verify …" / rate-limit screen, so the new number is
+    // never entered. `pm clear` resets WA to first-run (EULA → number).
+    //
+    // ★CRITICAL (VERIFIED LIVE, watest34): NEVER clear on a CONTINUATION job — when the
+    // operator submits the OTP code (or picks a verify method), the API re-dispatches
+    // REGISTER_WHATSAPP with otpCode/verifyMethod while WA is PARKED on the verify
+    // screen. A pm-clear here nukes that live session → WA drops back to the empty
+    // "Enter your phone number" screen and the just-entered code is thrown away. So we
+    // gate the wipe on "no otpCode AND no verifyMethod" (i.e. a fresh registration).
     await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
     await adb(serial, ['shell', 'pm', 'clear', WA_PKG]).catch(() => undefined);
     await h.sleep(1200);
+  }
+
+  // 0.5) Proxy sanity check BEFORE entering the number. WhatsApp shows "Login not
+  // available" when a +90 number registers from a non-TR IP, so the operator must SEE
+  // the real exit country up front — the modal renders this as the "proxy" step. We
+  // don't hard-abort on a mismatch (the operator may proceed knowingly), but we log a
+  // loud ⚠ so it's not a silent US-exit like the one that burned 905360452827.
+  {
+    const numCc = ccToIso(phoneNumber);
+    const exit = await verifyExitCountry(serial).catch(() => null);
+    if (exit && exit.country) {
+      const match = !numCc || exit.country.toUpperCase() === numCc.toUpperCase();
+      await waProgress('proxy', 6,
+        `${match ? '✓' : '⚠'} Çıkış IP: ${exit.ip || '?'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
+        `${match ? ' — numara ülkesiyle eşleşti' : ` — numara ${numCc} ama çıkış ${exit.country}, WhatsApp banlayabilir!`}`);
+    } else {
+      await waProgress('proxy', 6, '⚠ Çıkış IP doğrulanamadı (proxy testi başarısız) — devam ediliyor');
+    }
   }
 
   // The signup screen sequence below was mapped LIVE on a real device (WhatsApp
@@ -1132,6 +1266,58 @@ async function registerWhatsApp(job, legacyPayload) {
   }
   await snap('launch');
 
+  // ── CONTINUATION SHORTCUT (VERIFIED LIVE, watest34) ───────────────────────
+  // When the operator submits the OTP code (or picks a verify method), the API re-
+  // dispatches REGISTER_WHATSAPP with otpCode/verifyMethod. WhatsApp was NOT cleared
+  // (see pm-clear gate above), so it re-opens PARKED on the verify screen — NOT on the
+  // first-run/number screen. Running the full first-run + number-entry state machine
+  // here is WRONG: it can't find the EULA/companion/number screens (they're already
+  // behind us), so it spins in the eula loop forever and the code never gets typed.
+  // FIX: if this is a continuation AND WhatsApp is already on/near the verify screen,
+  // jump STRAIGHT to the verify/OTP phase (skip first-run + number entry entirely).
+  // Read the focused package/activity from the mCurrentFocus line (defined HERE —
+  // before the continuation block below uses it. It was previously declared further
+  // down with `const`, so the continuation block hit a Temporal-Dead-Zone
+  // ReferenceError and crashed EVERY OTP-submit / verify-method continuation job.)
+  const curFocus = async () => {
+    const w = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    const m = w.match(/mCurrentFocus=\S+\s+\S+\s+([^\s}]*\/[^\s}]+)/) ||
+              w.match(/mCurrentFocus=[^}]*?([\w.]+\/[\w.]+)/);
+    return (m && m[1]) ? m[1] : w;
+  };
+
+  const isContinuation = Boolean(otpCode || verifyMethod);
+  let skipToVerify = false;
+  if (isContinuation) {
+    const foc = await curFocus();
+    // VerifyPhoneNumber activity, or the code field / "other phone" text present.
+    if (/verifyphone|VerifyPhoneNumber/i.test(foc) ||
+        (await h.find('com.whatsapp:id/verify_sms_code_input', 'id')) != null ||
+        (await h.find('com.whatsapp:id/registration_verify', 'id')) != null ||
+        (await h.seen('Verification code', 400)) ||
+        (await h.seen('Choose how to verify', 400))) {
+      skipToVerify = true;
+      await waProgress('verify', stepPct.verify, '↩ Doğrulama ekranına devam ediliyor (kod/yöntem girilecek)…');
+    } else if (/HomeActivity|home\.ui\.Home|conversations/i.test(foc) || (await h.find('com.whatsapp:id/fab', 'id')) != null) {
+      // Continuation arrived but WhatsApp is ALREADY on the home screen → registration
+      // already finished (a duplicate/late continuation). Report success instead of
+      // re-running the number machine (which would fail to find any first-run screen).
+      return done('home', { status: 'CREATED', note: 'WhatsApp zaten kayıtlı (ana ekran) — doğrulama tamamlanmış', phoneNumber });
+    } else {
+      // Continuation arrived but we're NOT on verify AND NOT on home — the parked
+      // session was lost (crash / unexpected screen). Running the full first-run +
+      // number machine here would silently DISCARD the operator's code and could
+      // re-submit the number (wasting an SMS / tripping a rate-limit). Bail cleanly so
+      // the operator knows a fresh registration is needed. (VERIFIED gap, scenario #7.)
+      const st = (await h.screenText().catch(() => '')).slice(0, 300);
+      return done('session_lost', {
+        status: 'REGISTER_FAILED',
+        note: 'Doğrulama oturumu kayboldu (WhatsApp beklenen ekranda değil) — kodu giremedik. Temiz bir kayıt başlatın.',
+        phoneNumber, screenTexts: st
+      });
+    }
+  }
+
   // ── FIRST-RUN STATE MACHINE (launch → phone-number screen) ────────────────
   // The screens between launch and the number field are NON-deterministic: the
   // custom-ROM / "internet required" alert appears on SOME boots and not others;
@@ -1158,17 +1344,6 @@ async function registerWhatsApp(job, legacyPayload) {
   //   on EULA for 50s+ because onEulaScreen() relied on seen() and the dump was
   //   empty that round). `dumpsys window` returns the current activity name RELIABLY
   //   even when the a11y tree doesn't, so we recognize screens by their Activity too.
-  const curFocus = async () => {
-    const w = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
-    // Grab the "package/activity" token from the mCurrentFocus line — it ALWAYS
-    // contains a '/'. Matching on the '/' avoids accidentally capturing the "u0"
-    // user-id field (which happened when a looser regex matched the wrong \S+ token
-    // and returned "u0", making state detection miss the real activity that round).
-    const m = w.match(/mCurrentFocus=\S+\s+\S+\s+([^\s}]*\/[^\s}]+)/) ||
-              w.match(/mCurrentFocus=[^}]*?([\w.]+\/[\w.]+)/);
-    return (m && m[1]) ? m[1] : w;
-  };
-
   // Target: the phone-number field is present. Recognize by Activity (RegisterPhone)
   // OR the a11y field — either signal alone is enough (dump-independent primary).
   const onPhoneScreen = async () => {
@@ -1184,6 +1359,19 @@ async function registerWhatsApp(job, legacyPayload) {
     if (/companionmode|RegisterAsCompanion/i.test(f)) return true;
     return (await h.seen('companion device', 400)) || (await h.seen('Link a device', 300)) ||
       (await h.seen('Link as companion', 300)) || (await h.find('com.whatsapp:id/registration_qr', 'id')) != null;
+  };
+  // "Transfer chat history" / "Scan QR code to connect phones" — WhatsApp offers to
+  // pull chats off an OLD phone via QR. We have no old phone to scan, so this is a
+  // dead-end that stalls until dismissed. Recognize by Activity (ChatTransferActivity)
+  // or its text; onChatTransfer()==true means we must tap NOT NOW to fall through to
+  // the normal number-verification path. VERIFIED LIVE (Pixel 7, +90 number already
+  // active on a Samsung S21: CONTINUE→"Turn on location" dead-end; NOT NOW→VerifyPhoneNumber).
+  const onChatTransfer = async () => {
+    const f = await curFocus();
+    if (/ChatTransfer|migration\.transfer/i.test(f)) return true;
+    return (await h.seen('Transfer chat history', 400)) ||
+      (await h.seen('Scan QR code to connect phones', 400)) ||
+      (await h.find('com.whatsapp:id/chat_transfer_primary_btn', 'id')) != null;
   };
   const onEulaScreen = async () => {
     const f = await curFocus();
@@ -1203,38 +1391,58 @@ async function registerWhatsApp(job, legacyPayload) {
       (await h.seen('to send you notifications', 300));
   };
   const onNumberHint = async () => /PhoneNumberHint|assistedsignin/i.test(await curFocus());
-  // Open ⋮ → "Register new account" (one attempt; the loop retries if it doesn't take).
+  // Open ⋮ → "Register new account". ★VERIFIED LIVE (mi11, WA companion/QR page):
+  // the overflow ImageView (content-desc "More options") sits at bounds
+  // [975,84][1080,210] (center 1027,147) and opens the popup with a RAW `input tap`
+  // (tapSyn is already raw input tap here — NOT vtouch). Once open, the popup's
+  // "Register new account" row's REAL bounds are read from the dump and tapped at
+  // its measured center (mi11: row [554,211][1070,525] → 812,368). Reading the live
+  // bounds makes this resolution-independent instead of trusting a hard-coded point.
+  // Vision is intentionally NOT used — it's an optional fallback that only wastes a
+  // ~60s round when ANTHROPIC_API_KEY is absent, and the coordinate path is reliable.
   const openRegisterMenu = async () => {
-    await h.a11yClickId('menuitem_overflow');
-    if (!(await h.tapSynIf('More options', 'desc'))) await h.tapScaled(1027, 147).catch(() => undefined);
-    // Wait for the popup item to render, then pick it (TextView is clickable=false,
-    // so a11y-text-click can miss → self-locating tap + measured-coordinate fallback).
-    let menuOpen = false;
-    for (let m = 0; m < 4 && !menuOpen; m++) { await h.sleep(600); menuOpen = await h.seen('Register new account', 400); }
-    await h.a11yClickText('Register new account');
-    let picked = (await h.tapSynIf('Register new account')) || (await h.tapSynIf('Register', 'text')) || (await h.tapSynIf('Use a different number'));
-    // Dump-blind case: the overflow menu is open but uiautomator can't read it, so
-    // tapSynIf found nothing. Try vision (it can see the popup item) BEFORE the
-    // blind measured-coordinate fallback — vision adapts to a shifted menu layout.
-    if (!picked && !menuOpen) {
-      picked = await h.tapVision('the "Register new account" menu item in the overflow popup', 'WhatsApp companion/link-device screen, overflow menu is open');
+    // 1) Open the overflow. Prefer the live "More options" node; else the a11y
+    //    broadcast; else the measured coordinate. All three are raw input taps.
+    const ov = await h.pollNode('More options', 1200, 'desc');
+    if (ov) { await h.tapSyn(ov.cx, ov.cy); }
+    else { await h.a11yClickId('menuitem_overflow'); await h.tapScaled(1027, 147).catch(() => undefined); }
+    // 2) Wait for the popup row to render, then tap ITS measured center. The
+    //    TextView is clickable=false so we target the clickable row parent by
+    //    reading the node the dump reports for "Register new account".
+    let picked = false;
+    for (let m = 0; m < 6 && !picked; m++) {
+      await h.sleep(600);
+      const item = findNode(await h.dump(), 'Register new account', 'text');
+      if (item) {
+        // Tap the popup row. The text TextView is clickable=false, but a synthetic
+        // tap on its center usually lands inside the clickable row on WA's popup.
+        // Tap the text center first, then nudge up ~60px toward the row center
+        // (measured live mi11: text 812,430 vs row 812,368) as a second shot.
+        await h.tapSyn(item.cx, item.cy);
+        await h.sleep(400);
+        await h.tapSyn(item.cx, Math.max(0, item.cy - 60));
+        await h.sleep(400);
+        picked = true;
+      }
     }
-    // Measured-coordinate fallback. VERIFIED LIVE (mi10, WA 2.25.x): the popup's
-    // "Register new account" TextView is clickable=false at bounds [596,402][1028,459]
-    // (center 812,430), but its clickable row parent is [554,211][1070,525]
-    // (center 812,368). A synthetic tap on the ROW CENTER (812,368) reliably moves
-    // companion → RegisterPhone; 812,430 (the text baseline) can miss the row. Tap
-    // the row center first, then the text center as a second shot.
+    // 3) a11y-text-click as a parallel best-effort (harmless if the row already took).
+    await h.a11yClickText('Register new account');
+    // 4) Dump-blind fallback — the popup is open but uiautomator can't read it. Use
+    //    the VERIFIED measured coordinates (row center 812,368, then text 812,430).
     if (!picked) {
       await h.tapScaled(812, 368).catch(() => undefined);
       await h.sleep(500);
       await h.tapScaled(812, 430).catch(() => undefined);
     }
-    return menuOpen;
+    return picked;
   };
 
   let reachedPhone = false;
   let romTaps = 0, eulaTaps = 0, menuTaps = 0, idleRounds = 0;
+  // Continuation job already parked on the verify screen (see skipToVerify above):
+  // skip the whole first-run + number-entry machine and go straight to the verify
+  // phase, so the OTP/method gets applied instead of spinning in the eula loop.
+  if (skipToVerify) reachedPhone = true;
   // ~18 observe→act rounds is plenty; the common path (EULA → number) takes 2-3.
   // ★PERF: each round reads the focused activity ONCE (dumpsys window — never hangs)
   //   and branches on it FIRST. The dump-based detectors (onRomAlert/onPermDialog via
@@ -1285,7 +1493,12 @@ async function registerWhatsApp(job, legacyPayload) {
     if (/companionmode|RegisterAsCompanion/i.test(foc) || await onCompanion()) {
       await openRegisterMenu();
       menuTaps++;
-      for (let w = 0; w < 5; w++) { await h.sleep(800); if (await onPhoneScreen()) { reachedPhone = true; break; } }
+      // After the menu tap, RegisterPhone can take a moment to focus. Poll the
+      // activity too (onPhoneScreen reads text; the activity flips first).
+      for (let w = 0; w < 6; w++) {
+        await h.sleep(800);
+        if (/phonenumberentry|RegisterPhone/i.test(await curFocus()) || await onPhoneScreen()) { reachedPhone = true; break; }
+      }
       continue;
     }
 
@@ -1321,9 +1534,12 @@ async function registerWhatsApp(job, legacyPayload) {
     // GPU-less phone (VERIFIED: temiz2 got through first try, temiz3 needed retries).
     // Also re-check the phone screen right after, so a successful menu tap exits fast.
     idleRounds++;
-    if (idleRounds >= 2 && menuTaps < 3) {
+    if (idleRounds >= 2 && menuTaps < 5) {
       await openRegisterMenu(); menuTaps++;
-      for (let w = 0; w < 4; w++) { await h.sleep(800); if (await onPhoneScreen()) { reachedPhone = true; break; } }
+      for (let w = 0; w < 5; w++) {
+        await h.sleep(800);
+        if (/phonenumberentry|RegisterPhone/i.test(await curFocus()) || await onPhoneScreen()) { reachedPhone = true; break; }
+      }
       if (reachedPhone) break;
     } else {
       await h.sleep(1200);
@@ -1355,6 +1571,13 @@ async function registerWhatsApp(job, legacyPayload) {
   };
   await clearAnr();
 
+  // The whole number-entry block (permission sweeps → field wait → type CC/number →
+  // submit) is skipped for a continuation job that's already on the verify screen —
+  // there's no number screen to fill. skipToVerify jumps us straight to the verify
+  // state machine below, where the OTP/method is applied. (VERIFIED LIVE, watest34:
+  // without this the continuation re-ran number entry against a verify screen and
+  // never typed the code.)
+  if (!skipToVerify) {
   // 5) Phone-number screen. Fields by resource-id:
   //    registration_cc = country-code box, registration_phone = number box.
   //    We split the E.164 number into CC + local part. The agent receives the
@@ -1475,7 +1698,11 @@ async function registerWhatsApp(job, legacyPayload) {
     for (let w = 0; w < 8; w++) {
       await h.sleep(1000);
       const gone = (await h.find('com.whatsapp:id/registration_phone', 'id')) == null;
-      if (gone || await h.seen('correct number', 400) || await h.seen('OK', 400) || await h.seen('digit code', 400) || await h.seen('Verifying', 400)) { submitted = true; break; }
+      // DowngradeFriction (Business-account) also counts as "left the number screen" —
+      // otherwise the submit loop keeps re-tapping Next on the friction screen. The
+      // verify state machine's top branch then handles the two-step deactivate.
+      if (gone || /DowngradeFriction/i.test(await curFocus()) || await h.seen('deactivate your Business account', 400) ||
+          await h.seen('correct number', 400) || await h.seen('OK', 400) || await h.seen('digit code', 400) || await h.seen('Verifying', 400)) { submitted = true; break; }
     }
   }
   await snap('submit');
@@ -1486,6 +1713,7 @@ async function registerWhatsApp(job, legacyPayload) {
   // on (confirm dialog, flash-call, method sheet, direct OTP, or the SMS-fail
   // dialog), the loop identifies it and acts. This is what makes the flow order-
   // independent per the operator's requirement ("her aşamada anlamalı").
+  } // end !skipToVerify (number-entry block)
 
   curStep = 'verify'; curPct = stepPct.verify;
   await waProgress('verify', curPct, 'Doğrulama yöntemi belirleniyor…');
@@ -1517,14 +1745,27 @@ async function registerWhatsApp(job, legacyPayload) {
       (await h.seen('Verifying your number', 400)) || (await h.seen('digit code', 400)) ||
       (await h.seen('Enter the 6-digit code', 400));
   };
+  // "Choose how to verify" bottom-sheet. VERIFIED LIVE (watest46, +90): this sheet
+  // OPENS ON TOP of the flash-call education activity, so curFocus stays
+  // PrimaryFlashCallEducationScreen — recognize it by its TEXT, not the activity. The
+  // rows vary by number/build: "Other device / Missed call / Receive SMS / Voice call"
+  // (+ a "Choose how to verify" title). Match the title OR any two known method rows.
+  const onChooseVerify = async () => {
+    if (await h.seen('Choose how to verify', 500)) return true;
+    const t = await h.screenText().catch(() => '');
+    const rows = ['Receive SMS', 'Voice call', 'Missed call', 'Other device'].filter((r) => new RegExp(r, 'i').test(t));
+    return rows.length >= 2; // a real method sheet shows several options
+  };
   const onFlashCallEdu = async () => {
+    // If the method sheet is already up, this is NOT the plain education screen — let
+    // the choose-verify branch handle it (VERIFIED LIVE watest46: onFlashCallEdu was
+    // firing on the flash-call activity while the sheet was open, so the agent looked
+    // for "VERIFY ANOTHER WAY" — absent once the sheet is showing — and spun forever).
+    if (await onChooseVerify()) return false;
     if (/flashcall|FlashCallEducation/i.test(await curFocus())) return true;
     return (await h.seen('missed call', 400)) || (await h.seen('VERIFY ANOTHER WAY', 300)) ||
       (await h.find('com.whatsapp:id/secondary_button', 'id')) != null;
   };
-  const onChooseVerify = async () =>
-    (await h.seen('Choose how to verify', 500)) ||
-    ((await h.seen('Receive SMS', 400)) && (await h.seen('Voice call', 300)));
   const onSmsSendFailed = async () =>
     (await h.seen('send an SMS', 500)) || (await h.seen('send you an SMS', 400)) ||
     (await h.seen("couldn't send", 400)) || (await h.seen('check your number', 400));
@@ -1532,7 +1773,17 @@ async function registerWhatsApp(job, legacyPayload) {
   const onViewSmsPrompt = async () =>
     (await h.seen('view SMS', 500)) || (await h.seen('automatically detect', 400));
   const onWall = async () => {
+    // Activity signal first: CustomRegistrationBlockActivity is WhatsApp's hard block
+    // ("Download the official WhatsApp to continue") — the number/APK/device combo was
+    // rejected. VERIFIED LIVE (watest45, +355 AL number): the flow reached this screen
+    // after "Sending code". It's terminal — report it clearly instead of spinning to a
+    // vague OTP_SCREEN_NOT_REACHED.
+    const foc = await curFocus();
+    if (/CustomRegistrationBlock|RegistrationBlock|parole\./i.test(foc)) {
+      return 'Download the official WhatsApp to continue (numara/APK engellendi)';
+    }
     const t = await h.screenText();
+    if (/Download the official WhatsApp|official WhatsApp to continue/i.test(t)) return t;
     return /banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many (attempts|requests|devices)|try again later/i.test(t) ? t : null;
   };
   // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
@@ -1542,6 +1793,18 @@ async function registerWhatsApp(job, legacyPayload) {
   const onSwitchDialog = async () =>
     (await h.seen('Switch to WhatsApp Messenger', 500)) ||
     ((await h.seen('Switch now', 400)) && (await h.seen('Use different number', 300)));
+  // "Are you sure you want to deactivate your Business account?" (DowngradeFriction
+  // activity). The number already has a WhatsApp **Business** account; WhatsApp asks
+  // to deactivate it to register here. Two buttons: "USE +<number>" (proceed with THIS
+  // number — what we want) and "USE A DIFFERENT NUMBER" (goes back to the number
+  // screen → loop). VERIFIED LIVE (watest45, +359 BG Business number): the agent had
+  // NO branch, tapped the wrong option / fell back to the number screen, and looped.
+  const onDowngradeFriction = async () => {
+    const f = await curFocus();
+    if (/DowngradeFriction|downgrade\./i.test(f)) return true;
+    return (await h.seen('deactivate your Business account', 500)) ||
+      ((await h.seen('USE A DIFFERENT NUMBER', 400)) && (await h.seen('USE +', 300)));
+  };
   // "Verify <number> / Use your other phone to confirm moving WhatsApp to this one /
   // Enter the 6-digit code we sent to WhatsApp on your OTHER PHONE." The code is NOT
   // an SMS/voice OTP — it's pushed to the number's EXISTING WhatsApp on another
@@ -1552,12 +1815,16 @@ async function registerWhatsApp(job, legacyPayload) {
     return /code we sent to WhatsApp on your other phone|other phone to confirm moving WhatsApp/i.test(t);
   };
   // "You tried requesting code to other phone too many times. To verify, tap
-  // 'Send SMS' in N hours." Terminal rate-limit specific to the move/other-phone
-  // flow. VERIFIED LIVE (mi5): 6h 38m lock after repeated attempts.
+  // 'Send SMS' [in N hours]." Terminal rate-limit specific to the move/other-phone
+  // flow. VERIFIED LIVE (mi5: "in 6h 38m"; watest45 +359: NO time given, just
+  // "tap 'Send SMS'"). The old regex REQUIRED an "N hours" span and returned null when
+  // WhatsApp gave no time → the agent MISSED the screen and spun. Now: match the
+  // phrase regardless of whether a wait time is present, returning the time if shown.
   const onOtherPhoneRateLimit = async () => {
     const t = await h.screenText();
-    const m = /requesting code to other phone too many times.*?(\d+)\s*hours?,?\s*(\d+)?\s*minutes?/i.exec(t);
-    return m ? `${m[1]} saat ${m[2] || 0} dakika` : null;
+    if (!/requesting code to other phone too many times/i.test(t)) return null;
+    const m = /(\d+)\s*hours?,?\s*(\d+)?\s*minutes?/i.exec(t);
+    return m ? `${m[1]} saat ${m[2] || 0} dakika` : 'SMS ile doğrulama gerekiyor';
   };
 
   // "Choose how to verify" sheet: pick the FIRST ENABLED method, preferring SMS,
@@ -1616,8 +1883,57 @@ async function registerWhatsApp(job, legacyPayload) {
     await h.a11yClickId('continue_button');
     (await h.tapById('com.whatsapp:id/continue_button').then(() => true).catch(() => false)) || true;
     await h.tapSyn(540, 2128);            // Continue center (VERIFIED live)
-    await h.sleep(2500);
+    await h.sleep(1500); // ★PERF (FIRSAT 2): the verify loop re-polls onOtp() every round + a dedicated OTP poll follows, so a shorter settle is safe here
     return method.kind;
+  };
+
+  // Read the "Choose how to verify" sheet and return the AVAILABLE methods with their
+  // lock state, so the panel can show the operator which options are pickable. Rows:
+  // Missed call / Receive SMS / Voice call; a locked row shows "Try again in <n>".
+  const listVerifyOptions = async () => {
+    const sheet = await h.screenText();
+    const seg = (re) => (sheet.split(re)[1] || '').slice(0, 60);
+    const mk = (label, kind, re) => {
+      if (!re.test(sheet)) return null;
+      const after = seg(re);
+      const lockM = /Try again in ([^\n.]+)/i.exec(after);
+      return { label, kind, locked: /Try again/i.test(after), wait: lockM ? lockM[1].trim() : null };
+    };
+    return [
+      // "Other device" = the number is active on another phone; the code is pushed to
+      // that phone's WhatsApp (other-phone flow). VERIFIED LIVE (watest46, +90 on a
+      // Samsung S21). Listed so the operator can pick it from the panel.
+      mk('Diğer cihaz', 'other_device', /Other device/i),
+      mk('Missed call', 'missed_call', /Missed call/i),
+      mk('Receive SMS', 'sms', /Receive SMS/i),
+      mk('Voice call', 'voice', /Voice call/i)
+    ].filter(Boolean);
+  };
+  // Apply a SPECIFIC operator-chosen method on the sheet (mirrors pickVerifyMethod's
+  // proven raw-tap selection, but for the requested kind). Row ref-Y measured LIVE on
+  // 1080x2400: Missed call ≈1552, Receive SMS ≈1732, Voice call ≈1932 (label x≈258).
+  // Returns the applied kind, or null if that row is missing/locked.
+  const applyVerifyMethod = async (kind) => {
+    const opts = await listVerifyOptions();
+    const want = opts.find((o) => o.kind === kind);
+    if (!want || want.locked) return null;
+    await waProgress('verify', curPct, `Doğrulama yöntemi: ${want.label} (operatör seçimi)…`);
+    // The rows' vertical positions VARY by which options the sheet shows (e.g. an
+    // "Other device" row shifts everything down). So find the chosen row's MEASURED
+    // center from the dump instead of a fixed ref-Y (which only held for one layout).
+    const label = { other_device: 'Other device', missed_call: 'Missed call', sms: 'Receive SMS', voice: 'Voice call' }[kind];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const node = findNode(await h.dump().catch(() => []), label, 'text');
+      if (node) await h.tapSyn(node.cx, node.cy);
+      else await h.tapSyn(258, kind === 'other_device' ? 1190 : kind === 'missed_call' ? 1552 : kind === 'sms' ? 1732 : 1932);
+      await h.sleep(700);
+    }
+    await h.sleep(400);
+    await h.a11yClickId('continue_button');
+    (await h.tapById('com.whatsapp:id/continue_button').then(() => true).catch(() => false)) || true;
+    await h.tapSyn(540, 2128); // Continue center (VERIFIED live)
+    await h.sleep(1500); // ★PERF (FIRSAT 2): verify loop re-polls onOtp() so a shorter settle is safe
+    return kind;
   };
 
   let voiceTried = false, bothLockedNote = null, wallText = null;
@@ -1629,9 +1945,51 @@ async function registerWhatsApp(job, legacyPayload) {
     // Success: OTP screen reached (WhatsApp sent SMS/voice code). Leave the loop.
     if (await onOtp()) break;
 
+    // "Deactivate your Business account?" (DowngradeFriction) — handled FIRST (right
+    // after onOtp), BEFORE onWall/others. VERIFIED LIVE (mi68, +90 Business number):
+    // this screen's body text ("…will be deleted in accordance with the applicable
+    // policies…") was being mis-caught by a later branch (or the loop just never
+    // reached the old late-placed DowngradeFriction branch), so the agent sat on the
+    // friction screen forever. Placing it at the top means it's recognized the instant
+    // it appears. TWO steps (both mapped LIVE): (1) "USE +<number>" primary_button →
+    // (2) confirm the "Deactivate and switch" dialog via a11y CLICK_TEXT (its buttons
+    // aren't in the dump on this GPU-less build; 690,1410 is the coord fallback).
+    if (await onDowngradeFriction()) {
+      await snap('downgrade_business');
+      await waProgress(curStep, curPct, '⚠ Numarada WhatsApp Business hesabı vardı — devre dışı bırakılıp bu numarayla devam ediliyor…');
+      await h.a11yClickId('primary_button');
+      if (!(await h.tapSynIf('USE +', 'text'))) await h.tapSyn(540, 2064).catch(() => undefined);
+      await h.sleep(2500);
+      await h.a11yClickText('Deactivate and switch');
+      if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
+      await h.sleep(3000);
+      continue;
+    }
+
     // Terminal ban / integrity wall — stop and report.
     wallText = await onWall();
     if (wallText) break;
+
+    // "Transfer chat history / Scan QR code" — WhatsApp wants to import chats off an
+    // OLD phone via QR. We have none, so CONTINUE is a dead-end ("Turn on location" →
+    // QR wait → stall). Tap NOT NOW (and dismiss the location dialog's "Not now" if it
+    // appears) to fall through to normal number verification. VERIFIED LIVE (Pixel 7,
+    // +90 already-registered number → after NOT NOW the activity flipped to
+    // VerifyPhoneNumber). The agent previously had NO branch here and hung in the
+    // vision-fallback loop with no screenshot/status — that stall is what this fixes.
+    if (await onChatTransfer()) {
+      await snap('chat_transfer'); // capture so the panel/operator can SEE the stall screen
+      // findNode is case-insensitive, so 'not now' matches both the location dialog's
+      // "Not now" AND the transfer screen's "NOT NOW". Some builds pop a
+      // "Turn on location to continue the transfer" dialog first — dismiss it, then the
+      // main transfer screen's NOT NOW leaves the flow → number verification.
+      await h.a11yClickText('Not now');
+      await h.tapSynIf('not now', 'text');
+      await h.sleep(1500);
+      await h.tapSynIf('not now', 'text');
+      await h.sleep(2500);
+      continue;
+    }
 
     // "Switch to WhatsApp Messenger?" — number has an existing WA Business account.
     // Confirm "Switch now" to proceed (operator picked this number on purpose).
@@ -1643,6 +2001,15 @@ async function registerWhatsApp(job, legacyPayload) {
       continue;
     }
 
+    // "Deactivate your Business account?" (DowngradeFriction). Proceed with THIS number
+    // — TWO steps, both mapped LIVE (watest45, +359 BG Business number):
+    //   1) Tap the primary "USE +<number>" button (id=primary_button, bottom green
+    //      button ≈540,2064 on 1080x2400) — NOT "USE A DIFFERENT NUMBER" (loops back).
+    //   2) A confirm DIALOG pops: "Deactivate your Business account? … Cancel /
+    //      Deactivate and switch". Its buttons are NOT in the uiautomator dump on this
+    //      GPU-less build, so a11y CLICK_TEXT on "Deactivate and switch" is the ONLY
+    //      reliable path (VERIFIED: it advanced to VerifyPhoneNumber; blind coord taps
+    //      alone did NOT). A measured coordinate (≈690,1410) is a best-effort fallback.
     // Move/other-phone rate-limit ("...too many times... Send SMS in N hours") —
     // terminal. Report the wait clearly so the operator knows when to retry.
     const otherRl = await onOtherPhoneRateLimit();
@@ -1715,15 +2082,37 @@ async function registerWhatsApp(job, legacyPayload) {
       continue;
     }
 
-    // "Choose how to verify" sheet: pick SMS (preferred) or Voice.
+    // "Choose how to verify" sheet: SMS / Voice call / Missed call. If the operator
+    // pre-picked a method (verifyMethod in the payload), apply it. Otherwise PAUSE and
+    // ask via the panel — the modal shows the available (non-rate-limited) options and
+    // the operator taps one, which re-dispatches with verifyMethod set. This replaces
+    // the old blind SMS-preferred guess the user wanted control over.
     if (await onChooseVerify()) {
-      const kind = await pickVerifyMethod();
-      if (kind === 'voice') voiceTried = true;
-      if (kind === null) {
-        bothLockedNote = 'WhatsApp bu numara için SMS ve sesli aramayı geçici olarak kısıtladı ("Try again in …"). Sayaç bitince tekrar deneyin veya başka numara kullanın.';
-        break;
+      if (verifyMethod) {
+        const kind = await applyVerifyMethod(verifyMethod);
+        if (kind === 'voice') voiceTried = true;
+        if (kind === null) {
+          bothLockedNote = 'Seçilen doğrulama yöntemi bu ekranda kullanılamıyor (kısıtlı/yok). Panelden başka yöntem seçin.';
+          break;
+        }
+        continue;
       }
-      continue;
+      // No operator choice yet → present the options and wait.
+      await snap('choose_verify');
+      const opts = await listVerifyOptions();
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      const avail = opts.filter((o) => !o.locked).map((o) => o.kind);
+      const optNote = '🔀 Doğrulama yöntemi seçin: ' +
+        opts.map((o) => `${o.label}${o.locked ? ` (kısıtlı${o.wait ? ' — ' + o.wait : ''})` : ''}`).join(' · ');
+      await waProgress('otp_wait', curPct, optNote);
+      return done('choose_verify', {
+        status: 'OTP_WAIT',
+        otpChannel: 'method_select',
+        verifyOptions: opts,
+        availableMethods: avail,
+        note: optNote,
+        phoneNumber
+      });
     }
 
     // Flash-call education screen: choose "Verify another way" → method sheet.
@@ -1820,19 +2209,93 @@ async function registerWhatsApp(job, legacyPayload) {
   //    fallback. Verify the name landed, then Next.
   if (await h.seen('your name', 12000) || await h.seen('Profile info', 4000) || await h.find('com.whatsapp:id/registration_name', 'id')) {
     await snap('profile');
-    for (let i = 0; i < 3; i++) {
+    // Verify the FULL name landed (not just the first word). VERIFIED LIVE (mi15): the
+    // old first-word check let a11y write "Kaan Demir" but the screenText hadn't
+    // refreshed yet, so the typeInto fallback ALSO ran → "Kaan DemirKaanDemir". Now we
+    // (a) require the whole name present, (b) CLEAR the field before the typeInto
+    // fallback so the two inputs can't concatenate, and (c) only fall back when a11y
+    // genuinely didn't take.
+    const nameLanded = async () => (await h.screenText()).replace(/\s+/g, ' ').includes(fullName);
+    // ★BUG B (VERIFIED LIVE, watest34): the Profile-info screen has a "connection
+    // problems" help link + the field sits near it, so a BLIND `input tap` on the
+    // field/Next drifts onto it → WhatsApp opens "Set up your account" / a FAQ item
+    // (FaqItemActivity) and the flow strands there. FIX: on Profile info NEVER use a
+    // blind tap — a11y SET_TEXT fills the name WITHOUT focusing/tapping. If we ever
+    // detect we drifted onto a help/FAQ/support screen, BACK out to RegisterName.
+    const onHelpScreen = async () => {
+      const f = await curFocus();
+      return /Faq|inappsupport|support|SetupAccount|set up your account/i.test(f) ||
+        (await h.seen('Set up your account', 400)) || (await h.seen('Fix connection issues', 400));
+    };
+    const backToProfileIfStrayed = async () => {
+      for (let i = 0; i < 3; i++) {
+        if (!(await onHelpScreen())) return;
+        await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+        await h.sleep(1200);
+      }
+    };
+    let named = false;
+    for (let i = 0; i < 4 && !named; i++) {
+      await backToProfileIfStrayed(); // make sure we're on Profile info, not a help page
+      // a11y SET_TEXT — fills the field with NO tap (safe on this screen). Try both ids.
       await h.a11ySetText('registration_name', fullName);
       await h.a11ySetText('profile_name', fullName);
+      await h.sleep(900);
+      if (await nameLanded()) { named = true; break; }
+      // a11y didn't stick → LAST-RESORT `input text` (ADB keyboard injects without a
+      // tap-to-focus, so it can't drift onto the help link). Clear first so nothing
+      // concatenates. NO tapById/typeInto here — those tap and risk the help screen.
+      await h.clearField().catch(() => undefined);
+      await h.sleep(300);
+      await inputText(serial, fullName).catch(() => undefined);
       await h.sleep(700);
-      if ((await h.screenText()).includes(fullName.split(' ')[0])) break;
-      // Fallback: uiautomator typeInto (may hang on some builds, hence secondary).
-      await h.typeInto('Type your name here', fullName).catch(async () => { await h.typeInto('name', fullName).catch(() => undefined); });
-      await h.sleep(600);
-      if ((await h.screenText()).includes(fullName.split(' ')[0])) break;
+      if (await nameLanded()) { named = true; break; }
     }
-    await h.a11yClickId('registration_submit');
-    (await h.tapById('com.whatsapp:id/registration_submit').then(() => true).catch(() => false)) || await h.tapBy('Next');
-    await h.sleep(4000);
+    // Next/submit — a11y CLICK first (no tap drift). If still on RegisterName, tap the
+    // Next button at its MEASURED bounds (read live from the dump, NOT a blind
+    // coordinate that can hit the help link). Close the keyboard (BACK) between tries
+    // since it can cover Next. Bail out of any help screen we stray onto.
+    for (let i = 0; i < 5; i++) {
+      await backToProfileIfStrayed();
+      const foc = await curFocus();
+      if (!/RegisterName|registration\.app\.RegisterName/i.test(foc) && !(await h.find('com.whatsapp:id/registration_name', 'id'))) break;
+      // primary: a11y click on the submit button (no coordinates involved)
+      await h.a11yClickId('registration_submit');
+      await h.sleep(1000);
+      if (!/RegisterName/i.test(await curFocus())) break;
+      // secondary: tap the Next button at its REAL measured center (dump-derived)
+      const nextNode = findNode(await h.dump().catch(() => []), ['registration_submit', 'Next'], 'any');
+      if (nextNode) { await h.tapSyn(nextNode.cx, nextNode.cy); await h.sleep(1200); }
+      if (!/RegisterName/i.test(await curFocus())) break;
+      // keyboard may be covering Next — dismiss and retry
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      await h.sleep(800);
+    }
+    await backToProfileIfStrayed();
+    await h.sleep(3000);
+  }
+
+  // 9b) Post-name interstitials → home. Modern WhatsApp inserts optional screens
+  // BETWEEN the profile name and the chat list — most importantly an "Add email
+  // address" screen (RegisterEmail), and sometimes restore-backup / contacts / a
+  // permission prompt. VERIFIED LIVE (watest34): the flow stranded on RegisterEmail
+  // and reported PROFILE_INCOMPLETE even though registration had succeeded. So before
+  // the home check, sweep these away by tapping Skip / Not now / Continue / Allow a
+  // few times — each is harmless if the screen isn't there, and we stop as soon as we
+  // reach home.
+  for (let i = 0; i < 6; i++) {
+    const win = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/HomeActivity|home\.ui\.Home|conversations|\bChats\b/i.test(win) || await h.find('com.whatsapp:id/fab', 'id')) break;
+    // Email screen: has a "Skip" (id=skip / text). Also generic Not now / Continue.
+    await h.a11yClickId('register_email_skip').catch(() => undefined);
+    await h.a11yClickId('skip').catch(() => undefined);
+    const acted =
+      (await h.tapSynIf('Skip', 'text')) || (await h.tapSynIf('SKIP', 'text')) ||
+      (await h.tapSynIf('Not now', 'text')) || (await h.tapSynIf('NOT NOW', 'text')) ||
+      (await h.tapSynIf('Not Now', 'text')) || (await h.tapSynIf('Maybe later', 'text')) ||
+      (await h.tapById('com.android.permissioncontroller:id/permission_allow_button').then(() => true).catch(() => false)) ||
+      (await h.tapSynIf('Continue', 'text'));
+    if (!acted) await h.sleep(1200); else await h.sleep(1600);
   }
 
   // 10) CONFIRM we truly reached the home/chat screen before claiming success —
@@ -2026,6 +2489,23 @@ async function whatsappSend(serial, payload) {
     // still === true (definitely not sent) → loop and retry; null → also retry once
   }
 
+  // ★Late "… is not on WhatsApp" / invalid-recipient dialog (scenario #6). The early
+  // one-shot check right after chat-open can MISS this on a slow device — the compose
+  // box renders first and the "not on WhatsApp / invite" dialog pops a beat later,
+  // AFTER we've already tapped send. Re-check here so we return INVALID_RECIPIENT
+  // instead of a false SENT (the send tap may have cleared the box / hit the dialog).
+  {
+    const t = await h.screenText().catch(() => '');
+    if (/not on WhatsApp|isn.t on WhatsApp|invalid|isn.t a valid|WhatsApp'ta değil|geçerli değil/i.test(t)) {
+      return {
+        status: 'INVALID_RECIPIENT',
+        note: 'Alıcı WhatsApp\'ta kayıtlı değil (mesaj gönderilemedi)',
+        to,
+        screenTexts: t.slice(0, 300)
+      };
+    }
+  }
+
   // Dismiss any "Can't set up the recorder" / recording dialog a stray tap raised,
   // so it never blocks the next send. (Tap OK / press BACK.)
   const scr = await h.screenText().catch(() => '');
@@ -2038,10 +2518,31 @@ async function whatsappSend(serial, payload) {
     await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
   }
 
+  // ★"Your message was not sent." dialog / red-! retry state (VERIFIED LIVE,
+  // watest34): a freshly-registered account's FIRST outgoing message often fails on
+  // the first attempt — WhatsApp shows a "Your message was not sent" dialog (or a red
+  // "!" retry badge on the bubble) even though the compose box cleared. A single
+  // "Try Again" tap delivers it (confirmed: the ! turned into ✓✓). Without this the
+  // job wrongly reported COMPOSE_FAILED while the message sat un-sent. Handle up to a
+  // couple of retries.
+  for (let r = 0; r < 2; r++) {
+    const t = await h.screenText().catch(() => '');
+    if (!/message was not sent|not sent|gönderilemedi/i.test(t)) break;
+    // "Try Again" button on the "Your message was not sent" dialog.
+    if (!(await h.tapSynIf('Try Again', 'text'))) await h.tapIf('Try Again').catch(() => undefined);
+    await h.sleep(4000);
+  }
+
   // Final confirmation if the loop couldn't confirm (null path): one more dump.
   if (!sent) {
     const still = await composeStillFull();
     if (still === false) sent = true; // box cleared after all → sent
+  }
+  // After a Try-Again, re-check delivery: if the compose box is empty AND no "not
+  // sent" dialog remains, treat as sent.
+  if (!sent) {
+    const t = await h.screenText().catch(() => '');
+    if (!/message was not sent|gönderilemedi/i.test(t) && (await composeStillFull()) === false) sent = true;
   }
 
   if (!sent) {
@@ -4360,11 +4861,34 @@ async function provisionDevice(job) {
   if (proxy && proxy.country && proxy.username && proxy.host) {
     await step('proxy', 76, `Proxy (${proxy.country})`, async () => {
       await logLine(`${proxy.country} residential proxy'ye yönlendiriliyor (redsocks + iptables)…`);
-      await hostSh('wd-proxy.sh', [
+      await logLine(`📡 Upstream: ${proxy.host}:${proxy.port || 9999} (${proxy.country})`);
+      const out = await hostSh('wd-proxy.sh', [
         instance, String(proxy.country), String(proxy.username),
         String(proxy.password || ''), String(proxy.host), String(proxy.port || 9999)
       ], 60000);
-      await logLine(`✓ Çıkış IP ${proxy.country} ülkesine yönlendirildi`);
+      // wd-proxy.sh prints "PROXY_RESULT ... redsocks=<port>" only when the iptables
+      // REDIRECT rules were actually installed. If we DON'T see it, the routing didn't
+      // take (e.g. iptables needs root and was silently skipped) — surface that instead
+      // of the old always-green "yönlendirildi" that hid a US-exit bug.
+      const applied = /PROXY_RESULT[^\n]*redsocks=\d+/.test(String(out.stdout || ''));
+      if (!applied) {
+        await logLine('⚠ Proxy kuralları uygulanamadı (iptables REDIRECT eklenmedi) — çıkış IP host olabilir!');
+      } else {
+        await logLine('✓ redsocks + iptables REDIRECT aktif');
+      }
+      // VERIFY the real exit country the way WhatsApp sees it (app-uid traffic through
+      // redsocks), not a root curl (root bypasses the REDIRECT and shows the host IP).
+      // This is the check that catches a "US IP with a TR number" before registration.
+      const exit = await verifyExitCountry(serial).catch(() => null);
+      if (exit && exit.country) {
+        const match = String(exit.country).toUpperCase() === String(proxy.country).toUpperCase();
+        await logLine(
+          `${match ? '✓' : '⚠'} Gerçek çıkış IP: ${exit.ip || '—'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
+          `${match ? ' — numara ülkesiyle EŞLEŞTİ' : ` — İSTENEN ${proxy.country} DEĞİL, uyuşmuyor!`}`
+        );
+      } else {
+        await logLine(`✓ Çıkış IP ${proxy.country} ülkesine yönlendirildi (IP doğrulaması atlandı)`);
+      }
     });
   } else {
     await logLine('Proxy istenmedi — atlanıyor (datacenter IP)');
@@ -4382,12 +4906,19 @@ async function provisionDevice(job) {
     // The boot step already healed a half-boot (hwcomposer crash) by rebooting
     // until `service check package`=found, so framework services are up here.
     // Just confirm PM accepts installs with a real probe install of the tiny APK.
-    let pmReady = false;
-    for (let i = 0; i < 24 && !pmReady; i++) {
-      try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
-      catch { await new Promise((r) => setTimeout(r, 5000)); }
+    // ★PERF (FIRSAT 4): the ROOT step already installed adbkeyboard while proving PM
+    // is ready. If it's already present, PM demonstrably accepts installs → skip the
+    // whole 24×5s re-probe (a redundant reinstall that cost seconds on every provision).
+    let pmReady = (await adb(serial, ['shell', 'pm', 'path', 'com.android.adbkeyboard']).catch(() => '')).includes('package:');
+    if (pmReady) {
+      await logLine('✓ PackageManager hazır (adbkeyboard zaten kurulu)');
+    } else {
+      for (let i = 0; i < 24 && !pmReady; i++) {
+        try { await installBundledApkTo(instance, 'adbkeyboard.apk'); pmReady = true; }
+        catch { await new Promise((r) => setTimeout(r, 5000)); }
+      }
+      await logLine(pmReady ? '✓ PackageManager hazır' : '⚠ PackageManager hazır olmadı (yine de denenecek)');
     }
-    await logLine(pmReady ? '✓ PackageManager hazır' : '⚠ PackageManager hazır olmadı (yine de denenecek)');
 
     const apks = [
       ['com.whatsapp', 'whatsapp.apk', 'WhatsApp'],

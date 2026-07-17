@@ -296,6 +296,62 @@ export class AgentService {
           })
           .catch(() => undefined);
 
+        // ── Global "operator action needed" alert ────────────────────────────
+        // When a registration lands in a state that needs a human (waiting for the
+        // OTP code, a code that went to the number's other phone, a manual step) or
+        // outright fails, push an `alert.fired` event so the dashboard shows a global
+        // toast — even if the operator already closed the WhatsappRegisterModal.
+        // Without this the stall was silent: the modal-only `whatsapp.register.progress`
+        // event reaches nobody once the modal is closed. (NotificationCenter listens
+        // for `alert.fired` on every page; carrying accountId/deviceId lets a future
+        // click re-open the code modal.) VERIFIED context: a Pixel 7 stalled on the
+        // "Transfer chat history" screen with no panel signal at all.
+        const needsAction = nextStatus === 'AWAITING_OTP' || nextStatus === 'AWAITING_MANUAL';
+        if (needsAction || nextStatus === 'FAILED') {
+          const phone = ((updated.payload as { phoneNumber?: string } | null)?.phoneNumber)
+            ?? (outcome.result as { phoneNumber?: string } | undefined)?.phoneNumber
+            ?? '';
+          const label = phone ? `WhatsApp ${phone}` : 'WhatsApp kaydı';
+          const title = needsAction ? `${label} — müdahale gerekiyor` : `${label} — kayıt başarısız`;
+          deviceHub.broadcast({
+            type: 'alert.fired',
+            deviceId: (updated.payload as { deviceId?: string } | null)?.deviceId ?? '',
+            payload: {
+              id: updated.id,
+              title,
+              detail: error ?? (needsAction ? 'Kod veya manuel bir adım bekleniyor.' : 'Kayıt tamamlanamadı.'),
+              rule: 'wa-register',
+              accountId,
+              deviceId: (updated.payload as { deviceId?: string } | null)?.deviceId ?? undefined,
+              needsAction
+            },
+            timestamp: new Date().toISOString(),
+            workspaceId: updated.workspaceId ?? undefined
+          });
+        }
+
+        // Webhook lifecycle events — so external integrators can react to the
+        // registration flow event-driven instead of polling the status endpoint. Fires
+        // AWAITING_OTP (submit a code / pick a method), REGISTERED (ACTIVE), or
+        // REGISTER_FAILED (with the reason). Best-effort, workspace-scoped.
+        {
+          const devId = (updated.payload as { deviceId?: string } | null)?.deviceId;
+          const phone = ((updated.payload as { phoneNumber?: string } | null)?.phoneNumber)
+            ?? (outcome.result as { phoneNumber?: string } | undefined)?.phoneNumber ?? '';
+          const ev =
+            nextStatus === 'AWAITING_OTP' || nextStatus === 'AWAITING_MANUAL' ? 'WHATSAPP_AWAITING_OTP'
+            : nextStatus === 'ACTIVE' ? 'WHATSAPP_REGISTERED'
+            : nextStatus === 'FAILED' ? 'WHATSAPP_REGISTER_FAILED'
+            : null;
+          if (ev) {
+            void webhooksService.dispatch(
+              ev,
+              { accountId, deviceId: devId, phoneNumber: phone, status: nextStatus, ...(error ? { error } : {}) },
+              updated.workspaceId ?? undefined
+            );
+          }
+        }
+
         // Keep the device's WA-registration badge (metadata) in sync so the
         // profiles card reflects reality: AWAITING_OTP while waiting for the code,
         // CLEARED on a terminal outcome (ACTIVE/FAILED). Only touch the badge if it
@@ -310,6 +366,17 @@ export class AgentService {
               const terminal = nextStatus === 'ACTIVE' || nextStatus === 'FAILED';
               const nextMeta = { ...meta };
               if (terminal) {
+                // On SUCCESS, before clearing the transient badge, persist the number to
+                // a DURABLE key so the profile card can show "hangi numara gömülü" long
+                // after the run ends. The transient waRegisterPhone is wiped below; this
+                // one survives. FAILED clears everything (no number is bound).
+                if (nextStatus === 'ACTIVE') {
+                  const phone = (meta.waRegisterPhone as string) || '';
+                  if (phone) {
+                    nextMeta.waRegisteredPhone = phone;
+                    nextMeta.waRegisteredAt = new Date().toISOString();
+                  }
+                }
                 delete nextMeta.waRegisterStatus;
                 delete nextMeta.waRegisterAccountId;
                 delete nextMeta.waRegisterPhone;
@@ -508,6 +575,13 @@ export class AgentService {
               }
             })
             .catch(() => undefined);
+          // Event-driven provisioning: fire DEVICE_PROVISIONED so integrators know the
+          // device is WhatsApp-ready without polling the provision-status endpoint.
+          void webhooksService.dispatch(
+            'DEVICE_PROVISIONED',
+            { deviceId, ipAddress: r.ip, adbPort: r.adbPort, instance: r.instance },
+            updated.workspaceId ?? undefined
+          );
         } else {
           await prisma.device
             .update({

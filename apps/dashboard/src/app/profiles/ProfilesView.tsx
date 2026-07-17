@@ -35,6 +35,7 @@ import {
   Loader2,
   Check,
   AlertTriangle,
+  ShieldCheck,
   X
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
@@ -131,6 +132,7 @@ export type DeviceProfile = {
   fingerprint?: DeviceFingerprint | null;
   tags?: string[];
   proxyId?: string | null;
+  protected?: boolean; // device is lock-protected (delete/reset/restore rejected)
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
@@ -146,7 +148,10 @@ function deviceFingerprint(d: DeviceProfile): string {
   return [
     d.id, d.status, d.name, d.ipAddress ?? '', d.adbPort ?? '', d.group?.id ?? '',
     (d.tags ?? []).join(','),
-    m.provisionStatus ?? '', m.waRegisterStatus ?? '', m.igRegisterStatus ?? ''
+    m.provisionStatus ?? '', m.waRegisterStatus ?? '', m.igRegisterStatus ?? '',
+    // Card also renders the durable WA number + protected lock — poll must re-render
+    // when either changes (e.g. a registration just completed, or the lock toggled).
+    m.waRegisteredPhone ?? '', d.protected ? '1' : '0'
   ].join('|');
 }
 
@@ -1158,6 +1163,28 @@ export function ProfilesView({
                       <span className="meta-icon"><Layers size={13} /></span>
                       {device.group?.name ?? 'Grupsuz'}
                     </li>
+                    {/* Durable WhatsApp number bound to this device (persists after a
+                        successful register). Shown only when a number is actually
+                        registered, so idle cards stay clean. */}
+                    {(device.metadata?.waRegisteredPhone as string) ? (
+                      <li>
+                        <span className="meta-icon"><MessageCircle size={13} /></span>
+                        <span className="mono" title="Bu cihaza kayıtlı WhatsApp numarası">
+                          +{String(device.metadata?.waRegisteredPhone).replace(/^\+/, '')}
+                        </span>
+                      </li>
+                    ) : null}
+                    {/* Protected-lock badge — shown INDEPENDENTLY of the WA number, so a
+                        device the operator locked ("Koru") reads as Korumalı even when no
+                        number was captured (e.g. registered via a direct/test path). */}
+                    {device.protected ? (
+                      <li>
+                        <span className="meta-icon"><ShieldCheck size={13} /></span>
+                        <span className="proxy-country-pill" title="Cihaz korumalı — silme/sıfırlama/geri-yükleme reddedilir">
+                          <ShieldCheck size={10} /> Korumalı
+                        </span>
+                      </li>
+                    ) : null}
                   </ul>
                   <div className="card-tags">
                     {(device.tags ?? []).map((t) => (

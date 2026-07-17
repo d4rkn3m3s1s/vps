@@ -203,6 +203,8 @@ export class DeviceService {
     }
     const lastSeen = toDate(input.lastSeen);
     if (lastSeen) data.lastSeen = lastSeen;
+    // Protect/unprotect: a protected device refuses delete/reset/restore.
+    if (typeof input.protected === 'boolean') data.protected = input.protected;
 
     return prisma.device.update({
       where: { id },
@@ -257,6 +259,17 @@ export class DeviceService {
   }
 
   async deleteDevice(id: string, workspaceId?: string) {
+    // Protected devices (e.g. one holding an active WhatsApp account) refuse
+    // deletion — an operator must unprotect it first. Workspace-scoped lookup so
+    // a cross-tenant device is treated as not-found.
+    const dev = await prisma.device.findFirst({
+      where: { id, ...(workspaceId ? { workspaceId } : {}) },
+      select: { protected: true }
+    });
+    if (!dev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    if (dev.protected) {
+      throw new AppError('Bu cihaz korumalı — silmeden önce korumayı kaldırın', 409, 'DEVICE_PROTECTED');
+    }
     // Workspace-scoped, atomic delete: a device outside the caller's workspace is
     // never matched (no cross-tenant delete, no TOCTOU window).
     const { count } = await prisma.device.deleteMany({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });

@@ -103,6 +103,11 @@ export const snapshotService = {
     if (!device || (ctx.workspaceId && device.workspaceId && device.workspaceId !== ctx.workspaceId)) {
       throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     }
+    // Restoring overwrites the device's current data — refuse on a protected
+    // device (would destroy e.g. an active WhatsApp account).
+    if (device.protected) {
+      throw new AppError('Bu cihaz korumalı — snapshot geri yükleme reddedildi (önce korumayı kaldırın)', 409, 'DEVICE_PROTECTED');
+    }
     if (!device.hostId) throw new AppError('Device has no host', 400, 'DEVICE_NO_HOST');
 
     await createJobRecord(
@@ -124,6 +129,11 @@ export const snapshotService = {
       where: { id: deviceId, ...(ctx.workspaceId ? { workspaceId: ctx.workspaceId } : {}) }
     });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
+    // Reset wipes app data / re-rolls identity — refuse on a protected device so an
+    // accidental "new device" reset can't erase e.g. an active WhatsApp account.
+    if (device.protected) {
+      throw new AppError('Bu cihaz korumalı — sıfırlama reddedildi (önce korumayı kaldırın)', 409, 'DEVICE_PROTECTED');
+    }
 
     if (input.regenerateFingerprint) {
       const fields = generateFingerprintData();

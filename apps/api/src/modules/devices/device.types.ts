@@ -31,6 +31,7 @@ export type DeviceUpdateInput = {
   metadata?: unknown;
   lastSeen?: string | Date | undefined;
   tags?: string[] | undefined;
+  protected?: boolean | undefined;
 };
 
 export type DeviceGroupCreateInput = {

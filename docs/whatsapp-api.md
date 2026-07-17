@@ -625,7 +625,7 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/register \
     "deviceId": "cmr3...",
     "phoneNumber": "+15551234567",
     "status": "REGISTERING",
-    "proxyAssigned": { "proxyId": "cmr9...", "country": "US" }
+    "proxyAssigned": { "country": "US" }
   }
 }
 ```
@@ -657,6 +657,29 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/register/cmr9.../otp \
 
 ---
 
+### POST /v1/whatsapp/register/:id/verify-method — Doğrulama yöntemi seç
+
+`:id` = kayıt yanıtındaki `accountId`. WhatsApp bazen numaradan sonra **"Choose how
+to verify"** (doğrulama yöntemini seç) ekranında durur; bu durumda hesap
+`status = AWAITING_OTP` + `phase = method_select` olur. Bu uç ile yöntemi seçersiniz;
+ajan seçimi uygular ve kod ekranına ilerler. **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `method` | `sms` \| `voice` \| `missed_call` | ✔ | Doğrulama yöntemi (SMS / sesli arama / cevapsız çağrı) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/register/cmr9.../verify-method \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "method": "sms" }'
+```
+
+```json
+{ "data": { "id": "cmr9...", "status": "AWAITING_OTP", "phoneNumber": "+15551234567" } }
+```
+
+---
+
 ### GET /v1/whatsapp/register/:id/status — Kayıt ilerlemesi
 
 `:id` = `accountId`. Canlı adım-adım ilerleme (mevcut adım, yüzde, tüm adım günlüğü) —
@@ -684,6 +707,50 @@ curl "https://<sunucu-adresi>/public/v1/whatsapp/register/cmr9.../status" \
   }
 }
 ```
+
+---
+
+### GET /v1/jobs/:jobId — İş durumu (sonuç okuma)
+
+Cihaz süren yazma uçlarının (send, broadcast, profile, block, blocklist, mynumber,
+send-media, delete-message, clear-chat) döndürdüğü `jobId`'nin durumunu ve sonucunu
+okur. Bu uç, asenkron bir işin bitip bitmediğini ve (bittiyse) sonucunu öğrenmenin
+**evrensel** yoludur. Okuma — **her geçerli anahtar erişir** (write gerekmez).
+İş yalnızca çağıranın çalışma alanına aitse döner; yabancı bir `jobId` → `404 JOB_NOT_FOUND`.
+
+```bash
+curl "https://<sunucu-adresi>/public/v1/jobs/cmr9dd..." \
+  -H "x-api-key: flk_..."
+```
+
+```json
+{
+  "data": {
+    "id": "cmr9dd...",
+    "type": "WHATSAPP_MYNUMBER",
+    "status": "COMPLETED",
+    "result": { "status": "OK", "number": "+90 XXX XXX XX XX" },
+    "error": null,
+    "createdAt": "2026-07-17T09:00:00.000Z",
+    "updatedAt": "2026-07-17T09:00:18.000Z"
+  }
+}
+```
+
+`status` akışı: `PENDING` → `RUNNING` → `COMPLETED` (veya `FAILED`). İş `COMPLETED`
+olduğunda sonuç `result` alanında durur; `FAILED` ise sebep `error` alanındadır.
+`result` içeriği iş türüne göre değişir; örnekler:
+
+| İş türü (`type`) | `result` (COMPLETED) |
+|---|---|
+| `WHATSAPP_MYNUMBER` | `{ "status": "OK", "number": "+90 …" }` |
+| `WHATSAPP_BLOCKLIST` | `{ "status": "OK", "count": 1, "blocked": ["+90 …"] }` |
+| `WHATSAPP_DELETE_MESSAGE` | `{ "status": "DELETED", "scope": "everyone" }` |
+
+> **Yoklama (polling):** `jobId`'yi alın, birkaç saniyede bir `GET /v1/jobs/:jobId`
+> çağırın; `status` `COMPLETED`/`FAILED` olana kadar bekleyin. Alternatif olarak
+> webhook (`WHATSAPP_SENT` / `WHATSAPP_FAILED`) veya Telegram/Slack bildirimiyle de
+> sonucu öğrenebilirsiniz (yukarıdaki §2'ye bakın).
 
 ---
 
@@ -787,10 +854,10 @@ content-type: application/json
   "event": "WHATSAPP_MESSAGE",
   "data": {
     "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",
-    "direction": "IN",
-    "peer": "90XXXXXXXXXX",
-    "body": "gelen mesaj metni",
-    "waTimestamp": "2026-07-05T14:09:23.445Z"
+    "deviceName": "Cloud Phone 01",
+    "from": "90XXXXXXXXXX",
+    "text": "gelen mesaj metni",
+    "ts": "2026-07-05T14:09:23.445Z"
   }
 }
 ```
@@ -811,6 +878,27 @@ content-type: application/json
 
 `WHATSAPP_FAILED` olayında ek olarak `failReason` alanı bulunur.
 
+### Teslimat başlıkları ve imza doğrulama
+
+Her webhook `POST` isteği şu başlıklarla gönderilir:
+
+| Başlık | Açıklama |
+|---|---|
+| `X-Fleet-Event` | Olay tipi (`WHATSAPP_MESSAGE`, `WHATSAPP_SENT`, `WHATSAPP_FAILED`) |
+| `X-Fleet-Delivery` | Bu teslimatın benzersiz kimliği (tekilleştirme / izleme için) |
+| `X-Fleet-Signature` | HMAC-SHA256 imzası (**yalnızca** webhook'un bir gizli anahtarı — secret — varsa gönderilir) |
+
+**İmza doğrulama:** `X-Fleet-Signature`, ham istek gövdesinin (raw body) webhook
+secret'ıyla hesaplanan HMAC-SHA256 özetidir (hex olarak). İsteğin gerçekten sizin
+sunucunuzdan geldiğini doğrulamak için, aldığınız ham gövdeyi kendi secret'ınızla
+aynı şekilde imzalayıp karşılaştırın:
+
+```js
+const crypto = require('crypto');
+const expected = crypto.createHmac('sha256', WEBHOOK_SECRET).update(rawBody).digest('hex');
+const ok = crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.header('X-Fleet-Signature')));
+```
+
 ---
 
 ## 5. Hata kodları
@@ -819,19 +907,38 @@ content-type: application/json
 |---|---|---|
 | `400` | `INVALID_RECIPIENT` | Geçersiz/eksik telefon numarası |
 | `400` | `INVALID_NUMBER` | Kayıt için geçersiz telefon numarası (ülke kodu dahil olmalı) |
+| `400` | `MISSING_TARGET` | `profile`/`block`: `to` **ve** `from` ikisi de eksik (en az biri gerekli) |
+| `400` | `NOT_AWAITING_OTP` | `/otp` veya `/verify-method`: hesap o an OTP / yöntem-seçimi aşamasında değil |
+| `400` | `INVALID_OTP` | Gönderilen koddan geçerli rakam çıkmıyor |
 | `400` | (zod doğrulama) | Eksik/hatalı alan (örn. `message` boş) |
-| `401` | — | `x-api-key` başlığı yok veya geçersiz |
+| `401` | `UNAUTHORIZED` | `x-api-key` başlığı yok veya geçersiz |
 | `403` | `WORKSPACE_REQUIRED` | Anahtar bir çalışma alanına bağlı değil (servis anahtarı kabul edilmez) |
 | `403` | `INSUFFICIENT_SCOPE` | Yazma işlemi için `write`/`admin` kapsamı yok |
 | `404` | `DEVICE_NOT_FOUND` | Cihaz bulunamadı (veya başka bir çalışma alanına ait) |
+| `404` | `ACCOUNT_NOT_FOUND` | Kayıt hesabı (`accountId`) bulunamadı (veya başka bir çalışma alanına ait) |
+| `404` | `JOB_NOT_FOUND` | İş (`jobId`) bulunamadı (veya başka bir çalışma alanına ait) |
 | `409` | `DEVICE_OFFLINE` | Cihaz durdurulmuş — önce uyandırın |
 | `409` | `AGENT_UNREACHABLE` | Cihazın sunucu aracısı/ADB'si yanıt vermiyor (iş gönderilemez) |
 | `409` | `DEVICE_BUSY` | Cihazda zaten bir ağır iş sürüyor — bitince tekrar deneyin |
+| `409` | `OTP_ALREADY_SUBMITTED` | `/otp`: kod zaten gönderilmiş, hesap hâlihazırda işleniyor (çift-gönderim) |
 | `409` | `NO_ONLINE_HOST` | Kurulum için çevrimiçi KVM sunucusu yok |
-| `429` | — | Hız sınırı aşıldı (IP başına ~120 istek/dakika; cihaz süren uçlar ek sınırlı) |
+| `429` | `RATE_LIMITED` | Hız sınırı aşıldı (aşağıya bakın) |
 
 Hata gövdesi:
 
 ```json
 { "error": "WORKSPACE_REQUIRED", "message": "Bu uç nokta çalışma alanına bağlı bir API anahtarı gerektirir (servis anahtarı kabul edilmez)" }
 ```
+
+### Hız sınırları (rate limit)
+
+Sınırlar uç türüne göre farklıdır — tek bir "IP başına" sınır **yoktur**:
+
+| Uç grubu | Sınır | Anahtar (bucket) |
+|---|---|---|
+| Yazma POST'ları (send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, `/register/:id/otp`, `/register/:id/verify-method`) | **~120 istek/dakika** | IP başına |
+| Ağır işlemler: `POST /v1/devices/provision`, `POST /v1/whatsapp/register` | **~20 istek/dakika** | **API anahtarı başına** |
+| GET okuma uçları (devices, messages, conversations, thread, stats, labels, provision-status, register-status, jobs) + etiket/durum POST'ları (`/labels`, `/conversations/labels`, `/conversations/state`) | **Sınırsız** | — |
+
+Sınıra takılan istekler `429 RATE_LIMITED` döner. Her yanıtta `RateLimit-Limit`,
+`RateLimit-Remaining` ve `RateLimit-Reset` başlıkları ile kalan kotanızı görebilirsiniz.

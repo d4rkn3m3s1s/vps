@@ -108,6 +108,15 @@ fi
 ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " || { log "redsocks not listening on $RS_PORT"; exit 1; }
 
 # ── 2) iptables: transparent REDIRECT for THIS instance's subnet ─────────────
+# iptables writes need root. If we're not root the REDIRECT inserts below fail
+# silently (no `set -e`) and the script would still print PROXY_RESULT — a false
+# "APPLIED" that leaves the device on the host's datacenter IP (the exact bug that
+# let a TR number register on a US exit and hit "Login not available"). Fail loud.
+if [ "$(id -u)" != "0" ]; then
+  log "ERROR: not root — cannot install iptables REDIRECT for $SUBNET"
+  echo "PROXY_FAIL instance=$INSTANCE reason=need-root"
+  exit 1
+fi
 modprobe xt_REDIRECT 2>/dev/null || true
 # clean prior rules for this subnet (idempotent)
 while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q "$SUBNET"; do
@@ -119,5 +128,13 @@ for NET in 0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168
   iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -d "$NET" -j RETURN
 done
 iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -j REDIRECT --to-ports "$RS_PORT"
+# VERIFY the REDIRECT rule actually landed before declaring success — a failed insert
+# (missing xt_REDIRECT module, table full, etc.) must NOT report APPLIED. Only print
+# the PROXY_RESULT marker the agent keys on when the rule is really present.
+if ! iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "-s ${SUBNET}" | grep -F -- "REDIRECT --to-ports ${RS_PORT}" >/dev/null 2>&1; then
+  log "ERROR: REDIRECT rule for $SUBNET NOT present after insert"
+  echo "PROXY_FAIL instance=$INSTANCE reason=redirect-not-installed"
+  exit 1
+fi
 log "iptables REDIRECT active for $SUBNET -> redsocks:$RS_PORT"
 echo "PROXY_RESULT instance=$INSTANCE cc=$CC subnet=$SUBNET_ID redsocks=$RS_PORT"

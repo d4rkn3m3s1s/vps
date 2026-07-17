@@ -54,6 +54,9 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
   });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [elapsed, setElapsed] = useState(0);
+  // Real provisioning start (first log line's ts). Count elapsed from THIS, not from
+  // modal-open — otherwise reopening a background provision reset the clock to 00:00.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const termRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +71,13 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
         if (cancelled || !d) return;
         if (Array.isArray(d.log) && d.log.length) setLogs(d.log as LogLine[]);
         if (d.lastProgress) setCurrent(d.lastProgress as ProvisionProgress);
+        // Anchor the elapsed clock to the real start (API startedAt, else first log ts)
+        // so reopening a background provision shows true elapsed time, not 00:00.
+        const firstTs = d.startedAt ?? (Array.isArray(d.log) && d.log[0]?.ts) ?? null;
+        if (firstTs) {
+          const ms = Date.parse(firstTs);
+          if (!Number.isNaN(ms)) setStartedAt(ms);
+        }
       } catch {
         /* no history yet — live events will fill it */
       }
@@ -83,6 +93,8 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
     const p = e.payload as ProvisionProgress | undefined;
     if (!p || p.jobId !== jobId) return;
     setCurrent(p);
+    // First live event also anchors the clock (brand-new provision, no history yet).
+    setStartedAt((prev) => prev ?? (e.timestamp ? Date.parse(e.timestamp) : Date.now()));
     if (p.note) {
       const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: p.note };
       setLogs((prev) => [...prev, line]);
@@ -92,12 +104,18 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
   const done = current.status === 'COMPLETED' || current.percent >= 100;
   const failed = current.status === 'FAILED';
 
-  // Elapsed timer — stops once terminal.
+  // Elapsed timer — counts from the REAL start (startedAt) so it survives modal
+  // close/reopen. Freezes once terminal (done/failed) at the true total duration.
   useEffect(() => {
     if (done || failed) return;
-    const t = setInterval(() => setElapsed((v) => v + 1), 1000);
+    const tick = () => {
+      if (startedAt) setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      else setElapsed((v) => v + 1);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [done, failed]);
+  }, [done, failed, startedAt]);
 
   // Refresh the device list when provisioning succeeds.
   useEffect(() => {

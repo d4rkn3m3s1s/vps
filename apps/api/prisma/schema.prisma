@@ -418,6 +418,11 @@ model Device {
   proxyId        String?
   // Optional vendor-side phone id (retained for external references).
   externalId     String?
+  // Protected devices refuse destructive ops (delete / reset / snapshot-restore /
+  // data-wipe). Set for valuable phones (e.g. one holding an active WhatsApp
+  // account) so an accidental delete/reset can't wipe the account. Enforced in
+  // deleteDevice / resetDevice / restoreSnapshot.
+  protected      Boolean      @default(false)
   // External ADB access (TCP bridge). When exposed, the host agent forwards the
   // device's ADB to a public host:port, optionally restricted to an IP allowlist.
   adbExposed     Boolean      @default(false)
@@ -1063,6 +1068,12 @@ enum WebhookEvent {
   WHATSAPP_MESSAGE
   WHATSAPP_SENT
   WHATSAPP_FAILED
+  // Registration/provision lifecycle — so integrators can react to the two flagship
+  // async flows without poll loops (register/provision were poll-only before).
+  WHATSAPP_AWAITING_OTP
+  WHATSAPP_REGISTERED
+  WHATSAPP_REGISTER_FAILED
+  DEVICE_PROVISIONED
   ALL
 }
 

@@ -1016,6 +1016,10 @@ export class BatchService {
     }
     if (!acc.deviceId) throw new AppError('Hesap bir cihaza bağlı değil', 400, 'NO_DEVICE');
     if (!acc.phoneNumber) throw new AppError('Hesapta numara yok', 400, 'NO_NUMBER');
+    // Fail fast if the device went offline between register-start and OTP-submit — the
+    // register-start endpoint already guarantees this; without it the OTP job sits
+    // PENDING for ~6min while the caller polls a stale "REGISTERING". (BULGU 5.)
+    await assertDeviceReady(acc.deviceId, workspaceId);
 
     const otp = otpCode.replace(/\D/g, '').slice(0, 8);
     if (!otp) throw new AppError('Geçerli bir OTP kodu gerekli', 400, 'INVALID_OTP');
@@ -1053,6 +1057,60 @@ export class BatchService {
     return toPublic(updated);
   }
 
+  // Operator picked a verification method on the "Choose how to verify" sheet
+  // (sms | voice | missed_call). Re-dispatch REGISTER_WHATSAPP carrying verifyMethod so
+  // the agent selects that row + Continue, instead of blindly guessing. Same atomic
+  // AWAITING_OTP→REGISTERING guard as provideOperatorOtp so a double-tap can't create
+  // two jobs.
+  async provideVerifyMethod(
+    workspaceId: string | undefined,
+    accountId: string,
+    method: string
+  ) {
+    const m = String(method || '').trim().toLowerCase();
+    if (!['sms', 'voice', 'missed_call'].includes(m)) {
+      throw new AppError('Geçersiz doğrulama yöntemi', 400, 'INVALID_VERIFY_METHOD');
+    }
+    const acc = await prisma.generatedAccount.findFirst({
+      where: { id: accountId, ...(workspaceId ? { workspaceId } : {}) }
+    });
+    if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
+    if (acc.status !== 'AWAITING_OTP') {
+      throw new AppError('Hesap doğrulama-yöntemi aşamasında değil', 400, 'NOT_AWAITING_OTP');
+    }
+    if (!acc.deviceId) throw new AppError('Hesap bir cihaza bağlı değil', 400, 'NO_DEVICE');
+    if (!acc.phoneNumber) throw new AppError('Hesapta numara yok', 400, 'NO_NUMBER');
+    // Same offline fast-fail as provideOperatorOtp (BULGU 5).
+    await assertDeviceReady(acc.deviceId, workspaceId);
+
+    const fullName = [acc.firstName, acc.lastName].filter(Boolean).join(' ') || 'Fleet User';
+
+    const claimed = await prisma.generatedAccount.updateMany({
+      where: { id: acc.id, status: 'AWAITING_OTP' },
+      data: { status: 'REGISTERING', error: null }
+    });
+    if (claimed.count === 0) {
+      throw new AppError('Hesap zaten işleniyor', 409, 'METHOD_ALREADY_SUBMITTED');
+    }
+    const updated = await prisma.generatedAccount.findUniqueOrThrow({ where: { id: acc.id } });
+
+    await createJobRecord(
+      'REGISTER_WHATSAPP',
+      {
+        deviceId: acc.deviceId,
+        accountId: acc.id,
+        phoneNumber: acc.phoneNumber,
+        fullName,
+        verifyMethod: m
+      } as unknown as JobPayload,
+      undefined,
+      workspaceId,
+      { skipBusyCheck: true } // continuation of the same registration flow
+    );
+
+    return toPublic(updated);
+  }
+
   // Wait for a Job to reach a terminal state (COMPLETED / FAILED), polling the
   // row. Returns the job (with its result) or null on timeout.
   private async awaitJob(jobId: string, timeoutMs: number) {
@@ -1075,6 +1133,21 @@ export class BatchService {
       where: { id },
       data: { status: 'FAILED', error: 'iptal edildi' }
     });
+    // ALSO clear the device's WA-registration badge so the profile card stops showing
+    // "Kod bekleniyor" and unlocks the WhatsApp button for a fresh register. Without
+    // this a stuck REGISTERING/AWAITING_OTP account left the card locked forever even
+    // after cancel. Only clears if the badge belongs to THIS account.
+    if (acc.deviceId) {
+      const dev = await prisma.device.findUnique({ where: { id: acc.deviceId }, select: { metadata: true } }).catch(() => null);
+      const meta = (dev?.metadata ?? {}) as Record<string, unknown>;
+      if (meta.waRegisterAccountId === acc.id) {
+        delete meta.waRegisterStatus;
+        delete meta.waRegisterAccountId;
+        delete meta.waRegisterPhone;
+        delete meta.waRegisterJobId;
+        await prisma.device.update({ where: { id: acc.deviceId }, data: { metadata: meta as object } }).catch(() => undefined);
+      }
+    }
     return toPublic(updated);
   }
 

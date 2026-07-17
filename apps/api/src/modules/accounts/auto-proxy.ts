@@ -66,8 +66,14 @@ export async function autoAttachCountryProxyByCountry(
   try {
     const cc = String(countryCode || '').trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(cc)) return null;
+    // Accept BOTH provider groups. One-click provision mirrors its country-matched
+    // residential exit as `group:'residential'` (provision.service), while manually
+    // imported upstreams land as `group:'provider'`. Looking up ONLY 'provider' meant
+    // a device provisioned with a residential proxy found NO match here → the
+    // EMULATOR_SET_PROXY job was silently skipped → registration ran on the host's
+    // datacenter IP → "Login not available". Matching either group closes that gap.
     const provider = await prisma.proxy.findFirst({
-      where: { group: 'provider', ...(workspaceId ? { workspaceId } : {}) },
+      where: { group: { in: ['provider', 'residential'] }, ...(workspaceId ? { workspaceId } : {}) },
       orderBy: { createdAt: 'desc' }
     });
     if (!provider) return null;

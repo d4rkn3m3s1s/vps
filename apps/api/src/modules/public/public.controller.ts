@@ -6,6 +6,7 @@ import { batchService } from '../accounts/batch.service';
 import { whatsappService } from '../whatsapp/whatsapp.service';
 import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
+import { getJob } from '../jobs/jobs.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
 
 const deviceService = new DeviceService();
@@ -35,6 +36,30 @@ export async function sendHandler(req: Request, res: Response): Promise<void> {
   const input = sendSchema.parse(req.body);
   const { job } = await batchService.sendFromDevice(workspaceId, input);
   res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/send/bulk — many DISTINCT messages in one call (each a
+// {deviceId,to,message}). Returns one {jobId,status} per item (or {error} for the ones
+// that failed to dispatch), so an integrator sending 100 personalized messages makes a
+// single HTTP round-trip instead of 100 (and counts as one heavy-op). Capped at 100.
+const bulkSendSchema = z.object({
+  messages: z.array(sendSchema).min(1).max(100)
+});
+export async function bulkSendHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const { messages } = bulkSendSchema.parse(req.body);
+  const results = await Promise.all(
+    messages.map(async (m) => {
+      try {
+        const { job } = await batchService.sendFromDevice(workspaceId, m);
+        return { to: m.to, jobId: job.id, status: job.status };
+      } catch (e) {
+        return { to: m.to, error: e instanceof AppError ? e.code : 'DISPATCH_FAILED', message: (e as Error).message };
+      }
+    })
+  );
+  res.json({ data: { count: results.length, results } });
 }
 
 // POST /public/v1/whatsapp/profile — fetch a contact's profile (avatar + name).
@@ -243,7 +268,10 @@ export async function broadcastHandler(req: Request, res: Response): Promise<voi
   requireScope(req, 'write');
   const input = broadcastSchema.parse(req.body);
   const result = await whatsappService.createBroadcast(workspaceId, input);
-  res.status(201).json({ data: result });
+  // Match the documented public contract: { broadcastId, queued }. The internal
+  // service returns { id, total } — projecting here keeps external clients (which read
+  // data.broadcastId / data.queued per the docs) from silently getting undefined.
+  res.status(201).json({ data: { broadcastId: result.id, queued: result.total } });
 }
 
 // ── labels / categories over the public API ──────────────────────────────────
@@ -375,7 +403,27 @@ export async function registerWhatsappOtpHandler(req: Request, res: Response): P
   if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
   const { otpCode } = otpSchema.parse(req.body);
   const account = await batchService.provideOperatorOtp(workspaceId, accountId, otpCode);
-  res.json({ data: account });
+  // SECURITY (H-1): toPublic() decrypts otpCode + carries the phone number. This is an
+  // EXTERNAL boundary — never echo the decrypted OTP/secret back to the caller (it
+  // would land in their logs / any middlebox that records response bodies). Project to
+  // the same safe shape the register-start handler uses; the docs promise only these.
+  const a = account as Record<string, unknown>;
+  res.json({ data: { id: a.id, status: a.status, phoneNumber: a.phoneNumber } });
+}
+
+// POST /public/v1/whatsapp/register/:id/verify-method — when registration parked on
+// WhatsApp's "Choose how to verify" sheet (status AWAITING_OTP with method_select),
+// pick sms | voice | missed_call. The agent applies it and continues to the code step.
+const verifyMethodSchema = z.object({ method: z.enum(['sms', 'voice', 'missed_call']) });
+export async function registerWhatsappVerifyMethodHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const accountId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
+  const { method } = verifyMethodSchema.parse(req.body);
+  const account = await batchService.provideVerifyMethod(workspaceId, accountId, method);
+  const a = account as Record<string, unknown>;
+  res.json({ data: { id: a.id, status: a.status, phoneNumber: a.phoneNumber } });
 }
 
 // GET /public/v1/whatsapp/register/:id/status — live registration progress
@@ -386,4 +434,47 @@ export async function registerWhatsappStatusHandler(req: Request, res: Response)
   if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
   const data = await waRegisterService.getStatus(accountId, workspaceId);
   res.json({ data });
+}
+
+// GET /public/v1/me — who the calling flk_ key is: its workspace, scopes, label, and
+// this workspace's device count. Lets an integrator self-discover its permissions and
+// scale without trial-and-error 403s.
+export async function meHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const key = req.apiKey as { id?: string; name?: string; label?: string; scopes?: string[] } | undefined;
+  const deviceCount = await new DeviceService().listDevices(workspaceId).then((d) => d.length).catch(() => 0);
+  res.json({
+    data: {
+      workspaceId,
+      keyId: key?.id ?? null,
+      label: key?.label ?? key?.name ?? null,
+      scopes: key?.scopes ?? [],
+      deviceCount
+    }
+  });
+}
+
+// GET /public/v1/jobs/:jobId — universal poll target for the jobId every on-device
+// write endpoint hands back (send/blocklist/mynumber/profile/…). Previously external
+// callers got a jobId with NO way to read its result. Workspace-scoped (getJob filters
+// by workspaceId → a foreign jobId 404s). NOTE: we deliberately DO NOT return
+// job.payload — it can hold decrypted identity/proxy secrets. Only the safe outcome
+// fields are exposed.
+export async function jobHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const jobId = typeof req.params.jobId === 'string' ? req.params.jobId : '';
+  if (!jobId) throw new AppError('jobId gerekli', 400, 'MISSING_JOB_ID');
+  const job = await getJob(jobId, workspaceId);
+  if (!job) throw new AppError('İş bulunamadı', 404, 'JOB_NOT_FOUND');
+  res.json({
+    data: {
+      id: job.id,
+      type: job.type,
+      status: job.status,
+      result: job.result ?? null,
+      error: job.error ?? null,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt
+    }
+  });
 }

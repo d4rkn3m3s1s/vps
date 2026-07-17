@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { deviceHub } from '../devices/device.hub';
+import { AppError } from '../../lib/errors';
 
 // ── Live WhatsApp-registration progress (mirrors provision.service) ─────────────
 //
@@ -153,14 +154,23 @@ export class WaRegisterService {
     steps: WaStep[];
     lastProgress: Omit<WaRegisterProgress, 'shot'> | null;
     log: unknown[];
+    startedAt: string | null;
   }> {
     const acc = await prisma.generatedAccount.findFirst({
       where: { id: accountId, ...(workspaceId ? { workspaceId } : {}) },
       select: { id: true, status: true, deviceId: true, registerLog: true }
     });
-    if (!acc) throw new Error('account not found');
+    // AppError (not a bare Error) so an unknown/foreign accountId returns 404, not a
+    // 500. The public /register/:id/status endpoint is polled in a loop; a wrong id
+    // previously threw a plain Error → 500 INTERNAL + 5xx log noise on every poll.
+    if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
     const rl = (acc.registerLog ?? {}) as Record<string, unknown>;
     const last = (rl.lastProgress as Omit<WaRegisterProgress, 'shot'>) ?? null;
+    const log = Array.isArray(rl.log) ? (rl.log as unknown[]) : [];
+    // The FIRST log line's ts is when this registration actually began, so the modal
+    // shows the real elapsed time no matter WHEN the operator opens it — it was
+    // previously counting from modal-open, which reset to 00:00 on every reopen.
+    const first = log[0] as { ts?: string } | undefined;
     return {
       accountId: acc.id,
       deviceId: acc.deviceId ?? '',
@@ -169,7 +179,8 @@ export class WaRegisterService {
       percent: last?.percent ?? 0,
       steps: WA_REGISTER_STEPS,
       lastProgress: last,
-      log: Array.isArray(rl.log) ? (rl.log as unknown[]) : []
+      log,
+      startedAt: (first?.ts as string) ?? null
     };
   }
 

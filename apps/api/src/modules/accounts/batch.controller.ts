@@ -227,6 +227,16 @@ export async function provideOtpHandler(req: Request, res: Response): Promise<vo
   res.json({ data: account });
 }
 
+// Operator picked a verification method on the "Choose how to verify" sheet; re-
+// dispatch REGISTER_WHATSAPP with verifyMethod so the agent selects that row instead
+// of guessing. Account flips AWAITING_OTP → REGISTERING (guarded against double-tap).
+const provideVerifyMethodSchema = z.object({ method: z.enum(['sms', 'voice', 'missed_call']) });
+export async function provideVerifyMethodHandler(req: Request, res: Response): Promise<void> {
+  const { method } = provideVerifyMethodSchema.parse(req.body);
+  const account = await batchService.provideVerifyMethod(getWorkspaceId(req), id(req), method);
+  res.json({ data: account });
+}
+
 // Live WhatsApp-registration progress (log + last step) for the modal to restore.
 export async function waRegisterStatusHandler(req: Request, res: Response): Promise<void> {
   const data = await waRegisterService.getStatus(id(req), getWorkspaceId(req));

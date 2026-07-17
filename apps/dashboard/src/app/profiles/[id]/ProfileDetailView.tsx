@@ -24,7 +24,9 @@ import {
   Hash,
   Wifi,
   Monitor,
-  Shuffle
+  Shuffle,
+  ShieldCheck,
+  Shield
 } from 'lucide-react';
 import { PageMotion } from '../../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../../components/hud';
@@ -76,6 +78,7 @@ export type DetailDevice = {
   host?: { id: string; name: string } | null;
   fingerprint?: DetailFingerprint | null;
   externalId?: string | null;
+  protected?: boolean;
 };
 
 export type DetailJob = {
@@ -229,6 +232,31 @@ export function ProfileDetailView({
     }
   }
 
+  // Protect / unprotect: a protected device refuses delete / reset / snapshot-
+  // restore server-side (device.service + snapshot.service enforce it). Use for a
+  // valuable phone (e.g. one holding an active WhatsApp account).
+  async function toggleProtect() {
+    const next = !device.protected;
+    setBusy(next ? 'Koru' : 'Koruma');
+    try {
+      const res = await fetch(`/api/devices/${device.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ protected: next })
+      });
+      if (!res.ok) {
+        flash(next ? 'Koruma açılamadı' : 'Koruma kaldırılamadı', 'err');
+        return;
+      }
+      flash(next ? 'Cihaz korumaya alındı — silme/sıfırlama engellendi' : 'Koruma kaldırıldı', 'ok');
+      router.refresh();
+    } catch {
+      flash('İşlem başarısız oldu', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   // Assigns (or clears, when empty) the KVM host this device physically runs on.
   // The host agent only claims jobs for devices assigned to it.
   async function assignHost(next: string) {
@@ -272,6 +300,15 @@ export function ProfileDetailView({
             </button>
             <button type="button" className="btn-ghost" disabled={!!busy} onClick={() => lifecycle('sleep', 'Durdur')}>
               <Square size={14} /> Durdur
+            </button>
+            <button
+              type="button"
+              className={device.protected ? 'btn-primary' : 'btn-ghost'}
+              disabled={!!busy}
+              onClick={toggleProtect}
+              title={device.protected ? 'Bu cihaz korumalı — silme/sıfırlama engelli. Kaldırmak için tıklayın.' : 'Cihazı silme/sıfırlamaya karşı koru (değerli hesap için)'}
+            >
+              {device.protected ? <><ShieldCheck size={14} /> Korumalı</> : <><Shield size={14} /> Koru</>}
             </button>
             <button type="button" className="btn-primary" disabled={!!busy} onClick={screenshot}>
               <Camera size={14} /> Ekran görüntüsü

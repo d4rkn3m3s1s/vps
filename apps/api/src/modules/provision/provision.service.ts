@@ -456,6 +456,46 @@ class ProvisionService {
     };
   }
 
+  // Operator cancels a running/queued provision from the panel. Workspace-guarded
+  // (IDOR-safe: findFirst by {id, workspaceId}). Only flips a PENDING/RUNNING job to
+  // FAILED — a COMPLETED/FAILED job is left alone (returns its current status). The
+  // conditional updateMany means if the agent's complete() wins the race, this is a
+  // no-op. Also clears claimedByHostId so the dead claim can't block anything, and
+  // marks the half-built device FAILED so the card stops showing a frozen "kuruluyor".
+  async cancel(jobId: string, workspaceId?: string): Promise<{ jobId: string; status: string; cancelled: boolean }> {
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, status: true, type: true, payload: true, workspaceId: true }
+    });
+    if (!job) throw new AppError('Provision job not found', 404, 'JOB_NOT_FOUND');
+    if (job.status !== 'PENDING' && job.status !== 'RUNNING') {
+      // Already terminal — nothing to cancel; report the real status honestly.
+      return { jobId: job.id, status: job.status, cancelled: false };
+    }
+    const reason = 'Kurulum operatör tarafından iptal edildi.';
+    const flipped = await prisma.job.updateMany({
+      where: { id: job.id, status: { in: ['PENDING', 'RUNNING'] } },
+      data: { status: 'FAILED', error: reason, finishedAt: new Date(), claimedByHostId: null }
+    });
+    if (flipped.count === 0) {
+      // Agent's complete() won the race — return whatever it landed on.
+      const fresh = await prisma.job.findUnique({ where: { id: job.id }, select: { status: true } });
+      return { jobId: job.id, status: fresh?.status ?? 'UNKNOWN', cancelled: false };
+    }
+    const deviceId = (job.payload as { deviceId?: string } | null)?.deviceId ?? '';
+    // Mark the half-built device FAILED so the card stops showing a frozen "kuruluyor".
+    if (deviceId) await this.updateProvisionStatus(deviceId, 'FAILED').catch(() => undefined);
+    // Broadcast so the modal + Jobs view + card badge refresh immediately.
+    deviceHub.broadcast({
+      type: 'job.updated',
+      deviceId,
+      payload: { id: job.id, type: job.type, status: 'FAILED', error: reason },
+      timestamp: new Date().toISOString(),
+      workspaceId: job.workspaceId ?? undefined
+    });
+    return { jobId: job.id, status: 'FAILED', cancelled: true };
+  }
+
   private async updateProvisionStatus(deviceId: string, provisionStatus: 'READY' | 'FAILED'): Promise<void> {
     const device = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
     const meta = (device?.metadata ?? {}) as Record<string, unknown>;

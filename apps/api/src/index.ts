@@ -9,6 +9,7 @@ import { deviceHub } from './modules/devices/device.hub';
 import { streamHub } from './modules/stream/stream.hub';
 import { schedulerService } from './modules/scheduler/scheduler.service';
 import { reapStaleJobs } from './modules/jobs/jobs.service';
+import { sweepIdempotencyKeys } from './modules/public/idempotency.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
@@ -147,7 +148,10 @@ async function main(): Promise<void> {
       })(),
       // Fail jobs that hang PENDING/RUNNING with no agent progress, so the
       // dashboard shows an error instead of an eternal "yükleniyor" spinner.
-      reapStaleJobs()
+      reapStaleJobs(),
+      // Drop expired public-API Idempotency-Key reservations (24h TTL) so the
+      // table stays bounded. Best-effort; a failed sweep just retries next tick.
+      sweepIdempotencyKeys().catch(() => 0)
     ])
       .then(([devices, hosts, reapedJobs]) => {
         if (devices > 0 || hosts > 0 || reapedJobs > 0) logger.info('Offline detection', { devices, hosts, reapedJobs });

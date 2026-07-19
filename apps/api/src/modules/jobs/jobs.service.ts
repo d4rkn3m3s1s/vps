@@ -5,6 +5,20 @@ import { deviceHub } from '../devices/device.hub';
 import { AppError } from '../../lib/errors';
 import { EXCLUSIVE_JOB_TYPES, type JobPayload, type JobType } from './job.types';
 import { waRegisterService } from '../accounts/wa-register.service';
+import { encryptString } from '../../lib/crypto';
+import { webhooksService } from '../webhooks/webhooks.service';
+
+// Local copy of whatsapp.service.normalizePeer's phone-canonicalisation, inlined
+// to avoid a jobs↔whatsapp import cycle (whatsapp.service already imports
+// createJobRecord from here). Keeps a reaper-written OUT row in the SAME thread as
+// the agent-written ones: digits only, drop a leading "00", cap length.
+function canonicalPeer(peer: string): string {
+  const raw = peer.trim();
+  const digits = raw.replace(/\D/g, '');
+  const looksLikePhone = digits.length >= 7 && /^[\d\s+()\-.]+$/.test(raw);
+  if (!looksLikePhone) return raw.slice(0, 256);
+  return digits.replace(/^00(?=\d)/, '').slice(0, 256);
+}
 
 // Human labels for the "device busy" message so the operator sees WHAT is running.
 const JOB_LABELS: Partial<Record<JobType, string>> = {
@@ -27,10 +41,29 @@ const JOB_LABELS: Partial<Record<JobType, string>> = {
   DEVICE_SLEEP: 'Cihaz uyutma'
 };
 
-// One device-exclusive job at a time. If the given device already has an active
+// Short, serialisable messaging jobs that the operator fires back-to-back (send /
+// send-media). Unlike REGISTER/PROVISION (which are long single-shot flows that a
+// second job must NOT interleave with), two of these on the same device are SAFE
+// to queue: the host agent runs one job per device at a time, so a second send
+// just waits its turn. So instead of rejecting the 2nd rapid send with DEVICE_BUSY
+// (which — with no retry — silently dropped the message: the #1 root cause of
+// "sometimes it doesn't send"), we let it through as PENDING and let the agent
+// drain the queue. A depth cap still stops a runaway flood. See createJobRecord.
+const QUEUEABLE_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'WHATSAPP_SEND',
+  'WHATSAPP_SEND_MEDIA'
+]);
+// Max PENDING+RUNNING queueable jobs allowed to pile up on one device before we
+// start rejecting — keeps a stuck agent from letting hundreds of sends accumulate.
+const QUEUE_DEPTH_CAP = 8;
+
+// Device-exclusivity guard. If the given device already has an active
 // (PENDING/RUNNING) exclusive job, reject with DEVICE_BUSY so the operator queues
 // work serially instead of flooding the device with overlapping ADB/UI drives.
-// deviceId is read from payload.deviceId OR the emulatorId argument.
+// EXCEPTION: when BOTH the incoming job and the active one are QUEUEABLE messaging
+// jobs, we do NOT reject — we allow it to queue (up to QUEUE_DEPTH_CAP), because
+// the agent serialises them anyway and dropping the message is worse than a short
+// wait. deviceId is read from payload.deviceId OR the emulatorId argument.
 async function assertDeviceIdle(
   type: JobType,
   deviceId: string | undefined,
@@ -51,6 +84,27 @@ async function assertDeviceIdle(
     orderBy: { createdAt: 'desc' }
   });
   if (!active) return;
+
+  // Queue instead of reject: incoming AND active are both short messaging jobs.
+  // The agent will drain them one at a time; we only guard against an unbounded
+  // pile-up (e.g. a wedged agent that never drains).
+  if (QUEUEABLE_JOB_TYPES.has(type) && QUEUEABLE_JOB_TYPES.has(active.type as JobType)) {
+    const depth = await tx.job.count({
+      where: {
+        status: { in: ['PENDING', 'RUNNING'] },
+        type: { in: [...QUEUEABLE_JOB_TYPES] },
+        ...(workspaceId ? { workspaceId } : {}),
+        OR: [{ deviceId }, { emulatorId: deviceId }, { payload: { path: ['deviceId'], equals: deviceId } }]
+      }
+    });
+    if (depth < QUEUE_DEPTH_CAP) return; // room in the queue → allow (PENDING)
+    throw new AppError(
+      `Cihazda çok fazla bekleyen mesaj var (${depth}). Kuyruk boşalınca tekrar deneyin.`,
+      409,
+      'DEVICE_QUEUE_FULL'
+    );
+  }
+
   const label = JOB_LABELS[active.type as JobType] ?? active.type;
   throw new AppError(
     `Cihaz meşgul — "${label}" işlemi sürüyor. Bitince tekrar deneyin.`,
@@ -174,20 +228,40 @@ export async function listJobs(workspaceId?: string, limit = 100) {
 // of spinning. Thresholds are generous so a genuinely slow run isn't killed:
 //   - PENDING never claimed for > 6 min  → agent isn't picking it up
 //   - RUNNING with no completion for > 15 min → agent hung mid-run
+//   - RUNNING short messaging job (send/media) with no completion for > 4 min →
+//     these normally take 15-30s; 15 min of "sending…" is a stale-agent lie, so
+//     they get a much tighter cap and turn into an honest FAILED bubble sooner.
 // For REGISTER_WHATSAPP we also flip the account + push a FAILED progress event
-// so the live panel turns red with a clear reason.
+// so the live panel turns red with a clear reason. For WHATSAPP_SEND we write the
+// same FAILED bubble + broadcast counter that agent.complete() would have, so a
+// reaper-killed message leaves a visible trace in the chat thread (it previously
+// only flipped the Job to FAILED — the thread showed nothing).
 const PENDING_STALE_MS = 6 * 60 * 1000;
 const RUNNING_STALE_MS = 15 * 60 * 1000;
+const RUNNING_STALE_SHORT_MS = 4 * 60 * 1000; // send/media: tight cap
+const SHORT_RUNNING_TYPES: ReadonlySet<JobType> = new Set<JobType>(['WHATSAPP_SEND', 'WHATSAPP_SEND_MEDIA']);
 
 export async function reapStaleJobs(): Promise<number> {
   const now = Date.now();
   const pendingCutoff = new Date(now - PENDING_STALE_MS);
   const runningCutoff = new Date(now - RUNNING_STALE_MS);
+  const runningShortCutoff = new Date(now - RUNNING_STALE_SHORT_MS);
   const stale = await prisma.job.findMany({
     where: {
       OR: [
         { status: 'PENDING', createdAt: { lt: pendingCutoff } },
-        { status: 'RUNNING', OR: [{ startedAt: { lt: runningCutoff } }, { startedAt: null, createdAt: { lt: runningCutoff } }] }
+        // Long RUNNING jobs (not short messaging types) — generous 15 min cap.
+        {
+          status: 'RUNNING',
+          type: { notIn: [...SHORT_RUNNING_TYPES] },
+          OR: [{ startedAt: { lt: runningCutoff } }, { startedAt: null, createdAt: { lt: runningCutoff } }]
+        },
+        // Short messaging jobs — tight 4 min cap.
+        {
+          status: 'RUNNING',
+          type: { in: [...SHORT_RUNNING_TYPES] },
+          OR: [{ startedAt: { lt: runningShortCutoff } }, { startedAt: null, createdAt: { lt: runningShortCutoff } }]
+        }
       ]
     },
     select: { id: true, type: true, status: true, payload: true, workspaceId: true },
@@ -223,6 +297,82 @@ export async function reapStaleJobs(): Promise<number> {
       timestamp: new Date().toISOString(),
       workspaceId: job.workspaceId ?? undefined
     });
+
+    // Device provisioning: clear the device's metadata.provisionStatus so the card
+    // stops showing a frozen "Kuruluyor". reapStaleJobs previously only flipped the Job
+    // to FAILED — the Device row kept provisionStatus:'PROVISIONING', so the panel still
+    // rendered "Kuruluyor" forever after a killed/orphaned provision. Now we mark it
+    // FAILED to match the terminal job. (The provision cancel endpoint does the same.)
+    if (job.type === 'PROVISION_DEVICE' && deviceId) {
+      const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } }).catch(() => null);
+      const meta = (dev?.metadata ?? {}) as Record<string, unknown>;
+      await prisma.device
+        .update({ where: { id: deviceId }, data: { metadata: { ...meta, provisionStatus: 'FAILED' } as object } })
+        .catch(() => undefined);
+    }
+
+    // WhatsApp send/media: the agent's complete() path writes a FAILED bubble +
+    // broadcast counter + webhook when a send fails; the reaper bypasses complete(),
+    // so a reaper-killed send left NO trace in the chat thread. Mirror that here so
+    // the operator sees a "gönderilemedi" bubble instead of the message vanishing.
+    if ((job.type === 'WHATSAPP_SEND' || job.type === 'WHATSAPP_SEND_MEDIA') && deviceId) {
+      const pl = (job.payload as { to?: string; message?: string; broadcastId?: string } | null) ?? {};
+      if (pl.to && pl.message) {
+        const outPeer = canonicalPeer(String(pl.to));
+        const outBody = String(pl.message).slice(0, 4096);
+        const outAt = new Date();
+        await prisma.whatsappMessage
+          .create({
+            data: {
+              deviceId,
+              workspaceId: job.workspaceId ?? null,
+              direction: 'OUT',
+              peer: outPeer,
+              body: encryptString(outBody),
+              read: true,
+              status: 'FAILED',
+              statusAt: outAt,
+              failReason: reason.slice(0, 200),
+              waTimestamp: outAt
+            }
+          })
+          .catch(() => undefined);
+        // Denormalise the FAILED status onto the thread (list tick) without pulling
+        // in whatsappService (import-cycle): upsert the conversation row directly.
+        await prisma.whatsappConversation
+          .upsert({
+            where: { deviceId_peer: { deviceId, peer: outPeer } },
+            create: {
+              deviceId,
+              workspaceId: job.workspaceId ?? null,
+              peer: outPeer,
+              lastMessageBody: encryptString(outBody),
+              lastDirection: 'OUT',
+              lastMessageAt: outAt,
+              lastStatus: 'FAILED',
+              unreadCount: 0
+            },
+            update: {
+              lastMessageBody: encryptString(outBody),
+              lastDirection: 'OUT',
+              lastMessageAt: outAt,
+              lastStatus: 'FAILED',
+              ...(job.workspaceId ? { workspaceId: job.workspaceId } : {})
+            }
+          })
+          .catch(() => undefined);
+        void webhooksService.dispatch(
+          'WHATSAPP_FAILED',
+          { deviceId, to: outPeer, status: 'FAILED', failReason: reason, ts: outAt.toISOString() },
+          job.workspaceId ?? undefined
+        );
+        if (pl.broadcastId) {
+          await prisma.whatsappBroadcast
+            .update({ where: { id: pl.broadcastId }, data: { failCount: { increment: 1 } } })
+            .catch(() => undefined);
+        }
+      }
+    }
 
     // WhatsApp registration: fail the account + push a FAILED step to the panel.
     if (job.type === 'REGISTER_WHATSAPP' && accountId) {

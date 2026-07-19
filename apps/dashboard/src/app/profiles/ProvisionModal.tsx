@@ -58,6 +58,8 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
   // modal-open — otherwise reopening a background provision reset the clock to 00:00.
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelMsg, setCancelMsg] = useState<string | null>(null);
   const termRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted history on open (covers "arka plana al" → reopen).
@@ -140,6 +142,30 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
+  }
+
+  // Cancel a stuck/unwanted provision: flips the job FAILED server-side and marks the
+  // half-built device FAILED so the card stops showing a frozen "kuruluyor". The live
+  // job.updated broadcast refreshes the badge; we also flip local state so the modal
+  // shows the failed footer immediately without waiting for the round-trip event.
+  async function cancelProvision() {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    setCancelMsg(null);
+    try {
+      const res = await fetch(`/api/provision/cancel/${encodeURIComponent(jobId)}`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setCancelMsg(body?.error || 'Kurulum iptal edilemedi');
+        return;
+      }
+      setCurrent((c) => ({ ...c, status: 'FAILED', note: 'Kurulum iptal edildi', label: 'İptal edildi' }));
+      router.refresh();
+    } catch {
+      setCancelMsg('Kurulum iptal edilemedi (ağ hatası)');
+    } finally {
+      setCancelBusy(false);
+    }
   }
 
   return (
@@ -249,7 +275,13 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
               <button type="button" className="btn-ghost" onClick={onClose}>Kapat</button>
             </>
           ) : (
-            <button type="button" className="btn-ghost" onClick={onClose}>Arka planda devam et</button>
+            <>
+              {cancelMsg ? <span className="field-error" style={{ marginRight: 'auto', fontSize: 12 }}>{cancelMsg}</span> : null}
+              <button type="button" className="btn-ghost" style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }} disabled={cancelBusy} onClick={cancelProvision}>
+                {cancelBusy ? 'İptal ediliyor…' : 'Kurulumu İptal Et'}
+              </button>
+              <button type="button" className="btn-ghost" onClick={onClose}>Arka planda devam et</button>
+            </>
           )}
         </footer>
       </div>

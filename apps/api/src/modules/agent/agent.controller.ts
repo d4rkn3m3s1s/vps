@@ -56,6 +56,17 @@ const whatsappInboundSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+// Agent reports an outbound delivery receipt read off a sent bubble (✓✓ / blue).
+// AGENT SIDE NOT WIRED YET — the endpoint + validation exist so the webhook/enum
+// half is deployable; the on-device tick read is the remaining TODO.
+const whatsappReceiptSchema = z.object({
+  serial: z.string().min(1),
+  to: z.string().min(1),
+  status: z.enum(['DELIVERED', 'READ']),
+  messageId: z.string().min(1).optional(),
+  ts: z.coerce.number().int().nonnegative().optional()
+});
+
 const progressSchema = z.object({
   step: z.string().min(1),
   percent: z.coerce.number().min(0).max(100).optional(),
@@ -117,6 +128,15 @@ export async function whatsappInboundHandler(req: Request, res: Response): Promi
   const host = requireHost(req);
   const input = whatsappInboundSchema.parse(req.body);
   res.json({ data: await agentService.inboundWhatsapp(host, input) });
+}
+
+// Agent pushes an outbound delivery receipt (message DELIVERED/READ on the peer's
+// phone). We advance the message status + fire WHATSAPP_DELIVERED / WHATSAPP_READ.
+// (Agent-side tick read is a TODO; see agentService.recordWhatsappReceipt.)
+export async function whatsappReceiptHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = whatsappReceiptSchema.parse(req.body);
+  res.json({ data: await agentService.recordWhatsappReceipt(host, input) });
 }
 
 // Vision fallback: locate a tap target on a screenshot the agent couldn't parse

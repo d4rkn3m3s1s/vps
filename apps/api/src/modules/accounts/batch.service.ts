@@ -442,6 +442,28 @@ export class BatchService {
     return { job };
   }
 
+  // Send a Telegram message directly from a DEVICE (no account row needed) — mirrors
+  // sendFromDevice for WhatsApp. Verifies the device belongs to the workspace, then
+  // dispatches TELEGRAM_SEND. The agent runtime-detects the installed Telegram package
+  // (org.telegram.messenger / .web / org.thunderdog.challegram — not fixed), opens the
+  // chat via the tg:// deep link, and taps Send. The recipient must be a Telegram user
+  // reachable by phone; the agent reports INVALID_RECIPIENT/BLOCKED/NOT_INSTALLED/
+  // NOT_LOGGED_IN otherwise.
+  async sendTelegramFromDevice(
+    workspaceId: string | undefined,
+    input: { deviceId: string; to: string; message: string }
+  ) {
+    // Verify the device belongs to this workspace AND is reachable right now (assertDeviceReady
+    // gives an immediate DEVICE_OFFLINE/AGENT_UNREACHABLE instead of a silent PENDING hang —
+    // sendFromDevice above predates that helper, but new code should use it).
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const to = input.to.replace(/[^\d]/g, '');
+    if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
+    const payload = { deviceId: input.deviceId, to, message: input.message } as unknown as JobPayload;
+    const job = await createJobRecord('TELEGRAM_SEND', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
   // Fetch a contact's WhatsApp profile (avatar + name/about) on a device. The
   // agent screenshots the avatar and scrapes the contact-info screen; the result
   // lands on the Job row AND is persisted onto the conversation thread by
@@ -789,21 +811,53 @@ export class BatchService {
   async startOperatorRegister(
     workspaceId: string | undefined,
     deviceId: string,
-    phoneNumber: string
+    phoneNumber: string,
+    operatorName?: string,
+    force?: boolean
   ) {
     if (!deviceId) throw new AppError('Cihaz belirtilmedi', 400, 'NO_DEVICE');
     // Verify the device belongs to this workspace before dispatching a job to it.
     await assertDeviceReady(deviceId, workspaceId);
+
+    // ★DATA-LOSS GUARD: a fresh REGISTER_WHATSAPP makes the agent run `pm clear com.whatsapp`
+    // (factory-reset) BEFORE entering the new number — so starting a new registration on a
+    // device that ALREADY holds a live WhatsApp account WIPES that account. Block it unless
+    // the operator explicitly confirms (force). The authoritative signal is an ACTIVE
+    // whatsapp GeneratedAccount on this device (Device.protected is a manual lock, not set
+    // automatically on WA success, so it's NOT reliable here). AWAITING_MANUAL counts too
+    // (account exists, just needs a human step). VERIFIED risk (operator flagged live).
+    if (!force) {
+      const existing = await prisma.generatedAccount.findFirst({
+        where: {
+          deviceId,
+          platform: 'whatsapp',
+          status: { in: ['ACTIVE', 'AWAITING_MANUAL'] },
+          ...(workspaceId ? { workspaceId } : {})
+        },
+        select: { id: true, phoneNumber: true }
+      });
+      if (existing) {
+        throw new AppError(
+          `Bu cihazda zaten aktif bir WhatsApp hesabı var (${existing.phoneNumber ?? 'numara bilinmiyor'}). Yeni kayıt bu hesabı SİLER. Yine de devam etmek için onaylayın.`,
+          409,
+          'DEVICE_HAS_ACTIVE_WHATSAPP'
+        );
+      }
+    }
 
     // Normalize to E.164 (agent's splitE164 wants a leading country code).
     const digits = phoneNumber.replace(/[^\d]/g, '');
     if (digits.length < 6) throw new AppError('Geçerli bir telefon numarası gerekli (ülke kodu dahil)', 400, 'INVALID_NUMBER');
     const phoneE164 = `+${digits}`;
 
-    // Random identity for the WhatsApp profile name (offline-first, never throws).
-    const ident = await accountsService.generateIdentity().catch(() => null);
-    const fullName =
-      [ident?.firstName, ident?.lastName].filter(Boolean).join(' ') || 'Fleet User';
+    // Profile name: use the operator-supplied name when given, else a random offline
+    // identity (offline-first, never throws). Either way the agent types this exact name.
+    const chosen = (operatorName ?? '').trim();
+    let fullName = chosen;
+    if (!fullName) {
+      const ident = await accountsService.generateIdentity().catch(() => null);
+      fullName = [ident?.firstName, ident?.lastName].filter(Boolean).join(' ') || 'Fleet User';
+    }
     const [firstName, ...rest] = fullName.split(' ');
     const lastName = rest.join(' ') || null;
 

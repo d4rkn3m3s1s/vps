@@ -33,6 +33,15 @@ export const JobTypes = [
   'WHATSAPP_DELETE_MSG',
   // Clear all messages in a chat (overflow → Clear chat).
   'WHATSAPP_CLEAR_CHAT',
+  // Send a Telegram message from a device via the tg:// deep link + Send tap
+  // (mirrors WHATSAPP_SEND; the agent runtime-detects the Telegram package).
+  'TELEGRAM_SEND',
+  // Register a NEW Telegram account on a device (mirrors REGISTER_WHATSAPP).
+  // Phone-number signup with an OTP-park state machine. Telegram-specific parks:
+  // OTP delivered in-app to the number's OTHER Telegram device (operator must
+  // read it), and a 2FA cloud-password prompt if the number already has an
+  // account (operator supplies cloudPassword on the continuation).
+  'TELEGRAM_REGISTER',
   'APP_EXPLORE',
   'AGENT_RUN',
   'APPLY_FINGERPRINT',
@@ -67,6 +76,8 @@ export const EXCLUSIVE_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
   'WHATSAPP_BLOCKLIST',
   'WHATSAPP_DELETE_MSG',
   'WHATSAPP_CLEAR_CHAT',
+  'TELEGRAM_SEND',
+  'TELEGRAM_REGISTER',
   'RPA_RUN',
   'AGENT_RUN',
   'APP_EXPLORE',

@@ -389,6 +389,23 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
     } catch { setNotice('Ağ hatası.'); } finally { setSending(false); }
   }
 
+  // Re-send a FAILED bubble's text to the same peer. Dispatches a fresh
+  // WHATSAPP_SEND (the queue now serialises it behind any running send) and
+  // refreshes the thread so the new attempt's SENT/FAILED status shows up.
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  async function retrySend(m: { id: string; peer: string; body: string }) {
+    if (!deviceId || retryingId) return;
+    setRetryingId(m.id); setNotice(null);
+    try {
+      const ok = await doSend(m.peer, m.body);
+      if (!ok) setNotice('Tekrar gönderilemedi.');
+      else {
+        setThread((prev) => [...prev, { id: `tmp-${Date.now()}`, direction: 'OUT', peer: m.peer, body: m.body, status: 'QUEUED', failReason: null, waTimestamp: new Date().toISOString(), createdAt: new Date().toISOString() }]);
+        setTimeout(() => { void loadThread({ silent: true }); void loadConversations(); }, 4000);
+      }
+    } catch { setNotice('Ağ hatası.'); } finally { setRetryingId(null); }
+  }
+
   async function startNewChat() {
     const to = newChatNumber.replace(/[^\d]/g, '');
     if (!to) return;
@@ -854,6 +871,11 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
                           {m.direction === 'OUT' ? <StatusTick status={m.status} /> : null}
                         </div>
                         <div className="wa-msg-hover">
+                          {m.direction === 'OUT' && m.status === 'FAILED' ? (
+                            <button title="Tekrar dene" disabled={retryingId === m.id} onClick={() => void retrySend({ id: m.id, peer: m.peer, body: m.body })}>
+                              <RefreshCw size={12} className={retryingId === m.id ? 'spin' : ''} />
+                            </button>
+                          ) : null}
                           <button title="Kopyala" onClick={() => void copyMsg(m)}><Copy size={12} /></button>
                           <button title="İlet" onClick={() => setForwardMsg(m)}><Forward size={12} /></button>
                         </div>

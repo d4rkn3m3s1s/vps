@@ -149,6 +149,31 @@ paths:
   # ── WhatsApp Public API (x-api-key only, workspace-bound flk_ key; NO JWT) ──
   # See docs/whatsapp-api.md for the full Turkish reference. On-device POSTs are
   # asynchronous: they return { jobId, status: "PENDING" } and complete in ~10-40s.
+  /public/v1/me:
+    get:
+      summary: Identify the calling API key (workspace, scopes, device count)
+      description: >
+        Self-discovery for an integration: returns the key's workspaceId, its keyId,
+        label, scopes, and this workspace's device count — so a client can learn its
+        own permissions (read vs write) and scale without trial-and-error 403s. Any
+        valid key (read).
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200':
+          description: Key identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      workspaceId: { type: string }
+                      keyId: { type: string, nullable: true }
+                      label: { type: string, nullable: true }
+                      scopes: { type: array, items: { type: string } }
+                      deviceCount: { type: integer }
   /public/v1/devices:
     get:
       summary: List the workspace's devices (public API)
@@ -193,6 +218,25 @@ paths:
       responses:
         '200':
           description: '{ data: { messages: [...], nextBefore } }'
+  /public/v1/whatsapp/thread/read:
+    post:
+      summary: Mark a chat thread read — clear its unread badge (write scope)
+      description: >
+        Zeroes the thread's unread count and flips its unread inbound rows to read,
+        exactly like opening the chat in the dashboard. Use it after an external inbox
+        integration has processed a thread's new messages.
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, peer]
+              properties:
+                deviceId: { type: string }
+                peer: { type: string, description: E.164 number or contact name }
+      responses:
+        '200': { description: '{ data: { ok: true } }' }
   /public/v1/whatsapp/stats:
     get:
       summary: Messaging counts + average first-response minutes
@@ -226,7 +270,22 @@ paths:
   /public/v1/whatsapp/send:
     post:
       summary: Send a WhatsApp message from a device (write scope)
+      description: >
+        Dispatches a WHATSAPP_SEND job; returns the jobId to poll via
+        GET /public/v1/jobs/{jobId}. Supports an optional Idempotency-Key header — a
+        retry with the SAME key returns the FIRST job instead of sending twice (the
+        response then also carries idempotentReplay:true).
       security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+          description: >
+            Opt-in dedupe key. The first request with a given key does the send and
+            records its jobId; every replay with the same key returns that jobId
+            without dispatching again. Bound to this endpoint — reusing it on a
+            different endpoint 409s (IDEMPOTENCY_KEY_REUSED).
       requestBody:
         content:
           application/json:
@@ -238,7 +297,67 @@ paths:
                 to: { type: string, description: E.164 number, e.g. 90XXXXXXXXXX }
                 message: { type: string, maxLength: 4096 }
       responses:
-        '200': { description: '{ data: { jobId, status: PENDING } }' }
+        '200': { description: '{ data: { jobId, status: PENDING, idempotentReplay? } }' }
+        '409': { description: 'Idempotency conflict — IDEMPOTENCY_KEY_REUSED or IDEMPOTENCY_IN_PROGRESS' }
+  /public/v1/whatsapp/send/bulk:
+    post:
+      summary: Send many distinct messages in one call (write scope)
+      description: >
+        Up to 100 {deviceId,to,message} items in a single request. Returns one
+        {to,jobId,status} per item (or {to,error,message} for items that failed to
+        dispatch). Counts as one heavy operation. With an Idempotency-Key header the
+        whole batch is deduped per-item (item N maps to a stable per-item key derived
+        from the batch key + index), so a replay returns the SAME per-item jobIds.
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+          description: >
+            Opt-in batch dedupe key. Each item is reserved under "<key>:<index>", so a
+            retry of the same array returns the same per-item jobIds (positional).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [deviceId, to, message]
+                    properties:
+                      deviceId: { type: string }
+                      to: { type: string, description: E.164 number }
+                      message: { type: string, maxLength: 4096 }
+      responses:
+        '200':
+          description: 'Per-item dispatch results'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      count: { type: integer }
+                      results:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            to: { type: string }
+                            jobId: { type: string }
+                            status: { type: string, example: PENDING }
+                            idempotentReplay: { type: boolean }
+                            error: { type: string, description: 'set instead of jobId when the item failed to dispatch' }
+                            message: { type: string }
   /public/v1/whatsapp/broadcast:
     post:
       summary: One-to-many throttled send (write scope)
@@ -686,6 +805,47 @@ components:
             error: { type: string, nullable: true, description: 'Failure reason when FAILED, else null.' }
             createdAt: { type: string, format: date-time }
             updatedAt: { type: string, format: date-time }
+
+    # ── Webhook event catalog ──
+    # The set of events a workspace webhook (created in the dashboard under
+    # Settings › Webhooks, or via the admin API) can subscribe to. A webhook fires a
+    # POST to its URL with a WebhookEnvelope body when a matching event occurs.
+    # Subscribe to a single event or to 'ALL'. Workspace-scoped: an event only reaches
+    # that workspace's hooks. Must stay in sync with the Prisma WebhookEvent enum +
+    # webhooks.controller.WEBHOOK_EVENTS.
+    WebhookEvent:
+      type: string
+      description: >
+        Subscribable webhook events. 'ALL' is a subscribe-to-everything filter, never
+        an emitted event value.
+      enum:
+        - JOB_COMPLETED           # any on-device job finished OK      → { jobId, jobType }
+        - JOB_FAILED              # any on-device job failed           → { jobId, jobType, error }
+        - DEVICE_ONLINE           # a device transitioned to ONLINE    → { deviceId, name }
+        - DEVICE_OFFLINE          # a device went OFFLINE
+        - DEVICE_PROVISIONED      # one-click provision finished       → { deviceId, ipAddress, adbPort, instance }
+        - QUOTA_HIGH              # usage quota threshold crossed
+        - ALERT_FIRED             # an alert rule fired
+        - WHATSAPP_MESSAGE        # inbound WhatsApp message captured   → { deviceId, deviceName, messageId, from, text, ts }
+        - WHATSAPP_SENT           # outbound message left the device    → { deviceId, to, messageId, status:SENT, ts }
+        - WHATSAPP_FAILED         # outbound message failed             → { deviceId, to, status:FAILED, failReason, ts }
+        - WHATSAPP_DELIVERED      # outbound ✓✓ delivered on peer phone → { deviceId, to, messageId, status:DELIVERED, ts }  (agent tick-read is a TODO)
+        - WHATSAPP_READ           # outbound blue-tick read             → { deviceId, to, messageId, status:READ, ts }        (agent tick-read is a TODO)
+        - WHATSAPP_AWAITING_OTP   # registration parked for a code/method → { accountId, deviceId, phoneNumber, status }
+        - WHATSAPP_REGISTERED     # registration reached ACTIVE          → { accountId, deviceId, phoneNumber, status }
+        - WHATSAPP_REGISTER_FAILED# registration failed                  → { accountId, deviceId, phoneNumber, status, error }
+        - ALL                     # subscribe to every event above
+    WebhookEnvelope:
+      type: object
+      description: The JSON body POSTed to a webhook URL when a subscribed event fires.
+      properties:
+        event:
+          $ref: '#/components/schemas/WebhookEvent'
+          description: The concrete event that fired (never 'ALL').
+        firedAt: { type: string, format: date-time }
+        data:
+          type: object
+          description: Event-specific payload (see the per-event shapes on WebhookEvent).
 security:
   - bearerAuth: []
   - apiKeyAuth: []

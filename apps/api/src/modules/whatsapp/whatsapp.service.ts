@@ -16,6 +16,7 @@ import { AppError } from '../../lib/errors';
 import { encryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
+import { webhooksService } from '../webhooks/webhooks.service';
 import { logger } from '../../lib/logger';
 
 // Kept in sync with the dashboard label picker + Telegram chip rendering.
@@ -111,6 +112,79 @@ export async function recordMessage(input: {
       ...(isIn ? { unreadCount: { increment: 1 }, archived: false } : {})
     }
   });
+}
+
+// ── outbound delivery receipts (✓✓ delivered / blue-tick read) ───────────────
+
+// Monotonic ordering of an outbound message's delivery state. A receipt may only
+// ADVANCE the status (SENT → DELIVERED → READ); a late/stale DELIVERED must never
+// pull a message that's already READ back down.
+const OUT_STATUS_RANK: Record<string, number> = { QUEUED: 0, SENT: 1, DELIVERED: 2, READ: 3, FAILED: -1 };
+
+// Advance the delivery state of the most recent matching OUT message in a thread
+// (and denormalise it onto the conversation's list tick), then fire the matching
+// webhook so external integrations learn a sent message was delivered/read on the
+// peer's phone. Idempotent + monotonic: re-applying the same or an older receipt is
+// a no-op. Returns whether anything actually advanced.
+//
+// ⚠️ AGENT SIDE IS NOT WIRED YET. This is the API + webhook half of the receipt
+// feature. The host agent must, on a WHATSAPP_SEND (or a periodic sweep), read the
+// tick glyph off the sent bubble (single ✓ = SENT, double ✓✓ = DELIVERED, blue =
+// READ) and POST it to /agent/whatsapp/receipt → agentService.recordWhatsappReceipt
+// → here. TODO(agent): implement the on-device tick read; until then no receipt
+// events fire and OUT messages stay 'SENT' (today's behaviour, unchanged).
+export async function advanceOutboundReceipt(input: {
+  deviceId: string;
+  workspaceId: string | null;
+  peer: string;
+  status: 'DELIVERED' | 'READ';
+  // Optional: target a specific message id; otherwise the newest OUT row in the thread.
+  messageId?: string | undefined;
+  at?: Date | undefined;
+}): Promise<{ advanced: boolean; messageId: string | null }> {
+  const peer = normalizePeer(input.peer);
+  const at = input.at ?? new Date();
+  const nextRank = OUT_STATUS_RANK[input.status] ?? 0;
+
+  // Find the target OUT message (specific id, or the newest OUT in the thread).
+  const msg = input.messageId
+    ? await prisma.whatsappMessage.findFirst({
+        where: { id: input.messageId, deviceId: input.deviceId, direction: 'OUT' },
+        select: { id: true, status: true, peer: true }
+      })
+    : await prisma.whatsappMessage.findFirst({
+        where: { deviceId: input.deviceId, peer, direction: 'OUT' },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, status: true, peer: true }
+      });
+  if (!msg) return { advanced: false, messageId: null };
+
+  // Monotonic: never downgrade (DELIVERED after READ, or any receipt on a FAILED row).
+  const curRank = OUT_STATUS_RANK[msg.status] ?? 0;
+  if (curRank < 0 || nextRank <= curRank) return { advanced: false, messageId: msg.id };
+
+  await prisma.whatsappMessage
+    .update({ where: { id: msg.id }, data: { status: input.status, statusAt: at } })
+    .catch(() => undefined);
+
+  // Denormalise onto the thread's list tick ONLY when this is still the last message
+  // (a newer send may have superseded it). Best-effort.
+  await prisma.whatsappConversation
+    .updateMany({
+      where: { deviceId: input.deviceId, peer, lastDirection: 'OUT' },
+      data: { lastStatus: input.status }
+    })
+    .catch(() => undefined);
+
+  // Webhook fan-out (WHATSAPP_DELIVERED / WHATSAPP_READ). webhooks.service does not
+  // import whatsapp.service, so a static import is cycle-free.
+  void webhooksService.dispatch(
+    input.status === 'READ' ? 'WHATSAPP_READ' : 'WHATSAPP_DELIVERED',
+    { deviceId: input.deviceId, to: peer, messageId: msg.id, status: input.status, ts: at.toISOString() },
+    input.workspaceId ?? undefined
+  );
+
+  return { advanced: true, messageId: msg.id };
 }
 
 // ── conversation list ───────────────────────────────────────────────────────
@@ -709,6 +783,7 @@ export async function listBroadcasts(
 
 export const whatsappService = {
   recordMessage,
+  advanceOutboundReceipt,
   listConversations,
   unreadTotal,
   getThreadMessages,

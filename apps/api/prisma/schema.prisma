@@ -60,6 +60,10 @@ enum JobType {
   WHATSAPP_DELETE_MSG
   // Clear all messages in a chat.
   WHATSAPP_CLEAR_CHAT
+  // Send a Telegram message from a device via the tg:// deep link + Send tap.
+  TELEGRAM_SEND
+  // Register a NEW Telegram account on a device (mirrors REGISTER_WHATSAPP).
+  TELEGRAM_REGISTER
   APP_EXPLORE
   AGENT_RUN
   APPLY_FINGERPRINT
@@ -359,6 +363,28 @@ model ApiKey {
   user         User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
+}
+
+// Idempotency-Key store for the public API's on-device write endpoints (send /
+// bulk-send). A first request carrying an `Idempotency-Key` header records the
+// resulting jobId here; a replay with the SAME key returns that stored jobId
+// instead of dispatching a second device job. The (workspaceId, key) unique index
+// is the concurrency chokepoint — a racing replay loses the INSERT and reads the
+// winner's jobId back. Keys are short-lived (swept on a TTL).
+model IdempotencyKey {
+  id          String   @id @default(cuid())
+  workspaceId String
+  key         String
+  // The endpoint/scope this key was first bound to (e.g. "whatsapp.send"). Replaying
+  // the same key against a DIFFERENT endpoint is a misuse and is rejected.
+  scope       String
+  // The job this key produced. Set once the job row exists; poll it via
+  // GET /public/v1/jobs/{jobId}.
+  jobId       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([workspaceId, key])
+  @@index([createdAt])
 }
 
 model Emulator {
@@ -1074,6 +1100,11 @@ enum WebhookEvent {
   WHATSAPP_REGISTERED
   WHATSAPP_REGISTER_FAILED
   DEVICE_PROVISIONED
+  // Outbound delivery receipts: DELIVERED = double-tick (reached the peer's phone),
+  // READ = blue-tick. Fired when the agent reads the tick state off a sent bubble
+  // and advances the message status (see whatsapp.service.advanceOutboundReceipt).
+  WHATSAPP_DELIVERED
+  WHATSAPP_READ
   ALL
 }
 

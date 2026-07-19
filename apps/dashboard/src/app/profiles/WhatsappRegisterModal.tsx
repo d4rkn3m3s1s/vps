@@ -118,6 +118,25 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     if (e.deviceId !== deviceId) return;
     const p = e.payload as WaProgress | undefined;
     if (!p || p.accountId !== accountId) return;
+    const pn = p.note ?? '';
+    // A heartbeat frame ('🎥 canlı') is a ~5s live-thumbnail tick, NOT a state change.
+    // Update ONLY the live screenshot — never let it overwrite `current`.
+    if (pn === '🎥 canlı') {
+      if (p.shot) setShot(p.shot);
+      return;
+    }
+    // ★FIX: a '📸 <label>' frame is a screenshot snapshot (snap()), NOT a state change
+    // either. It was OVERWRITING `current` — so a '📸 choose_verify' frame arriving right
+    // after the "🔀 Doğrulama yöntemi seçin" prompt clobbered the note → isMethodSelect
+    // flipped false → the method-select BUTTONS vanished and the operator couldn't pick
+    // (exact bug reported live). Treat it like a heartbeat: refresh the screenshot + log
+    // it, but do NOT replace `current`/its parked-state note.
+    if (pn.startsWith('📸')) {
+      if (p.shot) setShot(p.shot);
+      const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: pn };
+      setLogs((prev) => [...prev, line]);
+      return;
+    }
     setCurrent(p);
     if (p.shot) setShot(p.shot);
     // First live event we ever see also anchors the clock (covers a brand-new run
@@ -142,13 +161,21 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // it's rate-limited ("(kısıtlı — 24 hours)"). We detect that note and, instead of the
   // OTP code box, show tappable method buttons.
   const isMethodSelect = !done && !failed && current.step === 'otp_wait' && /Doğrulama yöntemi seçin/i.test(otpNote);
-  // Parse the option list out of the note so we can disable rate-limited ones.
+  // Parse the option list out of the note so we can disable rate-limited ones. The agent
+  // emits the note listing WHICHEVER options WhatsApp's sheet showed, in Turkish labels:
+  // "🔀 Doğrulama yöntemi seçin: Diğer cihaz · Missed call · Receive SMS · Voice call".
+  // ★FIX: (1) add 'other_device' (was missing → when the sheet only offered "Diğer cihaz"
+  // + others, that option never rendered and the modal could look empty); (2) match BOTH
+  // the Turkish label the agent prints AND the English WhatsApp row name, so a note in
+  // either form is parsed. Each option becomes a tappable button.
   const methodOptions = useMemo(() => {
-    if (!isMethodSelect) return [] as { kind: 'sms' | 'voice' | 'missed_call'; label: string; locked: boolean; wait: string | null }[];
-    const defs: { kind: 'sms' | 'voice' | 'missed_call'; label: string; re: RegExp }[] = [
-      { kind: 'sms', label: 'SMS ile kod', re: /Receive SMS/i },
-      { kind: 'voice', label: 'Sesli arama', re: /Voice call/i },
-      { kind: 'missed_call', label: 'Cevapsız çağrı', re: /Missed call/i }
+    type Kind = 'sms' | 'voice' | 'missed_call' | 'other_device';
+    if (!isMethodSelect) return [] as { kind: Kind; label: string; locked: boolean; wait: string | null }[];
+    const defs: { kind: Kind; label: string; re: RegExp }[] = [
+      { kind: 'sms', label: 'SMS ile kod', re: /Receive SMS|SMS ile kod/i },
+      { kind: 'voice', label: 'Sesli arama', re: /Voice call|Sesli arama/i },
+      { kind: 'missed_call', label: 'Cevapsız çağrı', re: /Missed call|Cevapsız çağrı/i },
+      { kind: 'other_device', label: 'Diğer cihaz', re: /Other device|Diğer cihaz/i }
     ];
     return defs
       .filter((d) => d.re.test(otpNote))
@@ -262,7 +289,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
   // Operator picked a verification method (SMS / Voice / Missed call). Re-dispatch so
   // the agent selects that row on the sheet and continues.
-  async function submitMethod(kind: 'sms' | 'voice' | 'missed_call') {
+  async function submitMethod(kind: 'sms' | 'voice' | 'missed_call' | 'other_device') {
     if (otpBusy) return;
     setOtpBusy(true);
     setOtpMsg(null);

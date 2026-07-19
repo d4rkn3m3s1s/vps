@@ -127,7 +127,9 @@ const JOB_TYPE_LABEL: Record<string, string> = {
   REGISTER_INSTAGRAM: 'Instagram kaydı',
   REGISTER_WHATSAPP: 'WhatsApp kaydı',
   WHATSAPP_SEND: 'WhatsApp gönder',
-  WHATSAPP_READ: 'WhatsApp oku'
+  WHATSAPP_READ: 'WhatsApp oku',
+  TELEGRAM_SEND: 'Telegram gönder',
+  TELEGRAM_REGISTER: 'Telegram kaydı'
 };
 
 function statusDot(status: string): string {

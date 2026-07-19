@@ -133,6 +133,10 @@ export type DeviceProfile = {
   tags?: string[];
   proxyId?: string | null;
   protected?: boolean; // device is lock-protected (delete/reset/restore rejected)
+  // ★DATA-LOSS GUARD: device already holds a live WhatsApp account (a new registration
+  // would pm-clear/wipe it). Populated by the list API from an ACTIVE whatsapp account.
+  hasActiveWhatsapp?: boolean;
+  activeWhatsappPhone?: string | null;
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
@@ -327,6 +331,12 @@ export function ProfilesView({
   // screen and stops (operator enters the SMS code on the /whatsapp page).
   const [waOpen, setWaOpen] = useState<DeviceProfile | null>(null);
   const [waPhone, setWaPhone] = useState('');
+  // Optional operator-chosen profile name. Left blank → the backend auto-generates a
+  // random identity name (previous behavior). Filled → the agent types exactly this.
+  const [waName, setWaName] = useState('');
+  // ★DATA-LOSS GUARD: when the device already has a live WhatsApp account, the operator
+  // must tick this to confirm they understand a new registration WIPES it.
+  const [waOverwriteOk, setWaOverwriteOk] = useState(false);
   const [waBusy, setWaBusy] = useState(false);
   const [waMsg, setWaMsg] = useState<string | null>(null);
   // Live WhatsApp-registration panel (opens after "Başlat"), like `provisioning`.
@@ -706,10 +716,15 @@ export function ProfilesView({
     setWaBusy(true);
     setWaMsg(null);
     try {
+      const nm = waName.trim();
       const res = await fetch('/api/accounts/whatsapp/register', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ deviceId: waOpen.id, phoneNumber: num })
+        // Only send fullName when the operator typed one — omitting it keeps the
+        // backend's auto-generate behavior. force:true only when the device already has a
+        // live WA account AND the operator ticked the overwrite warning (the API blocks
+        // otherwise with 409 DEVICE_HAS_ACTIVE_WHATSAPP).
+        body: JSON.stringify({ deviceId: waOpen.id, phoneNumber: num, ...(nm ? { fullName: nm } : {}), ...(waOpen.hasActiveWhatsapp && waOverwriteOk ? { force: true } : {}) })
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -730,10 +745,12 @@ export function ProfilesView({
         });
         setWaOpen(null);
         setWaPhone('');
+        setWaName('');
+        setWaOverwriteOk(false);
         setWaMsg(null);
       } else {
         setWaMsg('Kayıt başladı ama panel açılamadı — WhatsApp sayfasından takip edin.');
-        setTimeout(() => { setWaOpen(null); setWaPhone(''); setWaMsg(null); }, 3500);
+        setTimeout(() => { setWaOpen(null); setWaPhone(''); setWaName(''); setWaMsg(null); }, 3500);
       }
     } catch {
       setWaMsg('WhatsApp kaydı başlatılamadı (ağ hatası)');
@@ -1736,6 +1753,25 @@ export function ProfilesView({
               Bu cihazda otonom WhatsApp kaydı başlar. Ajan numara ekranına kadar kendisi ilerler ve
               SMS kodu ekranında durur — kodu WhatsApp sayfasından girersiniz.
             </p>
+            {/* ★DATA-LOSS GUARD: this device already holds a live WhatsApp account. A new
+                registration factory-resets WhatsApp (pm clear) and WIPES it. Warn loudly and
+                require an explicit tick before the start button is enabled. */}
+            {waOpen.hasActiveWhatsapp ? (
+              <div style={{ border: '1px solid rgba(248,113,113,0.5)', background: 'rgba(248,113,113,0.08)', borderRadius: 8, padding: '10px 12px', marginBottom: 12 }}>
+                <p style={{ margin: 0, color: '#f87171', fontWeight: 600, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertTriangle size={15} /> Bu cihazda zaten aktif bir WhatsApp hesabı var
+                  {waOpen.activeWhatsappPhone ? ` (${waOpen.activeWhatsappPhone})` : ''}
+                </p>
+                <p style={{ margin: '6px 0 8px', fontSize: 12, opacity: 0.85 }}>
+                  Yeni kayıt WhatsApp&apos;ı sıfırlar ve mevcut hesabı <b>KALICI olarak siler</b>. Başka bir boş cihaz
+                  kullanmayı düşünün. Yine de bu cihaza kaydetmek istiyorsanız aşağıyı onaylayın.
+                </p>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={waOverwriteOk} onChange={(e) => setWaOverwriteOk(e.target.checked)} />
+                  Mevcut hesabın silineceğini anlıyorum, yine de devam et
+                </label>
+              </div>
+            ) : null}
             <label className="field">
               <span>Telefon numarası (ülke kodu dahil)</span>
               <input
@@ -1747,6 +1783,16 @@ export function ProfilesView({
                 onChange={(e) => setWaPhone(e.target.value)}
               />
             </label>
+            <label className="field">
+              <span>Profil ismi (opsiyonel)</span>
+              <input
+                className="field-input"
+                type="text"
+                placeholder="Boş bırakılırsa rastgele isim üretilir"
+                value={waName}
+                onChange={(e) => setWaName(e.target.value)}
+              />
+            </label>
             <p className="helper" style={{ opacity: 0.7 }}>
               ⚠️ Numaranın ülkesi ile cihazın proxy çıkış ülkesi AYNI olmalı (yoksa WhatsApp
               &quot;Login not available&quot; verir). Cihaza doğru ülkenin proxy&apos;sini atadığınızdan emin olun.
@@ -1756,8 +1802,13 @@ export function ProfilesView({
               <button type="button" className="btn-ghost" disabled={waBusy} onClick={() => setWaOpen(null)}>
                 İptal
               </button>
-              <button type="button" className="btn-primary" disabled={waBusy || !waPhone.trim()} onClick={startWhatsapp}>
-                <MessageCircle size={14} /> {waBusy ? 'Başlatılıyor…' : 'WhatsApp kaydını başlat'}
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={waBusy || !waPhone.trim() || (waOpen.hasActiveWhatsapp && !waOverwriteOk)}
+                onClick={startWhatsapp}
+              >
+                <MessageCircle size={14} /> {waBusy ? 'Başlatılıyor…' : waOpen.hasActiveWhatsapp ? 'Mevcut hesabı sil ve kaydet' : 'WhatsApp kaydını başlat'}
               </button>
             </footer>
           </div>

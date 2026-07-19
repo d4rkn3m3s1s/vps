@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, meHandler } from './public.controller';
+import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, meHandler } from './public.controller';
 import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
@@ -19,6 +19,8 @@ publicRouter.get('/v1/whatsapp/messages', asyncHandler(messagesHandler));
 // WhatsApp-Web-style chat list + per-thread history for external integrations.
 publicRouter.get('/v1/whatsapp/conversations', asyncHandler(conversationsHandler));
 publicRouter.get('/v1/whatsapp/thread', asyncHandler(threadHandler));
+// Mark a thread read (clear its unread badge) — write scope, rate-limited.
+publicRouter.post('/v1/whatsapp/thread/read', apiRateLimiter, asyncHandler(markReadHandler));
 publicRouter.get('/v1/whatsapp/stats', asyncHandler(statsHandler));
 // Categories (labels): read + create + assign to a chat, and chat state.
 publicRouter.get('/v1/whatsapp/labels', asyncHandler(labelsHandler));

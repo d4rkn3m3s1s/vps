@@ -1,21 +1,24 @@
-#!/bin/sh -
-# net-head.sh <instance> — deterministic subnet id for a Waydroid instance.
-#
-# Waydroid multi-instance (PR #1990) derives a per-instance /24 from the
-# instance name so isolated instances never collide on the network. This is
-# the SAME formula waydroid's own net-head uses: md5(name) -> 192.168.<241..256>.x.
-# The default (unnamed) instance keeps 192.168.240.x.
-#
-# Prints ONLY the third octet (241..256, or 240 for the default) on stdout so
-# callers can do:  SUBNET_ID=$(sh net-head.sh mi4)  ->  "255".
+#!/bin/bash
+# net-head.sh <instance> — çakışmasız sıralı subnet (2..239). Bash, flock ile atomik.
 set -u
-
+MAP=/var/lib/waydroid-subnets.map
 INSTANCE="${1:-}"
-if [ -z "$INSTANCE" ]; then
-    echo 240
-    exit 0
-fi
+[ -z "$INSTANCE" ] && { echo 240; exit 0; }
+mkdir -p "$(dirname "$MAP")"; touch "$MAP"
 
-MD5HASH=$(printf '%s' "$INSTANCE" | md5sum | cut -d ' ' -f1)
-AS_DECIMAL=$(printf '%d' "0x$(printf '%s' "$MD5HASH" | cut -c1-8)")
-echo $((AS_DECIMAL % 16 + 241))
+# atomik lock (mkdir tabanlı, flock bağımsız)
+LOCKD=/var/lib/waydroid-subnets.lock
+i=0; while ! mkdir "$LOCKD" 2>/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; sleep 0.1; done
+trap 'rmdir "$LOCKD" 2>/dev/null' EXIT
+
+EXIST=$(awk -v n="$INSTANCE" '$1==n{print $2; exit}' "$MAP")
+if [ -n "$EXIST" ]; then echo "$EXIST"; exit 0; fi
+
+S=2
+while [ "$S" -le 239 ]; do
+  awk -v s="$S" '$2==s{f=1} END{exit !f}' "$MAP" || break
+  S=$((S+1))
+done
+[ "$S" -gt 239 ] && { echo "240"; exit 0; }
+printf '%s %s\n' "$INSTANCE" "$S" >> "$MAP"
+echo "$S"

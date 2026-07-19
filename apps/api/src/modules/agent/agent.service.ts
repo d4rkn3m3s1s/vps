@@ -191,8 +191,18 @@ export class AgentService {
         const outAt = new Date();
         const ok = outcome.status === 'COMPLETED' && res.status === 'SENT';
         const status = ok ? 'SENT' : 'FAILED';
-        const failReason = ok ? null : (res.status || outcome.error || 'SEND_FAILED');
-        void prisma.whatsappMessage
+        // Prefer the agent's human-readable Turkish `note` (e.g. "Bu WhatsApp hesabı
+        // incelemede…") over the bare status code so the operator sees WHY it failed —
+        // both in the chat thread's fail tag and the Telegram/notification below.
+        const statusCode = res.status || outcome.error || 'SEND_FAILED';
+        const failReason = ok
+          ? null
+          : (res.note ? `${res.note} (${statusCode})` : String(statusCode));
+        // Await the row create so we can carry its id on the webhook (lets an
+        // integrator correlate the SENT event — and any later DELIVERED/READ receipt
+        // — with the exact message). Best-effort: a failed create leaves messageId
+        // undefined but never blocks the rest of the fan-out.
+        const outMsg = await prisma.whatsappMessage
           .create({
             data: {
               deviceId: pl.deviceId,
@@ -205,9 +215,10 @@ export class AgentService {
               statusAt: outAt,
               ...(failReason ? { failReason: String(failReason).slice(0, 200) } : {}),
               waTimestamp: outAt
-            }
+            },
+            select: { id: true }
           })
-          .catch(() => undefined);
+          .catch(() => null);
         // Upsert the conversation thread with the outbound status (list tick).
         void whatsappService
           .recordMessage({
@@ -223,7 +234,7 @@ export class AgentService {
         // Webhook fan-out for external integrations (send outcome).
         void webhooksService.dispatch(
           ok ? 'WHATSAPP_SENT' : 'WHATSAPP_FAILED',
-          { deviceId: pl.deviceId, to: outPeer, status, ...(failReason ? { failReason: String(failReason) } : {}), ts: outAt.toISOString() },
+          { deviceId: pl.deviceId, to: outPeer, status, ...(outMsg ? { messageId: outMsg.id } : {}), ...(failReason ? { failReason: String(failReason) } : {}), ts: outAt.toISOString() },
           updated.workspaceId ?? undefined
         );
         // Update the parent broadcast's counters if this send belonged to one. These
@@ -235,6 +246,33 @@ export class AgentService {
             .update({
               where: { id: pl.broadcastId },
               data: ok ? { sentCount: { increment: 1 } } : { failCount: { increment: 1 } }
+            })
+            .catch(() => undefined);
+        }
+        // Notify the operator (Telegram/Slack/Discord) about STANDALONE send outcomes.
+        // Failures ALWAYS notify (with the exact reason: account-review / banned /
+        // invalid / not-sent) so nothing is missed. Successes notify only when
+        // FLEET_NOTIFY_SEND_OK=1 — the operator asked for a per-message "gönderildi ✅"
+        // ping during load-testing, but a 1000-recipient blast would spam the channel,
+        // so it's opt-in and skipped for broadcasts. Toggle off after testing.
+        const notifyOk = process.env.FLEET_NOTIFY_SEND_OK === '1';
+        if (!pl.broadcastId && (!ok || notifyOk)) {
+          // `updated` is fetched without the device relation, so look up the name
+          // separately (only when we're actually going to notify — cheap, keyed on id).
+          const dev = await prisma.device.findUnique({ where: { id: pl.deviceId }, select: { name: true } }).catch(() => null);
+          const devName = dev?.name;
+          const title = ok
+            ? `✅ WhatsApp gönderildi — ${outPeer}`
+            : `⚠️ WhatsApp gönderilemedi — ${outPeer}`;
+          void notificationsService
+            .dispatch(updated.workspaceId ?? '', {
+              title,
+              detail: [
+                ok ? '✅ Gönderildi' : `❌ ${failReason ?? statusCode}`,
+                `📞 Alıcı: ${outPeer}`,
+                devName ? `📱 Cihaz: ${devName}` : '',
+                `💬 ${outBody.slice(0, 200)}`
+              ].filter(Boolean).join('\n').slice(0, 900)
             })
             .catch(() => undefined);
         }
@@ -839,16 +877,49 @@ export class AgentService {
     );
     if (!device) return { stored: false };
 
-    const waTimestamp = input.ts && input.ts > 0 ? new Date(input.ts) : new Date();
+    // The agent sends `ts`: for notification-path messages it's WhatsApp's own
+    // `when=` (the message's REAL arrival time, ms-precise AND stable across agent
+    // restarts); for foreground-scrape messages the agent has no timestamp so it
+    // sends Date.now() (which differs every push/restart). We distinguish the two:
+    // a "real" ts is used ms-precise in the dedup key (restart-proof + lets two
+    // distinct same-text replies in the same minute keep separate keys); a
+    // scrape/now ts falls back to the old minute-bucket (best we can do without a
+    // real message time). This fixes the load-test bug where every agent restart
+    // re-pushed the same old notifications as "new" (minute-bucket drifted each time).
+    const hasRealTs = Boolean(input.ts && input.ts > 0);
+    const waTimestamp = hasRealTs ? new Date(input.ts as number) : new Date();
     // Keep the plaintext body for the live fan-out (WS/webhook/notification) but
     // store the message body AES-256-GCM encrypted at rest.
     const plainBody = input.text.slice(0, 4096);
     // Canonical peer so an inbound "+90 546…" and an outbound "905…" share ONE thread.
     const peer = normalizePeer(input.from);
-    // Idempotency key: a duplicate agent push (retry/restart re-scrape of the same
-    // notification) collides on the unique index and is skipped, so unread never
-    // double-counts. Bucketed to the minute so near-identical timestamps still dedup.
-    const dedupeKey = sha256(`${device.id}|${peer}|${plainBody}|${Math.floor(waTimestamp.getTime() / 60000)}`);
+    // Idempotency key: a duplicate agent push collides on the unique index and is
+    // skipped, so unread never double-counts. Real ts → ms-precise (stable); scrape
+    // ts → minute-bucket (near-identical timestamps still dedup within the minute).
+    const dedupeStamp = hasRealTs ? String(waTimestamp.getTime()) : `m${Math.floor(waTimestamp.getTime() / 60000)}`;
+    const dedupeKey = sha256(`${device.id}|${peer}|${plainBody}|${dedupeStamp}`);
+
+    // Safety net independent of the timestamp: if this EXACT (device, peer, text)
+    // was already stored very recently, skip it. WhatsApp's `when=` can occasionally
+    // drift and the agent's in-memory seen-set resets on every restart — during load
+    // testing that re-pushed the same old notification repeatedly. A short recency
+    // guard collapses those without blocking a genuine repeat (a real user re-sending
+    // "ok" 30s+ later still lands, since we only look back a few seconds).
+    const RECENT_DUP_MS = 8000;
+    const recentDup = await prisma.whatsappMessage.findFirst({
+      where: {
+        deviceId: device.id,
+        peer,
+        direction: 'IN',
+        createdAt: { gte: new Date(Date.now() - RECENT_DUP_MS) }
+      },
+      select: { id: true, body: true }
+    }).catch(() => null);
+    if (recentDup) {
+      // Body is encrypted; compare by decrypting the small recent candidate.
+      const prevPlain = (() => { try { return decryptString(recentDup.body); } catch { return ''; } })();
+      if (prevPlain === plainBody) return { stored: false };
+    }
 
     let msg;
     try {
@@ -894,10 +965,12 @@ export class AgentService {
       workspaceId: device.workspaceId ?? undefined
     });
 
-    // Webhook fan-out for external integrations.
+    // Webhook fan-out for external integrations. Carry the stored messageId so an
+    // integrator can correlate the webhook with GET /whatsapp/thread rows and
+    // dedupe on it (previously the payload had no stable id to key on).
     void webhooksService.dispatch(
       'WHATSAPP_MESSAGE',
-      { deviceId: device.id, deviceName: device.name, from: msg.peer, text: plainBody, ts: msg.waTimestamp.toISOString() },
+      { deviceId: device.id, deviceName: device.name, messageId: msg.id, from: msg.peer, text: plainBody, ts: msg.waTimestamp.toISOString() },
       device.workspaceId ?? undefined
     );
 
@@ -921,6 +994,39 @@ export class AgentService {
       .catch(() => undefined);
 
     return { stored: true, id: msg.id };
+  }
+
+  // Record an outbound delivery receipt the agent read off a sent bubble's tick
+  // glyph (✓✓ = DELIVERED, blue = READ). Resolves the device by ADB serial among
+  // this host's devices (same mapping as inboundWhatsapp/updateDeviceMetrics), then
+  // advances the message status + fires the WHATSAPP_DELIVERED/WHATSAPP_READ webhook
+  // via whatsappService.advanceOutboundReceipt (monotonic + idempotent).
+  //
+  // ⚠️ AGENT SIDE NOT WIRED YET. This is the API endpoint the agent will call once
+  // it can read tick state on-device; see advanceOutboundReceipt's TODO(agent). The
+  // route (/agent/whatsapp/receipt) + this handler exist so the webhook/enum half is
+  // deployable now and only the on-device tick read remains.
+  async recordWhatsappReceipt(
+    host: Host,
+    input: { serial: string; to: string; status: 'DELIVERED' | 'READ'; messageId?: string | undefined; ts?: number | undefined }
+  ): Promise<{ advanced: boolean; messageId: string | null }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true }
+    });
+    const device = devices.find(
+      (d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial
+    );
+    if (!device) return { advanced: false, messageId: null };
+
+    return whatsappService.advanceOutboundReceipt({
+      deviceId: device.id,
+      workspaceId: device.workspaceId ?? null,
+      peer: input.to,
+      status: input.status,
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+      ...(input.ts && input.ts > 0 ? { at: new Date(input.ts) } : {})
+    });
   }
 
   // Decrypt any secret fields so the agent receives ready-to-use values. The

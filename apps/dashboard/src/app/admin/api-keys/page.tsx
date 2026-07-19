@@ -819,9 +819,15 @@ export default function ApiKeysPage() {
           <div className="api-doc-block">
             <p className="helper api-doc-desc">Sürekli sorgulamak yerine, <strong>Webhooks</strong> sayfasından olaylara abone olun; her olay kendi URL’nize POST edilir. Desteklenen WhatsApp olayları:</p>
             <ul className="api-doc-params">
-              <li><code className="mono">WHATSAPP_MESSAGE</code> — yeni <strong>gelen</strong> mesaj</li>
-              <li><code className="mono">WHATSAPP_SENT</code> — <strong>giden</strong> mesaj cihazda gönderildi</li>
+              <li><code className="mono">WHATSAPP_MESSAGE</code> — yeni <strong>gelen</strong> mesaj (<code className="mono">messageId</code> ile)</li>
+              <li><code className="mono">WHATSAPP_SENT</code> — <strong>giden</strong> mesaj cihazda gönderildi (<code className="mono">messageId</code> ile)</li>
               <li><code className="mono">WHATSAPP_FAILED</code> — giden mesaj gönderilemedi (<code className="mono">failReason</code> ile)</li>
+              <li><code className="mono">WHATSAPP_DELIVERED</code> — giden mesaj karşı telefona ulaştı (✓✓) <span className="helper">(agent tik-okuma yakında)</span></li>
+              <li><code className="mono">WHATSAPP_READ</code> — giden mesaj okundu (mavi tik) <span className="helper">(agent tik-okuma yakında)</span></li>
+              <li><code className="mono">WHATSAPP_AWAITING_OTP</code> — kayıt kod/yöntem bekliyor</li>
+              <li><code className="mono">WHATSAPP_REGISTERED</code> — kayıt tamamlandı (ACTIVE)</li>
+              <li><code className="mono">WHATSAPP_REGISTER_FAILED</code> — kayıt başarısız</li>
+              <li><code className="mono">DEVICE_PROVISIONED</code> — tek-tık cihaz kurulumu bitti</li>
             </ul>
             <CodeBlock code={`POST https://sizin-sunucunuz.com/webhook\ncontent-type: application/json\n\n{\n  "event": "WHATSAPP_MESSAGE",\n  "data": {\n    "deviceId": "cmr3r9l8s00dwj5rsh1zi8wml",\n    "direction": "IN",\n    "peer": "905551112233",\n    "body": "gelen mesaj metni",\n    "waTimestamp": "2026-07-05T14:09:23.445Z"\n  }\n}`} />
           </div>

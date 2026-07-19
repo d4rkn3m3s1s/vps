@@ -27,6 +27,7 @@ import {
   registerAccountHandler,
   sendWhatsAppHandler,
   sendWhatsAppFromDeviceHandler,
+  sendTelegramFromDeviceHandler,
   readWhatsAppHandler,
   listWhatsAppMessagesHandler,
   fetchWhatsAppProfileHandler,
@@ -95,6 +96,10 @@ accountsRouter.get('/whatsapp/messages', requireApiKey, authenticateJwt, asyncHa
 // fast a caller can queue them, so a runaway loop can't flood the PENDING queue.
 // Send a WhatsApp message directly from a device (WhatsApp page).
 accountsRouter.post('/whatsapp/send', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppFromDeviceHandler));
+
+// Send a Telegram message directly from a device (Telegram page). Same guards/rate
+// limit as WhatsApp send; dispatches TELEGRAM_SEND (agent runtime-detects the pkg).
+accountsRouter.post('/telegram/send', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendTelegramFromDeviceHandler));
 
 // Fetch a contact's WhatsApp profile (avatar + name/about), device-scoped.
 accountsRouter.post('/whatsapp/profile', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(fetchWhatsAppProfileHandler));

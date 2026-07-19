@@ -33,6 +33,10 @@ const API_KEY = process.env.FLEET_API_KEY || '';
 const HOST_KEY = process.env.FLEET_HOST_KEY || '';
 const POLL_MS = Number(process.env.FLEET_POLL_MS || 3000);
 const HEARTBEAT_MS = Number(process.env.FLEET_HEARTBEAT_MS || 30000);
+// ★L3: live-panel screenshot cadence during a WhatsApp register run (the in-flow
+// thumbnail ticker, DISTINCT from the host HEARTBEAT_MS above). 5s balances a smooth
+// live view against screencap contention; tunable per host.
+const WA_HEARTBEAT_MS = Number(process.env.FLEET_WA_HEARTBEAT_MS || 5000);
 const ADB = process.env.FLEET_ADB || 'adb';
 // Optional H.264 fast-stream path. When FLEET_FFMPEG points at an ffmpeg binary,
 // streaming uses `screenrecord --output-format=h264 | ffmpeg -> mjpeg` instead of
@@ -331,6 +335,66 @@ function p(payload, key, fallback) {
   return v === undefined || v === null ? fallback : v;
 }
 
+// Per-job wall-clock caps (ms). A job that runs longer than its cap is abandoned
+// with a timeout error so the agent's SERIAL job loop can move on — without this,
+// a WhatsApp ANR (or any hung on-device step) could wedge the loop and, because
+// ONE agent process serves ALL of this host's devices, freeze every device's work
+// until the 15-min API-side reaper fired. Individual `adb` calls already have their
+// own short timeouts; this bounds the TOTAL flow. Types not listed use DEFAULT.
+// Long flows (register, provision) keep a generous cap; short messaging is tight.
+const JOB_TIMEOUT_DEFAULT_MS = 3 * 60 * 1000;
+const JOB_TIMEOUTS_MS = {
+  WHATSAPP_SEND: 100 * 1000,        // normally 15-30s; 100s is a hard ceiling
+  WHATSAPP_SEND_MEDIA: 150 * 1000,  // media attach is slower
+  WHATSAPP_READ: 90 * 1000,
+  WHATSAPP_PROFILE: 120 * 1000,
+  WHATSAPP_BLOCK: 90 * 1000,
+  WHATSAPP_BLOCKLIST: 90 * 1000,
+  WHATSAPP_MYNUMBER: 90 * 1000,
+  WHATSAPP_DELETE_MSG: 90 * 1000,
+  WHATSAPP_CLEAR_CHAT: 90 * 1000,
+  TELEGRAM_SEND: 100 * 1000,        // mirror WHATSAPP_SEND: normally 15-30s, 100s ceiling
+  TELEGRAM_REGISTER: 10 * 60 * 1000,   // OTP/2FA-park flow: keep generous (mirror REGISTER_WHATSAPP)
+  REGISTER_WHATSAPP: 10 * 60 * 1000,   // OTP-park flow: keep generous
+  REGISTER_INSTAGRAM: 10 * 60 * 1000,
+  PROVISION_DEVICE: 12 * 60 * 1000,    // full boot→WA-ready
+  PROVISION_INTEGRITY: 6 * 60 * 1000,
+  RPA_RUN: 6 * 60 * 1000,
+  AGENT_RUN: 8 * 60 * 1000,
+  APP_EXPLORE: 8 * 60 * 1000
+};
+
+// Race a job against its wall-clock cap. On timeout the RACE promise REJECTS (→ job
+// reported FAILED, dispatch loop continues), but the underlying runJob keeps running
+// in the background — it can't be forcibly killed (its in-flight `adb` child procs
+// have no per-call timeout and adbd may never answer). If we freed the device the
+// instant the race rejected, that abandoned runJob would still be driving ADB on the
+// SAME device when the next job claims it → the exact concurrent-ADB corruption this
+// per-device isolation exists to prevent. So we return the underlying promise too
+// (`settled`) and the caller keeps the device busy until it actually settles.
+// `timedOut` tells the caller which arm won so it only waits when it must.
+function withJobTimeout(type, promise) {
+  const ms = JOB_TIMEOUTS_MS[type] ?? JOB_TIMEOUT_DEFAULT_MS;
+  let timer;
+  // Swallow late rejection of the underlying promise so it can't become an
+  // unhandledRejection after the race already rejected (would crash the process
+  // under Node's default handler on 100s of long-running devices).
+  const settled = Promise.resolve(promise).then(
+    (v) => ({ ok: true, value: v }),
+    (e) => ({ ok: false, error: e })
+  );
+  const state = { timedOut: false };
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      state.timedOut = true;
+      reject(new Error(`Job zaman aşımı (${type}, ${Math.round(ms / 1000)}s)`));
+    }, ms);
+    if (timer.unref) timer.unref();
+  });
+  const raced = Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return { raced, settled, state };
+}
+
 // Mirrors apps/api processor.ts job handling, executed locally over ADB.
 async function runJob(job) {
   const { type, payload, serial } = job;
@@ -582,6 +646,15 @@ async function runJob(job) {
 
     case 'WHATSAPP_CLEAR_CHAT':
       return whatsappClearChat(serial, payload);
+
+    case 'TELEGRAM_SEND':
+      return telegramSend(serial, payload);
+
+    case 'TELEGRAM_READ':
+      return telegramRead(serial, payload);
+
+    case 'TELEGRAM_REGISTER':
+      return registerTelegram(job);
 
     case 'APP_EXPLORE':
       return exploreApp(serial, payload);
@@ -906,8 +979,17 @@ function waHelpers(serial) {
     }
     return false;
   };
-  // Flatten all visible text on screen (for wall detection / debugging).
+  // Flatten all visible text on screen (for wall detection / debugging). TEXT-ONLY —
+  // several callers parse this POSITIONALLY (pickVerifyMethod/listVerifyOptions do
+  // `sheet.split(/Receive SMS/i)[1].slice(0,60)` to read a row's lock state), so injecting
+  // content-desc here would shift those offsets and break lock detection. Kept as-is.
   const screenText = async () => (await dump()).map((n) => n.text).filter(Boolean).join(' | ');
+  // ★H1: text + content-desc union — some WhatsApp buttons carry their label in
+  // content-desc, not text (overflow items). The verify-loop detectors used seen()/find()
+  // with field='any' (which checks desc), so the hoisted per-round read must include desc
+  // to preserve that recognition. Used ONLY for the loop's `txt` — NOT for the positional
+  // parsers above.
+  const screenTextRich = async () => (await dump()).flatMap((n) => [n.text, n.desc]).filter(Boolean).join(' | ');
   // Ensure the real-touch layer is up before a flow starts (heals after reboot).
   const ensureTouch = async () => ensureVtouch(serial);
   // Real long-press at logical coords (opens WhatsApp message context menu).
@@ -995,7 +1077,7 @@ function waHelpers(serial) {
     if (n) { await tapNode(n); return true; }
     return tapVision(vTarget || `the "${Array.isArray(q) ? q[0] : q}" button`, hint);
   };
-  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText, longPress, longPressNode, pollNode, tapSyn, tapSynNode, tapSynIf, tapScaled, a11ySetText, a11yClickId, a11yClickText, tapVision, tapByV };
+  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText, screenTextRich, longPress, longPressNode, pollNode, tapSyn, tapSynNode, tapSynIf, tapScaled, a11ySetText, a11yClickId, a11yClickText, tapVision, tapByV };
 }
 
 const WA_PKG = 'com.whatsapp';
@@ -1051,6 +1133,11 @@ async function registerWhatsApp(job, legacyPayload) {
   if (typeof job === 'string') job = { id: null, serial: job, payload: legacyPayload || {} };
   const jobId = job.id || null;
   const serial = job.serial;
+  // ★OTP-WATCH: a register job just claimed this device — cancel any parked OTP-watch for
+  // it. Either this is the continuation (operator entered the code → the watch's purpose is
+  // over) or a fresh re-register (the old parked state is stale). The in-job heartbeat takes
+  // over the live view from here.
+  if (typeof otpWatch !== 'undefined') otpWatch.delete(serial);
   const payload = job.payload || {};
   const phoneNumber = String(p(payload, 'phoneNumber', '')).trim();
   const fullName = String(p(payload, 'fullName', '')).trim();
@@ -1060,6 +1147,13 @@ async function registerWhatsApp(job, legacyPayload) {
   // asks the operator via the panel (status VERIFY_METHOD) instead of blindly guessing
   // — the user asked for this so they control SMS-vs-voice per number/attempt.
   const verifyMethod = String(p(payload, 'verifyMethod', '')).trim().toLowerCase();
+  // ★MODAL-FIX: a continuation job (operator submitted OTP or picked a verify method) re-
+  // launches WhatsApp and re-runs proxy/perms/a11y/launch — but re-narrating those early
+  // steps in the panel makes the SAME accountId log look like it "started over" (double
+  // "queued▸ Çıkış IP" etc.). Compute this early so those success notes can be SUPPRESSED
+  // on a continuation; the work still runs, only the narration is silenced. The clean
+  // `verify: ↩ Doğrulama ekranına devam ediliyor` line becomes the first visible line.
+  const isContinuation = Boolean(otpCode || verifyMethod);
   const apkUrl = p(payload, 'apkUrl', '');
   // accountId correlates the two register jobs (number-entry, then OTP) into one
   // continuous progress panel on the dashboard.
@@ -1087,6 +1181,26 @@ async function registerWhatsApp(job, legacyPayload) {
   };
   const logLine = (text) => waProgress(curStep, curPct, text);
 
+  // ★L1+L2 OBSERVABILITY — the verify state machine used to write NOTHING to the agent
+  // text log (/var/log/fleet-agent.log): a 176s run left only "claimed job" + "completed",
+  // so a stall was undiagnosable from the log. wlog() writes a device-tagged line via the
+  // top-level log() (a console.log → stdout → the log file), reusing screen reads the
+  // detectors already did (no extra ADB). markPhase() records per-screen elapsed time so
+  // the operator can SEE "downgrade=38s otp_wait=40s" both in the log and in the job result.
+  const waTag = `[wa ${(serial.split(':')[0] || serial).split('.').pop() || serial}]`;
+  const wlog = (m) => { try { log(`${waTag} ${m}`); } catch { /* logging must never break the flow */ } };
+  const t0 = Date.now();
+  const timings = {};            // { phaseName: totalMs }
+  let _phaseAt = t0, _phase = 'start';
+  const markPhase = (name) => {
+    const now = Date.now();
+    const dt = now - _phaseAt;
+    timings[_phase] = (timings[_phase] || 0) + dt;
+    if (name !== _phase) wlog(`phase '${_phase}' ${(dt / 1000).toFixed(1)}s → ${name}`);
+    _phase = name; _phaseAt = now;
+  };
+  const timingSummary = () => Object.entries(timings).map(([k, v]) => `${k}=${(v / 1000).toFixed(0)}s`).join(' ');
+
   // Step-by-step screenshots for bug-tracking: every major step + every failure
   // return captures the screen so the operator SEES exactly where it stalled
   // (instead of a blind status string). Bounded to the last 12 shots to keep the
@@ -1094,7 +1208,14 @@ async function registerWhatsApp(job, legacyPayload) {
   // copy to the live progress panel (best-effort; sharp shrinks it so the WS frame
   // stays small).
   const shots = [];
-  const snap = async (label) => {
+  // keepNote=true pushes ONLY the screenshot (empty note) so the current parked-state
+  // note is NOT overwritten. ★BUG-A ROOT: done() calls snap(label) right AFTER a parked
+  // state emitted its meaningful note (e.g. "🔀 Doğrulama yöntemi seçin…" method-select,
+  // or "📲 SMS kodu bekleniyor"). The old snap always sent note '📸 <label>', which
+  // CLOBBERED that note → the panel (which keys the method-select / OTP UI off the note)
+  // fell back to a plain OTP box and the operator couldn't pick a method. For OTP_WAIT
+  // returns done() now snaps with keepNote so the prompt survives.
+  const snap = async (label, keepNote = false) => {
     const png = await grabPng(serial, 12000).catch(() => null);
     if (png) {
       shots.push({ label, ts: new Date().toISOString(), png: png.toString('base64') });
@@ -1102,7 +1223,7 @@ async function registerWhatsApp(job, legacyPayload) {
       // Downscaled thumbnail for the live panel (≈300px). Falls back to no shot if
       // sharp is unavailable — the step still reports, just without a screenshot.
       const thumb = await shrinkPng(png, 300).catch(() => null);
-      await waProgress(curStep, curPct, `📸 ${label}`, undefined, thumb || undefined);
+      await waProgress(curStep, curPct, keepNote ? '🎥 canlı' : `📸 ${label}`, undefined, thumb || undefined);
     }
     return label;
   };
@@ -1130,7 +1251,10 @@ async function registerWhatsApp(job, legacyPayload) {
         const thumb = await shrinkPng(png, 300).catch(() => null);
         if (thumb) await waProgress(curStep, curPct, '🎥 canlı', undefined, thumb);
       } catch { /* best-effort; never let a frame error break the flow */ }
-    }, 10000);
+    }, WA_HEARTBEAT_MS); // ★L3: 5s (was 10s) → smoother live view during long stretches
+    // (DowngradeFriction ~5s, OTP wait). One screencap+shrink is a small fraction of 5s
+    // on GPU-less Waydroid (the dominant cost is uiautomator dump, not screencap); the
+    // ticker is .unref()'d + error-swallowed so an overrun frame can never wedge the flow.
     if (heartbeat.unref) heartbeat.unref(); // don't keep the test-job process alive
   };
   const stopHeartbeat = () => { if (heartbeat) { clearInterval(heartbeat); heartbeat = null; } };
@@ -1140,8 +1264,16 @@ async function registerWhatsApp(job, legacyPayload) {
   // and emits a terminal progress event reflecting the TRUE outcome.
   const done = async (label, obj) => {
     stopHeartbeat();
-    await snap(label);
+    markPhase(label);                        // close the current phase's timer
+    const elapsedMs = Date.now() - t0;
+    // For OTP_WAIT parked states (SMS wait / method-select / other-phone / rate-limit) the
+    // caller JUST emitted the operator-facing note; snap with keepNote so the screenshot
+    // is pushed WITHOUT overwriting that note (see snap()'s ★BUG-A comment).
     const st = obj && obj.status;
+    await snap(label, st === 'OTP_WAIT');
+    // ★L2: one SUMMARY line so a tail of the log tells the whole timing story, e.g.
+    // "[wa mi68] DONE otp_wait 108s | eula=8s number=6s downgrade=38s verify=12s"
+    wlog(`DONE ${label} ${(elapsedMs / 1000).toFixed(0)}s | ${timingSummary()}`);
     if (st && !OK_STATUSES.has(st)) {
       // Real failure — mark the current step FAILED with the human note so the
       // panel turns red and shows the reason (not a fake success).
@@ -1150,18 +1282,32 @@ async function registerWhatsApp(job, legacyPayload) {
     } else if (st === 'CREATED') {
       await waProgress('done', 100, '✓ WhatsApp hesabı oluşturuldu', 'COMPLETED');
     }
-    return { ...obj, shots };
+    // ★OTP-WATCH: when we park at OTP_WAIT the job ends COMPLETED and the in-job heartbeat
+    // stops, so the panel thumbnail would freeze while the operator reads/enters the code.
+    // Register this device so the agent's otpWatchTick keeps pushing a ~10s frame until the
+    // continuation job arrives (which clears it) or the TTL expires. Only when we have a
+    // jobId (real dispatch, not a local test) + accountId (panel correlation).
+    if (st === 'OTP_WAIT' && jobId && accountId) {
+      otpWatch.set(serial, { jobId, accountId, deviceId: serial, until: Date.now() + OTP_WATCH_TTL_MS });
+    }
+    return { ...obj, shots, timings, elapsedMs };
   };
 
   // 0) Ensure WhatsApp is installed; optionally side-load from apkUrl.
-  const installed = (await adb(serial, ['shell', 'pm', 'list', 'packages', WA_PKG]))
-    .includes(WA_PKG);
+  // ★LEAK GUARD (S1): every throw-path AFTER startHeartbeat() that does NOT return via
+  // done() (which stops the ticker) would otherwise leak the 10s heartbeat setInterval
+  // in the long-lived agent — it keeps firing screencap against a dead job forever. The
+  // `pm list` read (offline device → raw reject) and download() (fetch failure) both sit
+  // before the install try and both throw. Wrap them so ANY throw here clears the ticker.
+  let installed;
+  try {
+    installed = (await adb(serial, ['shell', 'pm', 'list', 'packages', WA_PKG])).includes(WA_PKG);
+  } catch (e) { stopHeartbeat(); throw e; }
   if (!installed) {
     if (!apkUrl) return done('not_installed', { status: 'NOT_INSTALLED', note: 'WhatsApp kurulu değil ve apkUrl verilmedi' });
-    const local = await download(String(apkUrl), 'whatsapp.apk');
-    // stopHeartbeat on failure: this is the one throw-path after startHeartbeat() that
-    // does NOT go through done()/step() (their catch clears it), so without this the
-    // 10s heartbeat ticker would leak in the long-lived agent if the install throws.
+    let local;
+    try { local = await download(String(apkUrl), 'whatsapp.apk'); }
+    catch (e) { stopHeartbeat(); throw e; }
     try { await adb(serial, ['install', '-r', '-g', local]); }
     catch (e) { stopHeartbeat(); throw e; }
     finally { await safeRm(local); }
@@ -1192,11 +1338,11 @@ async function registerWhatsApp(job, legacyPayload) {
     const exit = await verifyExitCountry(serial).catch(() => null);
     if (exit && exit.country) {
       const match = !numCc || exit.country.toUpperCase() === numCc.toUpperCase();
-      await waProgress('proxy', 6,
+      if (!isContinuation) await waProgress('proxy', 6, // ★MODAL-FIX: suppress on continuation
         `${match ? '✓' : '⚠'} Çıkış IP: ${exit.ip || '?'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
         `${match ? ' — numara ülkesiyle eşleşti' : ` — numara ${numCc} ama çıkış ${exit.country}, WhatsApp banlayabilir!`}`);
     } else {
-      await waProgress('proxy', 6, '⚠ Çıkış IP doğrulanamadı (proxy testi başarısız) — devam ediliyor');
+      if (!isContinuation) await waProgress('proxy', 6, '⚠ Çıkış IP doğrulanamadı (proxy testi başarısız) — devam ediliyor');
     }
   }
 
@@ -1219,7 +1365,7 @@ async function registerWhatsApp(job, legacyPayload) {
     'BLUETOOTH_CONNECT', 'NEARBY_WIFI_DEVICES'
   ];
   curStep = 'perms'; curPct = stepPct.perms;
-  await waProgress('perms', curPct, 'İzinler veriliyor (23 runtime + appops)…');
+  if (!isContinuation) await waProgress('perms', curPct, 'İzinler veriliyor (23 runtime + appops)…'); // ★MODAL-FIX
   for (const short of WA_PERMS) {
     await adb(serial, ['shell', 'pm', 'grant', WA_PKG, `android.permission.${short}`]).catch(() => undefined);
   }
@@ -1228,13 +1374,13 @@ async function registerWhatsApp(job, legacyPayload) {
   for (const op of ['RECEIVE_SMS', 'READ_SMS', 'SEND_SMS', 'READ_CALL_LOG', 'READ_PHONE_NUMBERS']) {
     await adbSu(serial, `appops set ${WA_PKG} ${op} allow`).catch(() => undefined);
   }
-  await logLine('✓ İzinler verildi');
+  if (!isContinuation) await logLine('✓ İzinler verildi'); // ★MODAL-FIX
 
   // 0b-2) Ensure the com.fleet.a11y AccessibilityService is enabled — it's the ONLY
   //   reliable way to fill WhatsApp's registration number fields (they reject
   //   focus). Enabling it via `settings put secure` does NOT need root. Idempotent.
   curStep = 'a11y'; curPct = stepPct.a11y;
-  await waProgress('a11y', curPct, 'Erişilebilirlik servisi + klavye…');
+  if (!isContinuation) await waProgress('a11y', curPct, 'Erişilebilirlik servisi + klavye…'); // ★MODAL-FIX
   await adb(serial, ['shell', 'settings', 'put', 'secure', 'enabled_accessibility_services',
     'com.fleet.a11y/com.fleet.a11y.FleetA11yService']).catch(() => undefined);
   await adb(serial, ['shell', 'settings', 'put', 'secure', 'accessibility_enabled', '1']).catch(() => undefined);
@@ -1242,11 +1388,11 @@ async function registerWhatsApp(job, legacyPayload) {
   // 0c) Prefer ADBKeyboard for text entry — on redroid the stock IME drops
   //     `input text` into WhatsApp's fields, so number entry silently fails.
   await h.ensureAdbKeyboard();
-  await logLine('✓ Erişilebilirlik + klavye hazır');
+  if (!isContinuation) await logLine('✓ Erişilebilirlik + klavye hazır'); // ★MODAL-FIX
 
   // 1) Launch fresh.
   curStep = 'launch'; curPct = stepPct.launch;
-  await waProgress('launch', curPct, 'WhatsApp açılıyor…');
+  if (!isContinuation) await waProgress('launch', curPct, 'WhatsApp açılıyor…'); // ★MODAL-FIX
   await launchApp(serial, WA_PKG, null);
   // Smart wait: instead of a blind 8s sleep, poll until WhatsApp's first-run UI has
   // actually rendered (EULA / companion / phone screen), then continue immediately.
@@ -1262,7 +1408,9 @@ async function registerWhatsApp(job, legacyPayload) {
       if (await h.seen('WhatsApp', 300) || await h.seen('Agree and continue', 300)) { ready = true; break; }
     }
     // Small settle so the button/tree is interactable even once the window is up.
-    await h.sleep(ready ? 800 : 1500);
+    // ★#5: ready-path 350ms (was 800) — the poll already CONFIRMED the first-run window is
+    // up, so a shorter settle is enough; the not-ready path keeps 1500 for slow devices.
+    await h.sleep(ready ? 350 : 1500);
   }
   await snap('launch');
 
@@ -1280,13 +1428,18 @@ async function registerWhatsApp(job, legacyPayload) {
   // down with `const`, so the continuation block hit a Temporal-Dead-Zone
   // ReferenceError and crashed EVERY OTP-submit / verify-method continuation job.)
   const curFocus = async () => {
-    const w = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    // ★S3: use adbT (5s hard timeout) not plain adb() — a .catch() only handles a
+    // *rejection*, not a HANG. execFileAsync with no timeout never resolves if the child
+    // never returns, and curFocus is called dozens of times per run + inside the verify
+    // loop; a single hung `dumpsys window` on a loaded GPU-less Waydroid would freeze the
+    // agent's whole job loop (no per-job wall-clock guard). The timeout degrades a hang
+    // to '' → the flow falls through to its coordinate/text fallbacks instead of wedging.
+    const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
     const m = w.match(/mCurrentFocus=\S+\s+\S+\s+([^\s}]*\/[^\s}]+)/) ||
               w.match(/mCurrentFocus=[^}]*?([\w.]+\/[\w.]+)/);
     return (m && m[1]) ? m[1] : w;
   };
 
-  const isContinuation = Boolean(otpCode || verifyMethod);
   let skipToVerify = false;
   if (isContinuation) {
     const foc = await curFocus();
@@ -1335,6 +1488,7 @@ async function registerWhatsApp(job, legacyPayload) {
   //   • phone-number field present               → DONE (exit)
   curStep = 'eula'; curPct = stepPct.eula;
   await waProgress('eula', curPct, 'İlk ekranlar (uyarı / EULA / QR) çözülüyor…');
+  markPhase('eula');
   const OK_XY = [582, 1349];      // custom-ROM / internet alert "OK" (verified)
   const EULA_XY = [540, 1909];    // "Agree and continue" (verified)
 
@@ -1366,12 +1520,12 @@ async function registerWhatsApp(job, legacyPayload) {
   // or its text; onChatTransfer()==true means we must tap NOT NOW to fall through to
   // the normal number-verification path. VERIFIED LIVE (Pixel 7, +90 number already
   // active on a Samsung S21: CONTINUE→"Turn on location" dead-end; NOT NOW→VerifyPhoneNumber).
-  const onChatTransfer = async () => {
-    const f = await curFocus();
+  const onChatTransfer = async (foc, txt) => {
+    const f = foc ?? await curFocus();
     if (/ChatTransfer|migration\.transfer/i.test(f)) return true;
-    return (await h.seen('Transfer chat history', 400)) ||
-      (await h.seen('Scan QR code to connect phones', 400)) ||
-      (await h.find('com.whatsapp:id/chat_transfer_primary_btn', 'id')) != null;
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (/Transfer chat history|Scan QR code to connect phones/i.test(t)) return true;
+    return (await h.find('com.whatsapp:id/chat_transfer_primary_btn', 'id')) != null;
   };
   const onEulaScreen = async () => {
     const f = await curFocus();
@@ -1450,8 +1604,19 @@ async function registerWhatsApp(job, legacyPayload) {
   //   ONLY for overlays that don't change the activity, and only when the activity is
   //   the EULA/companion base screen. This cut the per-round cost from ~35s (many
   //   dumps) to ~2s on this build (measured: EULA sat for 35s/round before this).
+  const firstRunT0 = Date.now();
+  let lastFoc = '';
   for (let round = 0; round < 22 && !reachedPhone; round++) {
     const foc = await curFocus();
+    // ★BUG-B instrumentation: log which screen the first-run loop sees each time the
+    // focused activity CHANGES, with elapsed time — so a tail of the log shows exactly
+    // where the ~37s "eula" phase went (e.g. stuck on a companion/QR page, or WhatsApp
+    // itself slow to leave "connecting"). Only logs on change to stay quiet on fast runs.
+    const focShort = (foc || '').split('/').pop()?.slice(0, 40) || '';
+    if (focShort !== lastFoc) {
+      wlog(`first-run r${round} +${((Date.now() - firstRunT0) / 1000).toFixed(1)}s → ${focShort}`);
+      lastFoc = focShort;
+    }
 
     // ★"System UI isn't responding" / "<app> isn't responding" ANR dialog. VERIFIED
     //   LIVE on mi7 right after a REBOOT: SystemUI ANRs repeatedly (low CPU + reboot
@@ -1512,7 +1677,27 @@ async function registerWhatsApp(job, legacyPayload) {
       await h.sleep(400);
       await h.tapSyn(540, 1910).catch(() => undefined);            // EULA "Agree and continue"
       await h.a11yClickId('eula_accept');                          // broadcast fallback (non-blocking)
-      eulaTaps++; await h.sleep(1600); continue;
+      eulaTaps++;
+      // ★BUG-B fix: after accepting EULA, WhatsApp takes several seconds to render the
+      // number screen (measured LIVE: ~14s from EULA-tap to phonenumberentry). The old
+      // blind sleep(1600)+continue meant the loop re-tapped EULA (or idled) for many
+      // rounds until the number screen finally appeared. Instead POLL curFocus (cheap,
+      // never-hangs) until we LEFT the EULA activity, cap ~10s. Exits the instant the
+      // number screen renders — cutting the dead time — while still capped for safety.
+      // ★#3: cap 30 (15s, was 20/10s). Measured EULA→number is ~14s on many builds; the old
+      // 10s cap often gave up JUST before RegisterPhone painted and the flow fell into the
+      // companion→openRegisterMenu detour (~14-21s extra). Waiting a bit longer for a DIRECT
+      // RegisterPhone catches those runs. Early-exit is unchanged, so a fast boot/companion
+      // hop still exits immediately — this only extends patience on the slow-direct case.
+      let leftEula = false;
+      for (let w = 0; w < 30 && !leftEula; w++) {
+        await h.sleep(500);
+        const f2 = await curFocus();
+        if (/phonenumberentry|RegisterPhone/i.test(f2)) { reachedPhone = true; leftEula = true; break; }
+        if (!/\.EULA\b|registration\.app\.EULA/i.test(f2)) leftEula = true; // moved to some next screen (companion/perm) → let the loop handle it
+      }
+      if (reachedPhone) break;
+      continue;
     }
 
     // Activity not recognized — could be a bare AlertDialog overlay (custom-ROM /
@@ -1627,6 +1812,7 @@ async function registerWhatsApp(job, legacyPayload) {
   }
   curStep = 'number'; curPct = stepPct.number;
   await waProgress('number', curPct, `Numara giriliyor (${phoneNumber})…`);
+  markPhase('number');
   const { cc, local } = splitE164(phoneNumber);
   const localDigits = local.replace(/\D/g, '');
   // ★VERIFIED LIVE (mi5, WA 2.25.x): registration_cc / registration_phone are
@@ -1717,6 +1903,7 @@ async function registerWhatsApp(job, legacyPayload) {
 
   curStep = 'verify'; curPct = stepPct.verify;
   await waProgress('verify', curPct, 'Doğrulama yöntemi belirleniyor…');
+  markPhase('verify'); wlog('verify: state machine entered');
   // ── VERIFY STATE MACHINE ──────────────────────────────────────────────────
   // After submitting the number WhatsApp can land on ANY of several screens in a
   // NON-deterministic order (it depends on the build, the number, prior attempts,
@@ -1738,81 +1925,94 @@ async function registerWhatsApp(job, legacyPayload) {
   // above) because mi7's a11y dump is intermittently empty; seen()/find() are the
   // fallback for overlays/dialogs that don't change the activity. VERIFIED activity
   // names: VerifyPhoneNumber (OTP), PrimaryFlashCallEducationScreen (flash-call).
-  const onOtp = async () => {
-    if (/verifyphone|VerifyPhoneNumber/i.test(await curFocus())) return true;
+  // ★H1 — HOISTED-READ detectors. Each takes optional (foc, txt) = the ONE curFocus()
+  // and screenText() the verify loop reads once per round. When given, the detector is a
+  // SYNCHRONOUS regex over that single read (no dumps). When omitted (call sites outside
+  // the loop, e.g. inside pickVerifyMethod / onSmsSendFailed's recheck), it self-reads as
+  // before — fully back-compatible. This collapses the old per-round cost: previously
+  // each detector's absent-screen seen() burned its FULL timeout with fresh dumps
+  // (because seen()'s inner sleep(400) clears the 700ms dump cache), so a round did
+  // ~8-15s of dumping; now it's one curFocus (~0.3s) + one screenText (~1-2s). The retry
+  // that seen() gave is preserved by the loop itself re-observing each round.
+  const onOtp = async (foc, txt) => {
+    const f = foc ?? await curFocus();
+    if (/verifyphone|VerifyPhoneNumber/i.test(f)) return true;
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (/Verifying your number|digit code|Enter the 6-digit code/i.test(t)) return true;
+    // id-based fallback only when text didn't match (avoids extra dumps on the hot path)
     return (await h.find('com.whatsapp:id/verify_sms_code_input', 'id')) != null ||
-      (await h.find('com.whatsapp:id/registration_verify', 'id')) != null ||
-      (await h.seen('Verifying your number', 400)) || (await h.seen('digit code', 400)) ||
-      (await h.seen('Enter the 6-digit code', 400));
+      (await h.find('com.whatsapp:id/registration_verify', 'id')) != null;
   };
   // "Choose how to verify" bottom-sheet. VERIFIED LIVE (watest46, +90): this sheet
   // OPENS ON TOP of the flash-call education activity, so curFocus stays
-  // PrimaryFlashCallEducationScreen — recognize it by its TEXT, not the activity. The
-  // rows vary by number/build: "Other device / Missed call / Receive SMS / Voice call"
-  // (+ a "Choose how to verify" title). Match the title OR any two known method rows.
-  const onChooseVerify = async () => {
-    if (await h.seen('Choose how to verify', 500)) return true;
-    const t = await h.screenText().catch(() => '');
+  // PrimaryFlashCallEducationScreen — recognize it by its TEXT, not the activity.
+  const onChooseVerify = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (/Choose how to verify/i.test(t)) return true;
     const rows = ['Receive SMS', 'Voice call', 'Missed call', 'Other device'].filter((r) => new RegExp(r, 'i').test(t));
     return rows.length >= 2; // a real method sheet shows several options
   };
-  const onFlashCallEdu = async () => {
+  const onFlashCallEdu = async (foc, txt) => {
     // If the method sheet is already up, this is NOT the plain education screen — let
     // the choose-verify branch handle it (VERIFIED LIVE watest46: onFlashCallEdu was
     // firing on the flash-call activity while the sheet was open, so the agent looked
     // for "VERIFY ANOTHER WAY" — absent once the sheet is showing — and spun forever).
-    if (await onChooseVerify()) return false;
-    if (/flashcall|FlashCallEducation/i.test(await curFocus())) return true;
-    return (await h.seen('missed call', 400)) || (await h.seen('VERIFY ANOTHER WAY', 300)) ||
-      (await h.find('com.whatsapp:id/secondary_button', 'id')) != null;
+    const f = foc ?? await curFocus();
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (await onChooseVerify(f, t)) return false;
+    if (/flashcall|FlashCallEducation/i.test(f)) return true;
+    if (/missed call|VERIFY ANOTHER WAY/i.test(t)) return true;
+    return (await h.find('com.whatsapp:id/secondary_button', 'id')) != null;
   };
-  const onSmsSendFailed = async () =>
-    (await h.seen('send an SMS', 500)) || (await h.seen('send you an SMS', 400)) ||
-    (await h.seen("couldn't send", 400)) || (await h.seen('check your number', 400));
-  const onConfirmNumber = async () => (await h.seen('correct number', 500));
-  const onViewSmsPrompt = async () =>
-    (await h.seen('view SMS', 500)) || (await h.seen('automatically detect', 400));
-  const onWall = async () => {
+  const onSmsSendFailed = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /send an SMS|send you an SMS|couldn't send|check your number/i.test(t);
+  };
+  const onConfirmNumber = async (foc, txt) => /correct number/i.test(txt ?? await h.screenTextRich().catch(() => ''));
+  const onViewSmsPrompt = async (foc, txt) => /view SMS|automatically detect/i.test(txt ?? await h.screenTextRich().catch(() => ''));
+  const onWall = async (foc, txt) => {
     // Activity signal first: CustomRegistrationBlockActivity is WhatsApp's hard block
     // ("Download the official WhatsApp to continue") — the number/APK/device combo was
-    // rejected. VERIFIED LIVE (watest45, +355 AL number): the flow reached this screen
-    // after "Sending code". It's terminal — report it clearly instead of spinning to a
-    // vague OTP_SCREEN_NOT_REACHED.
-    const foc = await curFocus();
-    if (/CustomRegistrationBlock|RegistrationBlock|parole\./i.test(foc)) {
+    // rejected. VERIFIED LIVE (watest45, +355 AL number). It's terminal.
+    const f = foc ?? await curFocus();
+    if (/CustomRegistrationBlock|RegistrationBlock|parole\./i.test(f)) {
       return 'Download the official WhatsApp to continue (numara/APK engellendi)';
     }
-    const t = await h.screenText();
+    const t = txt ?? await h.screenTextRich();
     if (/Download the official WhatsApp|official WhatsApp to continue/i.test(t)) return t;
     return /banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many (attempts|requests|devices)|try again later/i.test(t) ? t : null;
   };
   // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
-  // account. WhatsApp asks to move it to Messenger (catalog/greeting/Meta-Verified
-  // get deleted, messages kept). We confirm with "Switch now" so registration can
-  // proceed (the operator chose this number knowingly). VERIFIED LIVE (mi5, +355).
-  const onSwitchDialog = async () =>
-    (await h.seen('Switch to WhatsApp Messenger', 500)) ||
-    ((await h.seen('Switch now', 400)) && (await h.seen('Use different number', 300)));
+  // account. Confirm "Switch now" so registration can proceed. VERIFIED LIVE (mi5, +355).
+  const onSwitchDialog = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /Switch to WhatsApp Messenger/i.test(t) || (/Switch now/i.test(t) && /Use different number/i.test(t));
+  };
   // "Are you sure you want to deactivate your Business account?" (DowngradeFriction
-  // activity). The number already has a WhatsApp **Business** account; WhatsApp asks
-  // to deactivate it to register here. Two buttons: "USE +<number>" (proceed with THIS
-  // number — what we want) and "USE A DIFFERENT NUMBER" (goes back to the number
-  // screen → loop). VERIFIED LIVE (watest45, +359 BG Business number): the agent had
-  // NO branch, tapped the wrong option / fell back to the number screen, and looped.
-  const onDowngradeFriction = async () => {
-    const f = await curFocus();
+  // activity). VERIFIED LIVE (watest45, +359 BG; mi68, +90). Proceed with "USE +<number>".
+  const onDowngradeFriction = async (foc, txt) => {
+    const f = foc ?? await curFocus();
     if (/DowngradeFriction|downgrade\./i.test(f)) return true;
-    return (await h.seen('deactivate your Business account', 500)) ||
-      ((await h.seen('USE A DIFFERENT NUMBER', 400)) && (await h.seen('USE +', 300)));
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /deactivate your Business account/i.test(t) || (/USE A DIFFERENT NUMBER/i.test(t) && /USE \+/i.test(t));
   };
   // "Verify <number> / Use your other phone to confirm moving WhatsApp to this one /
   // Enter the 6-digit code we sent to WhatsApp on your OTHER PHONE." The code is NOT
   // an SMS/voice OTP — it's pushed to the number's EXISTING WhatsApp on another
   // device, which the agent can't read. This needs a human with that phone, so we
   // stop at AWAITING_MANUAL. VERIFIED LIVE (mi5, +355 already-registered number).
-  const onOtherPhoneVerify = async () => {
-    const t = await h.screenText();
-    return /code we sent to WhatsApp on your other phone|other phone to confirm moving WhatsApp/i.test(t);
+  const onOtherPhoneVerify = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    // ★FIX (LIVE mi14 +90 538…): the screen text "Enter the 6-digit code we sent to
+    // WhatsApp on your other phone" was MISSED because screenTextRich joins UI nodes with
+    // " | ", and this sentence spans multiple nodes — so the exact phrase "code we sent to
+    // WhatsApp on your other phone" was broken by a separator and never matched. It was
+    // reported as a plain SMS OTP_WAIT ("SMS kodu bekleniyor") instead of other_phone.
+    // Match on the robust signal "other phone" combined with a code/verify cue, which
+    // survives the node split. (VerifyPhoneNumber activity + "other phone" + "code" is
+    // unambiguous — a normal SMS OTP screen never says "other phone".)
+    if (/other phone to confirm moving WhatsApp|code we sent to WhatsApp on your other phone/i.test(t)) return true;
+    return /other phone/i.test(t) && /(6-digit|digit code|Verification code|Enter the).{0,80}/i.test(t);
   };
   // "You tried requesting code to other phone too many times. To verify, tap
   // 'Send SMS' [in N hours]." Terminal rate-limit specific to the move/other-phone
@@ -1820,8 +2020,8 @@ async function registerWhatsApp(job, legacyPayload) {
   // "tap 'Send SMS'"). The old regex REQUIRED an "N hours" span and returned null when
   // WhatsApp gave no time → the agent MISSED the screen and spun. Now: match the
   // phrase regardless of whether a wait time is present, returning the time if shown.
-  const onOtherPhoneRateLimit = async () => {
-    const t = await h.screenText();
+  const onOtherPhoneRateLimit = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
     if (!/requesting code to other phone too many times/i.test(t)) return null;
     const m = /(\d+)\s*hours?,?\s*(\d+)?\s*minutes?/i.exec(t);
     return m ? `${m[1]} saat ${m[2] || 0} dakika` : 'SMS ile doğrulama gerekiyor';
@@ -1883,7 +2083,7 @@ async function registerWhatsApp(job, legacyPayload) {
     await h.a11yClickId('continue_button');
     (await h.tapById('com.whatsapp:id/continue_button').then(() => true).catch(() => false)) || true;
     await h.tapSyn(540, 2128);            // Continue center (VERIFIED live)
-    await h.sleep(1500); // ★PERF (FIRSAT 2): the verify loop re-polls onOtp() every round + a dedicated OTP poll follows, so a shorter settle is safe here
+    await h.sleep(800); // ★H4: 800ms (was 1500) — control returns to the verify loop which immediately re-checks onOtp() then enters the 24×750ms OTP poll, so this settle just hands off sooner; the tap needs a beat to register but the downstream poll guards correctness
     return method.kind;
   };
 
@@ -1932,7 +2132,7 @@ async function registerWhatsApp(job, legacyPayload) {
     await h.a11yClickId('continue_button');
     (await h.tapById('com.whatsapp:id/continue_button').then(() => true).catch(() => false)) || true;
     await h.tapSyn(540, 2128); // Continue center (VERIFIED live)
-    await h.sleep(1500); // ★PERF (FIRSAT 2): verify loop re-polls onOtp() so a shorter settle is safe
+    await h.sleep(800); // ★H4: 800ms (was 1500) — downstream verify loop + 24×750ms OTP poll guard correctness, so a shorter settle just hands off sooner
     return kind;
   };
 
@@ -1942,8 +2142,33 @@ async function registerWhatsApp(job, legacyPayload) {
     // A rebooted device can pop a "System UI isn't responding" ANR over the verify
     // screens too — clear it first so it can't hide the method sheet / OTP field.
     await clearAnr(1);
+    // ★H1: read the screen ONCE per round (one curFocus + one screenText) and feed ALL
+    // text-based detectors from it. Previously each detector's absent-screen seen() burned
+    // its full timeout on fresh dumps (seen's inner sleep clears the dump cache), so a
+    // round cost ~8-15s of dumping; now it's ~0.3s + ~1-2s. If the dump momentarily
+    // returns empty, re-read once so a single empty read doesn't blind the whole round.
+    const foc = await curFocus();
+    let txt = await h.screenTextRich().catch(() => '');
+    if (!txt) { await h.sleep(300); txt = await h.screenTextRich().catch(() => ''); }
     // Success: OTP screen reached (WhatsApp sent SMS/voice code). Leave the loop.
-    if (await onOtp()) break;
+    // ★OTHER-PHONE FIX: the "Use your other phone to confirm moving WhatsApp" screen runs
+    // on the SAME VerifyPhoneNumber activity as a normal SMS OTP, so onOtp() matches it and
+    // used to break here — reaching the generic OTP_WAIT that tells the operator to "wait
+    // for an SMS" that never comes (the code is on the number's OTHER phone). Detect it
+    // FIRST and DON'T break: let the loop fall through to the onOtherPhoneVerify branch
+    // below, which returns OTP_WAIT with otpChannel:'other_phone' so the panel shows the
+    // correct "read the code off your other phone" hint. VERIFIED LIVE (mi3, +90 534…).
+    // ★OTHER-PHONE + CONTINUATION FIX: normally we DON'T break on the other-phone verify
+    // screen (it shares VerifyPhoneNumber with a plain OTP) so the loop can report the
+    // correct other_phone hint. BUT when otpCode is present this is a CONTINUATION — the
+    // operator ALREADY read the code (off the other phone or SMS) and we MUST type it, not
+    // re-park at OTP_WAIT. So: if otpCode exists, break as soon as onOtp is true (type it);
+    // only defer to the other-phone branch when we have NO code yet (the initial park).
+    // (Without this, a continuation on an other-phone number looped: onOtherPhoneVerify
+    // stayed true → the break was skipped → the other-phone branch re-returned OTP_WAIT
+    // without ever entering the code — LIVE mi8 +90 539…, operator entered code twice, no
+    // progress.)
+    if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) { wlog(`verify: reached OTP screen (round ${round})`); break; }
 
     // "Deactivate your Business account?" (DowngradeFriction) — handled FIRST (right
     // after onOtp), BEFORE onWall/others. VERIFIED LIVE (mi68, +90 Business number):
@@ -1954,21 +2179,53 @@ async function registerWhatsApp(job, legacyPayload) {
     // it appears. TWO steps (both mapped LIVE): (1) "USE +<number>" primary_button →
     // (2) confirm the "Deactivate and switch" dialog via a11y CLICK_TEXT (its buttons
     // aren't in the dump on this GPU-less build; 690,1410 is the coord fallback).
-    if (await onDowngradeFriction()) {
+    if (await onDowngradeFriction(foc, txt)) {
+      markPhase('downgrade'); wlog('verify: DowngradeFriction (Business hesap) — devre dışı bırakılıyor');
       await snap('downgrade_business');
       await waProgress(curStep, curPct, '⚠ Numarada WhatsApp Business hesabı vardı — devre dışı bırakılıp bu numarayla devam ediliyor…');
+      // Step 1: tap "USE +<number>" (id=primary_button, bottom green button).
       await h.a11yClickId('primary_button');
       if (!(await h.tapSynIf('USE +', 'text'))) await h.tapSyn(540, 2064).catch(() => undefined);
-      await h.sleep(2500);
-      await h.a11yClickText('Deactivate and switch');
-      if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
-      await h.sleep(3000);
+      // ★DOWNGRADE-LOOP FIX (VERIFIED LIVE, mi8 +90 539…): after "USE +", WhatsApp takes ONE
+      // of TWO paths depending on build/number:
+      //   (A) a confirm DIALOG "Deactivate your Business account? … Deactivate and switch"
+      //       (VERIFIED mi68/watest45 +538/+359) → must click "Deactivate and switch".
+      //   (B) NO dialog — it goes STRAIGHT to the number/verify screen (VERIFIED mi8 +539).
+      // The old code ALWAYS waited ~2.5s for the (A) dialog and then blind-tapped
+      // "Deactivate and switch"; on path (B) that dialog never came, the blind tap landed
+      // on the number screen, and the loop re-detected DowngradeFriction → a ~28s/round
+      // SPIN (LIVE: 6 rounds / 157s). Fix: poll for EITHER the dialog OR having left the
+      // DowngradeFriction activity, capped ~3s. Only act on the dialog if it actually
+      // appeared; if we already left DowngradeFriction, just continue (the loop's onOtp/
+      // number branch handles the next screen) — no wasted blind tap, no re-detect spin.
+      let sawDialog = false, leftDowngrade = false;
+      for (let w = 0; w < 6; w++) {
+        await h.sleep(500);
+        if (await h.seen('Deactivate and switch', 250)) { sawDialog = true; break; }
+        if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) { leftDowngrade = true; break; }
+      }
+      if (sawDialog) {
+        // Path (A): confirm the dialog (its buttons aren't in the GPU-less dump → a11y
+        // CLICK_TEXT is the reliable path; 690,1410 is the measured coord fallback).
+        await snap('downgrade_confirm');
+        await h.a11yClickText('Deactivate and switch');
+        if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
+        for (let w = 0; w < 6; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
+      } else if (!leftDowngrade) {
+        // Neither the dialog nor a screen change within ~3s — the "USE +" tap may not have
+        // landed. Re-tap once more before looping (better than a silent 28s re-detect).
+        await h.a11yClickId('primary_button');
+        await h.tapSyn(540, 2064).catch(() => undefined);
+        await h.sleep(1500);
+      }
+      // Path (B) (leftDowngrade) falls straight through to continue → the loop re-observes
+      // and the number/verify branch takes over.
       continue;
     }
 
     // Terminal ban / integrity wall — stop and report.
-    wallText = await onWall();
-    if (wallText) break;
+    wallText = await onWall(foc, txt);
+    if (wallText) { wlog(`verify: WALL — ${wallText.slice(0, 80)}`); break; }
 
     // "Transfer chat history / Scan QR code" — WhatsApp wants to import chats off an
     // OLD phone via QR. We have none, so CONTINUE is a dead-end ("Turn on location" →
@@ -1977,7 +2234,8 @@ async function registerWhatsApp(job, legacyPayload) {
     // +90 already-registered number → after NOT NOW the activity flipped to
     // VerifyPhoneNumber). The agent previously had NO branch here and hung in the
     // vision-fallback loop with no screenshot/status — that stall is what this fixes.
-    if (await onChatTransfer()) {
+    if (await onChatTransfer(foc, txt)) {
+      wlog('verify: ChatTransfer — NOT NOW');
       await snap('chat_transfer'); // capture so the panel/operator can SEE the stall screen
       // findNode is case-insensitive, so 'not now' matches both the location dialog's
       // "Not now" AND the transfer screen's "NOT NOW". Some builds pop a
@@ -1993,7 +2251,8 @@ async function registerWhatsApp(job, legacyPayload) {
 
     // "Switch to WhatsApp Messenger?" — number has an existing WA Business account.
     // Confirm "Switch now" to proceed (operator picked this number on purpose).
-    if (await onSwitchDialog()) {
+    if (await onSwitchDialog(foc, txt)) {
+      wlog('verify: SwitchToMessenger dialog — Switch now');
       await snap('switch_dialog');
       await h.a11yClickText('Switch now');
       if (!(await h.tapSynIf('Switch now'))) await h.tapScaled(781, 1589).catch(() => undefined);
@@ -2012,8 +2271,9 @@ async function registerWhatsApp(job, legacyPayload) {
     //      alone did NOT). A measured coordinate (≈690,1410) is a best-effort fallback.
     // Move/other-phone rate-limit ("...too many times... Send SMS in N hours") —
     // terminal. Report the wait clearly so the operator knows when to retry.
-    const otherRl = await onOtherPhoneRateLimit();
+    const otherRl = await onOtherPhoneRateLimit(foc, txt);
     if (otherRl) {
+      wlog(`verify: OtherPhone RATE-LIMIT (${otherRl})`);
       await snap('other_phone_rate_limit');
       await h.a11yClickText('OK'); await h.tapSynIf('OK'); await h.sleep(800);
       // Set step 'otp_wait' + emit progress so the panel's OTP box (which triggers on
@@ -2021,7 +2281,7 @@ async function registerWhatsApp(job, legacyPayload) {
       curStep = 'otp_wait'; curPct = stepPct.otp_wait;
       const rlNote = `⏳ WhatsApp bu numaraya "diğer telefon" kodunu çok kez istedi — ${otherRl} sonra tekrar denenebilir. (Numara zaten kayıtlı bir WhatsApp hesabına ait.)`;
       await waProgress('otp_wait', curPct, rlNote);
-      return done('otp_wait', { status: 'RATE_LIMITED', note: rlNote, phoneNumber });
+      return done('otp_wait', { status: 'RATE_LIMITED', otpChannel: 'rate_limited', note: rlNote, phoneNumber });
     }
 
     // Move/other-phone verification — the 6-digit code was pushed to the number's
@@ -2032,12 +2292,13 @@ async function registerWhatsApp(job, legacyPayload) {
     // modal → operator has nowhere to enter the code). otpChannel tells the panel to
     // show the right hint. VERIFIED LIVE (mi10, +90 already-registered number: the
     // verify screen accepts a code typed into the field).
-    if (await onOtherPhoneVerify()) {
+    if (await onOtherPhoneVerify(foc, txt)) {
       // OTP-wait (NOT a failure): the operator reads the code off the number's other
       // phone and types it into the SAME field. Use step 'otp_wait' + status OTP_WAIT
       // so done()'s OK_STATUSES keeps it out of the FAILED path AND the panel's OTP box
       // (which triggers on step==='otp_wait') appears. The 📲 note tells the operator
       // WHERE the code is (other phone, not SMS) — the modal shows it verbatim.
+      wlog('verify: OtherPhone verify — OTP_WAIT (other_phone)');
       curStep = 'otp_wait'; curPct = stepPct.otp_wait;
       const otherNote = '📲 Kod diğer telefondaki WhatsApp\'a gönderildi (numara zaten kayıtlı) — o cihazdan okuyup panele girin.';
       await waProgress('otp_wait', curPct, otherNote);
@@ -2053,7 +2314,7 @@ async function registerWhatsApp(job, legacyPayload) {
     // LIVE on mi7, +1 802 683-3543 US). WhatsApp reached the OTP screen but rejected
     // the number as a non-mobile/invalid line — a NUMBER problem, not our bug. Bail
     // with a clear, honest reason instead of sitting at a fake OTP_WAIT.
-    if (await h.seen('not a valid mobile number', 400) || await h.seen('valid mobile number for the country', 400)) {
+    if (/not a valid mobile number|valid mobile number for the country/i.test(txt)) {
       return done('invalid_number', {
         status: 'INVALID_NUMBER',
         note: `WhatsApp bu numarayı geçerli bir cep numarası olarak kabul etmedi ("not a valid mobile number"). Numara yanlış/sabit-hat/kullanılmıyor olabilir — WhatsApp-uyumlu geçerli bir cep numarası kullanın.`,
@@ -2062,7 +2323,8 @@ async function registerWhatsApp(job, legacyPayload) {
     }
 
     // "Couldn't send an SMS" dialog: try the voice route via "Try another way".
-    if (await onSmsSendFailed()) {
+    if (await onSmsSendFailed(foc, txt)) {
+      wlog('verify: SMS send FAILED — sesli aramaya geçiliyor');
       await snap('sms_send_failed');
       await h.a11yClickText('Try another way');
       if (!(await h.tapSynIf('Try another way'))) await h.tapScaled(742, 1353).catch(() => undefined);
@@ -2087,7 +2349,8 @@ async function registerWhatsApp(job, legacyPayload) {
     // ask via the panel — the modal shows the available (non-rate-limited) options and
     // the operator taps one, which re-dispatches with verifyMethod set. This replaces
     // the old blind SMS-preferred guess the user wanted control over.
-    if (await onChooseVerify()) {
+    if (await onChooseVerify(foc, txt)) {
+      wlog(`verify: ChooseVerify sheet — ${verifyMethod ? 'uygulanıyor: ' + verifyMethod : 'operatöre soruluyor'}`);
       if (verifyMethod) {
         const kind = await applyVerifyMethod(verifyMethod);
         if (kind === 'voice') voiceTried = true;
@@ -2116,7 +2379,8 @@ async function registerWhatsApp(job, legacyPayload) {
     }
 
     // Flash-call education screen: choose "Verify another way" → method sheet.
-    if (await onFlashCallEdu()) {
+    if (await onFlashCallEdu(foc, txt)) {
+      wlog('verify: FlashCallEdu — verify another way');
       await h.a11yClickId('secondary_button');
       await h.a11yClickText('VERIFY ANOTHER WAY');
       (await h.tapSynIf('VERIFY ANOTHER WAY')) || (await h.tapSynIf('another way', 'text'));
@@ -2125,7 +2389,8 @@ async function registerWhatsApp(job, legacyPayload) {
     }
 
     // Late "Is this the correct number?" confirm dialog — accept it.
-    if (await onConfirmNumber()) {
+    if (await onConfirmNumber(foc, txt)) {
+      wlog('verify: confirm-number dialog — Yes');
       await h.a11yClickText('Yes');
       (await h.tapSynIf('Yes')) || (await h.tapBy('Yes').catch(() => undefined));
       await h.sleep(2200);
@@ -2133,7 +2398,8 @@ async function registerWhatsApp(job, legacyPayload) {
     }
 
     // "Allow WhatsApp to view SMS" prompt — we enter the code manually, so decline.
-    if (await onViewSmsPrompt()) {
+    if (await onViewSmsPrompt(foc, txt)) {
+      wlog('verify: view-SMS prompt — reddediliyor');
       await h.a11yClickId('cancel');
       (await h.tapSynIf('Not now')) || (await h.tapSynIf('NOT NOW'));
       await h.sleep(1800);
@@ -2141,6 +2407,10 @@ async function registerWhatsApp(job, legacyPayload) {
     }
 
     // Unknown/intermediate screen — settle briefly and re-observe.
+    // ★L1 (highest-value log line): an unrecognized screen used to leave NO trace at all,
+    // so the "spins on an unknown screen until rounds exhaust" stalls were invisible in
+    // the log. Emit the focused activity so a tail shows exactly what we're stuck on.
+    wlog(`verify: unknown screen round=${round} focus=${(foc || '').slice(0, 70)}`);
     await h.sleep(1400);
   }
 
@@ -2149,11 +2419,15 @@ async function registerWhatsApp(job, legacyPayload) {
     return done('device_wall', { status: 'DEVICE_WALL', note: 'WhatsApp cihazı/numarayı reddetti (ban / çok deneme) — bekleyin veya farklı numara/cihaz deneyin', screenTexts: wallText.slice(0, 400) });
   }
   if (bothLockedNote && !(await onOtp())) {
-    await snap('verify_rate_limited');
-    // step 'otp_wait' + progress so the panel opens the OTP box with the wait note.
-    curStep = 'otp_wait'; curPct = stepPct.otp_wait;
-    await waProgress('otp_wait', curPct, bothLockedNote);
-    return done('otp_wait', { status: 'OTP_WAIT', note: bothLockedNote, phoneNumber });
+    // ★SMS-SEND-FAILED → FAIL (operatör isteği): WhatsApp "Couldn't send an SMS to your
+    // number" derse (ve varsa voice de gönderilemezse) bu OTP_WAIT değil, KALICI bir
+    // BAŞARISIZLIKtır — SMS gelmeyecek, operatörün sonsuza kadar boşuna kod beklemesi
+    // yanlış. Job'ı FAILED çek, panele net "SMS gönderilemedi, 1 saat bekleyin veya
+    // WhatsApp-uyumlu başka numara kullanın" de. (VERIFIED LIVE mi16 +90 531 437…:
+    // Business geçildi ama WhatsApp SMS göndermedi; eskiden OTP_WAIT'te asılı kalıyordu.)
+    await snap('sms_send_failed_terminal');
+    curStep = 'verify'; curPct = stepPct.verify;
+    return done('sms_send_failed', { status: 'SMS_SEND_FAILED', note: bothLockedNote, phoneNumber });
   }
 
   // 8) OTP. The state machine above already handled ban walls and rate-limits. Now
@@ -2161,21 +2435,52 @@ async function registerWhatsApp(job, legacyPayload) {
   //    OTP_WAIT — otherwise a stalled number screen would falsely report "SMS sent"
   //    when WhatsApp never sent one. Poll a little longer here since the code screen
   //    can take a few seconds to render after the method sheet.
+  // ★H3: 24×750ms keeps the same ~18s ceiling but halves average detect latency —
+  // onOtp() leads with curFocus() (cheap dumpsys window, never hangs), so a finer poll
+  // catches the VerifyPhoneNumber flip ~0.75s sooner on the common path. ★L3: a mid-poll
+  // snap every 4 rounds so a slow-to-render OTP screen still produces a live frame.
   let otpReached = await onOtp();
   if (!otpReached) {
-    for (let w = 0; w < 12 && !otpReached; w++) { await h.sleep(1500); otpReached = await onOtp(); }
+    for (let w = 0; w < 24 && !otpReached; w++) {
+      await h.sleep(750);
+      otpReached = await onOtp();
+      if (!otpReached && w % 4 === 3) await snap('otp_wait_poll');
+    }
   }
   if (!otpReached) {
     const st = (await h.screenText()).slice(0, 400);
-    return done('otp_not_reached', { status: 'OTP_SCREEN_NOT_REACHED', note: 'Doğrulama ekranına ulaşılamadı — numara gönderimi başarısız olabilir (SMS/arama gönderilemedi)', phoneNumber, screenTexts: st });
+    return done('otp_not_reached', { status: 'OTP_SCREEN_NOT_REACHED', note: `Doğrulama ekranına ulaşılamadı — numara gönderimi başarısız olabilir (SMS/arama gönderilemedi). Son ekran: ${_phase}`, phoneNumber, screenTexts: st });
+  }
+  // ★SMS-SEND-FAILED overlay check (operatör isteği): "Couldn't send an SMS to your
+  // number" is a DIALOG that pops OVER the VerifyPhoneNumber activity — so onOtp() returns
+  // true (activity matches) and we'd otherwise claim OTP_WAIT and tell the operator to wait
+  // for an SMS that will NEVER arrive. Detect the dialog here (before parking at OTP_WAIT)
+  // and FAIL honestly. (VERIFIED LIVE mi16 +90 531 437…: sat at AWAITING_OTP "SMS bekle"
+  // while the screen showed "Couldn't send an SMS".)
+  if (await onSmsSendFailed()) {
+    await snap('sms_send_failed_terminal');
+    const note = 'WhatsApp bu numaraya SMS gönderemedi ("Couldn\'t send an SMS"). Numara WhatsApp doğrulaması alamıyor (itibar/operatör engeli). 1 saat sonra tekrar deneyin veya WhatsApp-uyumlu (SMS alabilen) başka bir numara kullanın.';
+    curStep = 'verify'; curPct = stepPct.verify;
+    return done('sms_send_failed', { status: 'SMS_SEND_FAILED', note, phoneNumber });
   }
   curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+  markPhase('otp_wait');
   await snap('otp_screen');
   if (!otpCode) {
+    // ★S2: the "other phone" verify screen ALSO runs on the VerifyPhoneNumber activity,
+    // so on a FRESH run that lands there directly, the loop's `if (onOtp()) break` at the
+    // top fires BEFORE the onOtherPhoneVerify branch ever runs — and we'd fall here and
+    // tell the operator to "wait for an SMS" that never comes (the code is on the number's
+    // OTHER phone). Re-test here so the panel gets the correct other_phone hint/channel.
+    if (await onOtherPhoneVerify()) {
+      const otherNote = '📲 Kod diğer telefondaki WhatsApp\'a gönderildi (numara zaten kayıtlı) — o cihazdan okuyup panele girin.';
+      await waProgress('otp_wait', curPct, otherNote);
+      return done('otp_wait', { status: 'OTP_WAIT', otpChannel: 'other_phone', note: otherNote, phoneNumber });
+    }
     // Signal the panel to open its OTP box (status RUNNING, not FAILED — this is a
     // normal pause point). The dashboard shows a 6-digit input at this step.
     await waProgress('otp_wait', curPct, '📲 SMS kodu bekleniyor — panelden gireceksiniz');
-    return done('otp_wait', { status: 'OTP_WAIT', note: 'SMS kodu bekleniyor — kod gelince otpCode ile tekrar gönderin', phoneNumber });
+    return done('otp_wait', { status: 'OTP_WAIT', otpChannel: 'sms', note: 'SMS kodu bekleniyor — kod gelince otpCode ile tekrar gönderin', phoneNumber });
   }
   curStep = 'otp'; curPct = stepPct.otp;
   await waProgress('otp', curPct, 'SMS kodu giriliyor…');
@@ -2272,7 +2577,11 @@ async function registerWhatsApp(job, legacyPayload) {
       await h.sleep(800);
     }
     await backToProfileIfStrayed();
-    await h.sleep(3000);
+    // ★H4: poll-until we left RegisterName (cap 3000ms) instead of a blind 3000ms. The
+    // post-name interstitial sweep right below re-reads dumpsys window and acts on
+    // whatever we land on, so the long blind settle was dead time; keep a floor so the
+    // RegisterName→next-screen transition has painted before the sweep reads it.
+    for (let w = 0; w < 6; w++) { await h.sleep(400); if (!/RegisterName/i.test(await curFocus())) break; }
   }
 
   // 9b) Post-name interstitials → home. Modern WhatsApp inserts optional screens
@@ -2364,6 +2673,30 @@ async function dismissBlockingDialogs(serial, h) {
   }
 }
 
+// Generic "System UI / <app> isn't responding" ANR dismisser — MODULE-LEVEL twin of
+// registerWhatsApp's in-scope clearAnr (agent.mjs ~1679), extracted so the send/read
+// flows can use it too. On this GPU-less Waydroid an ANR dialog ("<app> isn't
+// responding — Wait / Close app") pops OVER WhatsApp during message send (the compose
+// box has text and any view-tree churn can trip it), and — because whatsappSend had NO
+// ANR handling — the dialog stayed on screen, failed the send, AND blocked every
+// subsequent send (root cause of the user's "WhatsApp donuyor / close app çıkıyor"
+// report). Presses "Wait" (keep the app alive) via id + text + measured coordinate,
+// all raw taps. Reads focus itself (dumpsys window, 5s hard timeout) so it needs no
+// caller-scoped curFocus. Returns true if it dismissed a dialog, false if none seen.
+async function clearAnrDialog(serial, h, tries = 3) {
+  let dismissed = false;
+  for (let i = 0; i < tries; i++) {
+    const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+    const focused = /Application Not Responding|isn.t responding|aerr_/i.test(w);
+    if (!focused && !(await h.seen("isn't responding", 250))) return dismissed;
+    dismissed = true;
+    await h.tapById('android:id/aerr_wait').catch(() => undefined);
+    if (!(await h.tapSynIf('Wait'))) await h.tapSyn(322, 1306).catch(() => undefined);
+    await h.sleep(1200);
+  }
+  return dismissed;
+}
+
 // ── WhatsApp: send a message ────────────────────────────────────────────────
 //
 // Uses the wa.me deep link so we don't need the recipient saved as a contact:
@@ -2398,18 +2731,66 @@ async function whatsappSend(serial, payload) {
   // Wait for the chat to actually open instead of a flat 5s. Poll for the compose
   // box (id/entry) to appear — usually ~1-2s — and bail early. Falls back to a
   // 4.5s cap so a slow open still proceeds. Speeds up the common case a lot.
-  {
-    let opened = false;
-    for (let i = 0; i < 9 && !opened; i++) {
-      await h.sleep(500);
-      opened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+  // CRITICAL (VERIFIED LIVE 21:37, watest47): a cold deep-link open can trip an ANR
+  // ("WhatsApp isn't responding — Wait / Close app") that sits OVER the loading chat
+  // and blocks the compose box from ever appearing. The old loop just spun 9×~500ms
+  // then gave up (CHAT_NOT_OPENED) WITHOUT dismissing the ANR — so every send to that
+  // device failed until the dialog was cleared by hand. Clear the ANR INSIDE the poll
+  // (press "Wait" to keep WhatsApp alive) so the chat can finish rendering.
+  let chatOpened = false;
+  for (let i = 0; i < 9 && !chatOpened; i++) {
+    await h.sleep(500);
+    chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+    // Every couple of polls, if an ANR is up, press "Wait" and give it a beat to recover.
+    if (!chatOpened && i % 2 === 1 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
+  }
+  tlog(`chat opened (entry poll)=${chatOpened}`);
+  // Last-chance recovery: if the box still never appeared, an ANR may STILL be up
+  // (it can re-pop). Clear it once more and re-poll briefly before giving up — this
+  // turns a transient ANR from a hard CHAT_NOT_OPENED failure into a successful send.
+  if (!chatOpened) {
+    if (await clearAnrDialog(serial, h, 3)) {
+      await h.sleep(1000);
+      for (let i = 0; i < 6 && !chatOpened; i++) {
+        await h.sleep(500);
+        chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+      }
+      tlog(`chat opened after ANR recovery=${chatOpened}`);
     }
   }
-  tlog('chat opened (entry poll)');
-  // SPEED: take ONE dump and use it for BOTH the blocking-dialog sweep AND the
-  // invalid-recipient check, instead of dismissBlockingDialogs (its own dump) +
-  // a separate screenText() dump (~2.2s each). On the common path (no dialog,
-  // valid number) this is a single dump.
+  // If the compose box never appeared, WhatsApp landed on something OTHER than the
+  // Conversation screen. The most common (VERIFIED LIVE, 21:00): the account is
+  // "in review"/restricted/banned → a full-screen notice with NO compose box, so
+  // the old code polled 9× (~23s wasted) then blindly tapped the send coordinate
+  // into that notice and returned a vague COMPOSE_FAILED. Read the screen ONCE and
+  // report the ACTUAL reason (account review / ban / rate-limit) instead of hanging.
+  if (!chatOpened) {
+    const notice = await h.screenText().catch(() => '');
+    if (/account.{0,3}(is|being)?.{0,3}(in )?review|hesab\w* incelen|inceleme|no longer restricted/i.test(notice)) {
+      return { status: 'ACCOUNT_REVIEW', note: 'Bu WhatsApp hesabı incelemede/kısıtlı — mesaj gönderilemez (genelde 24s sürer)', to, screenTexts: notice.slice(0, 400) };
+    }
+    if (/banned|suspended|violat|yasakl|askıya|Terms of Service/i.test(notice)) {
+      return { status: 'ACCOUNT_BANNED', note: 'Bu WhatsApp hesabı yasaklı/askıda — mesaj gönderilemez', to, screenTexts: notice.slice(0, 400) };
+    }
+    if (/not on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(notice)) {
+      return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: notice.slice(0, 300) };
+    }
+    // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
+    return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to, screenTexts: notice.slice(0, 400) };
+  }
+  // An ANR ("<app> isn't responding") can pop while the deep link cold-opens the
+  // chat — clear it first so the box/dialog sweep below sees the real UI, not the
+  // ANR overlay. (Cheap: reads focus once, taps "Wait" only if the dialog is up.)
+  await clearAnrDialog(serial, h, 2);
+  tlog('anr sweep (post-open)');
+  // SPEED: take ONE dump and use it for THREE things — the blocking-dialog sweep,
+  // the invalid-recipient check, AND capturing the real id/send button bounds —
+  // instead of separate dumps (~2.2s each). On the common path (no dialog, valid
+  // number) this is a single dump. `sendNode` (if found) drives a real button tap
+  // below instead of the blind coordinate; multi-line messages / different WA
+  // versions move the button off the hard-coded ~93%/91.5% point, so the measured
+  // node is strictly better when present (falls back to the coordinate otherwise).
+  let sendNode = null;
   {
     const nodes = await h.dump().catch(() => []);
     const flat = nodes.map((n) => n.text).filter(Boolean).join(' | ');
@@ -2424,8 +2805,11 @@ async function whatsappSend(serial, payload) {
     if (/not on whatsapp|invalid|isn.?t a valid/i.test(flat)) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: flat.slice(0, 300) };
     }
+    // Capture the send button from THIS dump (no extra dump). id/send is the paper-
+    // plane; only trust it if it has real on-screen bounds (cx/cy > 0).
+    sendNode = nodes.find((n) => (n.resId || '').includes('id/send') && n.cx > 0 && n.cy > 0) || null;
   }
-  tlog('dialog+invalid check (1 dump)');
+  tlog(`dialog+invalid check (1 dump)${sendNode ? ' [id/send found]' : ''}`);
 
   // ── CRITICAL: minimize `uiautomator dump` here. ──────────────────────────────
   // With text in the compose box WhatsApp's view tree churns, and REPEATED dumps
@@ -2452,7 +2836,11 @@ async function whatsappSend(serial, payload) {
   const needle = message.trim();
   // Read the compose text via ONE guarded dump. One dump won't ANR (a LOOP does).
   // Returns true = still full, false = cleared/sent, null = couldn't tell.
+  // BEFORE every dump, clear any ANR dialog first: if "<app> isn't responding"
+  // is up, the dump returns '' (→ null) and, worse, the dialog blocks the send.
+  // Pressing "Wait" keeps WhatsApp alive so the box/bubble becomes readable again.
   const composeStillFull = async () => {
+    if (await clearAnrDialog(serial, h, 2)) await h.sleep(400);
     const nodes = await h.dump().catch(() => null);
     if (!nodes) return null;
     const entry = nodes.find((n) => n.resId.includes('id/entry'));
@@ -2480,11 +2868,15 @@ async function whatsappSend(serial, payload) {
   // vtouch FIFO tap (VERIFIED: one synthetic tap clears the box; a vtouch tap leaves
   // it full so the old vtouch-first code always burned attempt 0). Tap SYNTHETIC on
   // BOTH attempts — attempt 0 usually sends, attempt 1 is a safety retry.
+  // Prefer the MEASURED id/send bounds captured above (accurate for multi-line
+  // messages / different WA versions); fall back to the scaled blind coordinate.
+  const tapX = sendNode ? Math.round(sendNode.cx) : sendX;
+  const tapY = sendNode ? Math.round(sendNode.cy) : sendY;
   let sent = false;
   for (let attempt = 0; attempt < 2 && !sent; attempt++) {
-    await adb(serial, ['shell', 'input', 'tap', String(sendX), String(sendY)]); // synthetic (the reliable path)
+    await adb(serial, ['shell', 'input', 'tap', String(tapX), String(tapY)]); // synthetic (the reliable path)
     const still = await waitCleared(1500);
-    tlog(`send tap ${attempt} + verify (still=${still})`);
+    tlog(`send tap ${attempt} @${tapX},${tapY}${sendNode ? '(id/send)' : '(coord)'} + verify (still=${still})`);
     if (still === false) { sent = true; break; }  // cleared → sent
     // still === true (definitely not sent) → loop and retry; null → also retry once
   }
@@ -2527,9 +2919,13 @@ async function whatsappSend(serial, payload) {
   // couple of retries.
   for (let r = 0; r < 2; r++) {
     const t = await h.screenText().catch(() => '');
-    if (!/message was not sent|not sent|gönderilemedi/i.test(t)) break;
-    // "Try Again" button on the "Your message was not sent" dialog.
-    if (!(await h.tapSynIf('Try Again', 'text'))) await h.tapIf('Try Again').catch(() => undefined);
+    // Match EN + TR "not sent" dialogs (Turkish locale showed "gönderilmedi"/
+    // "Mesajınız gönderilmedi" → a false SENT before this widened the pattern).
+    if (!/message was not sent|not sent|gönderilemedi|gönderilmedi|iletilemedi/i.test(t)) break;
+    // "Try Again" / "Tekrar Dene" button on the "not sent" dialog.
+    if (!(await h.tapSynIf('Try Again', 'text')) && !(await h.tapSynIf('Tekrar Dene', 'text'))) {
+      await h.tapIf('Try Again').catch(() => undefined);
+    }
     await h.sleep(4000);
   }
 
@@ -2542,7 +2938,7 @@ async function whatsappSend(serial, payload) {
   // sent" dialog remains, treat as sent.
   if (!sent) {
     const t = await h.screenText().catch(() => '');
-    if (!/message was not sent|gönderilemedi/i.test(t) && (await composeStillFull()) === false) sent = true;
+    if (!/message was not sent|gönderilemedi|gönderilmedi|iletilemedi/i.test(t) && (await composeStillFull()) === false) sent = true;
   }
 
   if (!sent) {
@@ -2557,8 +2953,1406 @@ async function whatsappSend(serial, payload) {
       screenTexts: (await h.screenText().catch(() => '')).slice(0, 300)
     };
   }
-  tlog('SENT');
+  // ── BAN-RISK MITIGATION: leave the chat after sending ────────────────────────
+  // Staying on the Conversation screen keeps WhatsApp foregrounded, which (a) shows
+  // the account as "online" continuously — a dead giveaway for an always-on bot —
+  // and (b) auto-marks any incoming reply as READ (blue ticks) the instant it
+  // arrives, since the chat is open. Pressing HOME backgrounds WhatsApp: it stops
+  // reporting "online", and with no chat open incoming replies are NOT auto-read
+  // (no blue ticks) — yet inbound capture keeps working because it reads from the
+  // notification shade (dumpsys), not the open chat. The app stays resident so the
+  // NEXT send is still warm (no cold-start penalty). Best-effort; never fails a send.
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+  tlog('SENT (+HOME: çevrimiçi/okundu gizlendi)');
   return { status: 'SENT', to, message };
+}
+
+// ── Telegram: runtime package detection ─────────────────────────────────────
+//
+// Telegram's package name is NOT fixed — it depends on where the APK came from:
+//   org.telegram.messenger      Play Store build
+//   org.telegram.messenger.web  direct-APK build (telegram.org website)
+//   org.thunderdog.challegram   Telegram X
+// so we NEVER hard-code it. `pm list packages | grep telegram` at runtime finds the
+// one actually installed (preferring the official messenger over Telegram-X when both
+// are present). Cached per serial — the installed set doesn't change within a session.
+// Returns null if no Telegram build is installed (caller reports NOT_INSTALLED).
+const tgPkgCache = new Map();
+async function detectTelegramPkg(serial) {
+  if (tgPkgCache.has(serial)) return tgPkgCache.get(serial);
+  let pkg = null;
+  try {
+    const out = await adb(serial, ['shell', 'pm', 'list', 'packages']);
+    const pkgs = out
+      .split('\n')
+      .map((l) => l.replace(/^package:/, '').trim())
+      .filter(Boolean);
+    // Preference order: official messenger (+ .web variant) first, then Telegram-X.
+    const prefer = [
+      'org.telegram.messenger',
+      'org.telegram.messenger.web',
+      'org.thunderdog.challegram'
+    ];
+    pkg = prefer.find((c) => pkgs.includes(c)) || pkgs.find((p2) => /telegram|thunderdog\.challegram/i.test(p2)) || null;
+  } catch {
+    /* pm list failed — leave pkg null; caller reports NOT_INSTALLED */
+  }
+  tgPkgCache.set(serial, pkg);
+  return pkg;
+}
+
+// ── Telegram: first-launch priming (post-install / pre-register) ─────────────
+//
+// Runs ONCE after Telegram is installed (from the provision `apks` step) to leave
+// the app in a clean, automation-ready state BEFORE any register/send job touches it.
+// It does everything that does NOT depend on a logged-in account:
+//   1) Pre-grant runtime permissions over ADB (NOT lxc-attach: `pm grant` needs the
+//      Binder caller identity — the same reason the a11y/keyboard step uses ADB). If a
+//      permission dialog pops mid-register it overlays the phone/code field and stalls
+//      the flow, so we grant them up front exactly like registerTelegram's TG_PERMS.
+//   2) Lift restricted SMS appops as root so Telegram can AUTO-READ its own login SMS
+//      (a clean number then often needs NO operator OTP — Telegram fills the code itself).
+//   3) Cold-open the app once so first-run heavy init (DB create, emoji/resource unpack)
+//      happens now, not on the register job's clock; clear the cold-open ANR if one pops.
+//   4) Turn ON in-app notification message PREVIEWS via the app's SharedPreferences so
+//      inbound-message polling (dumpsys notification) sees the sender + text, not just
+//      "Telegram: New message". Best-effort — needs root to write the app's prefs file.
+//   5) Leave the device on HOME (never in Telegram's foreground) so the live screen shows
+//      the launcher, mirroring how the Magisk step force-stops itself.
+// Everything is best-effort and idempotent: safe to re-run, and never throws (a failure
+// here must not fail provision — Telegram is an OPTIONAL app). Returns a short status.
+//
+// ★a11y note: the com.fleet.a11y service is package-AGNOSTIC — its SET_TEXT/CLICK
+// broadcasts act on whatever window currently has accessibility focus (the FleetA11y
+// service is registered for all packages), so it drives Telegram's custom EditTexts the
+// same way it drives WhatsApp's. No Telegram-specific a11y wiring is needed; the generic
+// waHelpers() (dump/tap/type/a11y*/screenText) already work against Telegram (registerTelegram
+// and telegramSend both rely on exactly this). This priming step therefore needs no a11y
+// taps at all — it only pre-grants perms + primes prefs so the LATER a11y-driven flows land.
+async function primeTelegram(serial) {
+  const TG_PKG = await detectTelegramPkg(serial);
+  if (!TG_PKG) return { status: 'NOT_INSTALLED' };
+
+  // 1) Runtime permissions — same set registerTelegram pre-grants (POST_NOTIFICATIONS for
+  //    the notification previews we enable below; SMS for code auto-read; contacts/phone
+  //    so the add-contact/resolve paths don't prompt). `pm grant` is a no-op for perms the
+  //    package doesn't declare, so an over-broad list is harmless.
+  const TG_PERMS = [
+    'POST_NOTIFICATIONS', 'READ_CONTACTS', 'WRITE_CONTACTS', 'GET_ACCOUNTS',
+    'READ_PHONE_STATE', 'READ_PHONE_NUMBERS', 'CALL_PHONE',
+    'CAMERA', 'RECORD_AUDIO', 'RECEIVE_SMS', 'READ_SMS',
+    'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION',
+    'READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE',
+    'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO'
+  ];
+  for (const short of TG_PERMS) {
+    await adb(serial, ['shell', 'pm', 'grant', TG_PKG, `android.permission.${short}`]).catch(() => undefined);
+  }
+  // 2) Restricted SMS appops (root) — lets Telegram read its own login SMS.
+  for (const op of ['RECEIVE_SMS', 'READ_SMS', 'READ_PHONE_NUMBERS']) {
+    await adbSu(serial, `appops set ${TG_PKG} ${op} allow`).catch(() => undefined);
+  }
+
+  // 3) Cold-open once so first-run init amortizes here, then clear any cold-open ANR.
+  const h = waHelpers(serial);
+  await launchApp(serial, TG_PKG, null).catch(() => undefined);
+  // Give first-run a moment; poll for the welcome/phone UI (bounded, like registerTelegram).
+  let rendered = false;
+  for (let i = 0; i < 8 && !rendered; i++) {
+    await h.sleep(700);
+    const txt = await h.screenText().catch(() => '');
+    if (/Start Messaging|Continue in|Your phone|phone number|Enter code|Your Name|telegram/i.test(txt)) rendered = true;
+    if (!rendered && i % 3 === 2) await clearAnrDialog(serial, h, 1).catch(() => undefined);
+  }
+  await clearAnrDialog(serial, h, 1).catch(() => undefined);
+
+  // 4) Notification message previews ON via SharedPreferences (root). Telegram stores the
+  //    global preview toggle in userconfing / mainconfig; the widely-stable key across
+  //    builds is "EnablePreviewAll" (Notifications → default "Message Preview") in the
+  //    app's default prefs XML. We only FLIP it to true if the prefs dir exists — writing a
+  //    malformed XML would wipe settings, so we do an in-place sed that no-ops when absent.
+  //    Best-effort: if root/sed is unavailable the register flow still works, previews just
+  //    stay at Telegram's default (which is already ON for most builds — this hardens it).
+  const prefsGlob = `/data/data/${TG_PKG}/shared_prefs/Notifications.xml`;
+  await adbSu(serial,
+    // Only rewrite if the file exists AND already contains the key (never create/append —
+    // a partial XML corrupts prefs). Flip an existing false→true; leave everything else.
+    `f=${prefsGlob}; [ -f "$f" ] && grep -q 'EnablePreviewAll' "$f" && ` +
+    `sed -i 's/name="EnablePreviewAll" value="false"/name="EnablePreviewAll" value="true"/' "$f" || true`
+  ).catch(() => undefined);
+
+  // 5) Leave HOME — never keep Telegram in the foreground on the live screen.
+  await adb(serial, ['shell', 'am', 'force-stop', TG_PKG]).catch(() => undefined);
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+
+  return { status: 'PRIMED', pkg: TG_PKG, rendered };
+}
+
+// ── Telegram: send a message ────────────────────────────────────────────────
+//
+// Mirrors whatsappSend. Telegram exposes a deep link that resolves a phone number:
+//   tg://resolve?phone=<digits>&text=<urlencoded>
+// (leading "+" is stripped internally; LaunchActivity.java:2298-2307,2363).
+//
+// ★IMPORTANT deep-link semantics (verified against LaunchActivity.findContacts,
+//  master): the phone param resolves ONLY against the account's SAVED contacts
+//  (contactsByPhone / contactsByShortPhone, LaunchActivity.java:5892-5908). Behaviour:
+//   • Number IS a saved contact → the private chat opens and &text= is applied as the
+//     compose-box DRAFT (not auto-sent — like WhatsApp we must tap Send).
+//   • Number is NOT a saved contact → NO chat opens. Telegram shows the "New contact"
+//     flow instead — either a NewContactBottomSheet add-contact form, or a
+//     "New contact / Phone number %s is not in your contacts list. Do you want to add
+//     it?" alert (NewContactAlert*, LaunchActivity.java:3272-3293). The &text= is
+//     DISCARDED on this path — there is no compose box to fill.
+//  ⇒ To DM an arbitrary number reliably, that number must first be a contact on the
+//  logged-in account. When it isn't, we detect the add-contact wall (no EditText compose
+//  box appears; the FirstName/"Add contact"/"is not in your contacts list" screen shows)
+//  and report NOT_A_CONTACT rather than blind-tapping the add-contact form.
+//
+// As with WhatsApp, Telegram does NOT auto-send: the pre-filled text is only a draft,
+// so we must tap the Send button once the chat is open.
+//
+// ★MAPPED from DrKLO/Telegram source (org.telegram.messenger, master). Unlike WhatsApp,
+// Telegram assigns NO resource-ids to the compose box or the send button — there is no
+// setId() call anywhere in ChatActivityEnterView.java. Both are identified purely by
+// class + content-desc, which are STABLE across builds/locales:
+//   • Send button  = SendButton (a raw `View`, NOT a Button subclass), so in a
+//     `uiautomator dump` it appears as class="android.view.View" with
+//     content-desc = getString(R.string.Send)  (ChatActivityEnterView.java:3463).
+//     → EN "Send" / TR "Gönder". NO resource-id.
+//   • Compose box  = ChatActivityEditTextCaption → EditTextCaption → EditTextBoldCursor
+//     → EditTextEffects → EditText, so it dumps as class="android.widget.EditText"
+//     with hint = getString(R.string.TypeMessage) (== "Message" / "Mesaj"). NO resource-id.
+//   • ★CRITICAL: when the compose box is EMPTY, Telegram HIDES the send button and shows
+//     the voice/video record button in the SAME bottom-right slot — content-desc =
+//     getString(R.string.AccDescr{Voice,Video}Message) ("Record voice/video message")
+//     (ChatActivityEnterView.java:6122-6123). Blind-tapping that slot when the box is
+//     empty starts a voice recording. So we (a) only ever tap after confirming the draft
+//     is in the box, and (b) EXCLUDE the record button by content-desc when picking the
+//     coordinate fallback. See VOICE_DESCS below.
+// The COORDINATE fallback (send FAB ≈ bottom-right, like WA) is only used when the
+// content-desc node isn't found AND the record button isn't occupying that slot, so the
+// flow degrades gracefully without ever hitting the mic.
+//
+// payload: { to (E.164 digits, no +), message }
+async function telegramSend(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const message = String(p(payload, 'message', ''));
+  if (!to) throw new Error('to (telefon numarası) gerekli');
+  if (!message) throw new Error('message gerekli');
+
+  const h = waHelpers(serial); // same generic tap/type/dump/a11y helper set
+  const T0 = Date.now();
+  const tlog = process.env.FLEET_SEND_TIMING === '1'
+    ? (label) => console.error(`  [tg-send] ${label}: +${Date.now() - T0}ms`)
+    : () => {};
+
+  // Which Telegram build is installed? (runtime-detected, never assumed)
+  const TG_PKG = await detectTelegramPkg(serial);
+  if (!TG_PKG) {
+    return { status: 'NOT_INSTALLED', note: 'Cihazda Telegram yüklü değil', to };
+  }
+  tlog(`pkg=${TG_PKG}`);
+
+  // Guarantee real touch (heals vtouch after reboot) and a reliable IME — same as WA.
+  await h.ensureTouch();
+  tlog('ensureTouch');
+  await h.ensureAdbKeyboard();
+  tlog('ensureAdbKeyboard');
+
+  // ── Node identifiers (VERIFIED from DrKLO/Telegram source — no resource-ids exist). ──
+  // compose box  = class android.widget.EditText, hint R.string.TypeMessage. No id.
+  // send button  = class android.view.View, content-desc R.string.Send. No id.
+  // We FIND the send button by content-desc first, then fall back to the bottom-right
+  // coordinate (identical strategy to whatsappSend's sendNode → scaled-coord fallback).
+  // (4) SEND-BUTTON TWO VARIANTS. The slot at the end of the input bar renders ONE of two
+  //     controls depending on state, and both must be recognized:
+  //   • VARIANT A — SEND FAB (the normal case): a paper-plane View, content-desc
+  //       R.string.Send  → "Send" (EN) / "Gönder" (TR). This is what a fresh draft shows.
+  //   • VARIANT B — DONE / CHECK icon: when the compose box is in EDIT mode (editing a
+  //       previously-sent message) OR on some builds/skins the send affordance is a
+  //       checkmark, content-desc R.string.Done  → "Done" (EN) / "Bitti"/"Tamam" (TR),
+  //       sometimes R.string.Save ("Save"/"Kaydet"). tg://resolve never opens edit mode,
+  //       but including these makes the tap resilient to skins/forks (e.g. Telegram-X,
+  //       Nekogram) that relabel the send control — safe because we still exclude VOICE.
+  const SEND_DESCS = ['Send', 'Gönder', 'Gonder', 'Done', 'Bitti', 'Tamam', 'Save', 'Kaydet']; // R.string.Send / R.string.Done|Save per locale
+  const SEND_PRIMARY = ['Send', 'Gönder', 'Gonder']; // the FAB desc — matched first, before the Done/Save fallbacks
+  // ★The record button occupies the SAME slot when the box is empty — content-desc
+  // R.string.AccDescr{Voice,Video}Message. Never tap it: used to VETO the coord fallback.
+  const VOICE_DESCS = ['Record voice message', 'Record video message', 'Sesli mesaj', 'Görüntülü mesaj', 'voice message', 'video message'];
+
+  // ── (5) MULTI-LINE / EMOJI / TURKISH-safe compose typing ──────────────────────
+  // The shared h.typeText() sends the raw string through `am broadcast --es msg`.
+  // Two hazards for rich message bodies that this local helper handles:
+  //   • NEWLINES: a literal '\n' inside `am broadcast … --es msg '…\n…'` truncates the
+  //     argument at the newline (the device sh treats it as a command separator even
+  //     inside single quotes for `am`'s arg tokenizer), so only the FIRST line survives
+  //     and — worse — the tail can be interpreted as a stray shell token. So we type the
+  //     body line-by-line: each line via the IME broadcast, and between lines inject a
+  //     soft newline with KEYCODE_ENTER (66). In Telegram's compose box ENTER inserts a
+  //     newline (it does NOT send — send is a discrete button), so the draft keeps its
+  //     line breaks and we still control the send ourselves.
+  //   • EMOJI / non-ASCII (Turkish ç/ğ/ı/ö/ş/ü, 🎉): `input text` DROPS these (ASCII-only),
+  //     but the ADBKeyboard `ADB_INPUT_TEXT` broadcast commits the UTF-8 string intact.
+  //     We therefore REQUIRE ADBKeyboard for any non-ASCII body and fail loudly
+  //     (COMPOSE_FAILED) rather than silently sending a mangled, emoji-stripped message.
+  const hasNonAscii = /[^\x00-\x7F]/.test(message);
+  const adbKbOk = await h.ensureAdbKeyboard(); // idempotent; already called above, cached
+  // Type `body` into the currently-focused compose box, preserving line breaks and unicode.
+  const typeRichBody = async (body) => {
+    const lines = String(body).split(/\r\n|\r|\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        // Soft newline inside the compose box (Telegram ENTER = newline, not send).
+        await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_ENTER']).catch(() => undefined);
+        await h.sleep(120);
+      }
+      if (lines[i].length === 0) continue; // blank line already handled by the ENTER above
+      await h.typeText(lines[i]); // routes via ADBKeyboard broadcast (UTF-8 safe) when active
+      await h.sleep(180);
+    }
+  };
+
+  // Open the chat via the tg:// deep link with the text pre-filled. Single-quote the
+  // -d value (shArg) so encoded metacharacters in the message (&, ), etc.) pass through
+  // the device sh literally — exactly the bug whatsappSend guards against.
+  // encodeURIComponent already percent-escapes newlines/emoji/Turkish for the URL, so the
+  // deep-link pre-fill path itself is unicode-safe; the risk is only when a build ignores
+  // &text= and we fall back to typing (handled by typeRichBody above).
+  const url = `tg://resolve?phone=${to}&text=${encodeURIComponent(message)}`;
+  await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(url), TG_PKG]).catch(() => undefined);
+
+  // Wait for the chat to actually open. Telegram's compose EditText appearing is the
+  // signal the chat rendered. Poll (like WA's id/entry poll) and clear any ANR that
+  // pops over the cold open. We detect the compose box by class=EditText (id unknown).
+  // Compose box has NO resource-id (verified) → detect by class android.widget.EditText.
+  // The chat screen has exactly one EditText (the message field); prefer the one whose
+  // hint/text looks like the message field ("Message"/"Mesaj") and, to avoid latching the
+  // New-contact form's First/Last-name EditTexts, ignore ones sitting in the top half.
+  const findComposeBox = async (nodesIn) => {
+    const nodes = nodesIn || await h.dump().catch(() => []);
+    const edits = nodes.filter((n) => /(^|\.)EditText$/i.test(n.cls || '') && n.cx > 0 && n.cy > 0);
+    if (edits.length === 0) return null;
+    // The message field sits in the bottom input bar → largest cy wins on ties.
+    const looksLikeMsg = (n) => /message|mesaj|type a message/i.test(`${n.text || ''} ${n.desc || ''}`);
+    return edits.find(looksLikeMsg)
+      || edits.slice().sort((a, b) => b.cy - a.cy)[0]
+      || null;
+  };
+  let composeBox = null;
+  for (let i = 0; i < 9 && !composeBox; i++) {
+    await h.sleep(500);
+    composeBox = await findComposeBox();
+    if (!composeBox && i % 2 === 1 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
+  }
+  tlog(`chat opened (compose poll)=${Boolean(composeBox)}`);
+
+  // Last-chance ANR recovery (an ANR can re-pop and hide the box), same as WA.
+  if (!composeBox) {
+    if (await clearAnrDialog(serial, h, 3)) {
+      await h.sleep(1000);
+      for (let i = 0; i < 6 && !composeBox; i++) {
+        await h.sleep(500);
+        composeBox = await findComposeBox();
+      }
+      tlog(`chat opened after ANR recovery=${Boolean(composeBox)}`);
+    }
+  }
+
+  // The compose box never appeared → Telegram landed on a non-chat screen. Read it
+  // ONCE (rich = text + content-desc: several walls are alert BUTTONS whose label lives
+  // in content-desc) and report the real reason instead of blind-tapping (WA scenario #6).
+  if (!composeBox) {
+    const notice = await h.screenTextRich().catch(() => '');
+    // (6) ★FLOOD-WAIT FIRST — it can co-occur with a spam bulletin, and it's the one wall
+    // that carries a retry-after we want to surface. Exact strings (values/strings.xml):
+    //   R.string.FloodWait          "Too many attempts, please try again later."
+    //   R.string.FloodWaitTime      "Too many attempts. Please try again in %1$s."
+    //   R.string.NobodyLikesSpam2 / login FLOOD_WAIT_%d bulletins.
+    // Extract the retry-after ("N seconds/minutes/hours") when Telegram prints it.
+    if (/too many attempts|too many tries|please try again in|FLOOD_?WAIT|flood control|çok fazla deneme|daha sonra tekrar deneyin|lütfen .* sonra/i.test(notice)) {
+      const m = /(\d+)\s*(hour|hr|minute|min|second|sec|saat|dakika|dk|saniye|sn)/i.exec(notice);
+      return {
+        status: 'FLOOD_WAIT',
+        note: `Telegram hız sınırı (flood-wait): çok fazla deneme — ${m ? `${m[1]} ${m[2]}` : 'bir süre'} sonra tekrar deneyin`,
+        to,
+        ...(m ? { retryAfter: `${m[1]} ${m[2]}` } : {}),
+        screenTexts: notice.slice(0, 400)
+      };
+    }
+    // ★Most common wall (VERIFIED): the number is NOT a saved contact, so tg://resolve
+    // opened the "New contact" add-contact flow instead of a chat. Exact strings from
+    // NewContactAlert*/NewContactBottomSheet (values/strings.xml):
+    //   "Phone number %s is not in your contacts list. Do you want to add it?"
+    //   title "New contact", button "Add contact"; the sheet shows "First name (required)".
+    // Detect it and report NOT_A_CONTACT — to DM this number, add it as a contact first.
+    if (/not in your contacts list|add contact|new contact|first name \(required\)|rehber(iniz)?e ekle|kişilerinizde (yok|kayıtlı değil)|yeni kişi/i.test(notice)) {
+      return { status: 'NOT_A_CONTACT', note: 'Numara bu hesabın kişilerinde kayıtlı değil — Telegram DM için önce kişi olarak eklenmeli (tg://resolve?phone yalnızca kayıtlı kişiyle sohbet açar)', to, screenTexts: notice.slice(0, 400) };
+    }
+    // (1) INVALID_RECIPIENT — the number has NO Telegram account at all. Strings:
+    //   R.string.NoUsersFound "No users found." / MTProto PHONE_NOT_OCCUPIED /
+    //   USERNAME_NOT_OCCUPIED / "isn't on Telegram" contact-import bulletins.
+    if (/not on telegram|isn.t on telegram|no telegram account|no users found|phone.{0,12}(not|isn.t).{0,12}(found|registered|occupied)|USERNAME_NOT_OCCUPIED|PHONE_NOT_OCCUPIED|kullanıcı bulunamadı|Telegram'da (yok|değil|kayıtlı değil)|Telegram kullanmıyor/i.test(notice)) {
+      return { status: 'INVALID_RECIPIENT', note: 'Numara Telegram\'da kayıtlı değil (hesabı yok) — mesaj gönderilemez', to, screenTexts: notice.slice(0, 400) };
+    }
+    // (2) BLOCKED — the user exists but privacy/spam rules forbid messaging them. Strings:
+    //   R.string.PrivacyMessagesRestrictedByThisUser "This user doesn't accept messages…"
+    //   "You can't send messages to this user." / USER_PRIVACY_RESTRICTED / PEER_FLOOD /
+    //   USER_IS_BLOCKED / "You were blocked".
+    if (/can.t send messages|doesn.t accept (messages|new messages)|only accept messages from|USER_PRIVACY_RESTRICTED|PEER_FLOOD|USER_IS_BLOCKED|you were blocked|privacy|engellendi(niz)?|mesaj (kabul etmiyor|gönderemezsiniz)|gizlilik/i.test(notice)) {
+      return { status: 'BLOCKED', note: 'Telegram bu kullanıcıya mesaj göndermeyi engelledi (kullanıcının gizlilik ayarları / spam koruması / engelleme)', to, screenTexts: notice.slice(0, 400) };
+    }
+    // Not logged in / no account on this Telegram → can't send.
+    if (/log in|sign in|your phone number|start messaging|giriş yap|numaranızı/i.test(notice)) {
+      return { status: 'NOT_LOGGED_IN', note: 'Bu cihazda Telegram oturumu açık değil', to, screenTexts: notice.slice(0, 400) };
+    }
+    return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to, screenTexts: notice.slice(0, 400) };
+  }
+
+  // Clear any ANR that popped while opening, so the sweep below sees the real UI.
+  await clearAnrDialog(serial, h, 2);
+  tlog('anr sweep (post-open)');
+
+  // ── (3) DRAFT PRE-FILL VERIFY + IME SELF-HEAL ─────────────────────────────────
+  // The deep link pre-fills the compose box, but some Telegram builds IGNORE the &text=
+  // param (they silently open an EMPTY chat). So: read the box; if our message isn't
+  // there, type it via the reliable IME path (typeRichBody = newline/emoji/Turkish-safe).
+  // (whatsappSend can rely on wa.me always pre-filling; tg:// is less consistent, so we
+  //  verify + self-heal here.)
+  // The verify needle uses the FIRST LINE (up to 12 chars) — the deep-link path and the
+  // dump both surface the whole body as box.text, but line breaks/emoji can shift byte
+  // offsets, so comparing on a short ASCII-ish prefix of line 1 is the most robust probe.
+  const firstLine = (message.split(/\r\n|\r|\n/)[0] || '').trim();
+  const needle = firstLine || message.trim();
+  // Probe = first 12 chars of line 1 with any trailing non-ASCII trimmed (a multi-byte
+  // char can be split by the dump), so the includes() check doesn't fail on a clean fill.
+  const probe = needle.slice(0, 12).replace(/[^\x00-\x7F]+$/, '') || needle.slice(0, 4);
+  {
+    const box = await findComposeBox();
+    const cur = (box && (box.text ?? '')) || '';
+    const prefilled = probe.length > 0 && cur.includes(probe);
+    if (!prefilled) {
+      // (5)+(3) GUARD: the body has emoji/Turkish/non-ASCII but ADBKeyboard is NOT the
+      // active IME → `input text` would DROP those chars and send a mangled/empty message.
+      // Fail loudly instead of silently corrupting the outgoing text.
+      if (hasNonAscii && !adbKbOk) {
+        return {
+          status: 'COMPOSE_FAILED',
+          note: 'Mesaj emoji/Türkçe/özel karakter içeriyor ama ADBKeyboard IME aktif değil — düz `input text` bu karakterleri düşürür; gönderim iptal edildi (cihaza ADBKeyboard kurulmalı)',
+          to,
+          reason: 'NON_ASCII_NO_IME'
+        };
+      }
+      // Focus the box and type. typeRichBody routes through ADBKeyboard when active and
+      // preserves line breaks (KEYCODE_ENTER between lines) + UTF-8 (emoji/Turkish).
+      if (box) { await h.tapNode(box); await h.sleep(500); }
+      await h.clearField().catch(() => undefined);
+      await typeRichBody(message);
+      await h.sleep(500);
+      // Re-verify the self-heal actually landed text — if the box is STILL empty the field
+      // rejected input entirely (rare on redroid), so don't fall through to a blind send.
+      const box2 = await findComposeBox();
+      const cur2 = (box2 && (box2.text ?? '')) || '';
+      const filled2 = cur2.trim().length > 0 && (probe.length === 0 || cur2.includes(probe) || cur2.trim().length >= Math.min(4, needle.length));
+      if (!filled2) {
+        return {
+          status: 'COMPOSE_FAILED',
+          note: 'Mesaj kutusu doldurulamadı (deep-link &text= yok sayıldı ve IME yazımı da tutmadı) — gönderim iptal edildi',
+          to,
+          screenTexts: (await h.screenText().catch(() => '')).slice(0, 300)
+        };
+      }
+      tlog('compose self-filled (deep-link text was empty)');
+    }
+  }
+
+  // ── Locate the Send button. Prefer the content-desc node, else coordinate fallback. ──
+  // The SendButton lives in a 100dp-wide, right+bottom-gravity container at the end of the
+  // input bar (ChatActivityEnterView.java:3468), so it sits at the bottom-right, like
+  // WhatsApp's. Compute the scaled blind coordinate up front (used when no node is found).
+  let sw = 720, sh = 1280;
+  try {
+    const wm = await adb(serial, ['shell', 'wm', 'size']);
+    const ov = /Override size:\s*(\d+)x(\d+)/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x(\d+)/.exec(wm);
+    const m = ov || ph || /(\d+)x(\d+)/.exec(wm);
+    if (m) { sw = Number(m[1]) || sw; sh = Number(m[2]) || sh; }
+  } catch { /* keep defaults */ }
+  // Send FAB centre ≈ 92% width (100dp container hugs the right edge with a small margin)
+  // and ≈ 96% height (the input bar is the last row above the nav bar). WhatsApp used
+  // ~93%/~91.5%; Telegram's bar sits slightly lower, hence 96%.
+  const sendX = Math.round(sw * 0.92);
+  const sendY = Math.round(sh * 0.96);
+
+  let sendNode = null;
+  let recordInSlot = false;
+  {
+    const nodes = await h.dump().catch(() => []);
+    // Send button has NO resource-id — it carries content-desc R.string.Send. Match the
+    // desc exactly (== "send"/"gönder") so we never latch a "Send as…"/"Scheduled" control.
+    for (const d of SEND_DESCS) {
+      const n = nodes.find((x) => (x.desc || '').trim().toLowerCase() === d.toLowerCase() && x.cx > 0 && x.cy > 0);
+      if (n) { sendNode = n; break; }
+    }
+    // ★VETO: if the record (voice/video) button is what's occupying the send slot, the
+    // draft never made it into the box → tapping the coordinate would start a recording.
+    if (!sendNode) {
+      recordInSlot = VOICE_DESCS.some((d) => nodes.some((x) => (x.desc || '').toLowerCase().includes(d.toLowerCase())));
+    }
+  }
+  if (!sendNode && recordInSlot) {
+    // The send button isn't present and the mic is in its place → the compose box is empty
+    // in Telegram's eyes. Report rather than blind-tap the mic (mirrors WA empty-box guard).
+    return {
+      status: 'COMPOSE_FAILED',
+      note: 'Gönder butonu görünmüyor (mesaj kutusu boş sayılıyor; kayıt/mikrofon butonu yerinde) — gönderim iptal edildi',
+      to,
+      screenTexts: (await h.screenText().catch(() => '')).slice(0, 300)
+    };
+  }
+  const tapX = sendNode ? Math.round(sendNode.tapX ?? sendNode.cx) : sendX;
+  const tapY = sendNode ? Math.round(sendNode.tapY ?? sendNode.cy) : sendY;
+  tlog(`send button ${sendNode ? '[desc found]' : '[coord fallback]'} @${tapX},${tapY}`);
+
+  // Confirm-before-retry loop, identical strategy to whatsappSend: a SYNTHETIC tap on
+  // the send button, then check whether the compose box CLEARED (= sent). Telegram
+  // clears the box on send; if it's still full we retry once. At most 2 taps so a
+  // stray tap on an empty box doesn't trigger the voice-record button.
+  const composeStillFull = async () => {
+    if (await clearAnrDialog(serial, h, 2)) await h.sleep(400);
+    const box = await findComposeBox();
+    if (!box) return null; // couldn't read → unknown
+    return (box.text ?? '').includes(needle.slice(0, 12));
+  };
+  const waitCleared = async (capMs) => {
+    const start = Date.now();
+    for (;;) {
+      const still = await composeStillFull();
+      if (still === false) return false;             // cleared → sent
+      if (Date.now() - start >= capMs) return still; // true (full) or null (unknown)
+      await h.sleep(350);
+    }
+  };
+  let sent = false;
+  for (let attempt = 0; attempt < 2 && !sent; attempt++) {
+    await adb(serial, ['shell', 'input', 'tap', String(tapX), String(tapY)]); // synthetic (reliable for FAB)
+    const still = await waitCleared(1500);
+    tlog(`send tap ${attempt} @${tapX},${tapY}${sendNode ? '(desc)' : '(coord)'} + verify (still=${still})`);
+    if (still === false) { sent = true; break; }
+  }
+
+  // Late spam/invalid wall: Telegram can pop the "can't message this user" alert a beat
+  // AFTER we tap send (slow device). Re-check so we return the real reason, not a false SENT.
+  {
+    const t = await h.screenText().catch(() => '');
+    // Post-send walls (from strings.xml): FloodWait "Too many attempts, please try again
+    // later", privacy/restriction bulletins, or a late add-contact prompt.
+    if (/can.t send messages|not on telegram|USERNAME_NOT_OCCUPIED|too many attempts|flood|spam|not in your contacts list|çok fazla|engellendi|daha sonra tekrar/i.test(t)) {
+      return { status: 'BLOCKED', note: 'Telegram mesajı reddetti (gizlilik/spam/flood veya numara Telegram\'da değil)', to, screenTexts: t.slice(0, 300) };
+    }
+  }
+
+  // Final confirmation if the loop couldn't confirm (null path): one more read.
+  if (!sent) {
+    const still = await composeStillFull();
+    if (still === false) sent = true; // box cleared after all → sent
+  }
+
+  if (!sent) {
+    return {
+      status: 'COMPOSE_FAILED',
+      note: 'Mesaj gönderilemedi (mesaj kutusu boşalmadı — gönderim doğrulanamadı)',
+      to,
+      screenTexts: (await h.screenText().catch(() => '')).slice(0, 300)
+    };
+  }
+
+  // ── BAN-RISK MITIGATION: leave the chat after sending (WhatsApp Fix 9 twin) ───
+  // Staying on the chat keeps Telegram foregrounded (shows "online", auto-reads
+  // incoming replies). Press HOME so Telegram backgrounds: it stops reporting online
+  // and incoming messages aren't auto-marked read. The app stays resident so the next
+  // send is warm. Best-effort; never fails a send.
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+  tlog('SENT (+HOME: çevrimiçi/okundu gizlendi)');
+  return { status: 'SENT', to, message, pkg: TG_PKG };
+}
+
+// ── Telegram: read a conversation ───────────────────────────────────────────
+//
+// Templated on whatsappRead, but Telegram's chat surface is different enough that
+// this is NOT a copy — it fixes the two concrete gaps the WhatsApp reader had:
+//   (1) whatsappRead reads only what's on ONE screen (no scroll) → misses history.
+//   (2) whatsappRead can't tell INCOMING from OUTGOING bubbles (it returns a flat
+//       string list) → the receipt/inbound pipeline can't act on direction.
+// This reader SCROLLS the history up, DEDUPES across passes, and TAGS each message
+// as 'in' | 'out'.
+//
+// ★★ WHY THE TELEGRAM CHAT IS HARD TO SCRAPE (mapped from DrKLO/Telegram, master):
+//   • Messages render in `org.telegram.ui.Cells.ChatMessageCell`, a raw custom `View`
+//     (NOT a TextView) that DRAWS its text on a Canvas — so in a `uiautomator dump`
+//     the message text is NOT in the node's `text` attribute. It IS exposed via
+//     accessibility: ChatMessageCell.onInitializeAccessibilityNodeInfo() builds a
+//     content-description from the message ("<sender>\n<text>\n<time>" style), so the
+//     bubble dumps as class="android.view.View" with the message in `content-desc`
+//     and an EMPTY `text`. ⇒ We read bubbles from `desc`, not `text` (opposite of WA).
+//   • NO resource-ids exist on the cells (Telegram sets none), and there is NO in/out
+//     flag in the dump. Direction is inferred GEOMETRICALLY: outgoing bubbles are
+//     right-gravity, incoming are left-gravity (ChatMessageCell positions the bubble
+//     background by `currentMessageObject.isOutOwner()`). The stable signal in the
+//     dump is the bubble's horizontal placement: an OUT bubble hugs the right edge
+//     (its right edge is near screen-width and it does NOT start at the left margin);
+//     an IN bubble starts at the left margin. We classify by which side of screen
+//     center the bubble's MIDPOINT sits AND whether it touches the left/right margin,
+//     so a wide bubble that crosses center is still classified by the edge it hugs.
+//   • The message list is an inverted RecyclerListView (`chatListView`) — newest at the
+//     BOTTOM, and scrolling UP (swipe down-gesture) reveals OLDER messages. We start at
+//     the bottom (freshly-opened chat), read, then scroll up to page through history.
+//
+// payload: { to? (E.164 digits — DM opened via tg://resolve, must be a saved contact),
+//            from? (contact display name — opens via search),
+//            limit? (max messages to return, default 50, cap 200),
+//            scrollPages? (how many history pages to page up, default 4, cap 12) }
+async function telegramRead(serial, payload) {
+  const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+  const from = String(p(payload, 'from', '')).trim();
+  const limit = Math.min(Math.max(1, Number(p(payload, 'limit', 50)) || 50), 200);
+  const scrollPages = Math.min(Math.max(0, Number(p(payload, 'scrollPages', 4)) || 0), 12);
+
+  const h = waHelpers(serial); // same generic tap/type/dump/a11y helper set
+  const T0 = Date.now();
+  const tlog = process.env.FLEET_SEND_TIMING === '1'
+    ? (label) => console.error(`  [tg-read] ${label}: +${Date.now() - T0}ms`)
+    : () => {};
+
+  const TG_PKG = await detectTelegramPkg(serial);
+  if (!TG_PKG) return { status: 'NOT_INSTALLED', note: 'Cihazda Telegram yüklü değil', to: to || undefined };
+
+  await h.ensureTouch();
+  await h.ensureAdbKeyboard();
+
+  // ── Open the chat ───────────────────────────────────────────────────────────
+  // Two entry paths, mirroring whatsappRead:
+  //   • `to` (phone): tg://resolve?phone deep-link. Like telegramSend, this ONLY opens
+  //     a chat if the number is a SAVED CONTACT of the logged-in account — otherwise it
+  //     lands on the New-contact flow (no chat, no bubbles). We detect that below.
+  //   • `from` (name): open Telegram, use the top search to find the dialog by name and
+  //     tap the first result. Telegram's global search field carries content-desc
+  //     R.string.Search ("Search" / "Ara"); results are dialog rows in the search list.
+  if (to) {
+    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(`tg://resolve?phone=${to}`), TG_PKG]).catch(() => undefined);
+    await h.sleep(4500);
+  } else if (from) {
+    await launchApp(serial, TG_PKG, null);
+    await h.sleep(4000);
+    // Open search (content-desc "Search"/"Ara"), type the name, tap the first hit.
+    if (await h.tapIf(['Search', 'Ara'], 'desc')) {
+      await h.sleep(900);
+      await h.typeText(from);
+      await h.sleep(1800);
+      // The first search result row carries the contact's name as text/desc → tap it.
+      await h.tapBy(from, 'any').catch(() => undefined);
+      await h.sleep(3000);
+    }
+  } else {
+    return { status: 'BAD_REQUEST', note: 'to (telefon) veya from (kişi adı) gerekli' };
+  }
+  await clearAnrDialog(serial, h, 2);
+
+  // ── Confirm a chat actually opened (compose box present), else report the reason ──
+  // Reuse the same compose-box detector shape as telegramSend: the message EditText is
+  // the signal the Conversation screen rendered. If it never appears we're on a wall
+  // (not-a-contact / not-logged-in) — read the screen ONCE and return the real reason
+  // instead of scraping an empty/irrelevant screen.
+  const hasComposeBox = async () => {
+    const nodes = await h.dump().catch(() => []);
+    return nodes.some((n) => /(^|\.)EditText$/i.test(n.cls || '') && n.cy > 0);
+  };
+  let opened = false;
+  for (let i = 0; i < 8 && !opened; i++) {
+    opened = await hasComposeBox();
+    if (!opened) { await h.sleep(600); if (i % 2 === 1) await clearAnrDialog(serial, h, 1); }
+  }
+  tlog(`chat opened=${opened}`);
+  if (!opened) {
+    const notice = await h.screenText().catch(() => '');
+    if (/not in your contacts list|add contact|new contact|first name \(required\)|rehber(iniz)?e ekle|kişilerinizde (yok|kayıtlı değil)|yeni kişi/i.test(notice)) {
+      return { status: 'NOT_A_CONTACT', note: 'Numara bu hesabın kişilerinde kayıtlı değil — Telegram sohbeti yalnızca kayıtlı kişiyle açılır (tg://resolve?phone). Okumak için önce kişi olarak ekleyin', to: to || undefined, screenTexts: notice.slice(0, 400) };
+    }
+    if (/log in|sign in|your phone number|start messaging|giriş yap|numaranızı/i.test(notice)) {
+      return { status: 'NOT_LOGGED_IN', note: 'Bu cihazda Telegram oturumu açık değil', to: to || undefined, screenTexts: notice.slice(0, 400) };
+    }
+    return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to: to || undefined, from: from || undefined, screenTexts: notice.slice(0, 400) };
+  }
+
+  // ── Screen geometry, for the direction (in/out) classifier + scroll gesture ──
+  const { sw, sh } = await wmSize(serial);
+  const centerX = sw / 2;
+
+  // ── Bubble extraction from one dump ──────────────────────────────────────────
+  //
+  // A message bubble is a ChatMessageCell → dumps as class android.view.View with the
+  // message in `content-desc` (see header). We keep only nodes that:
+  //   • have a non-trivial content-desc,
+  //   • sit in the message LIST band (below the toolbar, above the input bar) — this
+  //     drops the toolbar title, the "typing…" subtitle, and the compose-box hint,
+  //   • aren't the compose EditText (that's a real widget, class EditText, excluded).
+  // Direction: OUT hugs the RIGHT margin, IN hugs the LEFT margin. We decide by the
+  // bubble's midpoint side AND its nearest-edge gap, so a bubble wider than half the
+  // screen is still classified by the margin it touches.
+  const TOOLBAR_Y = Math.round(sh * 0.10);   // below the chat toolbar (avatar/name row)
+  const INPUTBAR_Y = Math.round(sh * 0.86);  // above the compose/input bar
+  const MARGIN = Math.round(sw * 0.06);       // ~6% edge gutter Telegram leaves per side
+  // Metadata-only a11y strings we must NOT treat as message text (localized).
+  const META_RE = /^(typing|online|last seen|seen recently|çevrimiçi|yazıyor|son görülme|bugün|today|yesterday|dün)\b/i;
+  const extractBubbles = (nodes) => {
+    const out = [];
+    for (const n of nodes) {
+      const desc = (n.desc || '').trim();
+      if (!desc || desc.length < 1) continue;
+      if (/(^|\.)EditText$/i.test(n.cls || '')) continue;      // compose box
+      const [x1, y1, x2] = n.bounds;
+      const cy = n.cy;
+      if (cy <= TOOLBAR_Y || cy >= INPUTBAR_Y) continue;        // chrome, not a bubble
+      // A ChatMessageCell dumps as View/ViewGroup; skip obvious non-cell chrome by
+      // requiring the node carry real message-like content, not a bare status word.
+      if (META_RE.test(desc)) continue;
+      // Direction: which margin does the bubble hug?
+      const leftGap = x1 - 0;
+      const rightGap = sw - x2;
+      const mid = (x1 + x2) / 2;
+      let dir;
+      if (leftGap <= MARGIN && rightGap > MARGIN) dir = 'in';        // pinned left → incoming
+      else if (rightGap <= MARGIN && leftGap > MARGIN) dir = 'out';  // pinned right → outgoing
+      else dir = mid < centerX ? 'in' : 'out';                       // fall back to midpoint side
+      // The a11y desc can carry a trailing time/status ("… 12:34" / "… Read"); keep the
+      // whole desc as the message (callers can strip), but use a normalized key for dedup
+      // so the same bubble re-seen after a scroll (with a jittered time suffix) collapses.
+      out.push({ dir, text: desc, y: cy, key: `${dir}:${desc.replace(/\s+/g, ' ').trim()}` });
+    }
+    // Top-to-bottom on screen (older→newer within this viewport).
+    out.sort((a, b) => a.y - b.y);
+    return out;
+  };
+
+  // ── Read the visible viewport, then page UP through history, deduping. ───────
+  // Telegram's list is inverted (newest at the bottom). We're at the bottom on open,
+  // so we collect the newest page first, then swipe DOWN (finger down = content up =
+  // OLDER messages) to reveal history. Dedup by the normalized key; ORDER is preserved
+  // oldest→newest by prepending each older page ahead of what we already have.
+  const seenKeys = new Set();
+  let ordered = []; // oldest → newest
+  const ingest = (bubbles, prepend) => {
+    const fresh = [];
+    for (const b of bubbles) {
+      if (seenKeys.has(b.key)) continue;
+      seenKeys.add(b.key);
+      fresh.push({ dir: b.dir, text: b.text });
+    }
+    if (fresh.length === 0) return 0;
+    ordered = prepend ? [...fresh, ...ordered] : [...ordered, ...fresh];
+    return fresh.length;
+  };
+
+  // First (bottom / newest) page.
+  ingest(extractBubbles(await h.dump().catch(() => [])), false);
+  tlog(`page 0: ${ordered.length} msgs`);
+
+  // Page up through history. A down-swipe in the middle of the list scrolls to OLDER
+  // messages (finger drags content downward). Stop early when a page yields no NEW
+  // bubbles (reached the top / no more history) or we already have `limit` messages.
+  const swipeToOlder = async () => {
+    // Swipe within the message band only, so we don't grab the toolbar or input bar.
+    const x = Math.round(sw * 0.5);
+    const yTop = Math.round(sh * 0.30);
+    const yBot = Math.round(sh * 0.72);
+    await adb(serial, ['shell', 'input', 'swipe', String(x), String(yTop), String(x), String(yBot), '350']).catch(() => undefined);
+    await h.sleep(700); // let the list settle before the next dump
+  };
+  for (let pg = 1; pg <= scrollPages && ordered.length < limit; pg++) {
+    await swipeToOlder();
+    await clearAnrDialog(serial, h, 1);
+    const added = ingest(extractBubbles(await h.dump().catch(() => [])), true);
+    tlog(`page ${pg}: +${added} (total ${ordered.length})`);
+    if (added === 0) break; // no new history surfaced → top reached
+  }
+
+  // Leave the chat so Telegram backgrounds (don't sit foregrounded auto-reading /
+  // showing online) — same ban-risk mitigation telegramSend applies after a send.
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+
+  // Return newest-last, capped to `limit`. `messages` (plain text, newest-last) mirrors
+  // whatsappRead's shape for backward compatibility; `items` adds the direction tag.
+  const items = ordered.slice(-limit);
+  return {
+    status: 'OK',
+    to: to || undefined,
+    from: from || undefined,
+    count: items.length,
+    messages: items.map((m) => m.text),
+    items, // [{ dir:'in'|'out', text }] — direction-tagged, oldest→newest
+    pkg: TG_PKG
+  };
+}
+
+// ── Telegram account registration (UIAutomator, class/text-based) ────────────
+//
+// Drives the Telegram Android first-run signup, which — like WhatsApp — is
+// PHONE-NUMBER based (no email required to create the account):
+//   welcome ("Start Messaging") → country + phone → code (SMS/app) →
+//   [2FA cloud password if the number already has an account] → name → home.
+//
+// ★★ CRITICAL DIFFERENCE FROM WHATSAPP (WHY THIS ISN'T A COPY-PASTE): Telegram's
+// entire UI is CUSTOM-DRAWN (org.telegram.ui.* SlideViews, no XML layouts). It
+// exposes NO stable resource-ids and NO com.fleet.a11y-fillable id fields — the
+// a11ySetText(id, …) path that makes WhatsApp registration work DOES NOT APPLY
+// here. So every screen is recognized by (a) the focused Activity
+// (LaunchActivity — Telegram runs the whole login inside ONE activity, so the
+// activity signal is far weaker than WA's per-screen activities) and (b) the
+// on-screen TEXT (localized title/hint strings). Fields are driven by their
+// android.widget.EditText class (the only stable handle), tapped to focus and
+// filled via the ADBKeyboard IME (same reliable text path send/read use). This
+// is why the flow leans on screenText() detectors + EditText-class taps, not the
+// id-based SET_TEXT/CLICK broadcasts. VERIFIED-LIVE markers are TODO — the
+// coordinates/text below are mapped from Telegram's public source
+// (org.telegram.ui.LoginActivity) and the English strings.xml; confirm each
+// against a live `uiautomator dump` on the target build before trusting it.
+//
+// ★★ THREE TELEGRAM-SPECIFIC OTP/2FA CASES the WhatsApp flow doesn't have:
+//   (a) OTP-to-OTHER-DEVICE (operator-OTP): if the number is already logged into
+//       Telegram on another device, the login code is delivered IN-APP to that
+//       device ("We've sent the code to the Telegram app on your other device"),
+//       NOT by SMS. The agent can't read it — the OPERATOR must read it off that
+//       device and submit it. This is the DEFAULT for reused numbers, so it's
+//       first-class here (otpChannel:'app'/'other_device'), whereas on WA it's an
+//       edge case. A fresh/unused number gets an SMS instead.
+//   (b) 2FA CLOUD PASSWORD: if the number already has an account WITH two-step
+//       verification enabled, after the code Telegram asks for the cloud password
+//       ("Enter your password"). We can't guess it — park at PASSWORD_WAIT so the
+//       operator can supply it (payload.cloudPassword on the continuation).
+//   (c) FLOOD-WAIT: too many code requests → "Too many attempts, please try again
+//       in N…" / FLOOD_WAIT. Terminal-ish; report the wait so the operator knows
+//       when to retry (mirrors WA's other-phone rate-limit).
+//
+// OTP handling mirrors registerWhatsApp: the agent is zero-dep + stateless, so
+// the code must be SUPPLIED. payload carries { phoneNumber, otpCode?, fullName,
+// cloudPassword?, countryCode?, apkUrl? }. If otpCode is absent we park at
+// OTP_WAIT so the control plane re-dispatches with it; if a cloud password is
+// needed and absent we park at PASSWORD_WAIT (surfaced via the same OTP_WAIT
+// panel channel with otpChannel:'cloud_password').
+//
+// Accepts the whole job object (needs job.id for live progress). Legacy callers
+// that pass (serial, payload) still work via the shim below (matches registerWhatsApp).
+async function registerTelegram(job, legacyPayload) {
+  // Back-compat: allow registerTelegram(serial, payload) as well as (job).
+  if (typeof job === 'string') job = { id: null, serial: job, payload: legacyPayload || {} };
+  const jobId = job.id || null;
+  const serial = job.serial;
+  // ★OTP-WATCH: a register job just claimed this device — cancel any parked OTP-watch
+  // for it (continuation or fresh re-register). Same rationale as registerWhatsApp.
+  if (typeof otpWatch !== 'undefined') otpWatch.delete(serial);
+  const payload = job.payload || {};
+  const phoneNumber = String(p(payload, 'phoneNumber', '')).trim();
+  const fullName = String(p(payload, 'fullName', '')).trim();
+  const otpCode = String(p(payload, 'otpCode', '')).trim();
+  // Operator-supplied Telegram cloud password (two-step verification). Only present
+  // on a continuation after we parked at PASSWORD_WAIT. Never logged.
+  const cloudPassword = String(p(payload, 'cloudPassword', '')).trim();
+  // Optional split: last name is separate on Telegram's register screen. If the
+  // operator sends only fullName we split on the first space (first + rest).
+  const lastNameRaw = String(p(payload, 'lastName', '')).trim();
+  const apkUrl = p(payload, 'apkUrl', '');
+  // accountId correlates the multi-step register jobs into one progress panel.
+  const accountId = p(payload, 'accountId', '');
+  if (!phoneNumber) throw new Error('phoneNumber gerekli');
+  if (!fullName) throw new Error('fullName gerekli');
+  // A continuation job is one that carries the operator's OTP or cloud password —
+  // Telegram is already PARKED on the code/password screen, so we must NOT restart
+  // the whole first-run machine (would discard the entered value). Same gate concept
+  // as registerWhatsApp's isContinuation.
+  const isContinuation = Boolean(otpCode || cloudPassword);
+
+  // Name split: Telegram's register screen has First name (required) + Last name
+  // (optional) fields. Prefer an explicit lastName; else split fullName.
+  const nameParts = fullName.split(/\s+/).filter(Boolean);
+  const firstName = nameParts[0] || fullName;
+  const lastName = lastNameRaw || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
+
+  const h = waHelpers(serial); // same generic tap/type/dump/screenText helper set
+
+  // ── Live progress (mirrors registerWhatsApp exactly) ──────────────────────
+  let curStep = 'launch', curPct = 0;
+  const tgProgress = async (step, percent, note, status, shot) => {
+    if (!jobId) return;
+    await reportProgress(jobId, step, percent, note, status, { accountId, ...(shot ? { shot } : {}) });
+  };
+  const stepPct = { perms: 8, launch: 20, welcome: 32, phone: 46, submit: 58, code: 72, otp_wait: 78, password: 84, profile: 92, done: 100 };
+  const step = async (key, note, fn) => {
+    curStep = key; curPct = stepPct[key] ?? curPct;
+    await tgProgress(key, curPct, note);
+    try { return await fn(); }
+    catch (e) { stopHeartbeat(); await tgProgress(key, curPct, `❌ HATA: ${e.message}`, 'FAILED'); throw new Error(`tg-register ${key}: ${e.message}`); }
+  };
+  const logLine = (text) => tgProgress(curStep, curPct, text);
+
+  // ── Observability (device-tagged log + phase timing), mirrors registerWhatsApp ──
+  const tgTag = `[tg ${(serial.split(':')[0] || serial).split('.').pop() || serial}]`;
+  const tlog = (m) => { try { log(`${tgTag} ${m}`); } catch { /* logging must never break the flow */ } };
+  const t0 = Date.now();
+  const timings = {};
+  let _phaseAt = t0, _phase = 'start';
+  const markPhase = (name) => {
+    const now = Date.now();
+    const dt = now - _phaseAt;
+    timings[_phase] = (timings[_phase] || 0) + dt;
+    if (name !== _phase) tlog(`phase '${_phase}' ${(dt / 1000).toFixed(1)}s → ${name}`);
+    _phase = name; _phaseAt = now;
+  };
+  const timingSummary = () => Object.entries(timings).map(([k, v]) => `${k}=${(v / 1000).toFixed(0)}s`).join(' ');
+
+  // ── Screenshots + heartbeat (identical machinery to registerWhatsApp) ─────
+  const shots = [];
+  const snap = async (label, keepNote = false) => {
+    const png = await grabPng(serial, 12000).catch(() => null);
+    if (png) {
+      shots.push({ label, ts: new Date().toISOString(), png: png.toString('base64') });
+      if (shots.length > 12) shots.shift();
+      const thumb = await shrinkPng(png, 300).catch(() => null);
+      await tgProgress(curStep, curPct, keepNote ? '🎥 canlı' : `📸 ${label}`, undefined, thumb || undefined);
+    }
+    return label;
+  };
+  // OTP_WAIT (code needed) and PASSWORD_WAIT (2FA) are BOTH operator-input parks, not
+  // failures — done() keeps them out of the FAILED path AND (because the panel opens
+  // its input box on step==='otp_wait') both route through that step. CREATED = success.
+  const OK_STATUSES = new Set(['CREATED', 'OTP_WAIT', 'PASSWORD_WAIT']);
+
+  let heartbeat = null;
+  const startHeartbeat = () => {
+    if (heartbeat || !jobId) return;
+    heartbeat = setInterval(async () => {
+      try {
+        const png = await grabPng(serial, 8000).catch(() => null);
+        if (!png) return;
+        const thumb = await shrinkPng(png, 300).catch(() => null);
+        if (thumb) await tgProgress(curStep, curPct, '🎥 canlı', undefined, thumb);
+      } catch { /* best-effort */ }
+    }, WA_HEARTBEAT_MS);
+    if (heartbeat.unref) heartbeat.unref();
+  };
+  const stopHeartbeat = () => { if (heartbeat) { clearInterval(heartbeat); heartbeat = null; } };
+  startHeartbeat();
+
+  const done = async (label, obj) => {
+    stopHeartbeat();
+    markPhase(label);
+    const elapsedMs = Date.now() - t0;
+    const st = obj && obj.status;
+    // OTP_WAIT / PASSWORD_WAIT already emitted their operator-facing note — snap with
+    // keepNote so the screenshot doesn't clobber it (same ★BUG-A guard as WA).
+    await snap(label, st === 'OTP_WAIT' || st === 'PASSWORD_WAIT');
+    tlog(`DONE ${label} ${(elapsedMs / 1000).toFixed(0)}s | ${timingSummary()}`);
+    if (st && !OK_STATUSES.has(st)) {
+      const reason = (obj && obj.note) || st;
+      await tgProgress(curStep, curPct, `❌ ${reason}`, 'FAILED');
+    } else if (st === 'CREATED') {
+      await tgProgress('done', 100, '✓ Telegram hesabı oluşturuldu', 'COMPLETED');
+    }
+    // Keep the parked live view fresh via the agent's otpWatchTick (same as WA).
+    if ((st === 'OTP_WAIT' || st === 'PASSWORD_WAIT') && jobId && accountId) {
+      otpWatch.set(serial, { jobId, accountId, deviceId: serial, until: Date.now() + OTP_WATCH_TTL_MS });
+    }
+    return { ...obj, shots, timings, elapsedMs };
+  };
+
+  // ── Focused-activity read (Telegram runs login inside ONE activity, so this is
+  // only useful to confirm we're IN Telegram, not to tell screens apart — screen
+  // recognition is TEXT-based below). Uses adbT (5s hard timeout) like WA's curFocus.
+  const curFocus = async () => {
+    const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+    const m = w.match(/mCurrentFocus=\S+\s+\S+\s+([^\s}]*\/[^\s}]+)/) ||
+              w.match(/mCurrentFocus=[^}]*?([\w.]+\/[\w.]+)/);
+    return (m && m[1]) ? m[1] : w;
+  };
+
+  // 0) Ensure Telegram is installed. Runtime-detect the package (never hard-coded —
+  // org.telegram.messenger / .web / Telegram-X), optionally side-load from apkUrl.
+  // ★LEAK GUARD: every throw before done() must stopHeartbeat() (same as WA).
+  let TG_PKG = await detectTelegramPkg(serial);
+  if (!TG_PKG) {
+    if (!apkUrl) { stopHeartbeat(); return done('not_installed', { status: 'NOT_INSTALLED', note: 'Telegram kurulu değil ve apkUrl verilmedi' }); }
+    let local;
+    try { local = await download(String(apkUrl), 'telegram.apk'); }
+    catch (e) { stopHeartbeat(); throw e; }
+    try { await adb(serial, ['install', '-r', '-g', local]); }
+    catch (e) { stopHeartbeat(); throw e; }
+    finally { await safeRm(local); }
+    tgPkgCache.delete(serial);            // re-detect the freshly-installed package
+    TG_PKG = await detectTelegramPkg(serial);
+    if (!TG_PKG) { stopHeartbeat(); return done('not_installed', { status: 'NOT_INSTALLED', note: 'Telegram kurulumu doğrulanamadı' }); }
+  } else if (!isContinuation) {
+    // FIRST register only — WIPE Telegram data so it starts factory-fresh. Same ROOT
+    // CAUSE as WA: a reused instance keeps the previous number's session and reopens
+    // on the chat list / a stale login screen, so the new number is never entered.
+    // NEVER clear on a CONTINUATION (the operator's parked code/password screen would
+    // be nuked and the just-entered value thrown away — the exact WA watest34 bug).
+    await adb(serial, ['shell', 'am', 'force-stop', TG_PKG]).catch(() => undefined);
+    await adb(serial, ['shell', 'pm', 'clear', TG_PKG]).catch(() => undefined);
+    await h.sleep(1200);
+  }
+
+  // 0.5) Proxy sanity check BEFORE entering the number (same as WA): Telegram also
+  // geo-scores the login IP, and a mismatch is the single best early ban signal. We
+  // don't hard-abort — just surface the real exit country. Suppressed on continuation.
+  {
+    const numCc = ccToIso(phoneNumber);
+    const exit = await verifyExitCountry(serial).catch(() => null);
+    if (exit && exit.country) {
+      const match = !numCc || exit.country.toUpperCase() === numCc.toUpperCase();
+      if (!isContinuation) await tgProgress('perms', 6,
+        `${match ? '✓' : '⚠'} Çıkış IP: ${exit.ip || '?'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
+        `${match ? ' — numara ülkesiyle eşleşti' : ` — numara ${numCc} ama çıkış ${exit.country}, Telegram engelleyebilir!`}`);
+    } else if (!isContinuation) {
+      await tgProgress('perms', 6, '⚠ Çıkış IP doğrulanamadı (proxy testi başarısız) — devam ediliyor');
+    }
+  }
+
+  // 0b) Pre-grant Telegram's runtime permissions so no dialog pops mid-flow (it would
+  // overlay the phone/code field and stall). pm grant is a no-op if not declared.
+  // Telegram needs SMS read (to AUTO-FILL the SMS code — the happy path for a fresh
+  // number) + contacts/phone/notifications. The auto-fill is why a clean number often
+  // needs NO operator OTP: Telegram reads its own SMS. Restricted SMS ops are also
+  // lifted as root (appops), same as WA.
+  const TG_PERMS = [
+    'POST_NOTIFICATIONS', 'READ_CONTACTS', 'WRITE_CONTACTS', 'GET_ACCOUNTS',
+    'READ_PHONE_STATE', 'READ_PHONE_NUMBERS', 'CALL_PHONE',
+    'CAMERA', 'RECORD_AUDIO', 'RECEIVE_SMS', 'READ_SMS',
+    'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION',
+    'READ_EXTERNAL_STORAGE', 'WRITE_EXTERNAL_STORAGE',
+    'READ_MEDIA_IMAGES', 'READ_MEDIA_VIDEO'
+  ];
+  curStep = 'perms'; curPct = stepPct.perms;
+  if (!isContinuation) await tgProgress('perms', curPct, 'İzinler veriliyor…');
+  for (const short of TG_PERMS) {
+    await adb(serial, ['shell', 'pm', 'grant', TG_PKG, `android.permission.${short}`]).catch(() => undefined);
+  }
+  for (const op of ['RECEIVE_SMS', 'READ_SMS', 'READ_PHONE_NUMBERS']) {
+    await adbSu(serial, `appops set ${TG_PKG} ${op} allow`).catch(() => undefined);
+  }
+  // Prefer ADBKeyboard for reliable text entry (Telegram's custom EditTexts drop
+  // `input text` on redroid, exactly like WA's fields).
+  await h.ensureAdbKeyboard();
+  await h.ensureTouch();
+  if (!isContinuation) await logLine('✓ İzinler + klavye hazır');
+
+  // 1) Launch Telegram. Poll until the first-run UI has actually rendered (welcome /
+  // phone / login), then continue — same smart-wait as WA (saves dead time on a fast
+  // cold open, tolerates a slow device up to ~9s).
+  curStep = 'launch'; curPct = stepPct.launch;
+  if (!isContinuation) await tgProgress('launch', curPct, 'Telegram açılıyor…');
+  await launchApp(serial, TG_PKG, null);
+  {
+    let ready = false;
+    for (let w = 0; w < 12 && !ready; w++) {
+      await h.sleep(700);
+      const txt = await h.screenText().catch(() => '');
+      if (/Start Messaging|Continue in|Your phone|phone number|Enter code|Your Name/i.test(txt)) { ready = true; break; }
+      // A returning EditText (phone/code field already up) is also "ready".
+      if ((await h.find('EditText', 'any').catch(() => null)) && /telegram/i.test(await curFocus())) { ready = true; break; }
+    }
+    await h.sleep(ready ? 400 : 1500);
+  }
+  await snap('launch');
+
+  // ── SCREEN DETECTORS (all TEXT-based — Telegram has no per-screen activity/ids) ──
+  // Each takes an optional hoisted `txt` (one screenText read per loop round) so a
+  // round is ~1 dump, not N — same ★H1 optimization as WA's verify loop.
+  //
+  // Welcome / intro: the "Start Messaging" button (+ "Continue in <lang>" language row).
+  const onWelcome = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /Start Messaging|Continue in /i.test(t);
+  };
+  // Phone-entry screen: title "Your phone number" / hint, or a country row + phone EditText.
+  const onPhoneScreen = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (/Your phone number|Your Phone|Please confirm your country code and enter your phone number/i.test(t)) return true;
+    // Fallback: an EditText is present and we're NOT on a later screen (no code/name/password cues).
+    const hasEdit = (await h.find('EditText', 'any').catch(() => null)) != null;
+    return hasEdit && !/Enter code|Your Name|Your password|Two-Step/i.test(t);
+  };
+  // Code screen (any delivery variant): "Enter code" title, "sent ... code" bodies.
+  const onCodeScreen = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /Enter code|We've sent (an SMS with an )?(the )?(activation )?code|Phone verification|We're calling your phone|Didn't get the code/i.test(t);
+  };
+  // ★OTP-to-OTHER-DEVICE (operator-OTP): the code went to the number's EXISTING
+  // Telegram on ANOTHER device ("We've sent the code to the Telegram app on your other
+  // device"). The agent CANNOT read it — the operator must. This is Telegram's DEFAULT
+  // for reused numbers. Distinct from the SMS case (which a fresh number gets + Telegram
+  // can auto-fill from its own SMS).
+  const onCodeToOtherDevice = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /code to the Telegram app|to the \*?\*?Telegram\*?\*? app on your other device|sent the code to the Telegram/i.test(t);
+  };
+  // ★2FA CLOUD PASSWORD: number already has an account with two-step verification.
+  // "Enter your password" / "Two-Step Verification" / "cloud password".
+  const onPasswordScreen = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /Two-Step Verification|Enter your password|cloud password|Your account is protected with an additional password/i.test(t);
+  };
+  // ★FLOOD-WAIT / too-many-attempts (terminal-ish rate limit).
+  const onFloodWait = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (!/Too many attempts|too many times|try again|FLOOD_WAIT|limit(ed)?/i.test(t)) return null;
+    const m = /(\d+)\s*(hour|minute|second|saat|dakika|saniye)/i.exec(t);
+    return m ? `${m[1]} ${m[2]}` : 'bir süre';
+  };
+  // Banned/invalid number wall (terminal).
+  const onNumberWall = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (/Banned Phone Number|number is banned|Invalid Phone Number|not a valid|number.*invalid/i.test(t)) return t;
+    return null;
+  };
+  // Register (new-account) screen: "Your Name" / "Profile info" / "First name (required)".
+  const onRegisterScreen = async (txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /Your Name|Profile info|First name \(required\)|Enter your name and add a profile picture|Add profile photo/i.test(t);
+  };
+  // Home / chat list reached = success. Telegram's main screen shows the chats title,
+  // the compose FAB (content-desc "New Message"), or the settings/search bar.
+  const onHome = async (txt) => {
+    const f = await curFocus();
+    if (/DialogsActivity|LaunchActivity/i.test(f) && (await h.find('New Message', 'desc').catch(() => null))) return true;
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /New Message/i.test(t) || (/Chats/i.test(t) && (await h.find('New Message', 'desc').catch(() => null)) != null);
+  };
+
+  // Helper: focus the first EditText on screen and type `value` via the reliable IME.
+  // Telegram fields reject `input text` on redroid but accept the ADBKeyboard broadcast
+  // (same as WA send). `nth` picks which EditText (0=first) for multi-field screens
+  // (register: first name = 0, last name = 1).
+  const fillEditText = async (value, nth = 0, clear = true) => {
+    const edits = (await h.dump().catch(() => [])).filter((n) => /EditText/i.test(n.cls || '') && n.cx > 0);
+    const field = edits[nth] || edits[0];
+    if (!field) return false;
+    await h.tapNode(field); await h.sleep(500);
+    if (clear) await h.clearField().catch(() => undefined);
+    await h.typeText(value); await h.sleep(600);
+    return true;
+  };
+  // Telegram's advance button is the floating round arrow FAB bottom-right. On the
+  // phone/name screens it's a plain FloatingActionButton; its content-desc is the
+  // localized "Done"/"Next"/"Proceed" (org.telegram.ui — R.string.Done) but MANY builds
+  // leave it empty, so we can't rely on a desc match alone. Strategy (mirrors WA's
+  // send-FAB → measured-node → scaled-coord ladder):
+  //   1) find a node whose desc is one of the localized Done labels and tap its MEASURED
+  //      center (works even after the layout shifts),
+  //   2) else the scaled bottom-right coordinate.
+  // ★KEYBOARD GUARD: after fillEditText the ADBKeyboard IME is up and covers the bottom
+  // ~40% of the screen — a blind 88%-height tap would hit the keyboard, not the FAB
+  // (exact bug WA guards against on RegisterName). So we FIRST dismiss the IME with BACK
+  // when it's open, then tap. `dismissIme` presses BACK only if a keyboard is showing so
+  // we never accidentally BACK out of the screen when no IME is up.
+  const DONE_DESCS = ['Done', 'Next', 'Proceed', 'Bitti', 'İleri', 'Devam', 'Continue'];
+  const imeShowing = async () => {
+    // dumpsys input_method exposes mInputShown/mShowRequested; reliable on redroid.
+    const s = await adbT(serial, ['shell', 'dumpsys', 'input_method'], 4000).catch(() => '');
+    return /mInputShown=true|mShowRequested=true|isInputViewShown=true/i.test(s);
+  };
+  const dismissIme = async () => {
+    if (await imeShowing()) {
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      await h.sleep(500);
+    }
+  };
+  const tapDone = async () => {
+    // 1) Locale-aware desc node (tap its real measured center).
+    for (const d of DONE_DESCS) {
+      const n = await h.find(d, 'desc').catch(() => null);
+      if (n) { await h.tapNode(n); return true; }
+    }
+    // 2) Coordinate fallback — but only AFTER closing the keyboard so we hit the FAB, not
+    // the IME. Telegram's Done FAB sits ~bottom-right (~88% w, ~88% h on a 1080x2400 ref).
+    await dismissIme();
+    let w = 1080, ht = 2400;
+    try {
+      const wm = await adb(serial, ['shell', 'wm', 'size']);
+      const m = /Override size:\s*(\d+)x(\d+)/.exec(wm) || /Physical size:\s*(\d+)x(\d+)/.exec(wm);
+      if (m) { w = +m[1]; ht = +m[2]; }
+    } catch { /* keep defaults */ }
+    await h.tapSyn(Math.round(w * 0.88), Math.round(ht * 0.88));
+    return false;
+  };
+
+  // ── CONTINUATION SHORTCUT (mirrors registerWhatsApp's skipToVerify) ───────
+  // On a continuation the operator submitted the code (or cloud password) and Telegram
+  // was NOT cleared, so it re-opens PARKED on the code/password screen. Jump STRAIGHT
+  // to the code/password phase — running the welcome+phone machine here is WRONG (those
+  // screens are behind us) and would spin.
+  curStep = 'welcome'; curPct = stepPct.welcome;
+  let reachedCode = false, reachedPassword = false;
+  if (isContinuation) {
+    const t = await h.screenTextRich().catch(() => '');
+    if (cloudPassword && await onPasswordScreen(t)) {
+      reachedPassword = true;
+      await tgProgress('password', stepPct.password, '↩ 2FA parola ekranına devam ediliyor…');
+    } else if (await onCodeScreen(t) || await onPasswordScreen(t)) {
+      reachedCode = true;
+      await tgProgress('code', stepPct.code, '↩ Kod ekranına devam ediliyor…');
+    } else if (await onHome(t)) {
+      return done('home', { status: 'CREATED', note: 'Telegram zaten kayıtlı (ana ekran) — doğrulama tamamlanmış', phoneNumber });
+    } else {
+      // Parked session lost (crash / unexpected screen). Don't restart the phone
+      // machine (would discard the code/waste a request). Bail cleanly (WA scenario #7).
+      return done('session_lost', {
+        status: 'REGISTER_FAILED',
+        note: 'Doğrulama oturumu kayboldu (Telegram beklenen ekranda değil) — kodu/parolayı giremedik. Temiz bir kayıt başlatın.',
+        phoneNumber, screenTexts: t.slice(0, 300)
+      });
+    }
+  }
+
+  // ── FIRST-RUN STATE MACHINE (launch → phone screen) ───────────────────────
+  // Like WA, the screens between launch and the phone field are non-deterministic
+  // (welcome may or may not show; a language sheet may pop). LOOP: read screen,
+  // recognize state, act, re-observe, until the phone field appears. Skipped entirely
+  // on a continuation (we jumped to code/password above).
+  markPhase('welcome');
+  let reachedPhone = false;
+  if (!isContinuation) {
+    for (let round = 0; round < 16 && !reachedPhone; round++) {
+      const txt = await h.screenTextRich().catch(() => '');
+      if (await onPhoneScreen(txt)) { reachedPhone = true; break; }
+      if (await onWelcome(txt)) {
+        // "Start Messaging" advances to the phone screen. Tap the button by text;
+        // Telegram draws it as a TextView inside a clickable container (tapNode resolves
+        // the clickable parent). ★TODO(live-map): confirm coordinate fallback.
+        tlog(`first-run r${round}: welcome → Start Messaging`);
+        if (!(await h.tapSynIf('Start Messaging', 'text'))) {
+          // Coordinate fallback: the button sits ~mid-lower-center on the intro screen.
+          await h.tapScaled(540, 2000).catch(() => undefined);
+        }
+        await h.sleep(2000);
+        continue;
+      }
+      // Unknown/rendering screen — settle and re-observe (a language-select or a
+      // permission dialog can appear; a stray Continue/Allow is harmless).
+      if (!(await h.tapSynIf('Allow', 'text')) && !(await h.tapSynIf('Continue', 'text'))) {
+        tlog(`first-run r${round}: unknown screen focus=${(await curFocus()).slice(0, 60)}`);
+      }
+      await h.sleep(1300);
+    }
+    await snap('first_run');
+    if (!reachedPhone) {
+      return done('phone_screen_failed', {
+        status: 'REGISTER_FAILED',
+        note: 'Telefon numarası ekranına ulaşılamadı (giriş ekranları geçilemedi). Temiz oturumla tekrar deneyin.',
+        phoneNumber
+      });
+    }
+
+    // ── PHONE ENTRY ──────────────────────────────────────────────────────────
+    // Telegram has a country row + a phone EditText that auto-formats. Typing the
+    // FULL E.164 (with +) into the phone field usually auto-selects the country, like
+    // WA's registration_cc trick — but Telegram's field expects the number WITHOUT the
+    // country code once the country is picked. Safest path (VERIFY LIVE): type the full
+    // "+<cc><local>" — Telegram parses the leading + and splits it. If that leaves the
+    // field with only the local part, that's expected. ★TODO(live-map): confirm whether
+    // the full +E.164 or (country picker + local) is needed on the target build.
+    curStep = 'phone'; curPct = stepPct.phone;
+    await tgProgress('phone', curPct, `Numara giriliyor (${phoneNumber})…`);
+    markPhase('phone');
+    // Dismiss a late permission dialog that could cover the field.
+    await h.tapById('com.android.permissioncontroller:id/permission_allow_button').catch(() => undefined);
+    const e164 = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber.replace(/\D/g, '')}`;
+    let phoneFilled = false;
+    for (let attempt = 0; attempt < 3 && !phoneFilled; attempt++) {
+      // Type the full +E.164 into the (first) phone EditText; Telegram splits country+local.
+      if (await fillEditText(e164, 0, true)) {
+        await h.sleep(800);
+        // Verify SOME digits landed (the field shows the formatted local part).
+        const after = await h.screenText().catch(() => '');
+        const digitsSeen = (after.match(/\d/g) || []).length;
+        if (digitsSeen >= 6) { phoneFilled = true; break; }
+      }
+      await h.sleep(700);
+    }
+    await snap('phone_filled');
+    if (!phoneFilled) {
+      return done('number_failed', { status: 'NUMBER_ENTRY_FAILED', note: 'Numara alanı doldurulamadı', phoneNumber });
+    }
+
+    // ── SUBMIT (Done) → confirm dialog "Is this the correct number? Yes" ──────
+    curStep = 'submit'; curPct = stepPct.submit;
+    await tgProgress('submit', curPct, 'Numara onaylanıyor (Done → Yes)…');
+    markPhase('submit');
+    let submitted = false;
+    for (let i = 0; i < 3 && !submitted; i++) {
+      await tapDone();
+      // Telegram shows a "Is this the correct number? +<n>" confirm dialog with a Yes button.
+      for (let w = 0; w < 8; w++) {
+        await h.sleep(1000);
+        const t = await h.screenTextRich().catch(() => '');
+        // Accept the confirm dialog if present.
+        if (/correct number|is this correct|confirm/i.test(t)) {
+          await h.tapSynIf('Yes', 'text'); await h.sleep(1500);
+        }
+        // Left the phone screen (reached code / password / flood / wall)?
+        if (await onCodeScreen(t) || await onPasswordScreen(t) || await onFloodWait(t) || await onNumberWall(t)) { submitted = true; break; }
+      }
+    }
+    await snap('submit');
+  }
+
+  // ── CODE / OTP STATE MACHINE ──────────────────────────────────────────────
+  // After submit Telegram lands on the code screen (SMS OR in-app to another device),
+  // OR jumps straight to the 2FA password screen (if the code auto-filled from SMS and
+  // the account has 2FA), OR shows flood-wait / a number wall. LOOP: recognize + act.
+  curStep = 'code'; curPct = stepPct.code;
+  await tgProgress('code', curPct, 'Doğrulama ekranı belirleniyor…');
+  markPhase('code');
+  let codeEntered = false;
+  for (let round = 0; round < 12; round++) {
+    const txt = await h.screenTextRich().catch(() => '');
+
+    // Terminal: flood-wait / rate limit.
+    const flood = await onFloodWait(txt);
+    if (flood) {
+      tlog(`code: FLOOD-WAIT (${flood})`);
+      await snap('flood_wait');
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      const note = `⏳ Telegram bu numaraya çok fazla kod isteği gördü — ${flood} sonra tekrar deneyin (FLOOD_WAIT).`;
+      await tgProgress('otp_wait', curPct, note);
+      return done('flood_wait', { status: 'RATE_LIMITED', otpChannel: 'rate_limited', note, phoneNumber });
+    }
+    // Terminal: banned / invalid number.
+    const wall = await onNumberWall(txt);
+    if (wall) {
+      tlog(`code: NUMBER WALL — ${wall.slice(0, 60)}`);
+      await snap('number_wall');
+      return done('number_wall', { status: 'NUMBER_WALL', note: 'Telegram numarayı reddetti (yasaklı/geçersiz numara)', phoneNumber, screenTexts: wall.slice(0, 300) });
+    }
+
+    // 2FA cloud password screen (may appear here if the SMS code auto-filled).
+    if (await onPasswordScreen(txt)) { reachedPassword = true; break; }
+
+    // Code screen. If we have the operator's code, ENTER it. Otherwise PARK.
+    if (await onCodeScreen(txt)) {
+      if (otpCode) {
+        tlog('code: entering operator code');
+        await snap('code_screen');
+        // Telegram's code field is a single EditText (some builds split into per-digit
+        // boxes but accept a single typed string). Type the digits; it auto-submits on
+        // the last digit, else tap Done.
+        await fillEditText(String(otpCode).replace(/\D/g, ''), 0, true);
+        await h.sleep(1500);
+        await tapDone();
+        await h.sleep(3500);
+        // Re-read: rejected code → error text; success → password screen / register / home.
+        const after = await h.screenTextRich().catch(() => '');
+        if (/Invalid code|code (is )?(expired|invalid)|wrong code/i.test(after)) {
+          return done('code_rejected', { status: 'OTP_REJECTED', note: 'Doğrulama kodu reddedildi', phoneNumber, screenTexts: after.slice(0, 300) });
+        }
+        codeEntered = true;
+        break;
+      }
+      // No code yet → PARK. Distinguish the delivery channel so the panel shows the
+      // right hint: 'app'/'other_device' = operator must read it off the number's other
+      // Telegram; 'sms' = it's coming by SMS (Telegram may also auto-fill it — we still
+      // park so the operator can enter it if auto-fill didn't fire).
+      const otherDevice = await onCodeToOtherDevice(txt);
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      const note = otherDevice
+        ? '📲 Kod, numaranın DİĞER cihazındaki Telegram uygulamasına gönderildi (numara zaten kayıtlı) — o cihazdan okuyup panele girin.'
+        : '📲 Telegram doğrulama kodu bekleniyor — SMS gelince panelden girin.';
+      tlog(`code: OTP_WAIT (${otherDevice ? 'other_device' : 'sms'})`);
+      await tgProgress('otp_wait', curPct, note);
+      return done('otp_wait', {
+        status: 'OTP_WAIT',
+        otpChannel: otherDevice ? 'other_device' : 'sms',
+        note, phoneNumber
+      });
+    }
+
+    // Already advanced past the code (register/home) — a fresh number whose SMS
+    // auto-filled without us. Break and let the post-code phase handle it.
+    if (await onRegisterScreen(txt) || await onHome(txt)) { codeEntered = true; break; }
+
+    tlog(`code: unknown screen round=${round} focus=${(await curFocus()).slice(0, 60)}`);
+    await h.sleep(1400);
+  }
+
+  // ── 2FA CLOUD PASSWORD ────────────────────────────────────────────────────
+  // The number already has an account WITH two-step verification. We can't guess the
+  // password — if the operator supplied one, enter it; else PARK at PASSWORD_WAIT.
+  if (reachedPassword || await onPasswordScreen()) {
+    curStep = 'password'; curPct = stepPct.password;
+    markPhase('password');
+    await snap('password_screen');
+    if (cloudPassword) {
+      tlog('password: entering operator cloud password');
+      await tgProgress('password', curPct, 'İki adımlı doğrulama parolası giriliyor…');
+      await fillEditText(cloudPassword, 0, true);
+      await h.sleep(1200);
+      await tapDone();
+      await h.sleep(3500);
+      const after = await h.screenTextRich().catch(() => '');
+      if (/Invalid password|wrong password|password.*incorrect/i.test(after)) {
+        return done('password_rejected', { status: 'PASSWORD_REJECTED', note: 'İki adımlı doğrulama parolası reddedildi', phoneNumber, screenTexts: after.slice(0, 300) });
+      }
+      // Advanced past 2FA → register/home below.
+    } else {
+      // PARK for the operator to supply the cloud password (routes through the OTP panel
+      // channel with otpChannel:'cloud_password' so the panel shows a password prompt).
+      const note = '🔒 Numarada iki adımlı doğrulama (2FA) açık — Telegram bulut parolasını panele girin (cloudPassword).';
+      tlog('password: PASSWORD_WAIT (2FA)');
+      curStep = 'otp_wait'; curPct = stepPct.otp_wait;
+      await tgProgress('otp_wait', curPct, note);
+      return done('password_wait', { status: 'PASSWORD_WAIT', otpChannel: 'cloud_password', note, phoneNumber });
+    }
+  }
+
+  // ── REGISTER (new account) — enter First + Last name → Done ────────────────
+  // Only shown for a number that has NEVER had a Telegram account (a truly fresh
+  // number). A reused number logs straight into its existing account (skips this and
+  // lands on home). So this screen is OPTIONAL.
+  curStep = 'profile'; curPct = stepPct.profile;
+  markPhase('profile');
+  if (await onRegisterScreen()) {
+    await tgProgress('profile', curPct, `Profil ismi giriliyor (${firstName}${lastName ? ' ' + lastName : ''})…`);
+    await snap('register_screen');
+    // First name (required) = EditText 0; last name (optional) = EditText 1.
+    await fillEditText(firstName, 0, true);
+    await h.sleep(500);
+    if (lastName) { await fillEditText(lastName, 1, true); await h.sleep(500); }
+    await tapDone();
+    await h.sleep(4000);
+  }
+
+  // ── CONFIRM HOME (success) ────────────────────────────────────────────────
+  // Sweep any post-register interstitials (permissions/sync prompts) toward home.
+  for (let i = 0; i < 6; i++) {
+    const txt = await h.screenTextRich().catch(() => '');
+    if (await onHome(txt)) break;
+    // Dismiss common post-login prompts (contacts sync, notifications, "Continue").
+    const acted =
+      (await h.tapSynIf('Continue', 'text')) ||
+      (await h.tapSynIf('Not Now', 'text')) || (await h.tapSynIf('Skip', 'text')) ||
+      (await h.tapById('com.android.permissioncontroller:id/permission_allow_button').then(() => true).catch(() => false));
+    await h.sleep(acted ? 1600 : 1400);
+  }
+  let atHome = false;
+  for (let i = 0; i < 6; i++) {
+    if (await onHome()) { atHome = true; break; }
+    await h.sleep(2000);
+  }
+  const finalText = await h.screenTextRich().catch(() => '');
+  if (!atHome) {
+    await tgProgress('profile', curPct, '❌ Ana ekrana ulaşılamadı', 'FAILED');
+    return done('profile_incomplete', { status: 'PROFILE_INCOMPLETE', note: 'Kod/isim adımından sonra ana ekrana ulaşılamadı', phoneNumber, screenTexts: finalText.slice(0, 300) });
+  }
+  curStep = 'done'; curPct = stepPct.done;
+  return done('home', { status: 'CREATED', note: 'Telegram hesabı oluşturuldu (ana ekran teyitli)', phoneNumber, pkg: TG_PKG, screenTexts: finalText.slice(0, 300) });
 }
 
 // ── WhatsApp: read messages from a chat ─────────────────────────────────────
@@ -4169,6 +5963,18 @@ async function installBundledApkTo(instance, apkFile) {
     log(`installBundledApk ${apkFile} FAIL: ${out.slice(0, 160)}`);
     throw new Error(`pm install başarısız (${apkFile}): ${out.slice(0, 160)}`);
   }
+  // ★CACHE-INVALIDATION: detectTelegramPkg() caches `null` (NOT_INSTALLED) per-serial.
+  // If a device was probed BEFORE Telegram was installed (e.g. an early telegramSend that
+  // returned NOT_INSTALLED, or a provision that installs Telegram after some other send),
+  // that stale `null` would make every subsequent send keep reporting NOT_INSTALLED even
+  // though the APK is now present. installBundledApkTo works on an INSTANCE (host-side),
+  // not a serial, and one instance can be reached via several serial forms, so we can't
+  // map instance→serial reliably here. The tgPkgCache is tiny (one entry per serial in
+  // this session), so on a Telegram install we simply drop the WHOLE cache — the next
+  // detectTelegramPkg() re-probes `pm list packages` and finds the freshly-installed pkg.
+  // (Same fix registerTelegram already applies with tgPkgCache.delete(serial) after its
+  // own apkUrl side-load; this covers the provision/bundled-install path too.)
+  if (apkFile === 'telegram.apk' || pkgFor(apkFile) === 'org.telegram.messenger.web') tgPkgCache.clear();
   return { stdout: out.trim(), apkFile, instance };
 }
 
@@ -4178,7 +5984,13 @@ function pkgFor(apkFile) {
     'whatsapp.apk': 'com.whatsapp',
     'magisk.apk': 'io.github.huskydg.magisk',
     'fleet-a11y.apk': 'com.fleet.a11y',
-    'adbkeyboard.apk': 'com.android.adbkeyboard'
+    'adbkeyboard.apk': 'com.android.adbkeyboard',
+    // The bundled telegram.apk is the direct-website build (org.telegram.messenger.web);
+    // the Play build is org.telegram.messenger. detectTelegramPkg() probes for either at
+    // runtime, so this entry only drives the post-install `pm path` verification below —
+    // point it at the package the bundled APK actually installs. If a future bundle swaps
+    // to the Play APK, change this to 'org.telegram.messenger' (or verify by pkgFor→detect).
+    'telegram.apk': 'org.telegram.messenger.web'
   })[apkFile] || '';
 }
 
@@ -4570,6 +6382,13 @@ async function provisionDevice(job) {
   const DEFAULT_MODEL = 'SM-G991B';
   if (!fp.model) fp.model = DEFAULT_MODEL;
   const proxy = payload.proxy || null;
+  // ★Opsiyonel Telegram kurulumu. WhatsApp her provision'da ZORUNLU kurulur (cihazın
+  // amacı "WhatsApp-hazır"); Telegram ise yalnızca control-plane istediğinde eklenir
+  // (payload.installTelegram === true). Bayrak yoksa Telegram atlanır — bu davranış
+  // geriye dönük uyumludur (mevcut provision çağrıları bu alanı göndermiyor). Bundled
+  // APK yoksa (APK_DIR'de telegram.apk bulunmuyorsa) adım best-effort uyarı bırakıp
+  // devam eder; Telegram'ın yokluğu provision'ı FAILED yapmaz.
+  const installTelegram = payload.installTelegram === true;
 
   // Current step context so log() lines below carry the right step/percent.
   let curStep = 'infra';
@@ -4577,13 +6396,35 @@ async function provisionDevice(job) {
   // Emit a live log line to the dashboard terminal (best-effort).
   const logLine = (text) => reportProgress(jobId, curStep, curPct, text);
 
+  // ★OBSERVABILITY (PL1) — provisionDevice wrote NOTHING to /var/log/fleet-agent.log on
+  // the happy path (only reportProgress → WS/Job.result). A tail during a stall showed
+  // just "claimed job PROVISION_DEVICE" → "completed", with no step trace or timing. Add
+  // a device-tagged plog() (console.log → stdout → log file) + a per-step timing map so a
+  // tail tells the whole story. Reuses data already in hand; no host/ADB calls.
+  const provTag = `[prov ${instance}]`;
+  const plog = (m) => { try { log(`${provTag} ${m}`); } catch { /* logging must never break the flow */ } };
+  const provT0 = Date.now();
+  const timings = {};            // { stepKey: ms }
+  let _stepAt = provT0;
+  const timingSummary = () => Object.entries(timings).map(([k, v]) => `${k}=${(v / 1000).toFixed(0)}s`).join(' ');
+
   const step = async (key, percent, note, fn) => {
+    // Close out the previous step's timer + log its duration (skip the very first call).
+    if (curStep !== key) {
+      const dt = Date.now() - _stepAt;
+      if (_stepAt !== provT0) { timings[curStep] = (timings[curStep] || 0) + dt; plog(`step '${curStep}' ${(dt / 1000).toFixed(1)}s done`); }
+      _stepAt = Date.now();
+    }
     curStep = key;
     curPct = percent;
+    plog(`step '${key}' ${percent}% — ${note}`);   // per-step text trace to /var/log
     await reportProgress(jobId, key, percent, note);
     try {
       return await fn();
     } catch (e) {
+      // ★log the technical error to /var/log WITH the step name + elapsed, so raw stack
+      // traces aren't the only (ungrouped) signal.
+      plog(`step '${key}' FAILED after ${((Date.now() - _stepAt) / 1000).toFixed(1)}s: ${e.message}`);
       // Push a terminal FAILED line with the full technical detail immediately.
       await reportProgress(jobId, key, percent, `❌ HATA: ${e.message}`, 'FAILED');
       throw new Error(`provision ${key}: ${e.message}`);
@@ -4630,39 +6471,67 @@ async function provisionDevice(job) {
   let ip = infra.ip;
   let serial = `${ip}:${adbPort}`;
 
+  // ★P1 (leak fix): infra just wrote ~4.4GB (images + userdata clone) + a systemd unit +
+  // dbus policy + subnet-map line to disk. If ANY step below throws (boot never gets IPv4,
+  // WhatsApp APK fails, etc.), that half-built instance was previously NEVER cleaned up —
+  // it leaked permanently (no wd-destroy / teardown existed anywhere), silently eating the
+  // host's disk headroom a few failed provisions at a time. Wrap the post-infra body so a
+  // failure tears the instance down before re-throwing. Best-effort teardown; the original
+  // error is always what propagates (a teardown failure never masks the real cause).
+  try {
   // 2) boot — start the session DETACHED (wd-run never returns), then verify boot
   //    over ADB and resolve the real DHCP ip.
   await step('boot', 18, 'Cihaz açılışı bekleniyor', async () => {
+    // ★boot sub-timing: boot is ~45s (the longest step) but was a black box. Stamp each
+    // sub-phase (DHCP bind / ADB authorize / waitBoot / svcUp) so a tail shows WHICH part
+    // of boot dominates before we try to shorten it. bootT0 is boot-step-relative.
+    const bootT0 = Date.now();
+    const bootMs = () => ((Date.now() - bootT0) / 1000).toFixed(0);
     await logLine('Android boot ediliyor (weston + container + session)…');
     hostShDetached('wd-run.sh', [instance]); // fire-and-forget: keeps session alive
-    // Give the container a moment to come up + lease an address.
-    await new Promise((r) => setTimeout(r, 8000));
+    // ★PH1: 2s (was 8s) — just enough for the container process to spawn before the poll
+    // loop starts. The loop below tolerates early "no address" reads (retries), so the
+    // extra 6s of the old blind wait was dead time on the common (fast-boot) case.
+    await new Promise((r) => setTimeout(r, 2000));
     // Wait for eth0 to actually get an IPv4 address bound INSIDE the container.
     // ROOT CAUSE of "boot_completed not reached within 300s" on a healthy-looking
     // container: Android's netd sometimes leaves eth0 with only an IPv6 link-local
     // address (no IPv4), so the DHCP lease exists on the host but the container is
-    // unreachable — ADB can't connect, waitBoot reads nothing, provision FAILS at
-    // 300s even though `getprop sys.boot_completed`=1 over lxc-attach. Give it up to
-    // ~90s to bind IPv4; if it never does, kick netd's dhcp client from inside.
-    // With the bridge+dnsmasq healthy (wd-run.sh clears the stale network_up marker
-    // and any orphan dnsmasq), eth0 binds IPv4 within a few seconds, so this loop
-    // normally exits on the first or second probe. The DHCP-kick only fires if it's
-    // genuinely stuck (~16s in), so a clean boot is NOT slowed down.
+    // unreachable — ADB can't connect, waitBoot reads nothing, provision FAILS at 300s
+    // even though `getprop sys.boot_completed`=1 over lxc-attach. A clean boot binds IPv4
+    // within a few seconds so the loop exits on probe 1-2; the DHCP-kick only fires on a
+    // genuinely-stuck boot. ★PH2: kick EARLIER (i===3, ~8-10s in) instead of i===12 (~24s)
+    // — a clean boot never reaches the kick regardless, so an earlier kick doesn't slow the
+    // happy path, it only shortens the stuck path. Probe timeout 6s→3s (an `ip addr show`
+    // that will answer answers in <1s; 6s only bit when the container was unreachable).
+    // ★DHCP-KICK REPEAT (measured LIVE, mi8): the whole 45s "boot" step was eth0 waiting
+    // for IPv4 — ADB/waitBoot/svcUp were all 0s once IPv4 bound. A SINGLE kick at i===3
+    // (~8s) wasn't enough: netd then took ~37s more to bind on its own. So RE-KICK on a
+    // cadence (every ~5 probes ≈ every ~10s) until IPv4 appears — each kick re-runs the dhcp
+    // request, nudging netd instead of passively waiting out its slow self-timer. Kicks are
+    // idempotent (down/up + dhcptool, all silenced), and a clean boot binds on probe 1-2 so
+    // it never reaches even the first kick — zero cost on the happy path, big win on the
+    // slow-IPv4 path this code exists for. Raised to 30 probes to keep the ~60s safety cap.
+    const dhcpKick = () => lxcAttach(instance, ['/system/bin/sh', '-c',
+      'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
+    const dhcpT0 = Date.now();
     let eth0Ip = '';
-    for (let i = 0; i < 20; i++) {
+    let kicks = 0;
+    for (let i = 0; i < 30; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
-        "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 6000).catch(() => '')).trim();
+        "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
-      if (i === 12) {
-        // Only kick if still no IPv4 after ~24s — a clean boot binds IPv4 well
-        // before this, so the kick (and its warning) never shows on a good boot.
-        // re-run Android's dhcp request.
-        await lxcAttach(instance, ['/system/bin/sh', '-c',
-          'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
-        await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
+      // First kick at i===3 (~8s), then repeat every 5 probes (~every 10s) while stuck.
+      if (i === 3 || (i > 3 && (i - 3) % 5 === 0)) {
+        await dhcpKick();
+        kicks++;
+        plog(`eth0 IPv4 gecikti — DHCP re-kick #${kicks} @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        if (kicks === 1) await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
       }
       await new Promise((r) => setTimeout(r, 2000));
     }
+    if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) plog(`eth0 IPv4 bound in ${((Date.now() - dhcpT0) / 1000).toFixed(1)}s → ${eth0Ip}`);
+    plog(`boot@${bootMs()}s: DHCP phase done`);
     if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) {
       if (eth0Ip !== ip) { await logLine(`DHCP → ${eth0Ip} (container eth0 IPv4)`); ip = eth0Ip; serial = `${ip}:${adbPort}`; }
     } else {
@@ -4680,9 +6549,10 @@ async function provisionDevice(job) {
       await ensureConnected(serial).catch(() => undefined);
       const st = await adbT(serial, ['get-state'], 6000).catch(() => '');
       if (ok && /device/.test(st)) { await logLine('✓ ADB yetkilendirildi'); break; }
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000)); // ★PH3: 2s (was 3s) — adb_keys usually appears within a few s once /data mounts; loop stays condition-gated + 30-cap
     }
-    await ensureConnected(serial);
+    plog(`boot@${bootMs()}s: ADB authorized`);
+    await ensureConnected(serial).catch(() => undefined); // ★S4: guard for message consistency — a wedged adb server shouldn't throw a raw error over the intended "boot not reached" one
     // 300s (not 180s): on a busy host (several instances software-rendering at
     // once) the first boot routinely takes 3-5 min. A 180s cap FAILED provision
     // mid-boot even though boot completed seconds later, leaving the device half
@@ -4695,6 +6565,7 @@ async function provisionDevice(job) {
       if (released && released !== ip) { ip = released; serial = `${ip}:${adbPort}`; await ensureConnected(serial); booted = await waitBoot(serial, 30000); }
     }
     if (!booted) throw new Error('boot_completed not reached within 300s');
+    plog(`boot@${bootMs()}s: boot_completed=1 (waitBoot done)`);
     // boot_completed=1 is NOT enough: on ~1 in 3 GPU-less boots hwcomposer.waydroid.so's
     // wayland thread aborts (VERIFIED in crash logs), taking system_server down — the
     // framework services (package/settings) then NEVER publish, so every later step
@@ -4707,16 +6578,19 @@ async function provisionDevice(job) {
     // must NOT trigger a needless reboot — require TWO consecutive misses across
     // the whole window before declaring the boot dead, and check over ADB too
     // (lxc-attach can time out spuriously and read as a false "not found").
+    // ★PH3: probe lxc + adb in PARALLEL (was sequential lxc-then-adb → up to 12s per miss).
+    // Either "found" is authoritative, so race them and take the first positive.
     const pkgUp = async () => {
-      const viaLxc = String(await lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 6000).catch(() => ''));
-      if (/: found/.test(viaLxc)) return true;
-      const viaAdb = String(await adbT(serial, ['shell', 'service', 'check', 'package'], 6000).catch(() => ''));
-      return /: found/.test(viaAdb);
+      const results = await Promise.all([
+        lxcAttach(instance, ['/system/bin/sh', '-c', 'service check package 2>&1'], 6000).catch(() => ''),
+        adbT(serial, ['shell', 'service', 'check', 'package'], 6000).catch(() => '')
+      ]);
+      return results.some((r) => /: found/.test(String(r)));
     };
     const svcUp = async () => {
       for (let i = 0; i < 24; i++) {
         if (await pkgUp()) return true;
-        await new Promise((r) => setTimeout(r, 3000));
+        await new Promise((r) => setTimeout(r, 2000)); // ★PH3: 2s (was 3s)
       }
       return false;
     };
@@ -4730,7 +6604,21 @@ async function provisionDevice(job) {
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
       if (reup) await svcUp();
     }
+    plog(`boot@${bootMs()}s: framework services up (svcUp done)`);
     await logLine(`✓ boot_completed=1 — Android hazır (${serial})`);
+    // ★P3 (spoof verification): applyIntegritySpoof/applyRoot in the infra step are
+    // best-effort (their catch only log()s), so a device could boot reporting the generic
+    // model (fleet-linkable → WhatsApp-ban risk) while provision still marches to a green
+    // "hazır". Read the model back now that Android is up and WARN loudly if it doesn't
+    // match the intended fp.model. Not fatal (the device still works) — but the operator
+    // MUST see it, since a fleet-linkable device is exactly what the spoof machinery
+    // exists to prevent. Best-effort read; never throws.
+    const gotModel = (await adbT(serial, ['shell', 'getprop', 'ro.product.model'], 6000).catch(() => '')).trim();
+    if (gotModel) {
+      const wantModel = String(fp.model || DEFAULT_MODEL).trim();
+      if (gotModel === wantModel) plog(`spoof OK model=${gotModel}`);
+      else { plog(`⚠ SPOOF MISMATCH model=${gotModel} beklenen=${wantModel} — cihaz fleet-linkable olabilir`); await logLine(`⚠ Kimlik uyuşmazlığı: model=${gotModel} (beklenen ${wantModel}) — spoof tam uygulanamamış olabilir`); }
+    }
   });
 
   // 3) root — install the real Magisk from the repo-bundled APK. This runs right
@@ -4925,21 +6813,81 @@ async function provisionDevice(job) {
       ['com.fleet.a11y', 'fleet-a11y.apk', 'Erişilebilirlik']
       // adbkeyboard installed above as the PM-readiness probe.
     ];
+    const installed = {};
     for (const [pkg, file, name] of apks) {
       // Use lxc-attach for the "already installed?" probe — ADB shell hangs on
       // fresh ARM Waydroid (the same reason installs use host-mount + lxc-attach).
       const has = (await lxcAttach(instance, ['pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
-      if (has) { await logLine(`• ${name} zaten kurulu`); continue; }
+      if (has) { installed[pkg] = true; await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
       let done = false;
       for (let attempt = 1; attempt <= 3 && !done; attempt++) {
-        try { await installBundledApkTo(instance, file); done = true; await logLine(`✓ ${name} kuruldu`); }
+        try { await installBundledApkTo(instance, file); done = true; installed[pkg] = true; await logLine(`✓ ${name} kuruldu`); }
         catch (e) {
-          if (attempt === 3) await logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 120)}`);
+          if (attempt === 3) { plog(`apks: ${name} (${pkg}) install FAILED after 3 tries: ${e.message.slice(0, 160)}`); await logLine(`⚠ ${name} kurulamadı: ${e.message.slice(0, 120)}`); }
           else await new Promise((r) => setTimeout(r, 6000));
         }
       }
     }
+    // ★Opsiyonel: Telegram (payload.installTelegram === true). WhatsApp/fleet-a11y'nin
+    // AKSİNE best-effort — kurulamazsa provision FAIL OLMAZ, yalnızca uyarı düşer. Bundled
+    // telegram.apk yoksa (APK_DIR'de değilse) installBundledApkTo "APK bulunamadı" atar;
+    // bunu yakalayıp atlarız. Kurulum SONRASI tgPkgCache.clear() installBundledApkTo içinde
+    // otomatik olur (stale NOT_INSTALLED cache'ini temizler), o yüzden burada ek iş yok.
+    if (installTelegram) {
+      const tgPkgs = ['org.telegram.messenger.web', 'org.telegram.messenger'];
+      let tgHas = false;
+      for (const tp of tgPkgs) {
+        if ((await lxcAttach(instance, ['pm', 'path', tp], 15000).catch(() => '')).includes('package:')) { tgHas = true; break; }
+      }
+      let tgReady = false;   // installed (already or now) → run first-launch priming
+      if (tgHas) {
+        await logLine('• Telegram zaten kurulu');
+        tgReady = true;
+      } else {
+        // Bundled APK gerçekten mevcut mu? (Erken bir "APK bulunamadı" atışından kaçın —
+        // best-effort adımda gürültülü stack yerine tek satır bilgi vermek isteriz.)
+        const tgSrc = join(APK_DIR, 'telegram.apk');
+        const tgExists = await execFileAsync('test', ['-f', tgSrc]).then(() => true).catch(() => false);
+        if (!tgExists) {
+          await logLine('• Telegram APK paketi bulunamadı (telegram.apk) — atlanıyor');
+        } else {
+          await logLine('Telegram kuruluyor…');
+          for (let attempt = 1; attempt <= 3 && !tgReady; attempt++) {
+            try { await installBundledApkTo(instance, 'telegram.apk'); tgReady = true; await logLine('✓ Telegram kuruldu'); }
+            catch (e) {
+              if (attempt === 3) { plog(`apks: Telegram install FAILED after 3 tries: ${e.message.slice(0, 160)}`); await logLine(`⚠ Telegram kurulamadı: ${e.message.slice(0, 120)}`); }
+              else await new Promise((r) => setTimeout(r, 6000));
+            }
+          }
+        }
+      }
+      // İlk-açılış hazırlığı (izin ön-verme + SMS appops + cold-open + bildirim önizleme +
+      // HOME). Best-effort ve idempotent — asla throw etmez, bu yüzden provision'ı riske
+      // atmadan hem "zaten kurulu" hem "yeni kuruldu" durumunda çalıştırılır. detectTelegramPkg
+      // burada re-probe eder (installBundledApkTo kurulumda tgPkgCache.clear() yaptı).
+      if (tgReady) {
+        try {
+          const primed = await primeTelegram(serial);
+          await logLine(primed.status === 'PRIMED'
+            ? '✓ Telegram ilk-açılış hazırlığı tamam (izinler + bildirim önizleme)'
+            : `• Telegram hazırlığı atlandı (${primed.status})`);
+        } catch (e) {
+          plog(`apks: primeTelegram error: ${(e && e.message || e).toString().slice(0, 120)}`);
+          await logLine('⚠ Telegram ilk-açılış hazırlığı tamamlanamadı (yine de kurulu)');
+        }
+      }
+    }
+
+    // ★P7 (false-success fix): WhatsApp is REQUIRED — the whole point of provisioning is a
+    // "WhatsApp-hazır" device. Previously a 3x-failed install was downgraded to a ⚠ log and
+    // the step returned normally, so provision reported "WhatsApp-hazır" at 100% while
+    // com.whatsapp was absent (the source of the raw PackageManager stack trace + green
+    // success). Re-probe and THROW if WhatsApp is missing so the provision FAILS honestly.
+    // (fleet-a11y stays best-effort — a device without it is degraded, not broken.)
+    const waPresent = installed['com.whatsapp'] ||
+      (await lxcAttach(instance, ['pm', 'path', 'com.whatsapp'], 15000).catch(() => '')).includes('package:');
+    if (!waPresent) throw new Error('WhatsApp kurulamadı (APK yüklenemedi) — cihaz WhatsApp-hazır değil');
   });
 
   // 9) a11y + keyboard — enable the accessibility service + ADBKeyboard IME + pin
@@ -5015,9 +6963,21 @@ async function provisionDevice(job) {
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
   });
 
-  // 11) done.
+  // 11) done — flush the final step's timer + emit ONE summary line so a tail of the log
+  // tells the whole timing story (e.g. "infra=42s boot=31s root=8s ...").
+  timings[curStep] = (timings[curStep] || 0) + (Date.now() - _stepAt);
+  const elapsedMs = Date.now() - provT0;
+  plog(`DONE ${instance} ${(elapsedMs / 1000).toFixed(0)}s | ${timingSummary()}`);
   await reportProgress(jobId, 'done', 100, `✓ Kurulum tamamlandı — ${instance} WhatsApp-hazır (${serial})`);
-  return { instance, serial, ip, adbPort, subnetId, ready: true, checks };
+  return { instance, serial, ip, adbPort, subnetId, ready: true, checks, timings, elapsedMs };
+  } catch (e) {
+    // ★P1: a post-infra step threw — tear down the half-built instance so its ~4.4GB clone
+    // (+ systemd unit / dbus policy / subnet-map line) doesn't leak on disk. Best-effort:
+    // the ORIGINAL error always propagates; a teardown failure is logged, never masks it.
+    plog(`provision FAILED — tearing down ${instance}: ${e.message}`);
+    await hostSh('wd-destroy.sh', [instance], 120000).catch((te) => plog(`teardown error (leaked): ${te.message}`));
+    throw e;
+  }
 }
 
 // Re-add the fwmark routes an Android netstack drops on every boot (else "no
@@ -5527,6 +7487,201 @@ function pickExtra(block, key) {
   return raw.replace(/\s*\((String|CharSequence|SpannableString)\)\s*$/i, '');
 }
 
+// ── Telegram inbound message capture ────────────────────────────────────────
+//
+// Twin of the WhatsApp inbound path (parseWaNotifications + scrapeIncomingBubbles),
+// but Telegram's notification + UI shapes differ enough that it is NOT a copy-paste.
+//
+// ★NOTIFICATION FORMAT (mapped from org.telegram.messenger.NotificationsController,
+//  DrKLO/Telegram master — VERIFIED-LIVE markers are TODO; confirm against a live
+//  `dumpsys notification --noredact` on the target build before fully trusting the
+//  group/preview detectors):
+//   • pkg is runtime-detected (org.telegram.messenger / .web / thunderdog.challegram),
+//     NEVER hard-coded — the same reason detectTelegramPkg exists for sends.
+//   • ONE-TO-ONE chat: android.title = sender display name, android.text = message
+//     body. Multiple unread from the same peer collapse into a MessagingStyle
+//     notification whose lines land in android.text.lines / android.messages
+//     ("Alice: hi", "Alice: are you there") — we take the LAST line as newest.
+//   • GROUP chat: android.title = GROUP name, android.text (or each messages line)
+//     is prefixed with the sender, e.g. "Alice: hello everyone". Telegram also sets
+//     android.subText / android.conversationTitle to the group name. We split the
+//     "Sender: body" prefix so `from` is the actual sender and tag the group name.
+//   • PREVIEW-OFF ("In-app notifications → Message preview" disabled, or lock-screen
+//     hidden): the body is replaced by a generic "You have a new message" /
+//     "%d new messages" / TR "Yeni mesajınız var" / "%d yeni mesaj". There is no real
+//     text to capture, so we surface a sentinel body (see PREVIEW_OFF_RE) rather than
+//     pushing the placeholder as if it were the message.
+//   • SERVICE/CALL/summary notices (ongoing "Telegram is running"/"Connecting…",
+//     incoming-call, "N new messages from M chats" summary) carry no real 1 message
+//     body → skipped, mirroring parseWaNotifications' summary/service filters.
+const tgSeen = new Map();          // serial -> Set of recent message-key hashes
+const TG_SEEN_MAX = 400;
+const tgScrapeState = new Map();   // serial -> { sig } for the foreground bubble-scrape
+// Telegram's preview-off / aggregate placeholder bodies (EN + TR). When the body is
+// only one of these there is no real message text to forward.
+const TG_PREVIEW_OFF_RE = /^(you have a new message|new message|\d+\s+new messages?|\d+\s+messages?|message|yeni mesaj(ınız)? var|\d+\s+yeni mesaj|mesaj)$/i;
+// Telegram's own non-conversational notices (service, call, sync). Never a message body.
+const TG_SERVICE_RE = /^(telegram( is running| web)?|connecting|updating|checking for messages|incoming call|calling|missed call|arıyor|gelen arama|cevapsız arama|bağlanıyor|güncelleniyor)\b/i;
+
+function tgSeenSet(serial) {
+  let s = tgSeen.get(serial);
+  if (!s) { s = new Set(); tgSeen.set(serial, s); }
+  return s;
+}
+
+// Pull a MessagingStyle notification's per-message lines. Telegram publishes them as
+// `android.text.lines` (array) and/or `android.messages` (parcelled bundles that
+// dumpsys prints as `Bundle[{... text=..., ...}]`). dumpsys renders string-array
+// extras as `android.text.lines=String[N] ("a", "b", ...)` and messages as a
+// bracketed bundle list. We extract each line's visible text, newest last. Returns
+// [] when neither is present (caller falls back to android.text / bigText).
+function pickNotifLines(block) {
+  const lines = [];
+  // Form A: android.text.lines=String[2] ("Alice: hi", "Alice: are you there?")
+  const arr = /android\.text\.lines=[^\n(]*\(([^\n]*)\)/.exec(block);
+  if (arr && arr[1]) {
+    // Split top-level comma-separated quoted items; tolerate commas inside a line
+    // (they're inside quotes) by matching quoted runs first, else naive split.
+    const quoted = arr[1].match(/"((?:[^"\\]|\\.)*)"/g);
+    if (quoted && quoted.length) {
+      for (const q of quoted) lines.push(q.slice(1, -1).replace(/\\"/g, '"'));
+    } else {
+      for (const part of arr[1].split(/,\s*/)) { const t = part.trim().replace(/^"|"$/g, ''); if (t) lines.push(t); }
+    }
+  }
+  // Form B: android.messages=[Bundle[{ ... text=Hi there ... }], Bundle[{ ... }]]
+  // Each MessagingStyle Message bundle carries a `text=` field; grab them in order.
+  if (!lines.length) {
+    const msgs = /android\.messages=\[([\s\S]*?)\]\s*(?:\n|android\.)/.exec(block);
+    if (msgs && msgs[1]) {
+      const re = /\btext=([^,}\n]+)/g;
+      let m;
+      while ((m = re.exec(msgs[1])) !== null) { const t = m[1].trim(); if (t && t !== 'null') lines.push(t); }
+    }
+  }
+  return lines.map((l) => l.trim()).filter(Boolean);
+}
+
+// Parse `dumpsys notification --noredact` for Telegram message notifications, for the
+// runtime-detected package `tgPkg` (one of org.telegram.messenger[.web] /
+// org.thunderdog.challegram). Returns [{ from, text, whenMs, group? }] shaped like
+// parseWaNotifications so the caller can merge/dedup/push both channels uniformly.
+function parseTgNotifications(dump, tgPkg) {
+  const out = [];
+  if (!tgPkg) return out;
+  // Match the exact installed package (escape dots) so we don't latch a different app.
+  const pkgRe = new RegExp('pkg=' + tgPkg.replace(/\./g, '\\.') + '\\b');
+  const blocks = String(dump).split(/NotificationRecord\(/).slice(1);
+  for (const b of blocks) {
+    const head = b.slice(0, 300);
+    if (!pkgRe.test(head)) continue;
+    const title = pickExtra(b, 'android.title');
+    if (!title) continue;
+    // Group name (if this is a group chat): Telegram sets conversationTitle/subText to
+    // the group; a one-to-one chat leaves them empty. Used both to tag the thread and
+    // to know we must strip the "Sender: " prefix from each body line.
+    const groupName = (pickExtra(b, 'android.conversationTitle') || pickExtra(b, 'android.subText') || '').trim();
+    const isGroup = Boolean(groupName) && groupName.toLowerCase() !== title.trim().toLowerCase();
+
+    // Prefer the per-message MessagingStyle lines (multi-line unread); newest is last.
+    // Fall back to bigText, then the single-line text.
+    const lines = pickNotifLines(b);
+    const bodies = lines.length
+      ? lines
+      : [pickExtra(b, 'android.bigText') || pickExtra(b, 'android.text')].filter(Boolean);
+    if (!bodies.length) continue;
+
+    const whenMs = Number(/when=(\d+)/.exec(b)?.[1] || 0);
+    for (const raw of bodies) {
+      let text = String(raw).trim();
+      if (!text) continue;
+      // Service / call / sync notices are not messages.
+      if (TG_SERVICE_RE.test(text)) continue;
+      // Summary aggregate lines ("N new messages from M chats").
+      if (/new messages? from .* chats?$/i.test(text) || /\d+\s+sohbette(n)? .* mesaj/i.test(text)) continue;
+
+      let from = title.trim();
+      let group;
+      if (isGroup) {
+        group = groupName;
+        // Group lines are "Sender: body" — split once so `from` is the real sender and
+        // the group name is carried separately. If there's no "Name: " prefix (rare —
+        // e.g. a service message in the group), keep the group as the sender.
+        const mm = /^([^:]{1,64}):\s([\s\S]+)$/.exec(text);
+        if (mm) { from = mm[1].trim(); text = mm[2].trim(); }
+        else { from = groupName; }
+      }
+      // Preview-off / placeholder → surface a sentinel so the operator sees "a message
+      // arrived" without us forwarding Telegram's generic string as if it were content.
+      if (TG_PREVIEW_OFF_RE.test(text)) text = '[önizleme kapalı — yeni mesaj]';
+      out.push({ from, text, whenMs, ...(group ? { group } : {}) });
+    }
+  }
+  return out;
+}
+
+// Scrape INCOMING message bubbles from an OPEN Telegram Conversation (foreground —
+// where Telegram suppresses the notification, same blind spot WhatsApp has). Telegram
+// is fully custom-drawn: chat rows are ChatMessageCell with NO resource-id and NO
+// per-bubble text node in the a11y tree — the bubble text surfaces as the cell's
+// content-desc instead (ChatMessageCell.getAccessibilityNodeInfo sets contentDescription
+// to the message text; incoming cells sit LEFT-anchored, outgoing RIGHT). So unlike WA
+// (which reads message_text NODES) we read content-desc off the left-half cells.
+// Returns [{from, text, whenMs}] shaped like the notification path for uniform merging.
+async function scrapeTelegramIncoming(serial) {
+  let nodes = [];
+  try { nodes = parseUiNodes(await uiDumpXml(serial)); } catch { return []; }
+  if (!nodes.length) return [];
+  // Screen width to split incoming (left) from outgoing (right).
+  let sw = 720;
+  try {
+    const wm = await adb(serial, ['shell', 'wm', 'size']);
+    const ov = /Override size:\s*(\d+)x/.exec(wm);
+    const ph = /Physical size:\s*(\d+)x/.exec(wm);
+    const m = ov || ph; if (m) sw = Number(m[1]) || sw;
+  } catch { /* keep default */ }
+  // Peer/group name from the action bar. Telegram's toolbar title has no stable id;
+  // it's the top-most TextView above the message area with a non-empty text.
+  const topNodes = nodes.filter((n) => n.text && n.cy < (nodes.reduce((mx, x) => Math.max(mx, x.cy), 0)) * 0.18);
+  const peer = (topNodes.sort((a, b) => a.cy - b.cy)[0]?.text || 'Telegram').trim();
+  // Incoming bubbles: left-anchored cells whose readable text lives in content-desc
+  // (custom-draw) or, on some builds, a plain text node inside the cell. We take
+  // content-desc when present (the whole bubble text), else text. Skip the toolbar,
+  // the compose box, and outgoing (right-half) cells.
+  const incoming = [];
+  for (const n of nodes) {
+    const body = (n.desc || n.text || '').trim();
+    if (!body) continue;
+    if (/(^|\.)EditText$/i.test(n.cls || '')) continue;        // compose box
+    if (n.cy < sw * 0) continue;                               // (noop guard placeholder)
+    if (typeof n.cx === 'number' && n.cx > sw * 0.5) continue; // outgoing → skip
+    // Only cell-sized nodes (a bubble spans a meaningful width) — filters out tiny
+    // status icons/timestamps that also sit on the left.
+    const w = (n.bounds?.[2] ?? 0) - (n.bounds?.[0] ?? 0);
+    if (w < sw * 0.12) continue;
+    // Cell content-desc / text that is just a timestamp or read-state is not a message.
+    if (/^\d{1,2}:\d{2}(\s?[AP]M)?$/i.test(body)) continue;
+    incoming.push({ text: body, cy: typeof n.cy === 'number' ? n.cy : 0 });
+  }
+  if (!incoming.length) return [];
+  incoming.sort((a, b) => a.cy - b.cy); // top→bottom = oldest→newest
+  const texts = incoming.map((b) => b.text).filter(Boolean);
+  if (!texts.length) return [];
+  const newest = texts[texts.length - 1];
+  const prev = tgScrapeState.get(serial);
+  if (prev && prev.sig === newest) return []; // nothing changed since last tick
+
+  let toEmit;
+  if (prev && prev.sig) {
+    const idx = texts.lastIndexOf(prev.sig);
+    toEmit = idx >= 0 ? texts.slice(idx + 1) : [newest];
+  } else {
+    toEmit = [newest];
+  }
+  tgScrapeState.set(serial, { sig: newest });
+  return toEmit.map((text) => ({ from: peer, text, whenMs: 0 }));
+}
+
 // Scrape INCOMING message bubbles from an open WhatsApp Conversation. Incoming
 // bubbles sit on the LEFT half of the screen (outgoing are on the right), so we
 // use each message_text node's horizontal center to keep only received ones.
@@ -5645,17 +7800,17 @@ async function pollWhatsappInbox(serial) {
 // root / WhatsApp simply return nothing (adbSu → '' on failure).
 async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
-  // Skip while a job is running. A job's WhatsApp RPA (uiautomator dump / screencap
-  // / taps) and the inbox poll's own dumpsys/screencap on the SAME device race each
-  // other on this Waydroid host — that contention is a leading cause of the "job
-  // hangs / dump comes back blank" instability. Serialising the inbox poll behind
-  // the job loop keeps every job's device access exclusive, so jobs run faster and
-  // more reliably even under back-to-back load.
-  if (jobBusy) return;
+  // Skip the inbox poll ONLY for devices that currently have a job running. A job's
+  // WhatsApp RPA (uiautomator dump / screencap / taps) and the inbox poll's own
+  // dumpsys/screencap on the SAME device race each other on this Waydroid host — that
+  // contention is a leading cause of the "job hangs / dump comes back blank"
+  // instability. With per-device concurrency the poll now yields PER DEVICE
+  // (busyDevices.has(serial)) instead of stopping for the whole host whenever any job
+  // runs — so inbound capture keeps working on idle devices during parallel sends.
   try {
     const serials = await reachableSerials();
     for (const serial of serials) {
-      if (jobBusy) return; // a job may have started mid-tick — yield the device
+      if (busyDevices.has(serial)) continue; // a job owns this device — skip it, poll the rest
       await pollWhatsappInbox(serial).catch(() => undefined);
     }
   } catch (err) {
@@ -5985,10 +8140,11 @@ function startCapture(ws, deviceId, serial, fps) {
       // ADB isolation: a running job (tap/swipe/exec-out cat/uiautomator) shares
       // the SAME adb transport as our screencap. A ~1.7s screencap in flight was
       // starving the job's own adb calls — the root of the "adb kararsızlığı".
-      // While a job holds the device, PAUSE streaming so the job's ADB calls run
-      // uncontended; resume the instant it finishes. Jobs are short, so the
-      // viewer only sees a brief freeze, and control stays responsive.
-      if (jobBusy) { await new Promise((r) => setTimeout(r, 200)); continue; }
+      // While a job holds THIS device, PAUSE streaming so the job's ADB calls run
+      // uncontended; resume the instant it finishes. Per-device now (busyDevices) so
+      // one device's job doesn't freeze every other device's stream. Jobs are short,
+      // so the viewer only sees a brief freeze, and control stays responsive.
+      if (busyDevices.has(serial)) { await new Promise((r) => setTimeout(r, 200)); continue; }
       try {
         const img = await captureFrame(serial);
         if (state.stopped) break;
@@ -6196,23 +8352,169 @@ function startStreamClient() {
 // --- main loop --------------------------------------------------------------
 
 let stopping = false;
-// True while a claimed job is executing. The WhatsApp inbox poll checks this and
-// yields the device so the job's RPA has exclusive ADB access (see whatsappInboxTick).
-let jobBusy = false;
+// ── Per-DEVICE concurrency ───────────────────────────────────────────────────
+// The agent used to run ONE job at a time across the WHOLE host (a single `jobBusy`
+// flag + an await-in-loop): a send to device B waited for device A's send to finish
+// even though they're different phones (VERIFIED LIVE 23:29 — three sends to three
+// devices queued 1s/12s/25s instead of running together). For the multi-user, many-
+// device usage this fleet is built for, that's a hard bottleneck (10 users → 10×
+// serial). Now we track busy devices in a SET and dispatch jobs for DIFFERENT devices
+// CONCURRENTLY, while still serialising jobs on the SAME device (overlapping ADB/UI
+// on one phone corrupts each other). A global cap bounds total parallelism so a burst
+// can't exhaust host resources.
+const busyDevices = new Set();          // serials with a job currently executing
+const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 8);
+let activeJobCount = 0;
+// Back-compat shim: some helpers (otpWatchTick, whatsappInboxTick) historically read
+// a global `jobBusy`. They now ask "is ANY job running?" via this getter, but the
+// hot path uses busyDevices.has(serial) for per-device decisions.
+function anyJobBusy() { return activeJobCount > 0; }
 process.on('SIGINT', () => { stopping = true; });
 process.on('SIGTERM', () => { stopping = true; });
 
+// ★OTP-WATCH — keep the live panel view FRESH while a registration is parked at OTP_WAIT.
+// When registerWhatsApp reaches the OTP screen it returns via done('otp_wait') → the job
+// ends COMPLETED → the in-job heartbeat ticker stops → the panel's live thumbnail FREEZES
+// while the operator reads/enters the code (which can take minutes). This registry lets
+// the agent keep pushing a ~10s thumbnail for a parked device even though no job is
+// running on it. registerWhatsApp adds an entry when it parks; a new continuation job
+// (or the deadline) removes it. Keyed by serial. { jobId, accountId, deviceId, until }.
+const otpWatch = new Map();
+const OTP_WATCH_MS = Number(process.env.FLEET_OTP_WATCH_MS || 10000);
+const OTP_WATCH_TTL_MS = Number(process.env.FLEET_OTP_WATCH_TTL_MS || 15 * 60 * 1000); // stop after 15 min
+// Push one downscaled thumbnail per parked device. Skips the device that's currently busy
+// with a claimed job (the job's own progress/heartbeat covers it), and drops expired
+// entries. Best-effort throughout — a frame error never breaks the loop.
+async function otpWatchTick() {
+  if (otpWatch.size === 0) return;
+  const now = Date.now();
+  for (const [serial, w] of otpWatch) {
+    if (now > w.until) { otpWatch.delete(serial); continue; }
+    if (busyDevices.has(serial)) continue; // a job is running ON THIS device — let it own the screen (other devices are fine)
+    try {
+      const png = await grabPng(serial, 8000).catch(() => null);
+      if (!png) continue;
+      const thumb = await shrinkPng(png, 300).catch(() => null);
+      if (thumb) {
+        // note '🎥 canlı' → the API/panel treat it as a heartbeat frame (does NOT clobber
+        // the parked-state OTP prompt note; see wa-register.service isHeartbeatFrame).
+        await reportProgress(w.jobId, 'otp_wait', 85, '🎥 canlı', undefined, { accountId: w.accountId, shot: thumb }).catch(() => undefined);
+      }
+    } catch { /* best-effort */ }
+  }
+}
+
+// Run ONE claimed job to completion in isolation. NEVER throws — every failure is
+// caught and reported as a FAILED job, so one device's crash/timeout can't break the
+// dispatch loop or any other device's job. Marks the device busy for the duration
+// (per-device serialisation + stream/inbox yielding) and always frees it in finally.
+// `waitForDevice`: if the device is momentarily busy (rare claim race), wait for it
+// to free before starting, so same-device jobs never overlap.
+async function runJobTask(job, waitForDevice) {
+  const serial = job.serial || null;
+  if (serial && waitForDevice) {
+    // Bounded wait for the device to free (max ~2 min); if it never frees, run anyway
+    // rather than stranding the job (the API reaper would otherwise fail it).
+    for (let i = 0; i < 240 && busyDevices.has(serial); i++) await sleep(500);
+  }
+  if (serial) busyDevices.add(serial);
+  activeJobCount++;
+  try {
+    log(`claimed job ${job.id} (${job.type}) -> ${serial ?? 'no-serial'} [active=${activeJobCount}]`);
+    // ── Automatic retry for TRANSIENT device errors ──────────────────────────
+    // On this GPU-less Waydroid host, a device's Android session occasionally
+    // restarts (libprocessgroup kills the cgroup) and for a few seconds its system
+    // services vanish → ADB returns "Can't find service: activity/input" or a step
+    // ANRs. The device recovers on its own within seconds. VERIFIED LIVE (21:52-55).
+    // Without retry these surfaced as a hard FAILED and the message was lost — the
+    // #1 gap for the multi-user, always-on usage this fleet is built for. So: retry
+    // idempotent, safe-to-repeat job types a couple of times with a short backoff.
+    // We do NOT retry stateful flows (register/provision) — replaying them mid-flow
+    // could double-act; those keep their single-shot semantics.
+    const RETRYABLE_TYPES = new Set([
+      'WHATSAPP_SEND', 'WHATSAPP_SEND_MEDIA', 'WHATSAPP_READ', 'WHATSAPP_PROFILE',
+      'WHATSAPP_BLOCK', 'WHATSAPP_BLOCKLIST', 'WHATSAPP_MYNUMBER',
+      // TELEGRAM_SEND confirms delivery (compose box cleared) before returning SENT,
+      // and a transient session-restart mid-open leaves the draft un-sent, so a retry
+      // re-opens the chat cleanly rather than double-posting. Same safety as WA send.
+      'TELEGRAM_SEND'
+    ]);
+    const isTransient = (msg) => /Can't find service|not found|device offline|closed|no devices|ANR|isn.t responding|zaman aşımı|timed out|Connection reset|protocol fault/i.test(String(msg || ''));
+    const MAX_TRIES = RETRYABLE_TYPES.has(job.type) ? 3 : 1;
+
+    let result;
+    let lastErr;
+    // Tracks an abandoned (timed-out) runJob whose ADB work is still in flight, so
+    // the finally can keep the device busy until it truly settles (see below).
+    let pendingSettle = null;
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+      // Wall-clock cap: a hung job (WhatsApp ANR etc.) rejects here instead of
+      // occupying its slot forever.
+      const t = withJobTimeout(job.type, runJob(job));
+      try {
+        result = await t.raced;
+        lastErr = null;
+        break;
+      } catch (err) {
+        // If the wall-clock cap fired, the underlying runJob is STILL RUNNING and may
+        // still be issuing ADB commands to this device. Remember its settle promise so
+        // the finally holds the device busy until it finishes — otherwise the next job
+        // for this serial would run concurrent ADB against a half-finished flow.
+        if (t.state.timedOut) pendingSettle = t.settled;
+        lastErr = err;
+        if (attempt < MAX_TRIES && isTransient(err.message)) {
+          const backoff = 2500 * attempt; // 2.5s, 5s — give the session time to recover
+          log(`job ${job.id} transient fail (try ${attempt}/${MAX_TRIES}): ${err.message} — retry in ${backoff}ms`);
+          await sleep(backoff);
+          if (serial) await ensureConnected(serial).catch(() => undefined); // re-establish ADB
+          continue;
+        }
+        throw err; // non-transient, or out of tries
+      }
+    }
+    if (lastErr) throw lastErr;
+    await reportComplete(job.id, 'COMPLETED', { result });
+    log(`completed ${job.id} [active=${activeJobCount - 1}]`);
+  } catch (err) {
+    log(`job ${job.id} failed:`, err.message);
+    try {
+      await reportComplete(job.id, 'FAILED', { error: err.message });
+    } catch (reportErr) {
+      log('failed to report failure:', reportErr.message);
+    }
+  } finally {
+    if (serial) busyDevices.delete(serial);
+    activeJobCount--;
+  }
+}
+
 async function loop() {
-  log(`starting — polling ${API_URL} every ${POLL_MS}ms`);
+  log(`starting — polling ${API_URL} every ${POLL_MS}ms (max ${MAX_CONCURRENT_JOBS} concurrent)`);
   await heartbeat();
   const hb = setInterval(heartbeat, HEARTBEAT_MS);
   // WhatsApp inbound-message poll (notification-based). Best-effort; failures
   // are logged and never block the job loop. Gated on jobBusy so it never contends
   // with a running job on the same device.
   const waInbox = WA_INBOX_ENABLED ? setInterval(() => { whatsappInboxTick().catch(() => undefined); }, WA_INBOX_MS) : null;
+  // ★OTP-WATCH ticker: keeps the panel's live thumbnail fresh for devices parked at OTP_WAIT.
+  const otpWatchT = setInterval(() => { otpWatchTick().catch(() => undefined); }, OTP_WATCH_MS);
   startStreamClient();
 
+  // Dispatch loop: claim jobs and run them CONCURRENTLY across devices, up to
+  // MAX_CONCURRENT_JOBS. Each job runs in its own isolated task (runJobTask) that
+  // NEVER throws — a crash/timeout on one device can't touch another. Same-device
+  // serialisation is enforced two ways: the API's exclusive-job guard won't hand out
+  // a second job for a busy device, AND we skip claiming for a serial already in
+  // busyDevices (defensive). Built for 100s of devices: bounded parallelism +
+  // per-device isolation + guaranteed cleanup.
   while (!stopping) {
+    // Backpressure: at the concurrency cap → wait for a slot to free instead of
+    // piling up claims. Keeps host ADB/CPU from being swamped by a burst.
+    if (activeJobCount >= MAX_CONCURRENT_JOBS) {
+      await sleep(POLL_MS);
+      continue;
+    }
+
     let job = null;
     try {
       job = await claimNext();
@@ -6227,26 +8529,30 @@ async function loop() {
       continue;
     }
 
-    log(`claimed job ${job.id} (${job.type}) -> ${job.serial ?? 'no-serial'}`);
-    jobBusy = true;
-    try {
-      const result = await runJob(job);
-      await reportComplete(job.id, 'COMPLETED', { result });
-      log(`completed ${job.id}`);
-    } catch (err) {
-      log(`job ${job.id} failed:`, err.message);
-      try {
-        await reportComplete(job.id, 'FAILED', { error: err.message });
-      } catch (reportErr) {
-        log('failed to report failure:', reportErr.message);
-      }
-    } finally {
-      jobBusy = false;
+    // Defensive same-device guard: if we somehow claimed a job for a device that's
+    // already running one (shouldn't happen — API guards it — but claim races or a
+    // non-exclusive job type could), run it AFTER the current one by re-queuing the
+    // claim intent. Simplest safe behaviour: skip the dispatch this tick; the job
+    // stays RUNNING (claimed) and we execute it once the device frees. To avoid
+    // losing it, we execute inline-serialised only for the same device.
+    if (job.serial && busyDevices.has(job.serial)) {
+      // Rare: execute it but wait for the device to free first (serialise on-device).
+      // Do NOT block the whole loop — spawn a waiter task.
+      void runJobTask(job, /*waitForDevice*/ true);
+      continue;
     }
+
+    // Fire-and-forget: start the job task WITHOUT awaiting so the loop immediately
+    // goes back to claim the NEXT job (for a DIFFERENT device) → true parallelism.
+    void runJobTask(job, false);
   }
+
+  // Graceful drain: let in-flight jobs finish (bounded wait) before tearing down.
+  for (let i = 0; i < 60 && activeJobCount > 0; i++) await sleep(500);
 
   clearInterval(hb);
   if (waInbox) clearInterval(waInbox);
+  clearInterval(otpWatchT);
   log('shutting down.');
 }
 

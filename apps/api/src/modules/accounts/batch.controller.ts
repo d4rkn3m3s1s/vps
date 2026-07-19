@@ -91,6 +91,18 @@ export async function sendWhatsAppFromDeviceHandler(req: Request, res: Response)
   res.json({ data: await batchService.sendFromDevice(getWorkspaceId(req), input) });
 }
 
+// Send a Telegram message directly from a device (Telegram page — device-scoped,
+// no account id). Same shape as WhatsApp send; the agent runtime-detects the pkg.
+const sendTelegramFromDeviceSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(5),
+  message: z.string().min(1).max(4096)
+});
+export async function sendTelegramFromDeviceHandler(req: Request, res: Response): Promise<void> {
+  const input = sendTelegramFromDeviceSchema.parse(req.body);
+  res.json({ data: await batchService.sendTelegramFromDevice(getWorkspaceId(req), input) });
+}
+
 // Fetch a contact's WhatsApp profile (avatar + name/about) — device-scoped.
 const fetchProfileSchema = z
   .object({
@@ -210,11 +222,22 @@ export async function autoRegisterWhatsAppHandler(req: Request, res: Response): 
 // (status REGISTERING → AWAITING_OTP as the agent reports back).
 const startRegisterSchema = z.object({
   deviceId: z.string().min(1),
-  phoneNumber: z.string().min(6)
+  phoneNumber: z.string().min(6),
+  // Optional operator-chosen profile name. Absent → backend auto-generates one.
+  fullName: z.string().trim().min(1).max(60).optional(),
+  // Explicit confirmation to proceed when the device already has a live WhatsApp account
+  // (the fresh register pm-clears it). Only the operator ticking the modal warning sets this.
+  force: z.boolean().optional()
 });
 export async function startRegisterHandler(req: Request, res: Response): Promise<void> {
   const input = startRegisterSchema.parse(req.body);
-  const account = await batchService.startOperatorRegister(getWorkspaceId(req), input.deviceId, input.phoneNumber);
+  const account = await batchService.startOperatorRegister(
+    getWorkspaceId(req),
+    input.deviceId,
+    input.phoneNumber,
+    input.fullName,
+    input.force
+  );
   res.status(201).json({ data: account });
 }
 
@@ -230,7 +253,11 @@ export async function provideOtpHandler(req: Request, res: Response): Promise<vo
 // Operator picked a verification method on the "Choose how to verify" sheet; re-
 // dispatch REGISTER_WHATSAPP with verifyMethod so the agent selects that row instead
 // of guessing. Account flips AWAITING_OTP → REGISTERING (guarded against double-tap).
-const provideVerifyMethodSchema = z.object({ method: z.enum(['sms', 'voice', 'missed_call']) });
+// ★FIX: add 'other_device' — WhatsApp's "Choose how to verify" sheet often offers "Other
+// device" (the number is registered elsewhere; the code goes to that phone). The agent's
+// applyVerifyMethod already handles it, but the schema rejected it → the panel button
+// 400'd. Now the operator can pick any row WhatsApp shows.
+const provideVerifyMethodSchema = z.object({ method: z.enum(['sms', 'voice', 'missed_call', 'other_device']) });
 export async function provideVerifyMethodHandler(req: Request, res: Response): Promise<void> {
   const { method } = provideVerifyMethodSchema.parse(req.body);
   const account = await batchService.provideVerifyMethod(getWorkspaceId(req), id(req), method);

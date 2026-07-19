@@ -43,6 +43,24 @@ export async function provisionStatusHandler(req: Request, res: Response): Promi
   res.json({ data });
 }
 
+// Operatör panelden devam eden/kuyruğa alınmış kurulumu iptal eder. Job FAILED olur,
+// yarım cihaz FAILED işaretlenir, badge temizlenir. Workspace-guarded (IDOR-safe).
+export async function provisionCancelHandler(req: Request, res: Response): Promise<void> {
+  const jobId = req.params.jobId;
+  if (typeof jobId !== 'string') {
+    res.status(400).json({ error: 'INVALID_JOB_ID', message: 'jobId is required' });
+    return;
+  }
+  const data = await provisionService.cancel(jobId, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'device.provision.cancel',
+    resourceType: 'job',
+    resourceId: jobId
+  }).catch(() => undefined);
+  res.json({ data });
+}
+
 // Tek-tık: sıfırdan yeni izole Waydroid instance oluşturur + kurulumu başlatır.
 export async function createInstanceHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = getWorkspaceId(req);

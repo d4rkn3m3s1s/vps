@@ -352,22 +352,42 @@ async function listDevicesText(workspaceId: string): Promise<{ text: string; but
 }
 
 // Build device-picker buttons (for the send / chat-browse flows).
+// `whatsappOnly`: keep only devices that have an ACTIVE WhatsApp account. Sending a
+// message from a device with no WhatsApp is guaranteed to fail (there's no account
+// to send from), so the send picker filters these out — the operator asked for
+// this ("her cihazda wp yok"). The phone number is shown next to the name so the
+// operator knows WHICH WhatsApp identity they're sending from.
 async function devicePickerButtons(
   workspaceId: string,
   action: 'sendpick' | 'readpick' | 'chatpick',
-  filter?: ConversationFilter
+  filter?: ConversationFilter,
+  whatsappOnly = false
 ): Promise<InlineButton[][]> {
   const devices = await deviceService.listDevices(workspaceId);
-  const online = devices.filter((d) => d.status === 'ONLINE');
-  const pick = (online.length ? online : devices).slice(0, 8);
+  // `hasActiveWhatsapp` / `activeWhatsappPhone` are attached by listDevices (device
+  // has an ACTIVE/AWAITING_MANUAL WhatsApp account). Read them defensively.
+  const waDevices = whatsappOnly
+    ? devices.filter((d) => (d as Record<string, unknown>).hasActiveWhatsapp === true)
+    : devices;
+  const online = waDevices.filter((d) => d.status === 'ONLINE');
+  const pick = (online.length ? online : waDevices).slice(0, 8);
   // A non-'all' filter is carried on the callback so the list opens pre-filtered
   // (e.g. /okunmamis → chatpick:<id>:unread). callback_data stays under 64 bytes.
   const suffix = filter && filter !== 'all' ? `:${filter}` : '';
-  const rows: InlineButton[][] = pick.map((d) => [
-    { text: `${d.status === 'ONLINE' ? '🟢' : '⚪️'} ${d.name}`.slice(0, 60), callback_data: `${action}:${d.id}${suffix}` }
-  ]);
+  const rows: InlineButton[][] = pick.map((d) => {
+    const phone = (d as Record<string, unknown>).activeWhatsappPhone as string | null | undefined;
+    const label = `${d.status === 'ONLINE' ? '🟢' : '⚪️'} ${d.name}${phone ? ` · ${phone}` : ''}`.slice(0, 60);
+    return [{ text: label, callback_data: `${action}:${d.id}${suffix}` }];
+  });
   rows.push([{ text: '⬅️ Menü', callback_data: 'menu' }]);
   return rows;
+}
+
+// True when the workspace has at least one device with an active WhatsApp account —
+// used to show a helpful "no WhatsApp device" message instead of an empty picker.
+async function hasAnyWhatsappDevice(workspaceId: string): Promise<boolean> {
+  const devices = await deviceService.listDevices(workspaceId);
+  return devices.some((d) => (d as Record<string, unknown>).hasActiveWhatsapp === true);
 }
 
 async function readMessagesText(workspaceId: string, deviceId: string): Promise<string> {
@@ -537,8 +557,12 @@ async function handleCommand(
     const { text: t, buttons } = await listDevicesText(workspaceId);
     await sendMessage(token, chatId, t, buttons);
   } else if (lower === '/gonder' || lower === 'gonder' || lower === '/send') {
-    const buttons = await devicePickerButtons(workspaceId, 'sendpick');
-    await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi cihazdan göndermek istiyorsunuz?', buttons);
+    if (!(await hasAnyWhatsappDevice(workspaceId))) {
+      await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.\nÖnce panelden bir cihaza WhatsApp kaydı yapın; mesaj yalnızca WhatsApp\'lı cihazdan gönderilebilir.', MAIN_MENU);
+    } else {
+      const buttons = await devicePickerButtons(workspaceId, 'sendpick', undefined, true);
+      await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi <b>WhatsApp\'lı</b> cihazdan göndermek istiyorsunuz?', buttons);
+    }
   } else if (lower === '/sohbetler' || lower === 'sohbetler' || lower === '/mesajlar' || lower === 'mesajlar' || lower === '/chats') {
     const buttons = await devicePickerButtons(workspaceId, 'chatpick');
     await sendMessage(token, chatId, '💬 <b>Sohbetler</b>\nHangi cihazın sohbetlerini görmek istiyorsunuz?', buttons);
@@ -643,8 +667,12 @@ async function handleCallback(
     const { text: t, buttons } = await listDevicesText(workspaceId);
     await sendMessage(token, chatId, t, buttons);
   } else if (data === 'send') {
-    const buttons = await devicePickerButtons(workspaceId, 'sendpick');
-    await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi cihazdan göndermek istiyorsunuz?', buttons);
+    if (!(await hasAnyWhatsappDevice(workspaceId))) {
+      await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.\nÖnce panelden bir cihaza WhatsApp kaydı yapın; mesaj yalnızca WhatsApp\'lı cihazdan gönderilebilir.', MAIN_MENU);
+    } else {
+      const buttons = await devicePickerButtons(workspaceId, 'sendpick', undefined, true);
+      await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi <b>WhatsApp\'lı</b> cihazdan göndermek istiyorsunuz?', buttons);
+    }
   } else if (data === 'q:unread' || data === 'q:favorite') {
     // Quick-filter from the main menu → device picker carrying the filter.
     const f: ConversationFilter = data === 'q:unread' ? 'unread' : 'favorite';

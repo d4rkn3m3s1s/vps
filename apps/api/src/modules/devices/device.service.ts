@@ -42,6 +42,23 @@ export class DeviceService {
     // Decrypt each fingerprint's identity fields so the profiles list + the
     // fingerprint modal show real IMEI/MAC/serial/androidId/phone, not ciphertext.
     for (const d of devices) if (d.fingerprint) d.fingerprint = decryptFingerprint(d.fingerprint);
+    // ★DATA-LOSS GUARD (UI hint): tag each device that already holds a live WhatsApp account
+    // so the dashboard can warn before a new registration (which pm-clears/wipes it). One
+    // grouped query for the whole page (no N+1). Signal = a whatsapp GeneratedAccount in
+    // ACTIVE/AWAITING_MANUAL — the same authoritative check the API start-guard uses.
+    if (devices.length) {
+      const ids = devices.map((d) => d.id);
+      const waAccounts = await prisma.generatedAccount.findMany({
+        where: { deviceId: { in: ids }, platform: 'whatsapp', status: { in: ['ACTIVE', 'AWAITING_MANUAL'] } },
+        select: { deviceId: true, phoneNumber: true }
+      });
+      const byDevice = new Map<string, string | null>();
+      for (const a of waAccounts) if (a.deviceId) byDevice.set(a.deviceId, a.phoneNumber ?? null);
+      for (const d of devices) {
+        (d as Record<string, unknown>).hasActiveWhatsapp = byDevice.has(d.id);
+        (d as Record<string, unknown>).activeWhatsappPhone = byDevice.get(d.id) ?? null;
+      }
+    }
     return devices;
   }
 

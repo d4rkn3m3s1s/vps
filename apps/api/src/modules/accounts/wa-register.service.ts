@@ -107,8 +107,29 @@ export class WaRegisterService {
     return event;
   }
 
+  // A heartbeat frame is the agent's ~5s live-thumbnail tick: it carries the current
+  // step/percent + the note '🎥 canlı' (and, over WS, a shot) purely to keep the panel's
+  // live view fresh. It is NOT a state transition. Recognizing it lets us keep it OUT of
+  // the persisted lastProgress/log so it can't overwrite a meaningful parked-state note
+  // (e.g. the "🔀 Doğrulama yöntemi seçin…" method-select prompt or "📲 SMS kodu
+  // bekleniyor") — which was making the panel miss the method-select UI and fall back to
+  // a plain OTP box. The live frame still reaches the panel via the WS broadcast above.
+  private isHeartbeatFrame(event: { note?: string | undefined }): boolean {
+    return (event.note ?? '') === '🎥 canlı';
+  }
+
+  // A '📸 <label>' frame is a screenshot snapshot, NOT a state change. It should appear in
+  // the log but must NOT become lastProgress — otherwise a '📸 choose_verify' arriving
+  // after the "🔀 Doğrulama yöntemi seçin" prompt would clobber the parked-state note the
+  // panel keys the method-select buttons off of (bug reported live: buttons vanished).
+  private isSnapFrame(event: { note?: string | undefined }): boolean {
+    return (event.note ?? '').startsWith('📸');
+  }
+
   // Append to GeneratedAccount.registerLog = { log: [...capped], lastProgress }.
   private async appendLog(accountId: string, event: Omit<WaRegisterProgress, 'shot'>): Promise<void> {
+    // Heartbeat frames are transient live-view ticks — never persist them at all.
+    if (this.isHeartbeatFrame(event)) return;
     const acc = await prisma.generatedAccount.findUnique({ where: { id: accountId }, select: { registerLog: true } });
     if (!acc) return;
     const cur = (acc.registerLog ?? {}) as Record<string, unknown>;
@@ -121,9 +142,12 @@ export class WaRegisterService {
       ...(event.note ? { note: event.note } : {})
     });
     const trimmed = log.slice(-200);
+    // Snap frames go into the log but PRESERVE the existing lastProgress (don't overwrite
+    // it with the screenshot note). Everything else updates lastProgress normally.
+    const nextLastProgress = this.isSnapFrame(event) ? (cur.lastProgress ?? event) : event;
     await prisma.generatedAccount.update({
       where: { id: accountId },
-      data: { registerLog: { log: trimmed, lastProgress: event } as Prisma.InputJsonValue }
+      data: { registerLog: { log: trimmed, lastProgress: nextLastProgress } as Prisma.InputJsonValue }
     });
   }
 

@@ -6,19 +6,31 @@ import { writeAuditLog } from '../audit/audit.service';
 import { webhooksService } from './webhooks.service';
 
 // Must stay in sync with the Prisma WebhookEvent enum + everything the producers
-// dispatch. WHATSAPP_SENT / WHATSAPP_FAILED are emitted by agent.service on job
-// completion; without them here, users could not subscribe to those events (the
-// producer fired an event no consumer could ever select — silent drift).
+// dispatch. Every value below is emitted somewhere (agent.service / jobs.service /
+// heartbeat); leaving one OUT means the producer fires an event no consumer can
+// ever subscribe to (silent drift). Kept exhaustive against the enum:
+//   - WHATSAPP_SENT / WHATSAPP_FAILED  → agent.service on WHATSAPP_SEND completion
+//   - WHATSAPP_DELIVERED / WHATSAPP_READ → agent.service on a delivery-receipt read
+//   - WHATSAPP_AWAITING_OTP / _REGISTERED / _REGISTER_FAILED → REGISTER_WHATSAPP hook
+//   - DEVICE_PROVISIONED → PROVISION_DEVICE completion
+// The last four existed in the Prisma enum + were dispatched, but were missing here
+// so operators could NOT subscribe to them — the drift this list closes.
 const WEBHOOK_EVENTS = [
   'JOB_COMPLETED',
   'JOB_FAILED',
   'DEVICE_ONLINE',
   'DEVICE_OFFLINE',
+  'DEVICE_PROVISIONED',
   'QUOTA_HIGH',
   'ALERT_FIRED',
   'WHATSAPP_MESSAGE',
   'WHATSAPP_SENT',
   'WHATSAPP_FAILED',
+  'WHATSAPP_DELIVERED',
+  'WHATSAPP_READ',
+  'WHATSAPP_AWAITING_OTP',
+  'WHATSAPP_REGISTERED',
+  'WHATSAPP_REGISTER_FAILED',
   'ALL'
 ] as const;
 

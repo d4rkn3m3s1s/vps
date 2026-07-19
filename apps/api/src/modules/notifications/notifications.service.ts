@@ -2,6 +2,7 @@ import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
 import { encryptString, decryptString } from '../../lib/crypto';
 import { assertSafePublicUrl } from '../../lib/urlGuard';
+import { logger } from '../../lib/logger';
 
 // Slack/Discord webhook URLs must live on the provider's own hosts. Pinning the
 // host (on top of the generic SSRF guard) blocks pointing a "webhook" at an
@@ -219,9 +220,14 @@ export async function dispatch(workspaceId: string, message: DispatchMessage): P
       rows.map(async (row) => {
         try {
           const config = JSON.parse(decryptString(row.configEnc)) as ChannelConfig;
-          await postToChannel(row.type as ChannelType, config, message);
-        } catch {
-          // swallow — best effort
+          const r = await postToChannel(row.type as ChannelType, config, message);
+          // Observability: dispatch was previously totally silent, so "did the
+          // Telegram ping actually go out?" was unanswerable during load-testing.
+          // Log the per-channel outcome (title only — no secrets/bodies).
+          if (r.ok) logger.info('notify sent', { channel: row.type, title: message.title.slice(0, 60) });
+          else logger.warn('notify failed', { channel: row.type, error: r.error, title: message.title.slice(0, 60) });
+        } catch (e) {
+          logger.warn('notify dispatch error', { channel: row.type, error: e instanceof Error ? e.message : String(e) });
         }
       })
     );

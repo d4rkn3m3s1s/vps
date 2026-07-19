@@ -8,6 +8,7 @@ import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
 import { getJob } from '../jobs/jobs.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
+import { withIdempotency, readIdempotencyKey } from './idempotency.service';
 
 const deviceService = new DeviceService();
 
@@ -34,8 +35,14 @@ export async function sendHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
   requireScope(req, 'write');
   const input = sendSchema.parse(req.body);
-  const { job } = await batchService.sendFromDevice(workspaceId, input);
-  res.json({ data: { jobId: job.id, status: job.status } });
+  // Idempotency-Key (optional): a retry with the same key returns the FIRST job
+  // instead of dispatching a second send. See idempotency.service.
+  const idemKey = readIdempotencyKey(req.header('idempotency-key'));
+  const result = await withIdempotency(workspaceId, idemKey, 'whatsapp.send', async () => {
+    const { job } = await batchService.sendFromDevice(workspaceId, input);
+    return { jobId: job.id, status: job.status };
+  });
+  res.json({ data: { jobId: result.jobId, status: result.status, ...(result.idempotentReplay ? { idempotentReplay: true } : {}) } });
 }
 
 // POST /public/v1/whatsapp/send/bulk — many DISTINCT messages in one call (each a
@@ -49,11 +56,20 @@ export async function bulkSendHandler(req: Request, res: Response): Promise<void
   const workspaceId = requirePublicWorkspace(req);
   requireScope(req, 'write');
   const { messages } = bulkSendSchema.parse(req.body);
+  // Idempotency-Key (optional): a replay of the SAME bulk call returns the SAME
+  // per-item jobIds instead of dispatching everything twice. We derive a stable
+  // per-item key from the batch key + item index so item N always maps to the same
+  // reservation across retries (order-stable: the array is positional).
+  const bulkKey = readIdempotencyKey(req.header('idempotency-key'));
   const results = await Promise.all(
-    messages.map(async (m) => {
+    messages.map(async (m, i) => {
       try {
-        const { job } = await batchService.sendFromDevice(workspaceId, m);
-        return { to: m.to, jobId: job.id, status: job.status };
+        const itemKey = bulkKey ? `${bulkKey}:${i}` : undefined;
+        const r = await withIdempotency(workspaceId, itemKey, 'whatsapp.send', async () => {
+          const { job } = await batchService.sendFromDevice(workspaceId, m);
+          return { jobId: job.id, status: job.status };
+        });
+        return { to: m.to, jobId: r.jobId, status: r.status, ...(r.idempotentReplay ? { idempotentReplay: true } : {}) };
       } catch (e) {
         return { to: m.to, error: e instanceof AppError ? e.code : 'DISPATCH_FAILED', message: (e as Error).message };
       }
@@ -242,6 +258,22 @@ export async function threadHandler(req: Request, res: Response): Promise<void> 
       nextBefore: result.nextBefore
     }
   });
+}
+
+// POST /public/v1/whatsapp/thread/read — mark a thread read: zeroes its unread
+// count and flips its unread inbound rows to read (write scope). Mirrors the
+// dashboard's "open chat" behaviour so an external inbox integration can clear the
+// unread badge after it has processed a thread's messages.
+const markReadSchema = z.object({
+  deviceId: z.string().min(1),
+  peer: z.string().min(1)
+});
+export async function markReadHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = markReadSchema.parse(req.body);
+  await whatsappService.markRead(workspaceId, input);
+  res.json({ data: { ok: true } });
 }
 
 // GET /public/v1/whatsapp/stats?deviceId=&sinceHours= — messaging counts + SLA.

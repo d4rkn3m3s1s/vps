@@ -2715,6 +2715,36 @@ input[type='date'] {
   vertical-align: middle;
 }
 
+/* WhatsApp account-health badges on profile cards. Same pill shape as
+   .proxy-country-pill, colour-coded by severity. */
+.wa-health-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 0.4rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 6px;
+  vertical-align: middle;
+}
+.wa-health-banned {
+  background: rgba(240, 68, 68, 0.16);
+  color: #ff6b6b;
+  border: 1px solid rgba(240, 68, 68, 0.32);
+}
+.wa-health-logged_out {
+  background: rgba(245, 158, 11, 0.16);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.32);
+}
+.wa-health-restricted {
+  background: rgba(234, 179, 8, 0.14);
+  color: #eab308;
+  border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
 .modal-wide {
   max-width: 640px;
   width: 92vw;
@@ -3286,6 +3316,67 @@ input[type='date'] {
   transition: color 0.18s ease;
 }
 .card-title-link:hover { color: var(--accent); }
+
+/* Fleet-health: WhatsApp account-health stat tiles. */
+.wa-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px;
+}
+.wa-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 10px 6px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 8px;
+}
+.wa-stat-value { font-size: 1.5rem; font-weight: 700; line-height: 1; }
+.wa-stat-label { font-size: 0.7rem; opacity: 0.7; text-align: center; }
+
+/* Registration analytics — 3 side-by-side breakdown tables. */
+.analytics-3col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+.analytics-table-title { font-size: 0.8rem; font-weight: 700; opacity: 0.8; margin-bottom: 6px; }
+.analytics-table table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.analytics-table th {
+  text-align: left; font-weight: 600; opacity: 0.55; padding: 3px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.analytics-table td {
+  padding: 4px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px;
+}
+.analytics-table th:not(:first-child), .analytics-table td:not(:first-child) { text-align: right; }
+
+/* Inline device rename — pencil button (subtle until card hover) + edit input. */
+.card-rename-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  background: none;
+  border: none;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+  flex: 0 0 auto;
+}
+.profile-card:hover .card-rename-btn { opacity: 0.6; }
+.card-rename-btn:hover { opacity: 1; color: var(--accent, #6366f1); }
+.card-rename-input {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  max-width: 180px;
+  height: auto;
+}
 
 /* ===================== Dashboard customizer ===================== */
 

@@ -176,6 +176,9 @@ export async function statsHandler(req: Request, res: Response): Promise<void> {
 
 const broadcastSchema = z.object({
   deviceId: z.string().min(1),
+  // Optional extra sending devices — recipients are sharded across the pool so the
+  // devices send in parallel (deviceId is always included as the primary).
+  deviceIds: z.array(z.string().min(1)).max(64).optional(),
   message: z.string().min(1).max(4096),
   peers: z.array(z.string().min(1)).max(1000).optional(),
   labelId: z.string().min(1).optional(),

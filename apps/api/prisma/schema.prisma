@@ -1069,12 +1069,19 @@ model WhatsappBroadcast {
   id          String   @id @default(cuid())
   workspaceId String?
   deviceId    String
+  // Multi-device fan-out: when set, recipients are sharded round-robin across these
+  // devices so different phones send in PARALLEL (agent runs one job per device
+  // concurrently). deviceId stays as the primary/first device for back-compat.
+  deviceIds   String[] @default([])
   message     String
   // Snapshot of the recipient peers at launch time (Postgres text[]).
   peers       String[] @default([])
   total       Int      @default(0)
   sentCount   Int      @default(0)
   failCount   Int      @default(0)
+  // How many recipient jobs have been dispatched so far — lets a restart resume
+  // dispatch from where it left off instead of stranding the rest (persist/resume).
+  dispatchedCount Int  @default(0)
   // QUEUED | RUNNING | COMPLETED | CANCELLED
   status      String   @default("QUEUED")
   createdAt   DateTime @default(now())
@@ -1082,6 +1089,7 @@ model WhatsappBroadcast {
 
   @@index([workspaceId])
   @@index([deviceId])
+  @@index([status])
 }
 
 enum WebhookEvent {
@@ -1105,6 +1113,10 @@ enum WebhookEvent {
   // and advances the message status (see whatsapp.service.advanceOutboundReceipt).
   WHATSAPP_DELIVERED
   WHATSAPP_READ
+  // Account health transition detected on-device: an ACTIVE account became
+  // RESTRICTED (in review / rate-limited), BANNED (suspended), or LOGGED_OUT.
+  // Payload carries { deviceId, phoneNumber, health, note }.
+  WHATSAPP_ACCOUNT_HEALTH
   ALL
 }
 
@@ -1284,6 +1296,9 @@ enum GeneratedAccountStatus {
   ACTIVE // account created successfully
   AWAITING_MANUAL // created but blocked on a human step (IG captcha / SMS wall)
   FAILED // gave up (no OTP, RPA error, etc.)
+  RESTRICTED // account was ACTIVE but is now temporarily limited (WhatsApp "in review" / rate-limited) — usually self-recovers in ~24h
+  BANNED // account was ACTIVE but is now permanently banned/suspended (BanAppealActivity, "This account can't use WhatsApp")
+  LOGGED_OUT // account got logged out on-device ("You're logged out" / number registered elsewhere) — needs re-registration
 }
 
 model GeneratedAccount {

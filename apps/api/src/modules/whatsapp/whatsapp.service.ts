@@ -187,6 +187,63 @@ export async function advanceOutboundReceipt(input: {
   return { advanced: true, messageId: msg.id };
 }
 
+// ── account health ───────────────────────────────────────────────────────────
+
+// The three on-device health states an ACTIVE WhatsApp account can fall into.
+export type WaAccountHealth = 'RESTRICTED' | 'BANNED' | 'LOGGED_OUT';
+
+// Only transition INTO a health state from a live account — never from a state
+// that is still mid-registration (those flows own the row) or already terminal.
+// This keeps a stray ban signal from overwriting an in-progress OTP wait.
+const HEALTH_TRANSITIONABLE = new Set(['ACTIVE', 'RESTRICTED', 'BANNED', 'LOGGED_OUT']);
+// Rank so we don't flap: a RESTRICTED signal must not overwrite a harder BANNED /
+// LOGGED_OUT that was already recorded. Recovery back to ACTIVE happens elsewhere
+// (a successful send/register), not here.
+const HEALTH_RANK: Record<string, number> = { RESTRICTED: 1, LOGGED_OUT: 2, BANNED: 3 };
+
+// Record a WhatsApp account-health transition detected on-device (from a send
+// result or an inbound system notice). Finds the device's most recent WhatsApp
+// account and, if it's in a transitionable state, moves it to `health` and fires
+// the WHATSAPP_ACCOUNT_HEALTH webhook. Idempotent + monotonic (won't downgrade a
+// harder state, won't re-fire the same state). Best-effort — never throws.
+export async function setAccountHealth(input: {
+  deviceId: string;
+  workspaceId: string | null;
+  health: WaAccountHealth;
+  note?: string | undefined;
+}): Promise<{ changed: boolean }> {
+  const account = await prisma.generatedAccount.findFirst({
+    where: { deviceId: input.deviceId, platform: 'whatsapp' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, status: true, phoneNumber: true }
+  });
+  if (!account) return { changed: false };
+  if (!HEALTH_TRANSITIONABLE.has(account.status)) return { changed: false };
+  // Monotonic: already at this state, or at a harder one → nothing to do.
+  const curRank = HEALTH_RANK[account.status] ?? 0;
+  const nextRank = HEALTH_RANK[input.health] ?? 0;
+  if (nextRank <= curRank) return { changed: false };
+
+  await prisma.generatedAccount
+    .update({
+      where: { id: account.id },
+      data: { status: input.health, ...(input.note ? { error: input.note.slice(0, 500) } : {}) }
+    })
+    .catch(() => undefined);
+
+  void webhooksService.dispatch(
+    'WHATSAPP_ACCOUNT_HEALTH',
+    {
+      deviceId: input.deviceId,
+      phoneNumber: account.phoneNumber ?? null,
+      health: input.health,
+      ...(input.note ? { note: input.note } : {})
+    },
+    input.workspaceId ?? undefined
+  );
+  return { changed: true };
+}
+
 // ── conversation list ───────────────────────────────────────────────────────
 
 export type ConversationRow = {
@@ -695,16 +752,23 @@ export async function createBroadcast(
   workspaceId: string | undefined,
   input: {
     deviceId: string;
+    deviceIds?: string[] | undefined; // multi-device fan-out (parallel send)
     message: string;
     peers?: string[] | undefined;
     labelId?: string | undefined;
-    minGapSec?: number | undefined; // min seconds between sends (default 6)
-    maxGapSec?: number | undefined; // max seconds between sends (default 20)
+    minGapSec?: number | undefined; // min seconds between sends PER DEVICE (default 6)
+    maxGapSec?: number | undefined; // max seconds between sends PER DEVICE (default 20)
   }
-): Promise<{ id: string; total: number }> {
+): Promise<{ id: string; total: number; devices: number }> {
   await assertDevice(input.deviceId, workspaceId);
   const message = input.message.trim().slice(0, 4096);
   if (!message) throw new AppError('Mesaj gerekli', 400, 'INVALID_MESSAGE');
+
+  // Resolve the sending-device pool: the primary deviceId plus any extra deviceIds.
+  // Validate each (workspace-scoped) so a foreign device can't be smuggled in.
+  const poolRaw = [input.deviceId, ...(input.deviceIds ?? [])].filter(Boolean);
+  const pool = [...new Set(poolRaw)];
+  for (const d of pool) if (d !== input.deviceId) await assertDevice(d, workspaceId);
 
   // Resolve recipients: explicit peers, or every thread with the given label.
   let peers = (input.peers ?? []).map((p) => p.replace(/[^\d]/g, '')).filter(Boolean);
@@ -722,6 +786,7 @@ export async function createBroadcast(
     data: {
       workspaceId: workspaceId ?? null,
       deviceId: input.deviceId,
+      deviceIds: pool,
       message,
       peers,
       total: peers.length,
@@ -731,42 +796,107 @@ export async function createBroadcast(
 
   const minGap = Math.max(2, input.minGapSec ?? 6) * 1000;
   const maxGap = Math.max(minGap, (input.maxGapSec ?? 20) * 1000);
-  // Fire-and-forget dispatcher: spaces the sends out with jitter so we don't slam
-  // the device (and WhatsApp) with a burst. Runs in the background.
-  void (async () => {
-    let dispatched = 0;
+  // Shard recipients round-robin across the device pool: recipient i → pool[i % N].
+  // Each device gets its OWN paced dispatcher running in PARALLEL, so N devices send
+  // ~N× faster than the old single-device loop (which serialised all 1000 on one phone
+  // ≈ 5h). Within a device the gap still paces creation; the agent runs one job per
+  // device at a time (skipBusyCheck lets them queue instead of tripping DEVICE_BUSY).
+  const shards: string[][] = pool.map(() => []);
+  peers.forEach((to, i) => { shards[i % pool.length]!.push(to); });
+
+  const dispatchShard = async (deviceId: string, tos: string[]) => {
     let dispatchFailed = 0;
-    for (const to of peers) {
+    for (const to of tos) {
       try {
-        const payload = { deviceId: input.deviceId, to, message, broadcastId: bc.id } as unknown as JobPayload;
-        // skipBusyCheck: every WHATSAPP_SEND here targets the SAME device and is part
-        // of the SAME broadcast, serialized by design (the agent runs one job per
-        // device at a time). Without this, an on-device send (15-30s) still PENDING
-        // when the next one is dispatched (~6s gap) trips assertDeviceIdle → DEVICE_BUSY,
-        // so every recipient past the first was silently dropped. The gap below still
-        // paces creation; the agent still executes them one at a time.
-        await createJobRecord('WHATSAPP_SEND', payload, input.deviceId, workspaceId ?? undefined, { skipBusyCheck: true });
-        dispatched++;
+        const payload = { deviceId, to, message, broadcastId: bc.id } as unknown as JobPayload;
+        await createJobRecord('WHATSAPP_SEND', payload, deviceId, workspaceId ?? undefined, { skipBusyCheck: true });
+        // Persist dispatch progress so a mid-broadcast API restart can tell how far it
+        // got (resume support) instead of the old in-memory-only counter that vanished.
+        await prisma.whatsappBroadcast.update({
+          where: { id: bc.id }, data: { dispatchedCount: { increment: 1 } }
+        }).catch(() => undefined);
       } catch (e) {
         dispatchFailed++;
-        logger.warn('broadcast dispatch failed', { error: String(e), to });
+        logger.warn('broadcast dispatch failed', { error: String(e), to, deviceId });
       }
-      const gap = minGap + Math.floor((maxGap - minGap) * ((dispatched * 2654435761) % 1000) / 1000);
+      const gap = minGap + Math.floor(Math.random() * (maxGap - minGap + 1));
       await new Promise((r) => setTimeout(r, gap));
     }
-    // NOTE: sentCount / failCount are NOT written here. They are the ACTUAL on-device
-    // outcome, incremented by agent.service.complete when each WHATSAPP_SEND finishes
-    // (SENT → sentCount, failure → failCount). Writing them here (job merely queued)
-    // was a double lie: it counted "dispatched" as "sent", and its absolute write
-    // clobbered the real per-send increments back to ~0. We only record how many jobs
-    // failed to even enqueue, so the operator can see a dispatch-level problem.
-    await prisma.whatsappBroadcast.update({
-      where: { id: bc.id },
-      data: { status: 'COMPLETED', ...(dispatchFailed > 0 ? { failCount: { increment: dispatchFailed } } : {}) }
-    }).catch(() => undefined);
+    return dispatchFailed;
+  };
+
+  // Fire-and-forget: run all shard dispatchers concurrently. When they ALL finish
+  // dispatching, DON'T force COMPLETED — the sends are still executing on-device. Let
+  // the status resolve to COMPLETED once sentCount+failCount(+dispatch failures) reaches
+  // total, reconciled in agent.service on each send-complete (and by the reaper). Only
+  // fold dispatch-level failures into failCount here so their count isn't lost.
+  void (async () => {
+    const results = await Promise.all(shards.map((tos, idx) => dispatchShard(pool[idx]!, tos)));
+    const dispatchFailed = results.reduce((a, b) => a + b, 0);
+    if (dispatchFailed > 0) {
+      await prisma.whatsappBroadcast.update({
+        where: { id: bc.id }, data: { failCount: { increment: dispatchFailed } }
+      }).catch(() => undefined);
+    }
+    // Reconcile once now (covers the all-dispatch-failed / tiny-broadcast case); the
+    // per-send completion path finalises the normal case.
+    await reconcileBroadcast(bc.id).catch(() => undefined);
   })();
 
-  return { id: bc.id, total: peers.length };
+  return { id: bc.id, total: peers.length, devices: pool.length };
+}
+
+// Resume any broadcast left RUNNING by an API restart. The dispatcher runs in-memory,
+// so a crash mid-broadcast stranded the un-dispatched tail forever (the row stayed
+// RUNNING with dispatchedCount < total). On startup we re-dispatch the remaining
+// recipients. peers is an ordered snapshot and dispatchedCount counts dispatches, so
+// peers.slice(dispatchedCount) is the tail; the public API's Idempotency-Key isn't in
+// play here, but re-dispatching is bounded and the reaper/reconcile keep counts honest.
+// Best-effort, sequential per broadcast, single device (the primary) to stay simple.
+export async function resumeStrandedBroadcasts(): Promise<number> {
+  const rows = await prisma.whatsappBroadcast.findMany({
+    where: { status: 'RUNNING' },
+    select: { id: true, deviceId: true, workspaceId: true, message: true, peers: true, total: true, dispatchedCount: true },
+    take: 50
+  });
+  let resumed = 0;
+  for (const bc of rows) {
+    const remaining = bc.peers.slice(bc.dispatchedCount);
+    if (!remaining.length) { await reconcileBroadcast(bc.id).catch(() => undefined); continue; }
+    resumed++;
+    void (async () => {
+      for (const to of remaining) {
+        try {
+          const payload = { deviceId: bc.deviceId, to, message: bc.message, broadcastId: bc.id } as unknown as JobPayload;
+          await createJobRecord('WHATSAPP_SEND', payload, bc.deviceId, bc.workspaceId ?? undefined, { skipBusyCheck: true });
+          await prisma.whatsappBroadcast.update({ where: { id: bc.id }, data: { dispatchedCount: { increment: 1 } } }).catch(() => undefined);
+        } catch (e) {
+          logger.warn('broadcast resume dispatch failed', { error: String(e), to, broadcastId: bc.id });
+        }
+        await new Promise((r) => setTimeout(r, 6000 + Math.floor(Math.random() * 14000)));
+      }
+      await reconcileBroadcast(bc.id).catch(() => undefined);
+    })();
+  }
+  if (resumed) logger.info('resumed stranded broadcasts', { count: resumed });
+  return resumed;
+}
+
+// Flip a broadcast to COMPLETED once every recipient's send has a terminal outcome
+// (sentCount + failCount >= total). Called after each send completes (agent.service)
+// and by the dispatcher. Idempotent + only advances a RUNNING row, so concurrent
+// callers can't double-flip or resurrect a CANCELLED broadcast.
+export async function reconcileBroadcast(broadcastId: string): Promise<void> {
+  const bc = await prisma.whatsappBroadcast.findUnique({
+    where: { id: broadcastId },
+    select: { status: true, total: true, sentCount: true, failCount: true }
+  });
+  if (!bc || bc.status !== 'RUNNING') return;
+  if (bc.sentCount + bc.failCount >= bc.total) {
+    await prisma.whatsappBroadcast
+      .updateMany({ where: { id: broadcastId, status: 'RUNNING' }, data: { status: 'COMPLETED' } })
+      .catch(() => undefined);
+  }
 }
 
 export async function listBroadcasts(
@@ -784,6 +914,7 @@ export async function listBroadcasts(
 export const whatsappService = {
   recordMessage,
   advanceOutboundReceipt,
+  setAccountHealth,
   listConversations,
   unreadTotal,
   getThreadMessages,
@@ -803,5 +934,7 @@ export const whatsappService = {
   deleteCannedReply,
   getStats,
   createBroadcast,
+  reconcileBroadcast,
+  resumeStrandedBroadcasts,
   listBroadcasts
 };

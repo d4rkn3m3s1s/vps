@@ -13,6 +13,12 @@ const createSchema = z.object({
   proxyCountry: z.string().length(2).optional()
 });
 
+// Batch: same fields + how many to create. `name` becomes a prefix when count>1.
+const batchSchema = createSchema.extend({
+  count: z.number().int().min(1).max(20).optional(),
+  namePrefix: z.string().min(1).max(40).optional()
+});
+
 // Kurulum plan/adımlarını döndürür (dashboard adım çubuğu bunu kullanır).
 export async function provisionStepsHandler(_req: Request, res: Response): Promise<void> {
   res.json({ data: { steps: provisionService.steps() } });
@@ -75,5 +81,24 @@ export async function createInstanceHandler(req: Request, res: Response): Promis
     ip: req.ip,
     userAgent: req.get('user-agent') ?? undefined
   });
+  res.status(201).json({ data });
+}
+
+// Toplu tek-tık: `count` adet cihazı benzersiz rastgele isim + her birine ayrı proxy
+// (aynı ülke, provider-rotation farklı IP) ile arka arkaya oluşturur. Hata-toleranslı:
+// biri patlarsa diğerleri devam eder, per-device sonuç listesi döner.
+export async function createBatchHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = getWorkspaceId(req);
+  const input = batchSchema.parse(req.body ?? {});
+  const data = await provisionService.createBatch(input, workspaceId);
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'device.provision.batch',
+    resourceType: 'device',
+    resourceId: data.started[0]?.deviceId ?? 'batch',
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined
+  }).catch(() => undefined);
   res.status(201).json({ data });
 }

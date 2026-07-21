@@ -9,6 +9,7 @@ import { deviceHub } from './modules/devices/device.hub';
 import { streamHub } from './modules/stream/stream.hub';
 import { schedulerService } from './modules/scheduler/scheduler.service';
 import { reapStaleJobs } from './modules/jobs/jobs.service';
+import { whatsappService } from './modules/whatsapp/whatsapp.service';
 import { sweepIdempotencyKeys } from './modules/public/idempotency.service';
 import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
@@ -163,6 +164,9 @@ async function main(): Promise<void> {
 
   server.listen(env.port, () => {
     logger.info(`API server listening on port ${env.port}`);
+    // Resume any broadcast whose in-memory dispatcher was killed by a restart, so its
+    // un-dispatched recipients aren't stranded forever (broadcast persist/resume).
+    void whatsappService.resumeStrandedBroadcasts().catch(() => undefined);
   });
 
   // Clean up the worker on shutdown so Redis connections drain gracefully.

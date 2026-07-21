@@ -15,7 +15,20 @@ INSTANCE="${1:?instance}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUBNET_ID="$(sh "$HERE/net-head.sh" "$INSTANCE")"
 SUBNET="192.168.$SUBNET_ID.0/24"
-RS_PORT=12345
+
+# ★PER-COUNTRY PORT (was a single shared 12345 → only ONE country could run at a
+# time; a TR device's proxy killed every AL/BG redsocks). Each country now gets its
+# OWN redsocks port so AL+BG+TR run concurrently. Ports are deterministic per CC so
+# reboots/re-applies land on the same one. clear-mode computes it from the CC arg too.
+rs_port_for() {
+  case "$(echo "$1" | tr '[:lower:]' '[:upper:]')" in
+    AL) echo 12345 ;;
+    BG) echo 12346 ;;
+    TR) echo 12347 ;;
+    US) echo 12348 ;;
+    *)  echo 12349 ;; # any other country shares one fallback port
+  esac
+}
 
 log(){ echo "[wd-proxy:$INSTANCE] $*"; }
 
@@ -38,6 +51,7 @@ PPASS="${4:?proxy pass}"
 PHOST="${5:?proxy host}"
 PPORT="${6:?proxy port}"
 CONF="/etc/redsocks-$CC.conf"
+RS_PORT="$(rs_port_for "$CC")"  # per-country local port (concurrent countries)
 
 # resolve upstream host to an IP (redsocks wants an IP, and we must RETURN it)
 PIP="$(getent hosts "$PHOST" | awk '{print $1; exit}')"
@@ -72,34 +86,27 @@ redsocks {
     password = "$PPASS";
 }
 EOF
-# redsocks on RS_PORT is shared per country; (re)start only if not already up
-# with THIS country's config. If a redsocks is already running with EXACTLY this
-# config, reuse it (no-op). Otherwise free the port and start fresh.
+# Each country has its OWN port + config, so we ONLY manage THIS country's redsocks —
+# we must NOT kill other countries' daemons (that was the tek-port bug: applying TR
+# killed AL/BG). If a redsocks is already up for THIS config, reuse it. Otherwise
+# start ours on RS_PORT. Only free RS_PORT if a STALE process (not our current config)
+# holds it — never touch other ports.
 if pgrep -f "redsocks -c $CONF" >/dev/null 2>&1; then
-  log "redsocks already up for $CC (reusing)"
+  log "redsocks already up for $CC on $RS_PORT (reusing)"
 else
-  # Something else may own RS_PORT — a redsocks for a DIFFERENT country, OR a stale
-  # redsocks from an older run started with a different config path (e.g. the
-  # legacy /etc/redsocks.conf). The old `pkill -f "redsocks -c /etc/redsocks-"`
-  # only matched OUR per-country configs, so a legacy redsocks kept the port and
-  # `redsocks -c $CONF` died with "Address already in use" (VERIFIED live on mi7).
-  # Kill EVERY redsocks (any config path) + whatever holds RS_PORT, then wait for
-  # the port to actually free before starting.
-  pkill -x redsocks 2>/dev/null || true
-  pkill -f "redsocks -c" 2>/dev/null || true
-  # Kill any lingering listener on RS_PORT (belt-and-suspenders; fuser handles the
-  # case where the process name isn't literally "redsocks").
-  fuser -k "$RS_PORT/tcp" 2>/dev/null || true
-  # Wait up to ~5s for the port to be released (TIME_WAIT / slow teardown).
-  for _i in 1 2 3 4 5 6 7 8 9 10; do
-    ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " || break
-    sleep 0.5
-  done
+  # If something ELSE holds THIS country's port (a stale redsocks with an old config),
+  # free just that port. Other countries' ports are untouched.
+  if ss -tlnp 2>/dev/null | grep -q ":$RS_PORT "; then
+    fuser -k "$RS_PORT/tcp" 2>/dev/null || true
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " || break
+      sleep 0.5
+    done
+  fi
   if ss -tlnp 2>/dev/null | grep -q ":$RS_PORT "; then
     log "redsocks port $RS_PORT still busy after kill — cannot start"; exit 1
   fi
-  redsocks -c "$CONF" && log "redsocks started ($CC)" || { log "redsocks FAILED (start)"; exit 1; }
-  # Give the daemon a moment to bind before we assert it's listening.
+  redsocks -c "$CONF" && log "redsocks started ($CC on $RS_PORT)" || { log "redsocks FAILED (start)"; exit 1; }
   for _i in 1 2 3 4 5 6; do
     ss -tlnp 2>/dev/null | grep -q ":$RS_PORT " && break
     sleep 0.5

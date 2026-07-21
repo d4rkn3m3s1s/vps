@@ -7,6 +7,7 @@ import { provisionRouter } from '../modules/provision/provision.routes';
 import { aiRouter } from '../modules/ai/ai.routes';
 import { alertsRouter } from '../modules/alerts/alerts.routes';
 import { analyticsRouter } from '../modules/analytics/analytics.routes';
+import { fleetHealthRouter } from '../modules/fleet-health/fleet-health.routes';
 import { apiKeysRouter } from '../modules/apikeys/apikeys.routes';
 import { billingRouter } from '../modules/billing/billing.routes';
 import { auditRouter } from '../modules/audit/audit.routes';
@@ -59,6 +60,7 @@ export function registerRoutes(app: Express): void {
   app.use('/fingerprints', fingerprintRouter);
   app.use('/schedules', schedulerRouter);
   app.use('/analytics', analyticsRouter);
+  app.use('/fleet-health', fleetHealthRouter);
   app.use('/permissions', permissionsRouter);
   app.use('/files', filesRouter);
   app.use('/bulk', bulkRouter);

@@ -20,10 +20,33 @@ import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
 import { calendarService } from '../calendar/calendar.service';
 import { notificationsService } from '../notifications/notifications.service';
-import { whatsappService, normalizePeer } from '../whatsapp/whatsapp.service';
+import { whatsappService, normalizePeer, type WaAccountHealth } from '../whatsapp/whatsapp.service';
 import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
 import { igRegisterService } from '../accounts/ig-register.service';
+
+// Classify a WhatsApp inbound notice as an account-health signal (or null if it's
+// a normal peer message). WhatsApp surfaces account trouble as system notifications
+// that the inbox poll captures verbatim — we key off the stable English strings
+// (WhatsApp's own copy) to detect them. Ordered hardest→softest so "can't use"
+// (ban) wins over a generic match. Returns the target health state or null.
+function classifyWaSystemNotice(text: string): WaAccountHealth | null {
+  const t = (text || '').toLowerCase();
+  if (!t) return null;
+  // Logged out / number moved elsewhere → needs re-registration.
+  if (/logged out of whatsapp|you're logged out|no longer registered|register(ed)? on another/i.test(t)) {
+    return 'LOGGED_OUT';
+  }
+  // Hard ban / suspension.
+  if (/can.?t use whatsapp|account.*(banned|suspended)|violat|terms of service/i.test(t)) {
+    return 'BANNED';
+  }
+  // Temporary restriction / review.
+  if (/temporarily (banned|restricted)|account.*(in )?review|try again later|restricted/i.test(t)) {
+    return 'RESTRICTED';
+  }
+  return null;
+}
 
 // The shape a host agent needs to execute a job on a local emulator. We resolve
 // the device's ADB endpoint and (for proxy jobs) decrypt the proxy secret here
@@ -213,12 +236,20 @@ export class AgentService {
               read: true,
               status,
               statusAt: outAt,
+              // Give each OUT row a unique dedupeKey so a resend to the same peer with
+              // the same text isn't silently dropped by any (peer,text)-based dedup and,
+              // more importantly, so the row is always distinct. Was previously unset
+              // (null) — combined with the swallowed .catch below, failed inserts made
+              // sent messages VANISH from the thread ("apiden atınca kayboluyor").
+              dedupeKey: sha256(`out|${pl.deviceId}|${outPeer}|${outBody}|${outAt.getTime()}`),
               ...(failReason ? { failReason: String(failReason).slice(0, 200) } : {}),
               waTimestamp: outAt
             },
             select: { id: true }
           })
-          .catch(() => null);
+          // Log the real reason instead of swallowing it — a silently-dropped insert is
+          // exactly how the "vanishing outbound message" bug hid for so long.
+          .catch((e) => { logger.warn('outbound WhatsappMessage create failed', { error: String(e), deviceId: pl.deviceId, peer: outPeer }); return null; });
         // Upsert the conversation thread with the outbound status (list tick).
         void whatsappService
           .recordMessage({
@@ -237,16 +268,36 @@ export class AgentService {
           { deviceId: pl.deviceId, to: outPeer, status, ...(outMsg ? { messageId: outMsg.id } : {}), ...(failReason ? { failReason: String(failReason) } : {}), ts: outAt.toISOString() },
           updated.workspaceId ?? undefined
         );
+        // Account health: a send that fails because the account is in review or
+        // banned tells us the account's health, not just this message's fate. Reflect
+        // it onto the GeneratedAccount (BANNED / RESTRICTED) + fire the health webhook
+        // so the profile card shows it. Monotonic + idempotent inside setAccountHealth.
+        if (!ok && (res.status === 'ACCOUNT_BANNED' || res.status === 'ACCOUNT_REVIEW')) {
+          void whatsappService
+            .setAccountHealth({
+              deviceId: pl.deviceId,
+              workspaceId: updated.workspaceId ?? null,
+              health: res.status === 'ACCOUNT_BANNED' ? 'BANNED' : 'RESTRICTED',
+              ...(res.note ? { note: String(res.note) } : {})
+            })
+            .catch(() => undefined);
+        }
         // Update the parent broadcast's counters if this send belonged to one. These
         // are the SINGLE source of truth for sent/fail — counted on the ACTUAL device
         // outcome here, not when the job was merely queued (the dispatcher no longer
         // writes them). Success advances sentCount; failure advances failCount.
         if (pl.broadcastId) {
+          const bid = pl.broadcastId;
           void prisma.whatsappBroadcast
             .update({
-              where: { id: pl.broadcastId },
+              where: { id: bid },
               data: ok ? { sentCount: { increment: 1 } } : { failCount: { increment: 1 } }
             })
+            // After the counter advances, reconcile: flip to COMPLETED once every
+            // recipient has a terminal outcome (sent+fail >= total). This replaces the
+            // old unconditional COMPLETED the dispatcher wrote after merely QUEUING all
+            // sends (which showed "done" while sends were still executing).
+            .then(() => whatsappService.reconcileBroadcast(bid))
             .catch(() => undefined);
         }
         // Notify the operator (Telegram/Slack/Discord) about STANDALONE send outcomes.
@@ -767,35 +818,45 @@ export class AgentService {
     const affected = await prisma.device.findMany({
       where: {
         hostId: host.id,
+        // ERROR is included so a device flagged by an interrupted wake/action
+        // heals back to ONLINE the moment it reports as ADB-reachable again (else
+        // the stale ERROR badge sticks forever even though the phone is fine).
         status: hasSerials
-          ? { in: ['OFFLINE', 'ONLINE', 'STARTING', 'STOPPING', 'REBOOTING', 'UPDATING'] }
+          ? { in: ['OFFLINE', 'ONLINE', 'STARTING', 'STOPPING', 'REBOOTING', 'UPDATING', 'ERROR'] }
           : { in: ['OFFLINE', 'ONLINE'] }
       },
       select: { id: true, name: true, status: true, lastSeen: true, workspaceId: true, ipAddress: true, adbPort: true }
     });
-    // Each device needs a DIFFERENT status/lastSeen, so a single bulk updateMany
-    // can't express this. But the per-device updates are independent, so run them
-    // concurrently instead of serially — a host with many phones no longer blocks
-    // the heartbeat response on N sequential round-trips.
-    await Promise.all(affected.map(async (d) => {
+    // Every device lands in exactly ONE of two buckets — up (→ONLINE + lastSeen) or
+    // down (→OFFLINE). Rather than N per-device UPDATEs (100+ round-trips on a big
+    // host), collect the two id sets and issue at most TWO bulk updateMany calls.
+    // (The old per-device online-minute metering that needed the prior lastSeen was
+    // removed with the usage module, so a bulk write is now correct.)
+    const upIds: string[] = [];
+    const downIds: string[] = [];
+    const newlyOnline: Array<{ id: string; name: string; workspaceId: string | null }> = [];
+    for (const d of affected) {
       const serial = d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null;
       const isUp = hasSerials ? Boolean(serial && reachable.has(serial)) : true;
-
       if (isUp) {
-        // Keep the device marked ONLINE and advance lastSeen. (Online-minute metering
-        // was removed with the usage module — it fed a pay-as-you-go bill that was
-        // never actually submitted to Stripe.) The status/lastSeen write is idempotent.
-        await prisma.device.update({ where: { id: d.id }, data: { status: 'ONLINE', lastSeen: now } });
-        // Fire DEVICE_ONLINE only on a real transition into ONLINE.
-        if (d.status !== 'ONLINE') {
-          void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
-        }
+        upIds.push(d.id);
+        if (d.status !== 'ONLINE') newlyOnline.push({ id: d.id, name: d.name, workspaceId: d.workspaceId ?? null });
       } else if (d.status !== 'OFFLINE') {
-        // Serial not reachable → the phone is down. Demote to OFFLINE (also clears
-        // a stuck REBOOTING/STARTING). Don't touch lastSeen so "last seen" stays meaningful.
-        await prisma.device.update({ where: { id: d.id }, data: { status: 'OFFLINE' } }).catch(() => undefined);
+        downIds.push(d.id);
       }
-    }));
+    }
+    // Two bulk writes instead of N. lastSeen advances only for reachable devices; the
+    // down set keeps its lastSeen so "last seen" stays meaningful.
+    if (upIds.length) {
+      await prisma.device.updateMany({ where: { id: { in: upIds } }, data: { status: 'ONLINE', lastSeen: now } }).catch(() => undefined);
+    }
+    if (downIds.length) {
+      await prisma.device.updateMany({ where: { id: { in: downIds } }, data: { status: 'OFFLINE' } }).catch(() => undefined);
+    }
+    // Fire DEVICE_ONLINE only on a real OFF→ON transition (unchanged semantics).
+    for (const d of newlyOnline) {
+      void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
+    }
 
     return updated;
   }
@@ -876,6 +937,25 @@ export class AgentService {
       (d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial
     );
     if (!device) return { stored: false };
+
+    // ── WhatsApp SYSTEM notice, not a peer message ───────────────────────────
+    // The notification poll also picks up WhatsApp's own account notices (banned /
+    // logged-out / can't-use). These arrive shaped like an inbound message but are
+    // health signals, not conversation content — so route them to setAccountHealth
+    // and DON'T store them as a chat message (that would pollute the thread + unread
+    // badge). Match on the body text; the `from` varies ("WhatsApp" / a header).
+    const noticeHealth = classifyWaSystemNotice(input.text);
+    if (noticeHealth) {
+      await whatsappService
+        .setAccountHealth({
+          deviceId: device.id,
+          workspaceId: device.workspaceId ?? null,
+          health: noticeHealth,
+          note: input.text.slice(0, 200)
+        })
+        .catch(() => undefined);
+      return { stored: false };
+    }
 
     // The agent sends `ts`: for notification-path messages it's WhatsApp's own
     // `when=` (the message's REAL arrival time, ms-precise AND stable across agent

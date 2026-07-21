@@ -67,8 +67,22 @@ function ago(iso?: string | null): string {
   return `${Math.floor(h / 24)} gün önce`;
 }
 
+type FleetHealth = {
+  devices: { total: number; online: number; offline: number; error: number };
+  waAccounts: { total: number; active: number; restricted: number; banned: number; loggedOut: number; awaitingOtp: number; awaitingManual: number; failed: number };
+  today: { started: number; active: number; failed: number; successRate: number };
+  host: { avgCpu: number; avgMem: number; avgDisk: number; onlineDevices: number };
+};
+type Bucket = { key: string; total: number; active: number; failed: number; successRate: number };
+type RegisterAnalytics = {
+  byCountry: Bucket[]; byProxyCountry: Bucket[]; byModel: Bucket[];
+  overall: { total: number; active: number; failed: number; successRate: number };
+};
+
 export function HealthView() {
   const [devices, setDevices] = useState<Device[]>([]);
+  const [health, setHealth] = useState<FleetHealth | null>(null);
+  const [analytics, setAnalytics] = useState<RegisterAnalytics | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -76,10 +90,16 @@ export function HealthView() {
   async function load(isRefresh = false) {
     if (isRefresh) setRefreshing(true);
     try {
-      const res = await fetch('/api/devices');
-      if (!res.ok) throw new Error('fetch failed');
-      const json = await res.json();
-      if (Array.isArray(json.data)) setDevices(json.data);
+      const [devRes, healthRes, anaRes] = await Promise.all([
+        fetch('/api/devices'),
+        fetch('/api/fleet-health/summary'),
+        fetch('/api/fleet-health/register-analytics?days=30')
+      ]);
+      if (!devRes.ok) throw new Error('fetch failed');
+      const devJson = await devRes.json();
+      if (Array.isArray(devJson.data)) setDevices(devJson.data);
+      if (healthRes.ok) { const j = await healthRes.json(); if (j?.data) setHealth(j.data as FleetHealth); }
+      if (anaRes.ok) { const j = await anaRes.json(); if (j?.data) setAnalytics(j.data as RegisterAnalytics); }
       setError(false);
     } catch {
       setError(true);
@@ -155,6 +175,37 @@ export function HealthView() {
         />
       </div>
 
+      {/* WhatsApp hesap sağlığı + bugünkü kayıt özeti */}
+      {health ? (
+        <HoloPanel title="WhatsApp hesap sağlığı" icon={<Activity size={16} />}>
+          <div className="wa-health-grid">
+            <WaStat label="Aktif" value={health.waAccounts.active} tone="#22c55e" />
+            <WaStat label="Kısıtlı" value={health.waAccounts.restricted} tone="#eab308" />
+            <WaStat label="Yasaklı" value={health.waAccounts.banned} tone="#ef4444" />
+            <WaStat label="Çıkış yapıldı" value={health.waAccounts.loggedOut} tone="#f59e0b" />
+            <WaStat label="OTP bekliyor" value={health.waAccounts.awaitingOtp} tone="#6366f1" />
+            <WaStat label="Başarısız" value={health.waAccounts.failed} tone="#94a3b8" />
+          </div>
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 13 }}>
+            <span>📅 <b>Bugün:</b> {health.today.started} kayıt başladı</span>
+            <span style={{ color: '#22c55e' }}>✓ {health.today.active} aktif</span>
+            <span style={{ color: '#ef4444' }}>✗ {health.today.failed} başarısız</span>
+            <span style={{ marginLeft: 'auto', fontWeight: 700 }}>Başarı: %{health.today.successRate}</span>
+          </div>
+        </HoloPanel>
+      ) : null}
+
+      {/* Kayıt başarı analitiği — hangi ülke/proxy/model daha iyi kaydediyor */}
+      {analytics && analytics.overall.total > 0 ? (
+        <HoloPanel title={`Kayıt başarı analitiği (son 30 gün · genel %${analytics.overall.successRate})`} icon={<Gauge size={16} />}>
+          <div className="analytics-3col">
+            <AnalyticsTable title="Ülkeye göre" rows={analytics.byCountry} />
+            <AnalyticsTable title="Proxy ülkesine göre" rows={analytics.byProxyCountry} />
+            <AnalyticsTable title="Cihaz modeline göre" rows={analytics.byModel} />
+          </div>
+        </HoloPanel>
+      ) : null}
+
       {/* Fleet-wide averages */}
       <HoloPanel title="Filo ortalamaları" icon={<Activity size={16} />}>
         <div className="health-avg-grid">
@@ -212,6 +263,46 @@ export function HealthView() {
         )}
       </HoloPanel>
     </PageMotion>
+  );
+}
+
+// A single WhatsApp-account-health stat tile (count + coloured label).
+function WaStat({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="wa-stat">
+      <span className="wa-stat-value mono" style={{ color: tone }}>{value}</span>
+      <span className="wa-stat-label">{label}</span>
+    </div>
+  );
+}
+
+// A registration-success breakdown table (by country / proxy / model). Colours the
+// success-rate cell green/yellow/red so the operator sees at a glance what works.
+function AnalyticsTable({ title, rows }: { title: string; rows: Bucket[] }) {
+  const rateTone = (r: number) => (r >= 60 ? '#22c55e' : r >= 30 ? '#eab308' : '#ef4444');
+  return (
+    <div className="analytics-table">
+      <div className="analytics-table-title">{title}</div>
+      {rows.length === 0 ? (
+        <div style={{ opacity: 0.5, fontSize: 12, padding: '6px 0' }}>Veri yok</div>
+      ) : (
+        <table>
+          <thead>
+            <tr><th>Değer</th><th>Top.</th><th>✓</th><th>Başarı</th></tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 8).map((r) => (
+              <tr key={r.key}>
+                <td title={r.key}>{r.key}</td>
+                <td className="mono">{r.total}</td>
+                <td className="mono" style={{ color: '#22c55e' }}>{r.active}</td>
+                <td className="mono" style={{ color: rateTone(r.successRate), fontWeight: 700 }}>%{r.successRate}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 

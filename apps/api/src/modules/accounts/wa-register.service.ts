@@ -104,6 +104,31 @@ export class WaRegisterService {
     const { shot: _omit, ...persisted } = event;
     void _omit;
     if (input.accountId) await this.appendLog(input.accountId, persisted).catch(() => undefined);
+    // ★A parked OTP_WAIT account whose device later hit the registration wall (the agent's
+    // otpWatch reports step=device_wall, status=FAILED AFTER the register job already
+    // COMPLETED into OTP_WAIT). The job-complete path can't flip it (that job is done), so
+    // do it here: move the account off AWAITING_OTP to FAILED with the wall reason, so the
+    // panel stops showing "SMS bekleniyor" forever.
+    if (input.accountId && status === 'FAILED' && input.step === 'device_wall') {
+      await prisma.generatedAccount
+        .updateMany({
+          where: { id: input.accountId, status: 'AWAITING_OTP' },
+          data: { status: 'FAILED', error: (input.note ?? 'WhatsApp kaydı engellendi (device wall)').slice(0, 500) }
+        })
+        .catch(() => undefined);
+      // ALSO clear the device's stale metadata.waRegisterStatus (it was left at
+      // AWAITING_OTP when the register job parked into OTP_WAIT). Without this the
+      // profile CARD keeps showing "kayıt sürüyor" even though the account is FAILED —
+      // the card reads metadata.waRegisterStatus, not the account row. Merge-update so
+      // the other metadata keys (instance/proxy/provision) are preserved.
+      if (input.deviceId) {
+        const dev = await prisma.device.findUnique({ where: { id: input.deviceId }, select: { metadata: true } }).catch(() => null);
+        if (dev) {
+          const md = { ...((dev.metadata as Record<string, unknown>) ?? {}), waRegisterStatus: 'FAILED' };
+          await prisma.device.update({ where: { id: input.deviceId }, data: { metadata: md as Prisma.InputJsonValue } }).catch(() => undefined);
+        }
+      }
+    }
     return event;
   }
 

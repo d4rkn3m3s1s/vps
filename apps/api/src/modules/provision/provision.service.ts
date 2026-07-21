@@ -76,12 +76,57 @@ export type CreateInstanceInput = {
   proxyCountry?: string | undefined;
 };
 
-// thordata residential proxy (proven). Credentials come from env so they aren't
-// baked into the repo; the username country suffix is appended host-side.
+// thordata proxy (proven). Credentials come from env so they aren't baked into the
+// repo; the username country suffix is appended host-side.
+//
+// TWO thordata accounts, picked by country: RESIDENTIAL (AL/BG/US) and MOBILE. TR's
+// residential pool is dead, so TR numbers MUST exit through the mobile account or
+// WhatsApp sees a country mismatch and blocks registration. Without this, TR devices
+// were provisioned onto the (dead) residential creds and only fixed later by the
+// host-side restore script — this makes the very first provision land on the right
+// account. AL/BG/US stay on residential (works first-try).
 const PROXY_HOST = process.env.FLEET_PROXY_HOST || '';
-const PROXY_PORT = Number(process.env.FLEET_PROXY_PORT || 9999);
+// Residential account (default; AL/BG/US).
+const PROXY_PORT = Number(process.env.FLEET_PROXY_PORT || 5555);
 const PROXY_USER = process.env.FLEET_PROXY_USER || '';
 const PROXY_PASS = process.env.FLEET_PROXY_PASS || '';
+// Mobile account (TR). Falls back to the residential creds if the mobile env vars
+// aren't set, so an incomplete deployment degrades to the old behaviour rather than
+// producing a proxy with empty credentials.
+const PROXY_MOBILE_HOST = process.env.FLEET_PROXY_MOBILE_HOST || PROXY_HOST;
+const PROXY_MOBILE_PORT = Number(process.env.FLEET_PROXY_MOBILE_PORT || 9999);
+const PROXY_MOBILE_USER = process.env.FLEET_PROXY_MOBILE_USER || PROXY_USER;
+const PROXY_MOBILE_PASS = process.env.FLEET_PROXY_MOBILE_PASS || PROXY_PASS;
+
+// Countries that must use the mobile account (residential pool dead/unavailable).
+const MOBILE_PROXY_COUNTRIES = new Set(
+  (process.env.FLEET_PROXY_MOBILE_COUNTRIES || 'TR')
+    .split(',')
+    .map((c) => c.trim().toUpperCase())
+    .filter(Boolean)
+);
+
+// Pick the right thordata account for a country. Returns null when no proxy is
+// configured at all (host/user empty) so the caller can skip proxy assignment.
+function proxyCredsFor(country: string): {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+} | null {
+  const cc = country.toUpperCase();
+  if (MOBILE_PROXY_COUNTRIES.has(cc)) {
+    if (!PROXY_MOBILE_HOST || !PROXY_MOBILE_USER) return null;
+    return {
+      host: PROXY_MOBILE_HOST,
+      port: PROXY_MOBILE_PORT,
+      user: PROXY_MOBILE_USER,
+      pass: PROXY_MOBILE_PASS
+    };
+  }
+  if (!PROXY_HOST || !PROXY_USER) return null;
+  return { host: PROXY_HOST, port: PROXY_PORT, user: PROXY_USER, pass: PROXY_PASS };
+}
 
 function stepFor(key: string): ProvisionStep {
   return PROVISION_STEPS.find((s) => s.key === key) ?? PROVISION_STEPS[0]!;
@@ -230,6 +275,76 @@ class ProvisionService {
     throw new AppError('No free instance slot on this host', 409, 'NO_INSTANCE_SLOT');
   }
 
+  // Generate a short, unique, human-readable random device name (e.g. "wa-x7k2").
+  // Optional prefix (default "wa") + 4 base36 chars. Verified unique within the
+  // workspace so two batch devices never collide on the display name. Retries a few
+  // times, then falls back to a longer suffix — collisions are astronomically rare.
+  private async uniqueRandomName(prefix: string, workspaceId?: string): Promise<string> {
+    const clean = (prefix || 'wa').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12) || 'wa';
+    const rand = (len: number) => {
+      // No Math.random bias concerns here — cosmetic name, just needs to be unique.
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+      let s = '';
+      for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+      return s;
+    };
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const name = `${clean}-${rand(attempt < 5 ? 4 : 6)}`;
+      const exists = await prisma.device.findFirst({
+        where: { name, ...(workspaceId ? { workspaceId } : {}) },
+        select: { id: true }
+      });
+      if (!exists) return name;
+    }
+    return `${clean}-${rand(8)}`;
+  }
+
+  // Batch one-click provision: create `count` brand-new devices back-to-back, each
+  // with its OWN unique random name and its OWN proxy (the country-matched auto-proxy
+  // is resolved per device, so each gets a distinct exit IP via provider rotation).
+  // Fault-tolerant: if one device fails to start, the rest still proceed — the caller
+  // gets a per-device result list (started vs error). The instance-name/subnet
+  // advisory lock inside createInstance keeps concurrent names from colliding.
+  async createBatch(
+    input: CreateInstanceInput & { count?: number | undefined; namePrefix?: string | undefined },
+    workspaceId?: string
+  ): Promise<{
+    total: number;
+    started: Array<{ jobId: string; deviceId: string; instance: string; name: string }>;
+    failed: Array<{ index: number; error: string }>;
+    steps: ProvisionStep[];
+  }> {
+    const count = Math.max(1, Math.min(20, Math.floor(input.count ?? 1)));
+    const started: Array<{ jobId: string; deviceId: string; instance: string; name: string }> = [];
+    const failed: Array<{ index: number; error: string }> = [];
+
+    for (let i = 0; i < count; i++) {
+      try {
+        // Each device gets a fresh unique name. If the operator typed a name, treat it
+        // as a PREFIX (name-1 style) for count>1, or use it verbatim for a single one.
+        const name =
+          input.name && input.name.trim()
+            ? count === 1
+              ? input.name.trim()
+              : await this.uniqueRandomName(input.name.trim(), workspaceId)
+            : await this.uniqueRandomName(input.namePrefix ?? 'wa', workspaceId);
+        const res = await this.createInstance({ ...input, name }, workspaceId);
+        started.push({ jobId: res.jobId, deviceId: res.deviceId, instance: res.instance, name: res.name });
+      } catch (e) {
+        // Don't abort the whole batch on one failure (e.g. NO_INSTANCE_SLOT when the
+        // host fills up mid-batch) — record it and keep going so the operator gets as
+        // many devices as the host could fit.
+        failed.push({ index: i, error: e instanceof AppError ? e.message : String((e as Error)?.message ?? e) });
+      }
+    }
+
+    if (!started.length && failed.length) {
+      // Nothing started at all — surface the first error as the batch error.
+      throw new AppError(failed[0]!.error || 'Toplu kurulum başlatılamadı', 409, 'BATCH_FAILED');
+    }
+    return { total: count, started, failed, steps: PROVISION_STEPS };
+  }
+
   // Create a brand-new instance: pick a host, allocate an instance name, create a
   // host-bound Device (with a unique fingerprint), decrypt that fingerprint into
   // the job payload (the agent can't decrypt), and write the PROVISION_DEVICE job.
@@ -284,17 +399,20 @@ class ProvisionService {
         }
       : {};
 
+    // Pick the account by country (TR → mobile, others → residential). creds is null
+    // when no proxy is configured for that country, in which case we skip assignment.
+    const creds = input.proxyCountry ? proxyCredsFor(input.proxyCountry) : null;
     const proxy =
-      input.proxyCountry && PROXY_HOST && PROXY_USER
+      input.proxyCountry && creds
         ? {
             country: input.proxyCountry.toUpperCase(),
-            username: PROXY_USER,
+            username: creds.user,
             // Carry the proxy password ENCRYPTED in the job payload; agent.service
             // .materializePayload decrypts payload.proxy.passwordEnc at claim time, so
             // the stored payload / GET /jobs/:id never expose the plaintext env secret.
-            passwordEnc: encryptString(PROXY_PASS),
-            host: PROXY_HOST,
-            port: PROXY_PORT
+            passwordEnc: encryptString(creds.pass),
+            host: creds.host,
+            port: creds.port
           }
         : null;
 

@@ -249,7 +249,17 @@ export async function reapStaleJobs(): Promise<number> {
   const stale = await prisma.job.findMany({
     where: {
       OR: [
-        { status: 'PENDING', createdAt: { lt: pendingCutoff } },
+        // Broadcast sends are queued intentionally: createBroadcast dispatches up to
+        // 1000 WHATSAPP_SEND jobs a few seconds apart, but the agent runs them one per
+        // device (~20s each), so the tail legitimately sits PENDING for hours. Exempt
+        // any job carrying a broadcastId from the PENDING reaper — else the reaper
+        // false-FAILs hundreds of valid recipients (inflating failCount + writing
+        // FAILED bubbles for messages that were never even attempted).
+        {
+          status: 'PENDING',
+          createdAt: { lt: pendingCutoff },
+          NOT: { payload: { path: ['broadcastId'], not: Prisma.DbNull } }
+        },
         // Long RUNNING jobs (not short messaging types) — generous 15 min cap.
         {
           status: 'RUNNING',

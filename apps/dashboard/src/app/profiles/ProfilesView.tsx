@@ -36,6 +36,7 @@ import {
   Check,
   AlertTriangle,
   ShieldCheck,
+  Pencil,
   X
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
@@ -137,6 +138,9 @@ export type DeviceProfile = {
   // would pm-clear/wipe it). Populated by the list API from an ACTIVE whatsapp account.
   hasActiveWhatsapp?: boolean;
   activeWhatsappPhone?: string | null;
+  // WhatsApp account HEALTH badge: null when healthy/absent, else a trouble state
+  // detected on-device (send result or inbound system notice).
+  waAccountHealth?: 'RESTRICTED' | 'BANNED' | 'LOGGED_OUT' | null;
 };
 
 export type Country = { countryCode: string; country: string; timezone: string };
@@ -155,7 +159,9 @@ function deviceFingerprint(d: DeviceProfile): string {
     m.provisionStatus ?? '', m.waRegisterStatus ?? '', m.igRegisterStatus ?? '',
     // Card also renders the durable WA number + protected lock — poll must re-render
     // when either changes (e.g. a registration just completed, or the lock toggled).
-    m.waRegisteredPhone ?? '', d.protected ? '1' : '0'
+    m.waRegisteredPhone ?? '', d.protected ? '1' : '0',
+    // WA account-health badge — re-render when a ban/restriction/logout is detected.
+    d.waAccountHealth ?? ''
   ].join('|');
 }
 
@@ -248,8 +254,9 @@ export function ProfilesView({
   apps?: AppOption[];
 }) {
   const router = useRouter();
-  // Live device list: seeded from the server render, then refreshed every 5s so
-  // status (ONLINE/OFFLINE) + KPI counts track the fleet without a full reload.
+  // Live device list: seeded from the server render. Real-time changes arrive over the
+  // WebSocket (useFleetEvents → device/job/alert events), so this poll is only a
+  // safety-net reconcile at 20s (was 5s — 4× less server load + traffic on big fleets).
   const [devices, setDevices] = useState<DeviceProfile[]>(initialDevices);
   useEffect(() => { setDevices(initialDevices); }, [initialDevices]);
   useEffect(() => {
@@ -270,7 +277,7 @@ export function ProfilesView({
         setDevices((prev) => (sameDeviceList(prev, next) ? prev : next));
       } catch { /* keep last good list */ }
     };
-    const id = setInterval(tick, 5000);
+    const id = setInterval(tick, 20000);
     return () => { alive = false; clearInterval(id); };
   }, []);
 
@@ -298,7 +305,7 @@ export function ProfilesView({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
+  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
   // Optional pre-provision dialog to capture a WhatsApp number (semi-autonomous
   // register on the fresh device). Blank number → device-only provision.
   const [provisionFormOpen, setProvisionFormOpen] = useState(false);
@@ -351,6 +358,40 @@ export function ProfilesView({
   // One-click identity reroll: per-device in-flight flag + toast.
   const [rerollBusy, setRerollBusy] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<{ kind: 'ok' | 'warn' | 'err'; text: string } | null>(null);
+  // Inline device rename: which device is being renamed + its draft name.
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+  // Persist a device rename. Name is a cosmetic label only — the Waydroid instance,
+  // WhatsApp account, proxy and all bindings are keyed by id/instance, NOT the name,
+  // so renaming is always safe. Optimistically updates the card, then PUTs to the API.
+  async function saveRename(id: string, rawName: string) {
+    const name = rawName.trim();
+    const dev = devices.find((d) => d.id === id);
+    if (!name || name.length < 2 || renameBusy || name === dev?.name) { setRenaming(null); return; }
+    setRenameBusy(true);
+    // Optimistic: show the new name immediately.
+    setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, name } : d)));
+    try {
+      const res = await fetch(`/api/devices/${id}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (!res.ok) {
+        // Roll back the optimistic change on failure.
+        setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, name: dev?.name ?? d.name } : d)));
+        setToast({ kind: 'err', text: 'İsim değiştirilemedi' });
+      } else {
+        setToast({ kind: 'ok', text: `İsim değiştirildi → ${name}` });
+      }
+    } catch {
+      setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, name: dev?.name ?? d.name } : d)));
+      setToast({ kind: 'err', text: 'İsim değiştirilemedi (ağ hatası)' });
+    } finally {
+      setRenameBusy(false);
+      setRenaming(null);
+    }
+  }
   // Per-device proxy modal (country-grouped picker + verify).
   const [proxyDevice, setProxyDevice] = useState<DeviceProfile | null>(null);
   // CPU pressure warning: software-rendered Waydroid pins the host CPU, which
@@ -445,7 +486,7 @@ export function ProfilesView({
       });
       if (!res.ok) throw new Error(`Oluşturma başarısız (${res.status})`);
       setCreateOpen(false);
-      setForm({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8' });
+      setForm({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Oluşturma başarısız');
@@ -861,15 +902,58 @@ export function ProfilesView({
     if (provisionBusy) return;
     setProvisionBusy(true);
     setError(null);
+    const count = Math.max(1, Math.min(20, parseInt(form.count, 10) || 1));
+    const commonBody = {
+      ...(form.countryCode ? { countryCode: form.countryCode, proxyCountry: form.countryCode } : {}),
+      ...(form.deviceModel ? { deviceModel: form.deviceModel } : {}),
+      ...(form.androidVersion ? { androidVersion: form.androidVersion } : {})
+    };
     try {
+      if (count > 1) {
+        // Batch: create N devices, each with a unique random name + its own proxy.
+        const res = await fetch('/api/provision/batch', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            count,
+            ...(form.name.trim() ? { namePrefix: form.name.trim() } : {}),
+            ...commonBody
+          })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setError(body?.data?.message || body?.error || 'Toplu cihaz oluşturulamadı');
+          return;
+        }
+        const d = body.data as {
+          started: Array<{ jobId: string; deviceId: string; instance: string; name: string }>;
+          failed: Array<{ index: number; error: string }>;
+          steps: ProvisionStep[];
+        };
+        setCreateOpen(false);
+        setProvisionFormOpen(false);
+        // Summary toast: how many started, how many failed to even start.
+        setToast(
+          d.failed.length
+            ? { kind: 'warn', text: `${d.started.length} cihaz kuruluyor · ${d.failed.length} başlatılamadı (${d.failed[0]?.error ?? ''})` }
+            : { kind: 'ok', text: `${d.started.length} cihaz aynı anda kuruluyor — her biri benzersiz isim + proxy ile` }
+        );
+        router.refresh(); // list picks up all the new "⚡ Kuruluyor" cards
+        // Open the live modal on the FIRST device so the operator can watch progress;
+        // the rest provision in parallel and show as cards in the list.
+        const first = d.started[0];
+        if (first) {
+          setProvisioning({ jobId: first.jobId, deviceId: first.deviceId, instance: first.instance, name: first.name, steps: d.steps });
+        }
+        return;
+      }
+      // Single device (count === 1).
       const res = await fetch('/api/provision/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...(form.name.trim() ? { name: form.name.trim() } : {}),
-          ...(form.countryCode ? { countryCode: form.countryCode, proxyCountry: form.countryCode } : {}),
-          ...(form.deviceModel ? { deviceModel: form.deviceModel } : {}),
-          ...(form.androidVersion ? { androidVersion: form.androidVersion } : {})
+          ...commonBody
         })
       });
       const body = await res.json().catch(() => ({}));
@@ -1128,9 +1212,36 @@ export function ProfilesView({
                     <span className="card-avatar" aria-hidden title={device.fingerprint?.manufacturer ?? device.name}>
                       {(device.fingerprint?.manufacturer ?? device.name ?? '?').trim().charAt(0).toUpperCase()}
                     </span>
-                    <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
-                      {device.name}
-                    </Link>
+                    {renaming?.id === device.id ? (
+                      <input
+                        className="field-input card-rename-input"
+                        type="text"
+                        autoFocus
+                        maxLength={80}
+                        value={renaming.value}
+                        disabled={renameBusy}
+                        onChange={(e) => setRenaming({ id: device.id, value: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') saveRename(device.id, renaming.value);
+                          if (e.key === 'Escape') setRenaming(null);
+                        }}
+                        onBlur={() => saveRename(device.id, renaming.value)}
+                      />
+                    ) : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+                        <Link href={`/profiles/${device.id}`} className="card-title card-title-link" title={device.name}>
+                          {device.name}
+                        </Link>
+                        <button
+                          type="button"
+                          className="card-rename-btn"
+                          title="İsmi değiştir"
+                          onClick={() => setRenaming({ id: device.id, value: device.name })}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                      </span>
+                    )}
                     {(device.metadata?.provisionStatus as string) === 'PROVISIONING' ? (
                       <button
                         type="button"
@@ -1199,6 +1310,31 @@ export function ProfilesView({
                         <span className="meta-icon"><ShieldCheck size={13} /></span>
                         <span className="proxy-country-pill" title="Cihaz korumalı — silme/sıfırlama/geri-yükleme reddedilir">
                           <ShieldCheck size={10} /> Korumalı
+                        </span>
+                      </li>
+                    ) : null}
+                    {/* WhatsApp account-health badge — only for trouble states, detected
+                        on-device (send result / inbound system notice). Healthy accounts
+                        show nothing here. */}
+                    {device.waAccountHealth ? (
+                      <li>
+                        <span className="meta-icon"><AlertTriangle size={13} /></span>
+                        <span
+                          className={`wa-health-pill wa-health-${device.waAccountHealth.toLowerCase()}`}
+                          title={
+                            device.waAccountHealth === 'BANNED'
+                              ? 'WhatsApp hesabı yasaklı/askıda — mesaj gönderilemez'
+                              : device.waAccountHealth === 'LOGGED_OUT'
+                              ? 'WhatsApp oturumu kapandı — yeniden kayıt gerekli'
+                              : 'WhatsApp hesabı kısıtlı/incelemede — genelde ~24s içinde düzelir'
+                          }
+                        >
+                          <AlertTriangle size={10} />{' '}
+                          {device.waAccountHealth === 'BANNED'
+                            ? 'WA Yasaklı'
+                            : device.waAccountHealth === 'LOGGED_OUT'
+                            ? 'WA Çıkış Yapıldı'
+                            : 'WA Kısıtlı'}
                         </span>
                       </li>
                     ) : null}
@@ -1706,18 +1842,31 @@ export function ProfilesView({
               Sıfırdan izole bir Waydroid cihazı kurulur (root + parmak izi + proxy + APK&apos;lar — WhatsApp&apos;a hazır).
               WhatsApp hesabı açmak ayrı bir adımdır: cihaz hazır olduktan sonra profil menüsünden &quot;WhatsApp Aç&quot;.
             </p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 12 }}>
+              <label className="field">
+                <span>Cihaz adı {(parseInt(form.count, 10) || 1) > 1 ? '(önek — sıralı benzersiz)' : '(boş = rastgele)'}</span>
+                <input
+                  className="field-input"
+                  type="text"
+                  placeholder={(parseInt(form.count, 10) || 1) > 1 ? 'watest → watest-a3f, watest-x7k…' : 'Boş bırak → wa-x7k2 (rastgele)'}
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span>Adet</span>
+                <input
+                  className="field-input"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={form.count}
+                  onChange={(e) => setForm((f) => ({ ...f, count: e.target.value.replace(/[^\d]/g, '') || '1' }))}
+                />
+              </label>
+            </div>
             <label className="field">
-              <span>Cihaz adı</span>
-              <input
-                className="field-input"
-                type="text"
-                placeholder="Örn: Instagram-1, WA-Albania…"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              />
-            </label>
-            <label className="field">
-              <span>Ülke (proxy eşleşmesi için)</span>
+              <span>Ülke (her cihaza eşleşen proxy — farklı çıkış IP)</span>
               <input
                 className="field-input"
                 type="text"
@@ -1727,13 +1876,24 @@ export function ProfilesView({
                 onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value.toUpperCase() }))}
               />
             </label>
+            {(parseInt(form.count, 10) || 1) > 1 ? (
+              <p className="helper" style={{ marginTop: -4 }}>
+                <b>{Math.max(1, Math.min(20, parseInt(form.count, 10) || 1))} cihaz</b> aynı anda kurulur; her biri
+                benzersiz isim + {form.countryCode || 'ülke'} proxy&apos;siyle (farklı IP) hazırlanır. İlk cihazın
+                canlı günlüğü açılır, kalanlar listede &quot;⚡ Kuruluyor&quot; olarak görünür.
+              </p>
+            ) : null}
             {error ? <p className="field-error">{error}</p> : null}
             <footer className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => setProvisionFormOpen(false)}>
                 İptal
               </button>
               <button type="button" className="btn-primary" disabled={provisionBusy} onClick={startProvision}>
-                <Zap size={14} /> {provisionBusy ? 'Başlatılıyor…' : 'Cihazı kur'}
+                <Zap size={14} /> {provisionBusy
+                  ? 'Başlatılıyor…'
+                  : (parseInt(form.count, 10) || 1) > 1
+                    ? `${Math.max(1, Math.min(20, parseInt(form.count, 10) || 1))} cihaz kur`
+                    : 'Cihazı kur'}
               </button>
             </footer>
           </div>

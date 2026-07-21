@@ -48,15 +48,38 @@ export class DeviceService {
     // ACTIVE/AWAITING_MANUAL — the same authoritative check the API start-guard uses.
     if (devices.length) {
       const ids = devices.map((d) => d.id);
+      // Pull the account row (newest per device) for BOTH the data-loss guard (a live
+      // account) AND the health badge (RESTRICTED/BANNED/LOGGED_OUT). One grouped query.
       const waAccounts = await prisma.generatedAccount.findMany({
-        where: { deviceId: { in: ids }, platform: 'whatsapp', status: { in: ['ACTIVE', 'AWAITING_MANUAL'] } },
-        select: { deviceId: true, phoneNumber: true }
+        where: {
+          deviceId: { in: ids },
+          platform: 'whatsapp',
+          status: { in: ['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED', 'BANNED', 'LOGGED_OUT'] }
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { deviceId: true, phoneNumber: true, status: true }
       });
-      const byDevice = new Map<string, string | null>();
-      for (const a of waAccounts) if (a.deviceId) byDevice.set(a.deviceId, a.phoneNumber ?? null);
+      // Health states that count as "device still holds a live account" for the
+      // data-loss guard: ACTIVE + AWAITING_MANUAL + RESTRICTED (temporary, may
+      // recover). BANNED/LOGGED_OUT no longer protect a usable account.
+      const LIVE = new Set(['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED']);
+      const byDevice = new Map<string, { phone: string | null; status: string }>();
+      // findMany is newest-first; keep the FIRST (newest) row seen per device.
+      for (const a of waAccounts) {
+        if (a.deviceId && !byDevice.has(a.deviceId)) {
+          byDevice.set(a.deviceId, { phone: a.phoneNumber ?? null, status: a.status });
+        }
+      }
       for (const d of devices) {
-        (d as Record<string, unknown>).hasActiveWhatsapp = byDevice.has(d.id);
-        (d as Record<string, unknown>).activeWhatsappPhone = byDevice.get(d.id) ?? null;
+        const acc = byDevice.get(d.id);
+        (d as Record<string, unknown>).hasActiveWhatsapp = acc ? LIVE.has(acc.status) : false;
+        (d as Record<string, unknown>).activeWhatsappPhone = acc?.phone ?? null;
+        // Surface a health badge only for the trouble states; ACTIVE/AWAITING_MANUAL
+        // render as normal (no badge). null = healthy or no account.
+        (d as Record<string, unknown>).waAccountHealth =
+          acc && (acc.status === 'RESTRICTED' || acc.status === 'BANNED' || acc.status === 'LOGGED_OUT')
+            ? acc.status
+            : null;
       }
     }
     return devices;

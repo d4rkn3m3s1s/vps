@@ -877,6 +877,20 @@ function waHelpers(serial) {
     _dumpAt = Date.now();
     return _dumpCache;
   };
+  // Retrying dump for ANR-prone screens (Conversation, confirm dialogs) where
+  // uiautomator dump intermittently returns '' → [] on this GPU-less Waydroid host.
+  // A single empty dump must NOT be read as "screen empty / dialog closed / sent" —
+  // root of a class of false-SENT / false-CLEARED / lost-inbound bugs. Each sleep
+  // busts the dump cache → a fresh capture. Returns [] only after all tries fail;
+  // callers MUST treat [] as INCONCLUSIVE, not a confirmed empty state.
+  const dumpOrRetry = async ({ tries = 3, gapMs = 500 } = {}) => {
+    for (let i = 0; i < tries; i++) {
+      const n = await dump().catch(() => []);
+      if (n.length) return n;
+      if (i < tries - 1) await sleep(gapMs);
+    }
+    return [];
+  };
   // Real touch (uinput vtouch) when available, else synthetic input tap. This
   // is the single tap primitive every WA flow (register/send/read) routes
   // through, so all of them get genuine touch events on hardened apps.
@@ -1003,7 +1017,11 @@ function waHelpers(serial) {
   // Long-press still needs vtouch; taps on menus need synthetic. Keep them separate.
   const tapSyn = async (x, y) => { clearDumpCache(); await adb(serial, ['shell', 'input', 'tap', String(Math.round(x)), String(Math.round(y))]); };
   // Tap a node's center with a synthetic tap. Returns whether the node was truthy.
-  const tapSynNode = async (n) => { if (!n) return false; await tapSyn(n.cx, n.cy); return true; };
+  // Use tapX/tapY (the smallest clickable ancestor's center, precomputed by parseUiNodes)
+  // when present — same clickable-parent resolution as tapNode. Fixes synthetic taps that
+  // landed on a non-clickable icon/label leaf whose real tap target is a wrapping row
+  // (COORD-2b). Falls back to the node's own center. Improves ALL tapSynNode callers.
+  const tapSynNode = async (n) => { if (!n) return false; await tapSyn(n.tapX ?? n.cx, n.tapY ?? n.cy); return true; };
   // Synthetic-tap the first node matching q; returns whether it was found.
   const tapSynIf = async (q, field = 'any') => {
     const n = findNode(await dump(), q, field);
@@ -1077,7 +1095,7 @@ function waHelpers(serial) {
     if (n) { await tapNode(n); return true; }
     return tapVision(vTarget || `the "${Array.isArray(q) ? q[0] : q}" button`, hint);
   };
-  return { sleep, dump, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText, screenTextRich, longPress, longPressNode, pollNode, tapSyn, tapSynNode, tapSynIf, tapScaled, a11ySetText, a11yClickId, a11yClickText, tapVision, tapByV };
+  return { sleep, dump, dumpOrRetry, tapNode, tapXY, find, tapBy, tapIf, typeInto, tapById, typeIntoId, typeText, clearField, ensureAdbKeyboard, ensureTouch, waitFor, seen, screenText, screenTextRich, longPress, longPressNode, pollNode, tapSyn, tapSynNode, tapSynIf, tapScaled, a11ySetText, a11yClickId, a11yClickText, tapVision, tapByV };
 }
 
 const WA_PKG = 'com.whatsapp';
@@ -2168,6 +2186,16 @@ async function registerWhatsApp(job, legacyPayload) {
     // stayed true → the break was skipped → the other-phone branch re-returned OTP_WAIT
     // without ever entering the code — LIVE mi8 +90 539…, operator entered code twice, no
     // progress.)
+    // ★WALL-BEFORE-OTP GUARD (VERIFIED LIVE, mi20 +355 Business number): WhatsApp can
+    // flip an apparent OTP screen into CustomRegistrationBlockActivity ("Download the
+    // official WhatsApp to continue") — especially on a Business-downgrade / risky
+    // number. If we break into OTP_WAIT first, the agent parks and stops watching the
+    // screen, so the block is NEVER reported (operator waits forever for an SMS that
+    // won't arrive). So: check the hard wall BEFORE accepting an OTP screen. If the
+    // block activity/text is up, report DEVICE_WALL instead of parking at OTP_WAIT.
+    wallText = await onWall(foc, txt);
+    if (wallText) { wlog(`verify: WALL (pre-OTP) — ${wallText.slice(0, 80)}`); break; }
+
     if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) { wlog(`verify: reached OTP screen (round ${round})`); break; }
 
     // "Deactivate your Business account?" (DowngradeFriction) — handled FIRST (right
@@ -2806,8 +2834,15 @@ async function whatsappSend(serial, payload) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: flat.slice(0, 300) };
     }
     // Capture the send button from THIS dump (no extra dump). id/send is the paper-
-    // plane; only trust it if it has real on-screen bounds (cx/cy > 0).
-    sendNode = nodes.find((n) => (n.resId || '').includes('id/send') && n.cx > 0 && n.cy > 0) || null;
+    // plane. Anchor the resId to END with ":id/send" so we don't latch onto a
+    // container like ":id/send_container"; among candidates prefer a clickable one,
+    // then the smallest-area node (the actual button, not a wrapper). Only trust real
+    // on-screen bounds (cx/cy > 0). Fall back to the coordinate tap when absent.
+    const sendCands = nodes.filter((n) => /:id\/send$/.test(n.resId || '') && n.cx > 0 && n.cy > 0);
+    const area = (n) => Math.max(0, (n.bounds?.[2] ?? 0) - (n.bounds?.[0] ?? 0)) * Math.max(0, (n.bounds?.[3] ?? 0) - (n.bounds?.[1] ?? 0));
+    sendNode = sendCands.filter((n) => n.clickable).sort((a, b) => area(a) - area(b))[0]
+      || sendCands.sort((a, b) => area(a) - area(b))[0]
+      || null;
   }
   tlog(`dialog+invalid check (1 dump)${sendNode ? ' [id/send found]' : ''}`);
 
@@ -2846,6 +2881,21 @@ async function whatsappSend(serial, payload) {
     const entry = nodes.find((n) => n.resId.includes('id/entry'));
     if (!entry) return null;
     return (entry.text ?? '').includes(needle.slice(0, 12));
+  };
+  // POSITIVE send evidence (SHOT-2): an OUTGOING bubble carrying our text appeared on
+  // the right half. A cleared compose box is necessary but not sufficient — this
+  // confirms the message actually landed in the thread. Best-effort; '' on a blank
+  // dump so it never flips a real send to failure, only strengthens a positive.
+  const outgoingBubbleAppeared = async () => {
+    const nodes = await h.dump().catch(() => []);
+    if (!nodes.length) return false;
+    const needleHead = needle.slice(0, 24);
+    return nodes.some((n) =>
+      /message_text/.test(n.resId || '') &&
+      (n.text || '').includes(needleHead) &&
+      // right-half = outgoing (incoming bubbles sit left); cx may be undefined → allow.
+      (typeof n.cx !== 'number' || n.cx > 0)
+    );
   };
 
   // Tap the send button, then CHECK before tapping again. The message usually
@@ -2933,6 +2983,9 @@ async function whatsappSend(serial, payload) {
   if (!sent) {
     const still = await composeStillFull();
     if (still === false) sent = true; // box cleared after all → sent
+    // SHOT-2: even if the box read was inconclusive (null, blank dump), a visible
+    // outgoing bubble with our text is positive proof the message landed.
+    else if (still === null && await outgoingBubbleAppeared()) sent = true;
   }
   // After a Try-Again, re-check delivery: if the compose box is empty AND no "not
   // sent" dialog remains, treat as sent.
@@ -2964,6 +3017,12 @@ async function whatsappSend(serial, payload) {
   // NEXT send is still warm (no cold-start penalty). Best-effort; never fails a send.
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
   tlog('SENT (+HOME: çevrimiçi/okundu gizlendi)');
+  // Remember the number + time so a later passive receipt read (pushOutgoingReceipt)
+  // can report against the phone number the API matches on, AND its attribution guard
+  // can confirm the open chat is still the one we sent to. peerName is filled in by the
+  // receipt reader when the title matches (saved-contact case); null here is fine.
+  waLastSentPeer.set(serial, { to, at: Date.now(), peerName: null });
+  waReceiptState.delete(serial); // new send → allow this chat's DELIVERED/READ to re-fire
   return { status: 'SENT', to, message };
 }
 
@@ -4369,31 +4428,26 @@ async function whatsappRead(serial, payload) {
   await h.ensureTouch();
   await h.ensureAdbKeyboard();
 
-  // Make sure a chat is open.
-  if (to) {
-    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(`https://wa.me/${to}`), WA_PKG]);
-    await h.sleep(5000);
-  } else if (from) {
-    await launchApp(serial, WA_PKG, null);
-    await h.sleep(4000);
-    // Open search, type the contact, tap the first chat hit.
-    if (await h.tapIf('Search', 'desc')) {
-      await h.sleep(800);
-      await inputText(serial, from);
-      await h.sleep(1500);
-      await h.tapBy(from, 'text').catch(() => undefined);
-      await h.sleep(2500);
+  // Make sure a chat is open — via the shared waOpenChat (real open-verify + ANR-clear
+  // + locale-safe search), and bail with NO_CHAT if it didn't open (invalid number /
+  // account restricted / ANR) instead of scraping whatever screen we're on.
+  if (to || from) {
+    if (!(await waOpenChat(serial, h, { to, from }))) {
+      return { status: 'NO_CHAT', note: 'Sohbet açılamadı (numara geçersiz / hesap kısıtlı / ANR)', count: 0, messages: [] };
     }
   }
   await dismissBlockingDialogs(serial, h);
 
-  // Pull bubbles. Prefer the message_text id; fall back to all on-screen text.
-  const nodes = await h.dump();
+  // Pull bubbles from a retrying dump (blank dump ≠ empty chat). Only real
+  // message_text bubbles count — do NOT fall back to "all on-screen text", which
+  // swept in toolbar/chrome strings and reported them as messages (inflated count).
+  const nodes = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
+  if (!nodes.length) return { status: 'READ_UNCONFIRMED', note: 'Sohbet okunamadı (boş dump)', count: 0, messages: [] };
   const bubbles = nodes
     .filter((n) => n.text && n.resId.includes('message_text'))
     .map((n) => n.text);
-  const messages = bubbles.length > 0 ? bubbles : nodes.map((n) => n.text).filter(Boolean);
-  return { status: 'OK', count: messages.length, messages: messages.slice(-50) };
+  // No message bubbles on a successfully-dumped chat → genuinely empty (or all media).
+  return { status: 'OK', count: bubbles.length, messages: bubbles.slice(-50) };
 }
 
 // ── WhatsApp: shared chat navigation helpers ────────────────────────────────
@@ -4518,32 +4572,45 @@ function cropPng(png, rx, ry, rw, rh) {
 // contact); if only a `from` name is given, open the app and search for it.
 // DUMP-FREE for the `to` path: the Conversation screen ANRs uiautomator dump, so
 // we just wait a fixed beat after the deep link (proven reliable in whatsappSend).
+// Returns TRUE only when the chat's compose box (id/entry) is actually on screen.
+// Previously the `to` path returned true unconditionally — so an invalid/non-WhatsApp
+// number, an account-in-review wall, or an ANR overlay all reported "opened" and every
+// subsequent tap went to the WRONG screen (false success / wrong-target action). Now
+// callers can trust the return value and bail with NO_CHAT instead of blind-tapping.
 async function waOpenChat(serial, h, { to, from }) {
   if (to) {
     await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', shArg(`https://wa.me/${to}`), WA_PKG]);
-    // SPEED: poll for the compose box (id/entry) to appear instead of a flat 8s
-    // wait — the chat is usually reachable in ~2-3s. A single `find` per step is
-    // safe here (the compose box is EMPTY so there's no view-tree churn/ANR — the
-    // ANR only happens with text in the box + a dump LOOP, which we don't do). We
-    // give it ~2s to start rendering, then poll up to an 8s cap so a slow cold
-    // start still proceeds exactly as before.
+    // SPEED: poll for the compose box (id/entry). Also clear an ANR overlay that can
+    // sit on top of the Conversation view (mirrors whatsappSend's open-poll logic) —
+    // otherwise the poll times out under an "isn't responding" dialog and we wrongly
+    // conclude the chat never opened. Track whether entry was actually seen.
     await h.sleep(2000);
+    let chatOpened = false;
     for (let i = 0; i < 12; i++) {
-      if (await h.find('com.whatsapp:id/entry', 'id').catch(() => null)) break;
+      if (await h.find('com.whatsapp:id/entry', 'id').catch(() => null)) { chatOpened = true; break; }
+      if (i % 2 === 1 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
       await h.sleep(500);
     }
-    return true;
+    return chatOpened;
   }
   if (from) {
     await launchApp(serial, WA_PKG, null);
     await h.sleep(3500);
-    if (await h.tapIf('Search', 'desc')) {
+    // Locale-safe Search (English "Search" / Turkish "Ara"); findNode accepts arrays.
+    if (await h.tapIf(['Search', 'Ara'], 'desc')) {
       await h.sleep(800);
       await inputText(serial, from);
       await h.sleep(1500);
       await h.tapBy(from, 'text').catch(() => undefined);
       await h.sleep(2200);
-      return true;
+      // Verify-after: confirm the compose box appeared (chat really opened) rather
+      // than returning true just because we tapped a search result that may not exist.
+      let chatOpened = false;
+      for (let i = 0; i < 8; i++) {
+        if (await h.find('com.whatsapp:id/entry', 'id').catch(() => null)) { chatOpened = true; break; }
+        await h.sleep(500);
+      }
+      return chatOpened;
     }
   }
   return false;
@@ -4613,19 +4680,20 @@ async function waOpenSettings(serial, h) {
     await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
     await h.sleep(1000);
     await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.home.ui.HomeActivity`]).catch(() => undefined);
-    const overflow = await h.pollNode('More options', 9000, 'desc');
+    // Locale-safe landmarks (EN/TR) — findNode/pollNode accept string arrays.
+    const overflow = await h.pollNode(['More options', 'Diğer seçenekler'], 9000, 'desc');
     if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
-    // Wait for the popup menu ("New group" landmark); re-tap the overflow once if it
-    // didn't render.
-    if (!(await h.pollNode('New group', 8000, 'text'))) {
+    // Wait for the popup menu ("New group"/"Yeni grup" landmark); re-tap the overflow
+    // once if it didn't render.
+    if (!(await h.pollNode(['New group', 'Yeni grup'], 8000, 'text'))) {
       if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
-      await h.pollNode('New group', 6000, 'text');
+      await h.pollNode(['New group', 'Yeni grup'], 6000, 'text');
     }
-    const settings = await h.pollNode('Settings', 6000, 'any');
+    const settings = await h.pollNode(['Settings', 'Ayarlar'], 6000, 'any');
     if (settings) await h.tapSynNode(settings);
     else await h.tapSyn(812, 1060); // fixed Settings row center (VERIFIED bounds)
-    // Settings loaded when the "Account" row appears.
-    return Boolean(await h.pollNode('Account', 9000, 'any'));
+    // Settings loaded when the "Account"/"Hesap" row appears.
+    return Boolean(await h.pollNode(['Account', 'Hesap'], 9000, 'any'));
   };
   // Retry the WHOLE flow once. On this Waydroid host the first ⋮/Settings tap
   // occasionally lands before the chat list is fully interactive, so a single retry
@@ -4659,7 +4727,9 @@ async function whatsappProfile(serial, payload) {
   // Conversation screen (a warm app sometimes stays on the chat LIST — VERIFIED).
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
-  await waOpenChat(serial, h, { to, from });
+  if (!(await waOpenChat(serial, h, { to, from }))) {
+    return { status: 'NO_CHAT', note: 'Sohbet açılamadı (numara geçersiz / hesap kısıtlı / ANR)', to };
+  }
 
   // ── AVATAR (from the Conversation screen) ─────────────────────────────────
   // The contact-info & full-screen-photo screens block screencap on this device
@@ -4687,14 +4757,19 @@ async function whatsappProfile(serial, payload) {
   // dump-safe. Name area center ≈ 40% width / 6% height.
   await tapReal(serial, Math.round(sw * 0.40), Math.round(sh * 0.06));
   await h.sleep(2200);
-  const nodes = await h.dump().catch(() => []);
+  // Retrying dump: if the contact-info screen didn't render / dumped blank, we must
+  // NOT synthesize phone/name from the caller-supplied `to`/`from` and pass it off as
+  // scraped data (the old `to ? '+'+to : ''` / `|| from` fallbacks did exactly that,
+  // returning status:'OK' with fabricated values). Only build fields from REAL nodes.
+  const nodes = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
+  const scraped = nodes.length > 0;
   const phoneNode = nodes.find((n) => /^\+?\d[\d\s()-]{6,}$/.test((n.text || '').trim()));
-  const phone = phoneNode ? phoneNode.text.trim() : (to ? `+${to}` : '');
+  const phone = phoneNode ? phoneNode.text.trim() : '';
   // Profile name shows as "~ Foo" (push-name) on the info screen.
   const tildeNode = nodes.find((n) => /^~\s*\S/.test((n.text || '').trim()));
   const byId = (frag) => (nodes.find((n) => n.resId.includes(frag) && n.text) || {}).text || '';
   const profileName = (tildeNode ? tildeNode.text.replace(/^~\s*/, '').trim() : '')
-    || byId('conversation_contact_name') || byId('profile_info') || from || '';
+    || byId('conversation_contact_name') || byId('profile_info') || '';
   const about = byId('status') || byId('about');
   const profile = {
     ...(profileName ? { profileName } : {}),
@@ -4704,6 +4779,11 @@ async function whatsappProfile(serial, payload) {
   // Return to a neutral state.
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
 
+  // If the info screen never yielded a dump AND we have no avatar, we read nothing —
+  // report honestly rather than an empty-but-OK profile.
+  if (!scraped && !avatarBase64) {
+    return { status: 'NO_INFO', note: 'Kişi bilgisi ekranı okunamadı (boş dump)', to, from };
+  }
   // If we got neither text nor an avatar, report the failure honestly.
   if (!avatarBase64 && Object.keys(profile).length === 0) {
     return { status: 'NO_INFO', note: 'Kişi bilgisi/foto alınamadı', to, from };
@@ -4740,7 +4820,9 @@ async function whatsappBlock(serial, payload) {
   // force-stop first so the deep link lands on the Conversation screen (VERIFIED).
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
-  await waOpenChat(serial, h, { to, from });
+  if (!(await waOpenChat(serial, h, { to, from }))) {
+    return { status: 'NO_CHAT', note: 'Sohbet açılamadı (numara geçersiz / hesap kısıtlı / ANR)', to, from };
+  }
   const onInfo = await waOpenContactInfo(serial, h);
   if (!onInfo) return { status: 'NO_INFO', note: 'Kişi bilgisi ekranı açılamadı', to, from };
 
@@ -4756,21 +4838,25 @@ async function whatsappBlock(serial, payload) {
   // target state → ALREADY_*.
   const wantRe = block ? /^block\b|^engelle/i : /^unblock\b|^engeli\s*kaldır/i;
   const oppRe  = block ? /^unblock\b|^engeli\s*kaldır/i : /^block\b|^engelle/i;
-  const nodes = await h.dump().catch(() => []);
+  // Retrying dump: the contact-info screen is usually dump-safe, but an empty read
+  // must NOT trigger a state-blind coordinate tap — that would flip an already-blocked
+  // contact to UNBLOCKED (reverse action) and lie that the request succeeded.
+  const nodes = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
   const norm = (t) => (t || '').trim();
-  const wantRow = nodes.find((n) => wantRe.test(norm(n.text)));
-  const oppRow  = nodes.find((n) => oppRe.test(norm(n.text)));
+  // Some builds carry the label in content-desc, not text — test both (screenTextRich).
+  const rowText = (n) => `${norm(n.text)} ${norm(n.desc)}`.trim();
+  const wantRow = nodes.find((n) => wantRe.test(rowText(n)));
+  const oppRow  = nodes.find((n) => oppRe.test(rowText(n)));
   if (wantRow) {
     await h.tapNode(wantRow);
     await h.sleep(1200);
   } else if (oppRow) {
     return { status: block ? 'ALREADY_BLOCKED' : 'ALREADY_UNBLOCKED', to, from };
   } else if (nodes.length === 0) {
-    // Dump came back empty (flaky on this device) but we scrolled to the danger
-    // zone. Coordinate-tap the Block/Unblock row: after the swipe it sits at
-    // ~40% width / 82% height (VERIFIED bounds [189,1933]-[682,1994] on 1080x2400).
-    await tapReal(serial, Math.round(sw * 0.40), Math.round(sh * 0.818));
-    await h.sleep(1200);
+    // Every retry came back empty — we CANNOT know the current block state, so a
+    // coordinate tap here is a coin-flip that could reverse the action. Bail honestly
+    // instead of guessing (old code blind-tapped ~40%/82% and reported success).
+    return { status: 'DUMP_EMPTY', note: 'Kişi bilgisi okunamadı — durum bilinmediği için işlem yapılmadı', to, from };
   } else {
     // Dump had content but neither verb was present.
     return { status: 'NO_ACTION', note: 'Engelle/Engeli kaldır satırı bulunamadı', to, from };
@@ -4790,7 +4876,19 @@ async function whatsappBlock(serial, payload) {
     await h.sleep(1000);
   }
 
+  // VERIFY-AFTER-ACTION: re-read the contact-info row and confirm the verb FLIPPED to
+  // the opposite (Block→Unblock present, or vice-versa). Otherwise the tap may have
+  // missed / the dialog may still be open, and reporting BLOCKED/UNBLOCKED would lie.
+  await h.sleep(600);
+  const afterBlock = await h.dumpOrRetry({ tries: 2, gapMs: 500 });
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  if (afterBlock.length) {
+    const flipped = afterBlock.some((n) => oppRe.test(`${norm(n.text)} ${norm(n.desc)}`.trim()));
+    const stillWant = afterBlock.some((n) => wantRe.test(`${norm(n.text)} ${norm(n.desc)}`.trim()));
+    if (!flipped && stillWant) {
+      return { status: 'UNVERIFIED', note: 'İşlem doğrulanamadı (durum değişmemiş görünüyor)', to: to || undefined, from: from || undefined };
+    }
+  }
   return { status: block ? 'BLOCKED' : 'UNBLOCKED', to: to || undefined, from: from || undefined };
 }
 
@@ -4811,19 +4909,19 @@ async function whatsappBlocklist(serial /*, payload */) {
   const ok = await waOpenSettings(serial, h);
   if (!ok) return { status: 'NO_LIST', note: 'Ayarlar ekranı açılamadı', blocked: [], count: 0 };
 
-  // Settings → Privacy (synthetic taps — same PopupWindow/list behaviour).
-  const privacy = await h.pollNode('Privacy', 6000, 'any');
-  if (!privacy) return { status: 'NO_LIST', note: 'Privacy satırı bulunamadı', blocked: [], count: 0 };
+  // Settings → Privacy (synthetic taps — same PopupWindow/list behaviour). EN/TR.
+  const privacy = await h.pollNode(['Privacy', 'Gizlilik'], 6000, 'any');
+  if (!privacy) return { status: 'NO_LIST', note: 'Gizlilik satırı bulunamadı', blocked: [], count: 0 };
   await h.tapSynNode(privacy);
-  // Privacy screen landmark.
-  await h.pollNode('Last seen', 6000, 'any');
+  // Privacy screen landmark (EN/TR).
+  await h.pollNode(['Last seen', 'Son görülme'], 6000, 'any');
 
-  // "Contacts" (holding "Blocked accounts") sits far down the Privacy list — scroll
-  // until it appears (VERIFIED: ~2 page swipes). We match the row by its subtitle
-  // "Blocked accounts" (present in the content-desc "Contacts,Blocked accounts, …").
+  // "Contacts" (holding "Blocked accounts"/"Engellenen hesaplar") sits far down the
+  // Privacy list — scroll until it appears (VERIFIED: ~2 page swipes). We match the
+  // row by its subtitle. Retrying dump so a blank read isn't taken as "not present".
   let contactsRow = null;
   for (let s = 0; s < 5; s++) {
-    contactsRow = findNode(await h.dump().catch(() => []), 'Blocked accounts', 'any');
+    contactsRow = findNode(await h.dumpOrRetry({ tries: 2, gapMs: 400 }), ['Blocked accounts', 'Engellenen hesaplar'], 'any');
     if (contactsRow) break;
     await adb(serial, ['shell', 'input', 'swipe', String(Math.round(sw * 0.5)), String(Math.round(sh * 0.75)), String(Math.round(sw * 0.5)), String(Math.round(sh * 0.28)), '250']);
     await h.sleep(450); // scroll settles fast; the next dump adds its own ~1.5s
@@ -4834,20 +4932,20 @@ async function whatsappBlocklist(serial /*, payload */) {
   // with a count, plus a "WhatsApp contacts" toggle). VERIFIED on 2.26.25.81.
   // SPEED: poll for the hub, and REUSE that same dump to find the clickable row
   // container — saves one ~2.2s dump vs a separate pollNode + dump.
-  await h.pollNode('WhatsApp contacts', 6000, 'any');
+  await h.pollNode(['WhatsApp contacts', 'WhatsApp kişileri'], 6000, 'any');
   // Open the actual blocked list. CRITICAL: the "Blocked accounts" TEXT node is NOT
   // clickable — its clickable parent is the row container
   // `block_list_privacy_contacts_preference`; tapping the text does nothing
   // (VERIFIED w/ screenshots). Tap that container by id; fall back to the text row.
-  const hubNodes = await h.dump().catch(() => []);
+  const hubNodes = await h.dumpOrRetry({ tries: 2, gapMs: 400 });
   const container = findNode(hubNodes, 'block_list_privacy_contacts_preference', 'id');
   if (container) await h.tapSynNode(container);
   else {
-    const brow = findNode(hubNodes, 'Blocked accounts', 'any');
+    const brow = findNode(hubNodes, ['Blocked accounts', 'Engellenen hesaplar'], 'any');
     if (brow) await h.tapSynNode(brow);
   }
-  // Wait for the Blocked-accounts list to render.
-  await h.pollNode('Accounts', 6000, 'any');
+  // Wait for the Blocked-accounts list to render (EN "Accounts" / TR "Hesaplar").
+  await h.pollNode(['Accounts', 'Hesaplar'], 6000, 'any');
   await h.sleep(400);
 
   // Scrape the list rows. Blocked entries show as a contact display name or a raw
@@ -4901,12 +4999,14 @@ async function whatsappMyNumber(serial /*, payload */) {
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
   await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.home.ui.HomeActivity`]).catch(() => undefined);
-  await h.pollNode('More options', 8000, 'desc'); // chat list is up
+  await h.pollNode(['More options', 'Diğer seçenekler'], 8000, 'desc'); // chat list is up
   {
-    const home = await h.dump().catch(() => []);
-    const youNode = home.find((n) => /\(You\)/i.test(n.text || '') && looksPhone((n.text || '').replace(/\s*\(You\)\s*/i, '')));
+    const home = await h.dumpOrRetry({ tries: 2, gapMs: 400 });
+    // Self-chat row suffix is "(You)" (EN) or "(Sen)" (TR).
+    const selfRe = /\((You|Sen)\)/i;
+    const youNode = home.find((n) => selfRe.test(n.text || '') && looksPhone((n.text || '').replace(/\s*\((You|Sen)\)\s*/i, '')));
     if (youNode) {
-      const num = youNode.text.replace(/\s*\(You\)\s*/i, '').trim();
+      const num = youNode.text.replace(/\s*\((You|Sen)\)\s*/i, '').trim();
       if (num) return { status: 'OK', number: num };
     }
   }
@@ -4917,28 +5017,29 @@ async function whatsappMyNumber(serial /*, payload */) {
   // The profile row at the very top has content-desc="You". Tapping it opens the
   // Profile screen. (Fallback: some builds label it with the account name only.)
   // Use synthetic taps throughout Settings (consistent with the menu behaviour).
-  const youRow = await h.pollNode('You', 5000, 'desc');
+  const youRow = await h.pollNode(['You', 'Sen'], 5000, 'desc');
   if (youRow) await h.tapSynNode(youRow);
   else {
     // Fallback: tap the top profile card by coordinate (~top of the list).
     const { sw, sh } = await wmSize(serial);
     await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.16));
   }
-  // Wait for the Profile screen ("Phone" label is the landmark) then read the
-  // number that follows it.
-  await h.pollNode('Phone', 6000, 'text');
+  // Wait for the Profile screen ("Phone"/"Telefon" label is the landmark) then read
+  // the number that follows it.
+  await h.pollNode(['Phone', 'Telefon'], 6000, 'text');
   await h.sleep(600);
-  const nodes = await h.dump().catch(() => []);
-  // Prefer the node right after the "Phone" label; else any phone-like text that
-  // is NOT the "(You)" self-chat entry.
+  const nodes = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
+  if (!nodes.length) return { status: 'NOT_FOUND', note: 'Profil ekranı okunamadı (boş dump)' };
+  // Prefer the node right after the "Phone"/"Telefon" label; else any phone-like text
+  // that is NOT the "(You)"/"(Sen)" self-chat entry.
   let number = '';
-  const phoneIdx = nodes.findIndex((n) => /^phone$/i.test((n.text || '').trim()));
+  const phoneIdx = nodes.findIndex((n) => /^(phone|telefon)$/i.test((n.text || '').trim()));
   if (phoneIdx >= 0) {
     const after = nodes.slice(phoneIdx + 1).find((n) => looksPhone(n.text));
     if (after) number = after.text.trim();
   }
   if (!number) {
-    const any = nodes.find((n) => looksPhone(n.text) && !/\(You\)/i.test(n.text));
+    const any = nodes.find((n) => looksPhone(n.text) && !/\((You|Sen)\)/i.test(n.text));
     if (any) number = any.text.trim();
   }
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
@@ -4989,39 +5090,57 @@ async function whatsappSendMedia(serial, payload) {
   // 2) Open the chat (force-stop for a clean cold open).
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
-  await waOpenChat(serial, h, { to });
+  if (!(await waOpenChat(serial, h, { to }))) {
+    return { status: 'NO_CHAT', note: 'Sohbet açılamadı (numara geçersiz / hesap kısıtlı / ANR)', to, mediaUrl };
+  }
 
   // 3) Tap the compose Attach (📎) button. Prefer its node (content-desc="Attach"),
   //    fall back to the known compose-bar position. Synthetic tap (overlay opens).
-  const attachNode = findNode(await h.dump().catch(() => []), 'Attach', 'desc')
-    || findNode(await h.dump().catch(() => []), 'Ekle', 'desc');
+  const attachNode = findNode(await h.dump().catch(() => []), ['Attach', 'Ekle'], 'desc');
   if (attachNode) await h.tapSynNode(attachNode);
-  else await h.tapSyn(Math.round(sw * 0.80), Math.round(sh * 0.916));
-  // Wait for the attach sheet (its Gallery/Document labels are the landmark).
-  await h.pollNode('Gallery', 4000, 'any');
+  else await h.tapScaled(864, 2198, 1080, 2400); // scaled ~80%/91.6% (was raw sw/sh)
+  // Wait for the attach sheet (its Gallery/Document labels are the landmark; EN/TR).
+  await h.pollNode(['Gallery', 'Galeri', 'Document', 'Belge'], 4000, 'any');
 
   // 4) Documents go through the Document row; images use the inline photo grid.
   if (kind === 'document') {
-    (await h.tapSynIf('Document', 'any').catch(() => false)) || (await h.tapSynIf('Belge', 'any').catch(() => false));
+    await h.tapSynIf(['Document', 'Belge'], 'any').catch(() => false);
     await h.sleep(2500);
-    // Document picker: tap the top-most file entry.
-    const doc = (await h.dump().catch(() => [])).find((n) => /\.(pdf|docx?|txt|xlsx?)$/i.test(n.text || ''));
-    if (doc) await h.tapSynNode(doc); else await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.25));
+    // Document picker: prefer the entry whose name EXACTLY matches the file we just
+    // pushed (fileName) — don't grab "the top-most .pdf" which could be an unrelated
+    // older document (wrong-file send reported as SENT). Fall back to any doc-like row
+    // only if the exact match isn't visible; last-resort a scaled coordinate tap.
+    const docNodes = await h.dumpOrRetry({ tries: 2, gapMs: 500 });
+    const exact = docNodes.find((n) => (n.text || '').trim() === fileName || (n.desc || '').includes(fileName));
+    const anyDoc = docNodes.find((n) => /\.(pdf|docx?|txt|xlsx?)$/i.test(n.text || ''));
+    const pick = exact || anyDoc;
+    if (pick) await h.tapSynNode(pick);
+    else await h.tapScaled(540, 600, 1080, 2400); // scaled last-resort (was fixed 0.5/0.25)
     await h.sleep(2000);
   } else {
-    // Pick the NEWEST photo tile from the inline grid. Tiles carry
-    // content-desc="Photo, date <when>…"; the newest (our just-pushed file) is the
-    // first such node in document order. Fall back to Gallery if the grid is empty.
-    const photoTile = (await h.dump().catch(() => [])).find((n) => /^Photo,|^Fotoğraf,/i.test((n.desc || '').trim()));
-    if (photoTile) {
-      await h.tapSynNode(photoTile);
+    // Pick the NEWEST photo tile from the inline grid. Tiles carry content-desc
+    // "Photo, date <when>…"; our just-pushed file is the freshest, so among matching
+    // tiles prefer the top-LEFT one (smallest cy, then smallest cx) — the grid orders
+    // newest-first, and picking by position is more robust than "first in doc order"
+    // when the dump order doesn't match visual order. Retrying dump (grid may still
+    // be indexing). The media preview + SEND_UNCONFIRMED guard downstream catches a
+    // wrong/failed pick, so this only needs to be best-effort correct.
+    const gridNodes = await h.dumpOrRetry({ tries: 3, gapMs: 600 });
+    const tiles = gridNodes
+      .filter((n) => /^Photo,|^Fotoğraf,/i.test((n.desc || '').trim()))
+      .sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx));
+    if (tiles.length) {
+      await h.tapSynNode(tiles[0]);
       await h.sleep(2000);
     } else {
-      // No inline grid — open Gallery and take the first item.
-      (await h.tapSynIf('Gallery', 'any').catch(() => false)) || (await h.tapSynIf('Galeri', 'any').catch(() => false));
+      // No inline grid — open Gallery and take the first (top-left) item.
+      await h.tapSynIf(['Gallery', 'Galeri'], 'any').catch(() => false);
       await h.sleep(2500);
-      const first = (await h.dump().catch(() => [])).find((n) => /^Photo,|^Fotoğraf,|^Image|image_thumb/i.test((n.desc || '') + (n.resId || '')));
-      if (first) await h.tapSynNode(first); else await h.tapSyn(Math.round(sw * 0.18), Math.round(sh * 0.28));
+      const galNodes = await h.dumpOrRetry({ tries: 2, gapMs: 500 });
+      const first = galNodes
+        .filter((n) => /^Photo,|^Fotoğraf,|^Image|image_thumb/i.test((n.desc || '') + (n.resId || '')))
+        .sort((a, b) => (a.cy - b.cy) || (a.cx - b.cx))[0];
+      if (first) await h.tapSynNode(first); else await h.tapScaled(194, 672, 1080, 2400); // scaled ~18%/28%
       await h.sleep(2000);
     }
   }
@@ -5029,9 +5148,8 @@ async function whatsappSendMedia(serial, payload) {
   // 5) We should now be on the media preview (a caption field + a send FAB). Confirm
   //    we actually reached it: the preview has a "Add a caption…" field or a Send
   //    button with content-desc="Send".
-  let onPreview = Boolean(await h.pollNode('Send', 3500, 'desc'))
-    || Boolean(findNode(await h.dump().catch(() => []), 'caption', 'any'))
-    || Boolean(findNode(await h.dump().catch(() => []), 'Add a caption', 'any'));
+  let onPreview = Boolean(await h.pollNode(['Send', 'Gönder'], 3500, 'desc'))
+    || Boolean(findNode(await h.dump().catch(() => []), ['caption', 'Add a caption', 'Açıklama ekle'], 'any'));
   if (!onPreview) {
     // Nothing got attached — report honestly instead of a false SENT.
     await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
@@ -5058,11 +5176,18 @@ async function whatsappSendMedia(serial, payload) {
   const sendNode = findNode(await h.dump().catch(() => []), 'Send', 'desc');
   if (sendNode) await h.tapSynNode(sendNode); else await h.tapSyn(Math.round(sw * 0.9), Math.round(sh * 0.92));
   await h.sleep(2500);
-  // Verify: the preview's Send button is gone AND the chat compose bar (entry) is back.
-  const after = await h.dump().catch(() => []);
-  const stillPreview = Boolean(findNode(after, 'Send', 'desc')) && !findNode(after, 'com.whatsapp:id/entry', 'id');
-  if (stillPreview) {
-    return { status: 'SEND_UNCONFIRMED', note: 'Gönder sonrası önizleme kapanmadı', to, mediaUrl, ...(caption ? { caption } : {}) };
+  // Verify with a retrying dump: we require POSITIVE evidence the send happened —
+  // the preview's Send button gone AND the chat compose bar (entry) back. A single
+  // blank dump would make both findNode()s return null → stillPreview=false → a FALSE
+  // SENT. So if every retry is empty we can't confirm → SEND_UNCONFIRMED, not SENT.
+  const after = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
+  if (!after.length) {
+    return { status: 'SEND_UNCONFIRMED', note: 'Gönderim doğrulanamadı (ekran okunamadı)', to, mediaUrl, ...(caption ? { caption } : {}) };
+  }
+  const backOnChat = Boolean(findNode(after, 'com.whatsapp:id/entry', 'id'));
+  const stillPreview = Boolean(findNode(after, 'Send', 'desc')) && !backOnChat;
+  if (stillPreview || !backOnChat) {
+    return { status: 'SEND_UNCONFIRMED', note: 'Gönder sonrası sohbet ekranına dönülmedi', to, mediaUrl, ...(caption ? { caption } : {}) };
   }
   return { status: 'SENT', to, mediaUrl, ...(caption ? { caption } : {}) };
 }
@@ -5092,7 +5217,9 @@ async function whatsappDeleteMsg(serial, payload) {
   const { sw, sh } = await wmSize(serial);
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
-  await waOpenChat(serial, h, { to });
+  if (!(await waOpenChat(serial, h, { to }))) {
+    return { status: 'NO_CHAT', note: 'Sohbet açılamadı — silme yapılmadı (numara geçersiz / hesap kısıtlı / ANR)', to, scope };
+  }
 
   // Locate the bubble to long-press. The chat screen IS dump-safe here (it's the
   // Conversation view but we're not typing, so no ANR). Prefer matchText; else the
@@ -5107,11 +5234,18 @@ async function whatsappDeleteMsg(serial, payload) {
     if (matchText) {
       const b = nodes.find((n) => isRealBubble(n) && n.text.includes(matchText));
       if (b) return { x: b.cx, y: b.cy };
+      // matchText was requested but NOT found among the visible bubbles. Do NOT fall
+      // through to "delete the newest bubble" — that silently deletes the WRONG
+      // message (irreversible data loss) when the target scrolled off-screen or the
+      // text differs. Signal not-found so the caller returns NOT_FOUND instead.
+      return null;
     }
     const texts = nodes.filter(isRealBubble);
     const last = texts[texts.length - 1];
     if (last) return { x: last.cx, y: last.cy };
-    return { x: Math.round(sw * 0.72), y: Math.round(sh * 0.82) };
+    // No matchText and no real bubble found → don't blind-tap a fixed coordinate
+    // (that could long-press a chat-list row and open the wrong CAB). Signal not-found.
+    return null;
   };
 
   // Find the CAB "Delete" (trash) icon. It is an ImageButton with
@@ -5123,8 +5257,9 @@ async function whatsappDeleteMsg(serial, payload) {
   ) || null;
   // Open the CAB via a real long-press; confirm by finding the trash icon.
   const openCab = async () => {
-    const { x, y } = await pickBubble();
-    await h.longPress(x, y, 750);
+    const bubble = await pickBubble();
+    if (!bubble) return { notFound: true }; // matchText not visible / no bubble → don't blind-tap
+    await h.longPress(bubble.x, bubble.y, 750);
     await h.sleep(1000); // CAB appears quickly; the dump poll below confirms
     // Poll for the CAB trash icon (desc="Delete" near the top).
     const start = Date.now();
@@ -5136,7 +5271,14 @@ async function whatsappDeleteMsg(serial, payload) {
     }
   };
   let deleteNode = await openCab();
+  // Target bubble not found → report NOT_FOUND rather than deleting the wrong message.
+  if (deleteNode && deleteNode.notFound) {
+    return { status: 'NOT_FOUND', note: matchText ? `"${matchText}" içeren mesaj ekranda bulunamadı` : 'Silinecek mesaj bulunamadı', to, scope };
+  }
   if (!deleteNode) { await h.sleep(500); deleteNode = await openCab(); }
+  if (deleteNode && deleteNode.notFound) {
+    return { status: 'NOT_FOUND', note: matchText ? `"${matchText}" içeren mesaj ekranda bulunamadı` : 'Silinecek mesaj bulunamadı', to, scope };
+  }
   if (!deleteNode) return { status: 'NO_MENU', note: 'Uzun-basma menüsü açılmadı (çöp ikonu yok)', to, scope };
 
   // Optional debug: report the CAB node we're about to tap + all descs on screen.
@@ -5181,11 +5323,30 @@ async function whatsappDeleteMsg(serial, payload) {
       || (await h.tapSynIf('Sil', 'any').catch(() => false))) chosen = 'plain';
   }
   await h.sleep(1200);
+  if (!chosen) {
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    return { status: 'ATTEMPTED', to, scope, note: 'Onay düğmesi bulunamadı', dialogTexts };
+  }
+  // VERIFY-AFTER-ACTION: the synthetic confirm tap can miss/be swallowed (the CAB
+  // overlay ignores vtouch) while `chosen` is truthy merely because the button node
+  // EXISTED. Confirm the deletion really happened BEFORE reporting DELETED: the
+  // confirm dialog must be gone AND the bubble must show the tombstone ("You deleted
+  // this message" / "Bu mesaj silindi"). A retrying dump so a blank read isn't taken
+  // as "dialog closed". If we can't confirm → ATTEMPTED, not DELETED.
+  const afterDel = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
-  if (!chosen) return { status: 'ATTEMPTED', to, scope, note: 'Onay düğmesi bulunamadı', dialogTexts };
-  // Honest scope: 'everyone' only if we actually hit the everyone button; when the
-  // caller wanted everyone but it wasn't offered, say so.
   const actualScope = chosen === 'everyone' ? 'everyone' : 'me';
+  if (!afterDel.length) {
+    return { status: 'ATTEMPTED', to, scope: actualScope, note: 'Silme doğrulanamadı (ekran okunamadı)' };
+  }
+  const dialogGone = !afterDel.some((n) => /delete for|delete message|mesajı sil|sil\?/i.test((n.text || '').trim()));
+  const tombstone = afterDel.some((n) => /you deleted this message|this message was deleted|bu mesaj silindi|mesajı sildiniz/i.test((n.text || '').trim()));
+  // 'me'/'plain' scope removes the bubble locally (no tombstone) — dialog-gone is the
+  // best signal there; 'everyone' leaves a tombstone we can positively confirm.
+  const confirmed = actualScope === 'everyone' ? (tombstone || dialogGone) : dialogGone;
+  if (!confirmed) {
+    return { status: 'ATTEMPTED', to, scope: actualScope, note: 'Onay sonrası silme doğrulanamadı (diyalog hâlâ açık olabilir)' };
+  }
   const out = { status: 'DELETED', to, scope: actualScope };
   if (wantEveryone && chosen !== 'everyone') { out.note = 'Herkesten sil seçeneği yoktu, sadece benden silindi'; out.everyoneUnavailable = true; }
   return out;
@@ -5209,11 +5370,14 @@ async function whatsappClearChat(serial, payload) {
   await h.ensureTouch();
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   await h.sleep(800);
-  await waOpenChat(serial, h, { to });
+  if (!(await waOpenChat(serial, h, { to }))) {
+    return { status: 'NO_CHAT', note: 'Sohbet açılamadı — temizleme yapılmadı (numara geçersiz / hesap kısıtlı / ANR)', to };
+  }
 
   // Open the chat overflow (⋮, top-right). Prefer the node; fall back to its known
-  // fixed center. Synthetic tap so the popup stays open.
-  const overflow = findNode(await h.dump().catch(() => []), 'More options', 'desc');
+  // fixed center. Synthetic tap so the popup stays open. Locale-safe (EN/TR desc).
+  const overflow = findNode(await h.dump().catch(() => []), 'More options', 'desc')
+    || findNode(await h.dump().catch(() => []), 'Diğer seçenekler', 'desc');
   if (overflow) await h.tapSynNode(overflow); else await h.tapSyn(1027, 147);
   await h.pollNode('Chat theme', 4000, 'any'); // menu-open landmark
 
@@ -5266,10 +5430,14 @@ async function whatsappClearChat(serial, payload) {
     await h.tapSyn(Math.round(sw * 0.5), Math.round(sh * 0.905));
   }
   await h.sleep(1500);
-  // Verify the dialog actually closed (confirm button gone) → real CLEARED.
-  const afterClear = await h.dump().catch(() => []);
-  const dialogStillOpen = afterClear.some(isConfirmBtn);
+  // Verify the dialog actually closed (confirm button gone) → real CLEARED. Use a
+  // retrying dump: a single blank dump ([]) would make [].some(isConfirmBtn)===false
+  // and report a FALSE CLEARED even though nothing was cleared. If every retry comes
+  // back empty we can't confirm the dialog closed → report ATTEMPTED, not CLEARED.
+  const afterClear = await h.dumpOrRetry({ tries: 3, gapMs: 500 });
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  if (!afterClear.length) return { status: 'ATTEMPTED', note: 'Temizleme doğrulanamadı (ekran okunamadı)', to };
+  const dialogStillOpen = afterClear.some(isConfirmBtn);
   return { status: dialogStillOpen ? 'ATTEMPTED' : 'CLEARED', to };
 }
 
@@ -5909,7 +6077,14 @@ async function installBundledApkTo(instance, apkFile) {
 
   const dest = join(hostTmp, apkFile);
   await execFileAsync('mkdir', ['-p', hostTmp]);
-  await execFileAsync('cp', ['-f', src, dest]);
+  // #8 APK-share: hardlink instead of copying 137MB per provision. The bundled APK
+  // (APK_DIR) and the instance data dir live on the SAME host filesystem (/), so a
+  // hardlink is instant + costs zero extra disk (just another dirent to the same
+  // inode). Falls back to a real copy if the link fails (e.g. cross-fs). We hardlink
+  // to a temp name then rename so a stale dest never blocks the link.
+  await execFileAsync('rm', ['-f', dest]).catch(() => undefined);
+  const linked = await execFileAsync('ln', ['-f', src, dest]).then(() => true).catch(() => false);
+  if (!linked) await execFileAsync('cp', ['-f', src, dest]);
   await execFileAsync('chmod', ['666', dest]).catch(() => undefined);
   await execFileAsync('chown', ['2000:2000', dest]).catch(() => undefined);
 
@@ -7437,6 +7612,14 @@ const WA_SEEN_MAX = 400;
 // each emission with a monotonic sequence so genuinely-distinct same-text
 // messages get distinct dedup keys. Notification-path messages are untouched.
 const waScrapeState = new Map();
+// Dedup outbound receipts so we POST a given (serial|peer|status) transition only
+// once. Keyed by serial → last status reported for the newest bubble of each peer.
+const waReceiptState = new Map();
+// Last phone number we SENT to on each serial. The open chat's title bar shows a
+// contact NAME (not the number) when the peer is saved, and the API matches
+// receipts by number — so we report the receipt against this remembered number
+// instead of the scraped title. Cleared implicitly by being overwritten per send.
+const waLastSentPeer = new Map();
 
 function waSeenSet(serial) {
   let s = waSeen.get(serial);
@@ -7669,16 +7852,21 @@ async function scrapeTelegramIncoming(serial) {
   if (!texts.length) return [];
   const newest = texts[texts.length - 1];
   const prev = tgScrapeState.get(serial);
-  if (prev && prev.sig === newest) return []; // nothing changed since last tick
+  // Twin of scrapeIncomingBubbles' fix: change-detection sig = newest+count (so a
+  // burst whose last bubble repeats the previous text still registers), anchor =
+  // last-emitted text (for the slice). Keying on `newest` alone dropped whole bursts.
+  const sig = `${newest}${texts.length}`;
+  if (prev && prev.sig === sig) return []; // nothing changed since last tick
 
   let toEmit;
-  if (prev && prev.sig) {
-    const idx = texts.lastIndexOf(prev.sig);
+  if (prev && prev.anchor) {
+    const idx = texts.lastIndexOf(prev.anchor);
     toEmit = idx >= 0 ? texts.slice(idx + 1) : [newest];
+    if (!toEmit.length) toEmit = [newest];
   } else {
     toEmit = [newest];
   }
-  tgScrapeState.set(serial, { sig: newest });
+  tgScrapeState.set(serial, { sig, anchor: newest });
   return toEmit.map((text) => ({ from: peer, text, whenMs: 0 }));
 }
 
@@ -7686,21 +7874,22 @@ async function scrapeTelegramIncoming(serial) {
 // bubbles sit on the LEFT half of the screen (outgoing are on the right), so we
 // use each message_text node's horizontal center to keep only received ones.
 // Returns [{from, text, whenMs}] shaped like parseWaNotifications for merging.
-async function scrapeIncomingBubbles(serial) {
+// Returns the parsed inbound messages AND exposes the (nodes, sw) it computed on
+// `_ctx`, so pollWhatsappInbox can hand them to pushOutgoingReceipt instead of paying
+// for a SECOND uiautomator dump + `wm size` round-trip on the same open chat. On this
+// GPU-less Waydroid host that duplicate capture was a leading contention source in
+// multi-device parallel runs — halving it directly helps parallel stability.
+async function scrapeIncomingBubbles(serial, _ctx) {
   // parseUiNodes is SYNCHRONOUS (returns an array, not a Promise) — the old
   // `...).catch()` threw a TypeError and killed the whole poll. Guard the (async)
   // uiDumpXml + (sync) parse together and bail cleanly on any failure.
   let nodes = [];
   try { nodes = parseUiNodes(await uiDumpXml(serial)); } catch { return []; }
   if (!nodes.length) return [];
-  // Screen width to split left/right.
+  // Screen width to split left/right — use the cached wmSize (no extra adb round-trip).
   let sw = 720;
-  try {
-    const wm = await adb(serial, ['shell', 'wm', 'size']);
-    const ov = /Override size:\s*(\d+)x/.exec(wm);
-    const ph = /Physical size:\s*(\d+)x/.exec(wm);
-    const m = ov || ph; if (m) sw = Number(m[1]) || sw;
-  } catch { /* keep default */ }
+  try { const wm = await wmSize(serial); if (wm && wm.sw) sw = wm.sw; } catch { /* keep default */ }
+  if (_ctx) { _ctx.nodes = nodes; _ctx.sw = sw; }
   // The chat title bar holds the peer name/number.
   const peer = (nodes.find((n) => n.resId.includes('conversation_contact_name'))?.text
     || nodes.find((n) => n.resId.includes('conversation_contact'))?.text
@@ -7729,20 +7918,118 @@ async function scrapeIncomingBubbles(serial) {
   const texts = incoming.map((b) => b.text).filter(Boolean);
   if (!texts.length) return [];
   const newest = texts[texts.length - 1];
-  // Nothing changed since last tick → skip.
-  if (prev && prev.sig === newest) return [];
+  // Change-detection signature: newest text + visible count. Keying on `newest`
+  // ALONE was wrong — if a burst's LAST bubble happened to equal the previously
+  // emitted text (e.g. two "ok" replies bracketing a new "gel"), the whole batch
+  // (including the new middle bubbles) got skipped and lost forever. Including the
+  // count makes a burst that adds bubbles register as a change even when the newest
+  // text repeats; the anchor-slice below then emits only the genuinely-new ones and
+  // the (from|text) seen-set dedups any overlap.
+  const sig = `${newest}${texts.length}`;
+  if (prev && prev.sig === sig) return [];
 
+  // `anchor` = the last text we emitted (tracked separately from the change-detection
+  // sig, which now also carries the count). Find it in the current list and emit
+  // everything after it; if it scrolled off, fall back to the newest only.
   let toEmit;
-  if (prev && prev.sig) {
-    const idx = texts.lastIndexOf(prev.sig);
-    // Emit bubbles after the anchor; if the anchor isn't visible, just the newest.
+  if (prev && prev.anchor) {
+    const idx = texts.lastIndexOf(prev.anchor);
     toEmit = idx >= 0 ? texts.slice(idx + 1) : [newest];
+    if (!toEmit.length) toEmit = [newest]; // anchor was the visible newest
   } else {
     toEmit = [newest]; // first sighting on this serial → only the newest
   }
-  waScrapeState.set(serial, { sig: newest });
+  waScrapeState.set(serial, { sig, anchor: newest });
   // whenMs stays 0 → the push uses Date.now(). Dedup by from|text in the seen-set.
   return toEmit.map((text) => ({ from: peer, text, whenMs: 0 }));
+}
+
+// PASSIVE delivery-receipt read. When a WhatsApp Conversation is already open in
+// the foreground (e.g. the operator is mid-reply, or an inbound scrape just ran),
+// the SAME ui dump also carries our OUTGOING bubbles' tick state in their status
+// marker's content-desc: "Sent" (✓), "Delivered" (✓✓), "Read" (blue). We read
+// the newest outgoing bubble's tick and report DELIVERED/READ to the control
+// plane. This is DELIBERATELY passive — it NEVER opens a chat or taps anything,
+// so Fix9 (HOME-after-send, ban protection) is untouched. Receipts only surface
+// for chats that happen to be open; that's the accepted trade-off for zero
+// ban-risk. Reuses the nodes already parsed by scrapeIncomingBubbles' caller.
+// Returns { peer, status } | null. status ∈ { 'DELIVERED', 'READ' }.
+function readOutgoingReceipt(nodes, sw) {
+  const peer = (nodes.find((n) => n.resId.includes('conversation_contact_name'))?.text
+    || nodes.find((n) => n.resId.includes('conversation_contact'))?.text
+    || '').trim();
+  if (!peer) return null;
+  // Status markers carry a content-desc describing tick state. WhatsApp uses the
+  // resource-id "status" (ImageView) next to each outgoing bubble; the human-
+  // readable state lives in content-desc and is locale-dependent, so we match the
+  // English strings AND common glyph fallbacks. Only OUTGOING markers matter, so
+  // keep right-half nodes (cx > 50% of screen width).
+  const markers = [];
+  for (const n of nodes) {
+    const d = (n.desc || '').toLowerCase();
+    if (!d) continue;
+    // Locale-inclusive: WhatsApp's tick content-desc is EN ("Read"/"Delivered") or
+    // TR ("Okundu"/"İletildi"/"Teslim edildi"). Without the TR strings, receipts were
+    // NEVER reported on Turkish-locale devices (silent miss). Diacritic-tolerant.
+    const isRead = /\bread\b|okundu/.test(d);
+    const isDelivered = /\bdelivered\b|iletildi|teslim/.test(d);
+    if (!isRead && !isDelivered) continue;
+    if (typeof n.cx === 'number' && n.cx < sw * 0.5) continue; // incoming side → not our receipt
+    markers.push({ status: isRead ? 'READ' : 'DELIVERED', cy: typeof n.cy === 'number' ? n.cy : 0 });
+  }
+  if (!markers.length) return null;
+  // Newest bubble = largest cy (bottom-most). Its marker is the freshest receipt.
+  markers.sort((a, b) => a.cy - b.cy);
+  return { peer, status: markers[markers.length - 1].status };
+}
+
+// Read the open chat's newest outgoing receipt and POST it to the control plane,
+// deduped so a SENT→DELIVERED→READ progression fires at most one webhook per step.
+// Monotonic ordering (DELIVERED < READ) is enforced server-side too, so a stale
+// re-read never regresses; here we just avoid re-POSTing an unchanged status.
+async function pushOutgoingReceipt(serial, preNodes, preSw) {
+  // Reuse the nodes/sw the inbound scrape just computed on the same open chat when
+  // provided (HIZ-1: avoids a duplicate dump + wm-size). Fall back to our own capture
+  // only when called standalone.
+  let nodes = preNodes;
+  let sw = preSw;
+  if (!nodes) {
+    try { nodes = parseUiNodes(await uiDumpXml(serial)); } catch { return; }
+    if (!nodes.length) return;
+    try { const wm = await wmSize(serial); if (wm && wm.sw) sw = wm.sw; } catch { /* keep default */ }
+  }
+  if (!nodes || !nodes.length) return;
+  if (!sw) sw = 720;
+  const receipt = readOutgoingReceipt(nodes, sw);
+  if (!receipt) return;
+  // Report against the number we last SENT to on this serial (API matches receipts
+  // by number). Only when a send happened here — otherwise we can't reliably tie the
+  // scraped tick to a phone number, so skip rather than push a name the API won't match.
+  const sent = waLastSentPeer.get(serial);
+  if (!sent) return;
+  const to = sent.to;
+  // ★ATTRIBUTION GUARD: the open chat may NOT be the one we sent to — the operator
+  // could have navigated to a different conversation, whose READ tick would then be
+  // wrongly POSTed against `to`. Only attribute the tick when the open chat's title
+  // plausibly matches the number we sent to: either the title's digits contain the
+  // sent number (title shows a raw number) OR the send was very recent AND no other
+  // chat has been seen since (best-effort for saved-contact titles that show a name).
+  const peerDigits = String(receipt.peer || '').replace(/[^\d]/g, '');
+  const titleMatches = peerDigits.length >= 7 && (to.endsWith(peerDigits) || peerDigits.endsWith(to.slice(-9)));
+  const recentSameChat = (Date.now() - (sent.at || 0) < 5 * 60 * 1000) && sent.peerName && sent.peerName === receipt.peer;
+  if (!titleMatches && !recentSameChat) return; // can't safely tie this tick to `to`
+  const key = `${to}|${receipt.status}`;
+  if (waReceiptState.get(serial) === key) return; // unchanged since last tick → skip
+  try {
+    await api('/agent/whatsapp/receipt', {
+      method: 'POST',
+      body: JSON.stringify({ serial, to, status: receipt.status, ts: Date.now() }),
+    });
+    waReceiptState.set(serial, key);
+    log(`wa receipt ${serial}: ${to} -> ${receipt.status}`);
+  } catch (err) {
+    log('wa receipt push failed:', err.message);
+  }
 }
 
 async function pollWhatsappInbox(serial) {
@@ -7756,8 +8043,15 @@ async function pollWhatsappInbox(serial) {
   try {
     const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);
     if (/com\.whatsapp\/\S*Conversation/.test(top)) {
-      const scraped = await scrapeIncomingBubbles(serial);
+      // Share ONE dump between the inbound scrape and the receipt read (HIZ-1):
+      // scrapeIncomingBubbles stashes its parsed nodes+sw on ctx; the receipt reader
+      // reuses them instead of dumping again.
+      const ctx = {};
+      const scraped = await scrapeIncomingBubbles(serial, ctx);
       if (scraped.length) msgs = msgs.concat(scraped);
+      // Same open chat → passively read our outgoing bubble's delivery receipt
+      // (no extra taps, Fix9-safe). Best-effort, deduped per (serial|peer|status).
+      await pushOutgoingReceipt(serial, ctx.nodes, ctx.sw).catch(() => undefined);
     }
   } catch { /* best-effort */ }
 
@@ -8363,8 +8657,17 @@ let stopping = false;
 // on one phone corrupts each other). A global cap bounds total parallelism so a burst
 // can't exhaust host resources.
 const busyDevices = new Set();          // serials with a job currently executing
-const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 8);
+// Default 24: the host is an 80-core / 250GB box; measured load sat at ~17-20 (~22%)
+// with headroom to spare, so 24 concurrent jobs stays well within limits while giving
+// messaging bursts more parallelism. Override with FLEET_MAX_CONCURRENT_JOBS per host.
+const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 24);
+// PROVISION_DEVICE is HEAVY (full Android boot → CPU spike; measured load 49 when 3
+// booted at once). Cap concurrent provisions SEPARATELY from the global job cap so a
+// batch of 10 doesn't boot all at once, while light jobs (send/read) still run up to
+// MAX_CONCURRENT_JOBS. Staggered boot = fast AND stable. Override via env.
+const MAX_CONCURRENT_PROVISIONS = Number(process.env.FLEET_MAX_CONCURRENT_PROVISIONS || 4);
 let activeJobCount = 0;
+let activeProvisionCount = 0;
 // Back-compat shim: some helpers (otpWatchTick, whatsappInboxTick) historically read
 // a global `jobBusy`. They now ask "is ANY job running?" via this getter, but the
 // hot path uses busyDevices.has(serial) for per-device decisions.
@@ -8380,6 +8683,14 @@ process.on('SIGTERM', () => { stopping = true; });
 // running on it. registerWhatsApp adds an entry when it parks; a new continuation job
 // (or the deadline) removes it. Keyed by serial. { jobId, accountId, deviceId, until }.
 const otpWatch = new Map();
+// Serials whose screen is momentarily held by an otpWatchTick screencap. Kept SEPARATE
+// from busyDevices so a capture never clears a job's device lock; the dispatcher checks
+// both before starting a job on a serial (ORCH-2 same-device concurrency guard).
+const otpCapturing = new Set();
+// Serials that already have a same-device waiter task pending in the dispatch loop.
+// Caps outstanding waiters at one per serial (ORCH-3) so a wedged device can't pile up
+// 120s busy-waiters when claim races deliver several jobs for the same serial.
+const sameDeviceWaiters = new Set();
 const OTP_WATCH_MS = Number(process.env.FLEET_OTP_WATCH_MS || 10000);
 const OTP_WATCH_TTL_MS = Number(process.env.FLEET_OTP_WATCH_TTL_MS || 15 * 60 * 1000); // stop after 15 min
 // Push one downscaled thumbnail per parked device. Skips the device that's currently busy
@@ -8390,8 +8701,28 @@ async function otpWatchTick() {
   const now = Date.now();
   for (const [serial, w] of otpWatch) {
     if (now > w.until) { otpWatch.delete(serial); continue; }
-    if (busyDevices.has(serial)) continue; // a job is running ON THIS device — let it own the screen (other devices are fine)
+    if (busyDevices.has(serial) || otpCapturing.has(serial)) continue; // a job or a prior capture owns this device
+    // TOCTOU guard (ORCH-2): the busy-check and the ~8s grabPng below are far apart —
+    // a job could claim this device in between and run screencap/input CONCURRENTLY
+    // with ours (torn/timeout frame → wrong-coordinate taps downstream). Mark the
+    // device as capturing in a SEPARATE set (not busyDevices, so we never accidentally
+    // clear a job's lock) that the dispatcher also honours before starting a job.
+    otpCapturing.add(serial);
     try {
+      // Re-check: a job may have claimed the device just before we set the flag.
+      if (busyDevices.has(serial)) continue;
+      // ★WALL-WHILE-PARKED (VERIFIED LIVE, mi20 +355): WhatsApp can flip the OTP screen
+      // into CustomRegistrationBlockActivity ("Download the official WhatsApp") AFTER we
+      // parked at OTP_WAIT. The operator then waits forever for an SMS that never comes.
+      // While we're here taking a thumbnail anyway, check the foreground activity — if the
+      // hard block is up, report FAILED (DEVICE_WALL) and stop watching this device so the
+      // panel shows the real reason instead of a frozen "SMS bekleniyor".
+      const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']).catch(() => '');
+      if (/CustomRegistrationBlock|registration\.app\.parole/i.test(top)) {
+        await reportProgress(w.jobId, 'device_wall', 100, '⛔ WhatsApp kaydı engellendi ("resmi uygulama" duvarı) — numara/cihaz reddedildi', 'FAILED', { accountId: w.accountId }).catch(() => undefined);
+        otpWatch.delete(serial);
+        continue;
+      }
       const png = await grabPng(serial, 8000).catch(() => null);
       if (!png) continue;
       const thumb = await shrinkPng(png, 300).catch(() => null);
@@ -8401,6 +8732,7 @@ async function otpWatchTick() {
         await reportProgress(w.jobId, 'otp_wait', 85, '🎥 canlı', undefined, { accountId: w.accountId, shot: thumb }).catch(() => undefined);
       }
     } catch { /* best-effort */ }
+    finally { otpCapturing.delete(serial); }
   }
 }
 
@@ -8412,13 +8744,26 @@ async function otpWatchTick() {
 // to free before starting, so same-device jobs never overlap.
 async function runJobTask(job, waitForDevice) {
   const serial = job.serial || null;
+  const isProvision = job.type === 'PROVISION_DEVICE';
   if (serial && waitForDevice) {
     // Bounded wait for the device to free (max ~2 min); if it never frees, run anyway
-    // rather than stranding the job (the API reaper would otherwise fail it).
-    for (let i = 0; i < 240 && busyDevices.has(serial); i++) await sleep(500);
+    // rather than stranding the job (the API reaper would otherwise fail it). Also wait
+    // out an in-flight otpWatch screencap (otpCapturing) so we don't start ADB work
+    // while a capture is mid-flight on the same serial (ORCH-2).
+    for (let i = 0; i < 240 && (busyDevices.has(serial) || otpCapturing.has(serial)); i++) await sleep(500);
+  }
+  // ★PROVISION boot-stagger (#3/#9): wait for a provision slot before booting so a big
+  // batch doesn't spike CPU by booting every instance at once. Bounded (~10 min) so a
+  // wedged provision can't strand the rest; light jobs never enter this gate.
+  if (isProvision) {
+    for (let i = 0; i < 1200 && activeProvisionCount >= MAX_CONCURRENT_PROVISIONS; i++) await sleep(500);
+    activeProvisionCount++;
   }
   if (serial) busyDevices.add(serial);
   activeJobCount++;
+  // Declared at function scope (not inside try) so the finally can await it: tracks an
+  // abandoned (timed-out) runJob whose ADB work is still in flight.
+  let pendingSettle = null;
   try {
     log(`claimed job ${job.id} (${job.type}) -> ${serial ?? 'no-serial'} [active=${activeJobCount}]`);
     // ── Automatic retry for TRANSIENT device errors ──────────────────────────
@@ -8444,9 +8789,6 @@ async function runJobTask(job, waitForDevice) {
 
     let result;
     let lastErr;
-    // Tracks an abandoned (timed-out) runJob whose ADB work is still in flight, so
-    // the finally can keep the device busy until it truly settles (see below).
-    let pendingSettle = null;
     for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
       // Wall-clock cap: a hung job (WhatsApp ANR etc.) rejects here instead of
       // occupying its slot forever.
@@ -8483,8 +8825,18 @@ async function runJobTask(job, waitForDevice) {
       log('failed to report failure:', reportErr.message);
     }
   } finally {
+    // If a wall-clock timeout abandoned a runJob mid-flight, its ADB work may still be
+    // touching this device. Hold the device BUSY until that settles (bounded cap) before
+    // releasing the serial — otherwise the next job for the same serial runs concurrent
+    // screencap/input against a half-finished flow → screen-state corruption (fake-SENT,
+    // wrong-screen taps). Bounded so a truly-wedged runJob can't hold the slot forever.
+    if (pendingSettle) {
+      const SETTLE_CAP_MS = 20000;
+      try { await Promise.race([pendingSettle, sleep(SETTLE_CAP_MS)]); } catch { /* settle rejected — fine, it's done */ }
+    }
     if (serial) busyDevices.delete(serial);
     activeJobCount--;
+    if (isProvision) activeProvisionCount--;
   }
 }
 
@@ -8529,6 +8881,13 @@ async function loop() {
       continue;
     }
 
+    // ★PROVISION boot-stagger (#3/#9): a provision boots a full Android → CPU spike. If
+    // we're already at the provision cap, don't start another boot right now. runJobTask
+    // waits for a provision slot (not the whole job cap) before booting, so a batch of 10
+    // provisions boots ~MAX_CONCURRENT_PROVISIONS at a time instead of all at once — fast
+    // AND stable. Light jobs (send/read) are unaffected and keep filling the global cap.
+    // (waitForProvisionSlot is handled inside runJobTask so the loop never blocks.)
+
     // Defensive same-device guard: if we somehow claimed a job for a device that's
     // already running one (shouldn't happen — API guards it — but claim races or a
     // non-exclusive job type could), run it AFTER the current one by re-queuing the
@@ -8537,8 +8896,17 @@ async function loop() {
     // losing it, we execute inline-serialised only for the same device.
     if (job.serial && busyDevices.has(job.serial)) {
       // Rare: execute it but wait for the device to free first (serialise on-device).
-      // Do NOT block the whole loop — spawn a waiter task.
-      void runJobTask(job, /*waitForDevice*/ true);
+      // Do NOT block the whole loop — spawn a waiter task. ORCH-3: cap outstanding
+      // same-device waiters so a wedged device can't accumulate a pile of 120s
+      // busy-waiters (the API has no per-serial exclusivity, so claim races here are
+      // routine). If one is already waiting for this serial, drop this claim — the API
+      // reaper re-queues it, and we avoid unbounded slot/CPU consumption.
+      if (sameDeviceWaiters.has(job.serial)) {
+        await sleep(POLL_MS);
+        continue;
+      }
+      sameDeviceWaiters.add(job.serial);
+      void runJobTask(job, /*waitForDevice*/ true).finally(() => sameDeviceWaiters.delete(job.serial));
       continue;
     }
 

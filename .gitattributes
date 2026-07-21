@@ -3,3 +3,7 @@ deploy/apks/vtouch filter=lfs diff=lfs merge=lfs -text
 deploy/magisk/su filter=lfs diff=lfs merge=lfs -text
 deploy/magisk/magisk.db filter=lfs diff=lfs merge=lfs -text
 deploy/magisk/*.tar.gz filter=lfs diff=lfs merge=lfs -text
+
+# Host shell scripts + agent must stay LF (run on Linux)
+deploy/kvm-host/**/*.sh text eol=lf
+deploy/kvm-host/**/*.mjs text eol=lf

@@ -127,12 +127,20 @@ async function adbSu(serial, cmd) {
 // Map an E.164 phone number's calling code → ISO-2 country (mirrors the API's
 // CC_TO_ISO). Used to check whether the proxy exit country matches the number before
 // registration, so a +90 number on a US exit is flagged instead of silently burned.
+// Kept in exact sync with the API's CC_TO_ISO (auto-proxy.ts). A subset here silently
+// downgraded the exit-country check to "unverifiable" for countries the API supports
+// (e.g. +62 ID / +65 SG), so a real mismatch went unflagged. Mirror the full map.
 const CC_TO_ISO = {
-  '355': 'AL', '90': 'TR', '49': 'DE', '44': 'GB', '33': 'FR', '39': 'IT', '34': 'ES',
-  '31': 'NL', '351': 'PT', '30': 'GR', '359': 'BG', '40': 'RO', '48': 'PL', '380': 'UA',
-  '7': 'RU', '46': 'SE', '47': 'NO', '45': 'DK', '358': 'FI', '43': 'AT', '41': 'CH',
-  '32': 'BE', '353': 'IE', '1': 'US', '55': 'BR', '52': 'MX', '54': 'AR', '91': 'IN',
-  '971': 'AE', '966': 'SA', '20': 'EG', '27': 'ZA', '234': 'NG', '61': 'AU', '81': 'JP'
+  '355': 'AL', '90': 'TR', '49': 'DE', '44': 'GB', '33': 'FR', '39': 'IT',
+  '34': 'ES', '31': 'NL', '351': 'PT', '30': 'GR', '359': 'BG', '40': 'RO',
+  '48': 'PL', '380': 'UA', '7': 'RU', '46': 'SE', '47': 'NO', '45': 'DK',
+  '358': 'FI', '43': 'AT', '41': 'CH', '32': 'BE', '353': 'IE', '1': 'US',
+  '55': 'BR', '52': 'MX', '54': 'AR', '91': 'IN', '62': 'ID', '63': 'PH',
+  '84': 'VN', '66': 'TH', '60': 'MY', '65': 'SG', '880': 'BD', '92': 'PK',
+  '971': 'AE', '966': 'SA', '20': 'EG', '27': 'ZA', '234': 'NG', '61': 'AU',
+  '64': 'NZ', '81': 'JP', '386': 'SI', '385': 'HR', '381': 'RS', '389': 'MK',
+  '382': 'ME', '383': 'XK', '387': 'BA', '420': 'CZ', '421': 'SK', '36': 'HU',
+  '370': 'LT', '371': 'LV', '372': 'EE'
 };
 function ccToIso(phone) {
   const d = String(phone || '').replace(/[^\d]/g, '');
@@ -2000,6 +2008,20 @@ async function registerWhatsApp(job, legacyPayload) {
     if (/Download the official WhatsApp|official WhatsApp to continue/i.test(t)) return t;
     return /banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many (attempts|requests|devices)|try again later/i.test(t) ? t : null;
   };
+  // ★RATE-LIMIT screen ("You recently connected" / "Please wait N minutes before trying
+  // again, or verify another way"). NOT a wall/ban — a temporary cool-down because the
+  // number was tried too recently/often. It shows up ON the VerifyPhoneNumber activity,
+  // so onOtp mistakes it for a real OTP screen and the agent parks at OTP_WAIT telling
+  // the operator "SMS bekleniyor" — while WhatsApp is actually saying "wait 31 minutes".
+  // VERIFIED LIVE (mi27, +355683175346). Detect it BEFORE accepting OTP and report the
+  // real reason + the wait time so the modal/log shows it instead of a false SMS-wait.
+  const onRateLimit = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|before trying again/i.test(t)) return null;
+    const m = t.match(/wait\s+(\d+)\s+(minute|hour|dakika|saat)/i);
+    const waitStr = m ? `${m[1]} ${/hour|saat/i.test(m[2]) ? 'saat' : 'dakika'}` : 'bir süre';
+    return `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`;
+  };
   // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
   // account. Confirm "Switch now" so registration can proceed. VERIFIED LIVE (mi5, +355).
   const onSwitchDialog = async (foc, txt) => {
@@ -2154,7 +2176,7 @@ async function registerWhatsApp(job, legacyPayload) {
     return kind;
   };
 
-  let voiceTried = false, bothLockedNote = null, wallText = null;
+  let voiceTried = false, bothLockedNote = null, wallText = null, rateLimitText = null;
   // Up to ~14 observe→act rounds; the common path reaches OTP in 2-3.
   for (let round = 0; round < 14; round++) {
     // A rebooted device can pop a "System UI isn't responding" ANR over the verify
@@ -2195,6 +2217,13 @@ async function registerWhatsApp(job, legacyPayload) {
     // block activity/text is up, report DEVICE_WALL instead of parking at OTP_WAIT.
     wallText = await onWall(foc, txt);
     if (wallText) { wlog(`verify: WALL (pre-OTP) — ${wallText.slice(0, 80)}`); break; }
+
+    // ★RATE-LIMIT before OTP: "You recently connected — wait N minutes". Must be checked
+    // BEFORE onOtp (it renders on the same VerifyPhoneNumber screen and would otherwise be
+    // parked as a false OTP_WAIT). Report it as the reason so the modal shows the real
+    // "wait N minutes" state, not "SMS bekleniyor".
+    rateLimitText = await onRateLimit(foc, txt);
+    if (rateLimitText) { wlog(`verify: RATE-LIMIT (pre-OTP) — ${rateLimitText.slice(0, 80)}`); break; }
 
     if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) { wlog(`verify: reached OTP screen (round ${round})`); break; }
 
@@ -2446,6 +2475,15 @@ async function registerWhatsApp(job, legacyPayload) {
   if (wallText) {
     return done('device_wall', { status: 'DEVICE_WALL', note: 'WhatsApp cihazı/numarayı reddetti (ban / çok deneme) — bekleyin veya farklı numara/cihaz deneyin', screenTexts: wallText.slice(0, 400) });
   }
+  // ★RATE-LIMIT ("You recently connected — wait N minutes"). Not terminal, but the
+  // operator must SEE it instead of a false "SMS bekleniyor": WhatsApp is throttling this
+  // number, not waiting for a code. Report RATE_LIMITED with the wait time so the modal
+  // shows the real state and the operator knows to wait / use a different number.
+  if (rateLimitText) {
+    await snap('rate_limited');
+    curStep = 'verify'; curPct = stepPct.verify;
+    return done('rate_limited', { status: 'RATE_LIMITED', note: rateLimitText, phoneNumber, screenTexts: rateLimitText.slice(0, 400) });
+  }
   if (bothLockedNote && !(await onOtp())) {
     // ★SMS-SEND-FAILED → FAIL (operatör isteği): WhatsApp "Couldn't send an SMS to your
     // number" derse (ve varsa voice de gönderilemezse) bu OTP_WAIT değil, KALICI bir
@@ -2517,10 +2555,14 @@ async function registerWhatsApp(job, legacyPayload) {
   await snap('otp_entered');
   await h.sleep(5000);
 
-  // Re-show a wall after a bad/late code.
+  // Re-show a wall after a bad/late code. Match BOTH word orders — WhatsApp's actual
+  // dialog is "The code you entered is incorrect. Please try again in N seconds"
+  // (code…incorrect), while the old regex only matched incorrect…code, so a wrong OTP
+  // went UNDETECTED: the agent moved on / parked and the operator never saw "wrong code"
+  // (VERIFIED LIVE, mi5 +90 539…: wrong code entered, dialog shown, agent didn't catch it).
   const afterOtp = await h.screenText();
-  if (/(invalid|wrong|incorrect).*code|try again later/i.test(afterOtp)) {
-    return done('otp_rejected', { status: 'OTP_REJECTED', note: 'SMS kodu reddedildi', screenTexts: afterOtp.slice(0, 400) });
+  if (/(invalid|wrong|incorrect)[^.]{0,40}code|code[^.]{0,40}(is\s+)?(invalid|wrong|incorrect)|try again (later|in\s+\d+\s+(second|minute))/i.test(afterOtp)) {
+    return done('otp_rejected', { status: 'OTP_REJECTED', note: '❌ Girilen SMS kodu YANLIŞ — panelden doğru 6 haneli kodu tekrar girin', screenTexts: afterOtp.slice(0, 400) });
   }
 
   // 8b) Post-OTP interstitials before the profile screen: restore-backup prompt,
@@ -6935,10 +6977,17 @@ async function provisionDevice(job) {
       // of the old always-green "yönlendirildi" that hid a US-exit bug.
       const applied = /PROXY_RESULT[^\n]*redsocks=\d+/.test(String(out.stdout || ''));
       if (!applied) {
-        await logLine('⚠ Proxy kuralları uygulanamadı (iptables REDIRECT eklenmedi) — çıkış IP host olabilir!');
-      } else {
-        await logLine('✓ redsocks + iptables REDIRECT aktif');
+        // ★FATAL: a proxy was REQUESTED but the REDIRECT did not install (not root /
+        // xt_REDIRECT missing / port busy). Previously this only logged a warning and
+        // fell through, so the device was provisioned "READY" while still exiting on the
+        // host's datacenter IP — a TR number registered on it then hit "Login not
+        // available". Mirror EMULATOR_SET_PROXY (which throws on the same condition):
+        // THROW so step() marks the provision FAILED instead of a silent fake-success.
+        await logLine('⚠ Proxy kuralları uygulanamadı (iptables REDIRECT eklenmedi) — çıkış IP host olurdu, provision DURDURULUYOR!');
+        const tail = String(out.stdout || out.stderr || '').trim().split('\n').pop() || 'wd-proxy.sh REDIRECT doğrulamadı';
+        throw new Error(`proxy apply failed (${proxy.country}): ${tail}`);
       }
+      await logLine('✓ redsocks + iptables REDIRECT aktif');
       // VERIFY the real exit country the way WhatsApp sees it (app-uid traffic through
       // redsocks), not a root curl (root bypasses the REDIRECT and shows the host IP).
       // This is the check that catches a "US IP with a TR number" before registration.
@@ -6949,6 +6998,13 @@ async function provisionDevice(job) {
           `${match ? '✓' : '⚠'} Gerçek çıkış IP: ${exit.ip || '—'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
           `${match ? ' — numara ülkesiyle EŞLEŞTİ' : ` — İSTENEN ${proxy.country} DEĞİL, uyuşmuyor!`}`
         );
+        // ★A verified country MISMATCH is as dangerous as no proxy: the number would
+        // register on the wrong country's IP. Fail the provision rather than mark the
+        // device ready on a mismatched exit. (Only fail when we actually resolved a
+        // country; an unverifiable exit below stays non-fatal — the REDIRECT is in.)
+        if (!match) {
+          throw new Error(`exit country mismatch: istenen ${proxy.country}, gerçek ${exit.country} (${exit.ip || '—'})`);
+        }
       } else {
         await logLine(`✓ Çıkış IP ${proxy.country} ülkesine yönlendirildi (IP doğrulaması atlandı)`);
       }
@@ -8840,6 +8896,26 @@ async function runJobTask(job, waitForDevice) {
   }
 }
 
+// ── SELF-WATCHDOG ────────────────────────────────────────────────────────────
+// systemd's Restart=always only catches a process that EXITS/crashes. It cannot see a
+// process that is alive but WEDGED — the dispatch loop stuck on a hung await (a dead
+// ADB socket, a proxy blackhole, a never-resolving fetch). That silent freeze is the
+// worst failure mode: the agent looks "active" to systemd while claiming/running no
+// jobs, so every device it owns quietly stops working until someone notices.
+// Fix: the loop stamps loopAlive every iteration; a separate timer checks that the
+// stamp is fresh. If the loop hasn't ticked for WATCHDOG_STALL_MS, we exit(1) so
+// systemd restarts us clean. The timer runs on its own — a wedged loop can't block it.
+let loopAlive = Date.now();
+const WATCHDOG_STALL_MS = 5 * 60 * 1000; // no loop progress for 5 min = wedged
+const watchdog = setInterval(() => {
+  const stalled = Date.now() - loopAlive;
+  if (stalled > WATCHDOG_STALL_MS) {
+    log(`WATCHDOG: dispatch loop wedged ${Math.round(stalled / 1000)}s (no progress) — exiting for systemd restart`);
+    process.exit(1);
+  }
+}, 30_000);
+watchdog.unref?.();
+
 async function loop() {
   log(`starting — polling ${API_URL} every ${POLL_MS}ms (max ${MAX_CONCURRENT_JOBS} concurrent)`);
   await heartbeat();
@@ -8860,6 +8936,7 @@ async function loop() {
   // busyDevices (defensive). Built for 100s of devices: bounded parallelism +
   // per-device isolation + guaranteed cleanup.
   while (!stopping) {
+    loopAlive = Date.now(); // watchdog heartbeat: proves the dispatch loop is progressing
     // Backpressure: at the concurrency cap → wait for a slot to free instead of
     // piling up claims. Keeps host ADB/CPU from being swamped by a burst.
     if (activeJobCount >= MAX_CONCURRENT_JOBS) {

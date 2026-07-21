@@ -86,14 +86,15 @@ export const snapshotService = {
       prisma.device.findUnique({ where: { id: deviceId } })
     ]);
     if (!snap) throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
-    // A snapshot may be restored only if it belongs to the caller's workspace OR
-    // it is publicly/workspace shared via the image market. Otherwise restoring a
-    // foreign PRIVATE snapshot by id is a cross-tenant IDOR.
+    // A snapshot may be restored only if it belongs to the caller's workspace OR it is
+    // PUBLIC (image-market). A foreign WORKSPACE-visibility snapshot is private to THAT
+    // tenant — listSnapshots never shows it cross-tenant, so allowing restore-by-id was a
+    // cross-tenant IDOR. Block anything foreign that isn't PUBLIC (both PRIVATE & WORKSPACE).
     if (
       ctx.workspaceId &&
       snap.workspaceId &&
       snap.workspaceId !== ctx.workspaceId &&
-      snap.visibility === 'PRIVATE'
+      snap.visibility !== 'PUBLIC'
     ) {
       throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
     }
@@ -163,13 +164,13 @@ export const snapshotService = {
   ) {
     const snap = await prisma.deviceSnapshot.findUnique({ where: { id: snapshotId } });
     if (!snap) throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
-    // Same cross-tenant guard as restore: a foreign PRIVATE snapshot cannot be
-    // cloned by id. Public/workspace-shared market images are allowed.
+    // Same cross-tenant guard as restore: only a PUBLIC (market) snapshot may be cloned
+    // by id across tenants. A foreign WORKSPACE/PRIVATE snapshot is off-limits.
     if (
       ctx.workspaceId &&
       snap.workspaceId &&
       snap.workspaceId !== ctx.workspaceId &&
-      snap.visibility === 'PRIVATE'
+      snap.visibility !== 'PUBLIC'
     ) {
       throw new AppError('Snapshot not found', 404, 'SNAPSHOT_NOT_FOUND');
     }

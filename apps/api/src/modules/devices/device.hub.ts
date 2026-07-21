@@ -97,8 +97,11 @@ export class DeviceHub {
     const message = JSON.stringify(event);
     for (const client of this.clients) {
       // Scope events to their workspace: a client only receives events for its own
-      // tenant. Untagged events (no workspaceId) still go to everyone (system-wide).
-      if (event.workspaceId && client.workspaceId && client.workspaceId !== event.workspaceId) continue;
+      // tenant. FAIL-CLOSED: once an event carries a workspaceId, deliver it ONLY to
+      // clients of THAT workspace — a client with no/other workspaceId is skipped.
+      // (Previously the guard also required client.workspaceId to be set, so a tagged
+      // event still leaked to any untagged client. Untagged events remain system-wide.)
+      if (event.workspaceId && client.workspaceId !== event.workspaceId) continue;
       if (client.readyState === WebSocket.OPEN) {
         // Guard each send: a socket can flip OPEN → CLOSING between the check and
         // the send (or send can throw on a half-dead peer). Without this, one bad

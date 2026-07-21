@@ -98,9 +98,12 @@ export class AlertsService {
     try {
       const rules = await prisma.alertRule.findMany({ where: { workspaceId, trigger, active: true } });
       for (const rule of rules) {
-        // Threshold rules (QUOTA_HIGH) only fire when the value meets it.
-        if (rule.threshold > 0 && typeof context.value === 'number' && context.value < rule.threshold) {
-          continue;
+        // Threshold rules (QUOTA_HIGH) only fire when the value MEETS the threshold.
+        // FAIL-CLOSED: a threshold rule invoked with NO numeric value can't be evaluated,
+        // so it must NOT fire (previously the `typeof === 'number'` short-circuit let a
+        // missing value skip the gate → the rule fired unconditionally, spamming alerts).
+        if (rule.threshold > 0) {
+          if (typeof context.value !== 'number' || context.value < rule.threshold) continue;
         }
 
         const event = await prisma.alertEvent.create({

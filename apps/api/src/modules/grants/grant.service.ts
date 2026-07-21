@@ -100,12 +100,23 @@ export const grantService = {
   // Permanently transfer a device to another workspace (by slug or id). The
   // device's farm account / fingerprint travel with it; standing grants are
   // revoked since the prior workspace no longer owns it.
-  async transfer(deviceId: string, targetWorkspace: string, workspaceId?: string) {
+  async transfer(deviceId: string, targetWorkspace: string, workspaceId?: string, userId?: string) {
     // You can only transfer a device your workspace currently owns.
     const device = await prisma.device.findFirst({ where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) } });
     if (!device) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     const ws = await prisma.workspace.findFirst({ where: { OR: [{ id: targetWorkspace }, { slug: targetWorkspace }] } });
     if (!ws) throw new AppError('Target workspace not found', 404, 'WORKSPACE_NOT_FOUND');
+    // ★The caller must be a MEMBER of the target workspace. Without this, an (admin-role)
+    // user could transfer a device — with its farm account + encrypted credential vault +
+    // TOTP — into ANY workspace by id/slug, including one they don't belong to, silently
+    // exfiltrating it. Verify membership before reassigning ownership.
+    if (userId) {
+      const member = await prisma.workspaceMember.findFirst({
+        where: { workspaceId: ws.id, userId },
+        select: { id: true }
+      });
+      if (!member) throw new AppError('Hedef workspace üyesi değilsiniz', 403, 'NOT_TARGET_MEMBER');
+    }
 
     await prisma.$transaction([
       prisma.device.update({ where: { id: deviceId }, data: { workspaceId: ws.id, groupId: null } }),

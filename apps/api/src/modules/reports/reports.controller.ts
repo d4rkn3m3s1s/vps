@@ -21,9 +21,12 @@ export async function reportSummaryHandler(req: Request, res: Response): Promise
   res.json({ data: await reportsService.summary(workspaceId, from, to) });
 }
 
-// Returns flat job rows; the dashboard turns these into a CSV download.
+// Returns flat job rows; the dashboard turns these into a CSV download. `data` stays
+// the row array (backward-compatible); `meta` carries total + truncated so the UI can
+// warn when the export was capped.
 export async function reportJobsHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requireWorkspaceId(req);
   const { from, to } = resolveRange(rangeSchema.parse(req.query));
-  res.json({ data: await reportsService.jobRows(workspaceId, from, to) });
+  const { rows, total, truncated } = await reportsService.jobRows(workspaceId, from, to);
+  res.json({ data: rows, meta: { total, truncated } });
 }

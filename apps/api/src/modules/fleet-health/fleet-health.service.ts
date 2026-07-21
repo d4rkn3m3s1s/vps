@@ -104,9 +104,14 @@ class FleetHealthService {
     const ws = workspaceId ? { workspaceId } : {};
     const since = new Date(Date.now() - Math.min(Math.max(1, days), 365) * 24 * 60 * 60 * 1000);
 
+    // Cap the scan so a large history (up to 365 days) can't pull the whole table into
+    // memory on a dashboard hit. 20k newest rows is far more than any real analytics
+    // window needs; beyond that the breakdown is representative, not a full census.
     const accounts = await prisma.generatedAccount.findMany({
       where: { platform: 'whatsapp', createdAt: { gte: since }, ...ws },
-      select: { status: true, countryCode: true, deviceId: true }
+      select: { status: true, countryCode: true, deviceId: true },
+      orderBy: { createdAt: 'desc' },
+      take: 20_000
     });
     // GeneratedAccount has no Prisma relation to Device (just a deviceId FK), so fetch
     // the referenced devices in ONE query and map deviceId → {model, proxyCountry}.

@@ -217,7 +217,7 @@ export async function createDeviceHandler(req: Request, res: Response): Promise<
   const unlimited = req.auth?.role === 'admin' || req.auth?.workspaceRole === 'admin';
   if (workspaceId) await billingService.assertCanAddDevice(workspaceId, { unlimited });
   const data = await deviceService.createDevice(input, workspaceId);
-  deviceHub.broadcast({ type: 'device.created', deviceId: data.id, payload: data, timestamp: new Date().toISOString() });
+  deviceHub.broadcast({ type: 'device.created', deviceId: data.id, payload: data, timestamp: new Date().toISOString(), ...(workspaceId ? { workspaceId } : {}) });
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.create',
@@ -246,7 +246,7 @@ export async function quickProfileHandler(req: Request, res: Response): Promise<
   const unlimited = req.auth?.role === 'admin' || req.auth?.workspaceRole === 'admin';
   if (workspaceId) await billingService.assertCanAddDevice(workspaceId, { unlimited });
   const result = await deviceService.quickProfile(input, workspaceId);
-  deviceHub.broadcast({ type: 'device.created', deviceId: result.device.id, payload: result.device, timestamp: new Date().toISOString() });
+  deviceHub.broadcast({ type: 'device.created', deviceId: result.device.id, payload: result.device, timestamp: new Date().toISOString(), ...(workspaceId ? { workspaceId } : {}) });
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.quick',
@@ -284,8 +284,9 @@ export async function updateDeviceHandler(req: Request, res: Response): Promise<
   const input = deviceUpdateSchema.parse(req.body);
   const id = requireDeviceId(req);
   if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'control');
-  const data = await deviceService.updateDevice(id, input, getWorkspaceId(req));
-  deviceHub.broadcast({ type: 'device.updated', deviceId: id, payload: data, timestamp: new Date().toISOString() });
+  const updWsId = getWorkspaceId(req);
+  const data = await deviceService.updateDevice(id, input, updWsId);
+  deviceHub.broadcast({ type: 'device.updated', deviceId: id, payload: data, timestamp: new Date().toISOString(), ...(updWsId ? { workspaceId: updWsId } : {}) });
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.update',
@@ -302,8 +303,9 @@ export async function updateDeviceHandler(req: Request, res: Response): Promise<
 export async function deleteDeviceHandler(req: Request, res: Response): Promise<void> {
   const id = requireDeviceId(req);
   if (req.auth) await permissionsService.assertDeviceAccess(req.auth.userId, req.auth.role, id, 'delete');
-  const data = await deviceService.deleteDevice(id, getWorkspaceId(req));
-  deviceHub.broadcast({ type: 'device.deleted', deviceId: id, payload: data, timestamp: new Date().toISOString() });
+  const delWsId = getWorkspaceId(req);
+  const data = await deviceService.deleteDevice(id, delWsId);
+  deviceHub.broadcast({ type: 'device.deleted', deviceId: id, payload: data, timestamp: new Date().toISOString(), ...(delWsId ? { workspaceId: delWsId } : {}) });
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.delete',

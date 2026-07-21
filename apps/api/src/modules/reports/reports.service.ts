@@ -54,14 +54,18 @@ export class ReportsService {
     };
   }
 
-  // Flat rows for CSV export: one row per job in range.
+  // Flat rows for CSV export: one row per job in range. Capped so a huge range can't
+  // OOM the process — but we surface `truncated` + `total` so the caller can WARN the
+  // operator that the CSV is incomplete instead of silently handing back a partial file
+  // that disagrees with the dashboard's job counts.
   async jobRows(workspaceId: string, from: Date, to: Date) {
-    const jobs = await prisma.job.findMany({
-      where: { workspaceId, createdAt: { gte: from, lte: to } },
-      orderBy: { createdAt: 'desc' },
-      take: 5000
-    });
-    return jobs.map((j) => ({
+    const CAP = 50_000;
+    const where = { workspaceId, createdAt: { gte: from, lte: to } };
+    const [total, jobs] = await Promise.all([
+      prisma.job.count({ where }),
+      prisma.job.findMany({ where, orderBy: { createdAt: 'desc' }, take: CAP })
+    ]);
+    const rows = jobs.map((j) => ({
       id: j.id,
       type: j.type,
       status: j.status,
@@ -70,6 +74,7 @@ export class ReportsService {
       finishedAt: j.finishedAt?.toISOString() ?? '',
       error: j.error ?? ''
     }));
+    return { rows, total, truncated: total > CAP };
   }
 }
 

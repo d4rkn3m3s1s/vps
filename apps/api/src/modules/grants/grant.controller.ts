@@ -57,7 +57,7 @@ const transferSchema = z.object({ workspace: z.string().min(1) });
 export async function transferHandler(req: Request, res: Response): Promise<void> {
   const deviceId = String(req.params.deviceId);
   const { workspace } = transferSchema.parse(req.body);
-  const data = await grantService.transfer(deviceId, workspace, getWorkspaceId(req));
+  const data = await grantService.transfer(deviceId, workspace, getWorkspaceId(req), req.auth?.userId);
   await writeAuditLog({
     userId: req.auth?.userId,
     action: 'device.transfer',

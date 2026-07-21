@@ -341,8 +341,14 @@ export async function reapStaleJobs(): Promise<number> {
         // times with a growing sendAttempt counter. Only after the last attempt do we
         // fall through and write the permanent FAILED bubble below. Broadcast sends are
         // exempt — they're paced intentionally and re-queuing 1000s would amplify load.
+        //
+        // ★ONLY retry a PENDING job. A RUNNING job was already CLAIMED by the agent and
+        // may still be MID-SEND on the device (the reaper's RUNNING cutoff is a timeout,
+        // not proof the send didn't happen). Re-dispatching it would deliver the SAME
+        // message twice. A PENDING job was never claimed → re-dispatch is safe. (This
+        // closes the duplicate-delivery hole the reaper-retry introduced.)
         const attempt = Number(pl.sendAttempt ?? 0);
-        if (!pl.broadcastId && attempt < MAX_SEND_RETRY) {
+        if (job.status === 'PENDING' && !pl.broadcastId && attempt < MAX_SEND_RETRY) {
           try {
             await createJobRecord(
               job.type,

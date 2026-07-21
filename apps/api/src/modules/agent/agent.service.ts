@@ -882,35 +882,53 @@ export class AgentService {
     );
 
     const now = new Date();
-    let updated = 0;
-    for (const m of input.devices) {
-      const deviceId = serialToId.get(m.serial);
-      if (!deviceId) continue;
-      try {
-        await prisma.device.update({
-          where: { id: deviceId },
-          data: {
-            lastSeen: now,
-            ...(typeof m.cpuUsage === 'number' ? { cpuUsage: m.cpuUsage } : {}),
-            ...(typeof m.memoryUsage === 'number' ? { memoryUsage: m.memoryUsage } : {}),
-            ...(typeof m.diskUsage === 'number' ? { diskUsage: m.diskUsage } : {})
-          }
-        });
-        // Append a timeseries point so the device-health charts have history.
-        // Best-effort: a failed insert must not break the metrics update.
-        await prisma.deviceMetricPoint.create({
-          data: {
+    // ── SCALE: batch the writes instead of 2×N sequential queries per heartbeat ──
+    // The old loop did `await device.update` + `await metricPoint.create` PER device,
+    // serially — at 500 devices that's 1000 round-trips every heartbeat and the tick
+    // falls behind. Now: all metric points go in ONE createMany, and the per-device
+    // updates (which carry different values so can't be a single query) run with bounded
+    // concurrency instead of strictly serial.
+    const targets = input.devices
+      .map((m) => ({ m, deviceId: serialToId.get(m.serial) }))
+      .filter((t): t is { m: (typeof input.devices)[number]; deviceId: string } => Boolean(t.deviceId));
+
+    // 1) One bulk insert for the timeseries points (best-effort).
+    if (targets.length > 0) {
+      await prisma.deviceMetricPoint
+        .createMany({
+          data: targets.map(({ m, deviceId }) => ({
             deviceId,
             cpuUsage: typeof m.cpuUsage === 'number' ? m.cpuUsage : 0,
             memoryUsage: typeof m.memoryUsage === 'number' ? m.memoryUsage : 0,
             diskUsage: typeof m.diskUsage === 'number' ? m.diskUsage : 0,
             capturedAt: now
-          }
-        }).catch(() => undefined);
-        updated += 1;
-      } catch {
-        /* device may have been deleted between heartbeats — skip */
-      }
+          }))
+        })
+        .catch(() => undefined);
+    }
+
+    // 2) Per-device updates with bounded concurrency (chunks of 25).
+    let updated = 0;
+    const CHUNK = 25;
+    for (let i = 0; i < targets.length; i += CHUNK) {
+      const slice = targets.slice(i, i + CHUNK);
+      const results = await Promise.all(
+        slice.map(({ m, deviceId }) =>
+          prisma.device
+            .update({
+              where: { id: deviceId },
+              data: {
+                lastSeen: now,
+                ...(typeof m.cpuUsage === 'number' ? { cpuUsage: m.cpuUsage } : {}),
+                ...(typeof m.memoryUsage === 'number' ? { memoryUsage: m.memoryUsage } : {}),
+                ...(typeof m.diskUsage === 'number' ? { diskUsage: m.diskUsage } : {})
+              }
+            })
+            .then(() => true)
+            .catch(() => false) // device may have been deleted between heartbeats — skip
+        )
+      );
+      updated += results.filter(Boolean).length;
     }
     // Opportunistically prune very old points so the table stays bounded (keep
     // ~7 days). Runs at most a fraction of the time to avoid a delete every tick.

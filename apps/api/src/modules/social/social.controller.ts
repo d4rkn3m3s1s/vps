@@ -13,14 +13,16 @@ import { writeAuditLog } from '../audit/audit.service';
 
 export async function connectHandler(req: Request, res: Response, _next: NextFunction): Promise<void> {
   const provider = String(req.params.provider ?? '').toUpperCase();
-  const user = (req as any).user;
-  if (!user?.id) {
+  // authenticateJwt populates req.auth (not req.user). Reading (req as any).user made
+  // uid ALWAYS undefined → this handler 401'd unconditionally (OAuth connect was dead).
+  const uid = req.auth?.userId;
+  if (!uid) {
     res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
     return;
   }
 
   const { verifier, challenge } = createPkcePair();
-  const state = createSignedState({ uid: user.id, p: provider, ts: Date.now(), cv: verifier });
+  const state = createSignedState({ uid, p: provider, ts: Date.now(), cv: verifier });
   const redirectUri = `${env.apiBaseUrl}/social/callback/${provider}`;
   const scopes = provider === 'X'
     ? ['tweet.read', 'tweet.write', 'users.read', 'offline.access']
@@ -116,11 +118,11 @@ export async function callbackHandler(req: Request, res: Response, _next: NextFu
 }
 
 export async function listHandler(req: Request, res: Response, _next: NextFunction): Promise<void> {
-  const user = (req as any).user;
-  if (!user) {
+  const uid = req.auth?.userId;
+  if (!uid) {
     res.status(401).json({ error: 'unauthenticated' });
     return;
   }
-  const rows = await listSocialAccountsForUser(user.id);
+  const rows = await listSocialAccountsForUser(uid);
   res.json(rows);
 }

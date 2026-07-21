@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { AppError } from '../../lib/errors';
+import { logger } from '../../lib/logger';
 import { assertSafePublicUrl } from '../../lib/urlGuard';
 import { encryptString, decryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
@@ -353,7 +354,10 @@ export class BatchService {
       const payload = {
         accountId: acc.id,
         email: acc.emailAddress,
-        password: decryptString(acc.passwordEnc),
+        // Ship the ciphertext straight through (acc.passwordEnc is already encrypted);
+        // agent.materializePayload decrypts passwordEnc→password at claim time so the
+        // stored payload / GET /jobs/:id never expose the account password in the clear.
+        passwordEnc: acc.passwordEnc,
         fullName: [acc.firstName, acc.lastName].filter(Boolean).join(' '),
         ...(acc.birthDate ? { birthYear: Number(acc.birthDate.slice(0, 4)) } : {}),
         ...(acc.username ? { username: acc.username } : {})
@@ -744,14 +748,55 @@ export class BatchService {
     //    deviceId goes in the PAYLOAD (the agent claims jobs by payload.deviceId);
     //    the emulatorId FK column points at the legacy Emulator table, not Device.
     const phoneE164 = rented.number.startsWith('+') ? rented.number : `+${rented.number}`;
-    const job1 = await createJobRecord(
-      'REGISTER_WHATSAPP',
-      { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
-      undefined,
-      workspaceId
-    );
-    const r1 = await this.awaitJob(job1.id, 120_000);
-    if (!r1) return fail('TIMEOUT', 'Numara giriş jobı zaman aşımına uğradı');
+
+    // ── Auto-assign a country-matched proxy BEFORE the first register pass ───────
+    // ★This fully-automatic flow previously dispatched REGISTER_WHATSAPP with NO
+    // proxy step — unlike registerAccount and startOperatorRegister, which both call
+    // autoAttachCountryProxy first. So an auto-rented number registered on the host's
+    // raw datacenter exit IP → country mismatch → "Login not available"/ban. Mirror the
+    // operator path: resolve the instance, attach a country-matched proxy, and skip the
+    // busy-check on job1 when a SET_PROXY was queued (it's this flow's own pre-step).
+    const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { metadata: true } });
+    const devMeta = (dev?.metadata ?? {}) as Record<string, unknown>;
+    const devInstance = typeof devMeta.instance === 'string' ? devMeta.instance : '';
+    let autoProxy: { country: string } | null = null;
+    if (devInstance) {
+      autoProxy = await autoAttachCountryProxy(deviceId, devInstance, phoneE164, workspaceId).catch(() => null);
+    }
+
+    // ── job1 (number-entry) with AUTO-RETRY on a TRANSIENT failure ─────────────
+    // The first on-device pass (enter number → OTP screen) can fail for INFRA reasons
+    // that have nothing to do with the number: the device was momentarily busy with
+    // another job (DEVICE_BUSY), ADB blipped, or the job timed out in the queue. Those
+    // are safe to retry — we haven't consumed an OTP yet, so re-running just re-enters
+    // the number. A HARD reject (device_wall / not-installed / banned) is NOT retried:
+    // re-attempting only burns the number and raises ban risk. We retry up to twice.
+    const isTransientReg = (r: { status?: string; error?: string | null } | null): boolean => {
+      if (!r) return true; // null = awaitJob timeout → transient
+      const s = `${r.status ?? ''} ${r.error ?? ''}`.toLowerCase();
+      if (/wall|not_installed|banned|reddet|engellendi|resmi uygulama|couldn|sms gönder/.test(s)) return false;
+      return /busy|meşgul|timeout|zaman aşımı|device_busy|command failed|ulaşılamadı/.test(s);
+    };
+    let r1 = null;
+    for (let regAttempt = 0; regAttempt <= 2; regAttempt++) {
+      const j1 = await createJobRecord(
+        'REGISTER_WHATSAPP',
+        { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName, regAttempt } as unknown as JobPayload,
+        undefined,
+        workspaceId,
+        { skipBusyCheck: Boolean(autoProxy) || regAttempt > 0 }
+      );
+      r1 = await this.awaitJob(j1.id, 120_000);
+      // Success (reached OTP_WAIT) or a HARD failure → stop retrying.
+      const res = (r1?.result as Record<string, unknown>) ?? {};
+      const reachedOtp = r1?.status !== 'FAILED' && (!res.status || res.status === 'OTP_WAIT');
+      if (reachedOtp || !isTransientReg(r1)) break;
+      if (regAttempt < 2) {
+        logger.info('register job1 transient fail — retrying', { deviceId, attempt: regAttempt + 1, status: r1?.status });
+        await sleep(4000); // brief settle before re-dispatch
+      }
+    }
+    if (!r1) return fail('TIMEOUT', 'Numara giriş jobı zaman aşımına uğradı (2 tekrar sonrası)');
     if (r1.status === 'FAILED') return fail('FAILED', `Numara girişi başarısız: ${r1.error ?? ''}`);
     const res1 = (r1.result as Record<string, unknown>) ?? {};
     if (res1.status && res1.status !== 'OTP_WAIT') {
@@ -770,17 +815,39 @@ export class BatchService {
         : await accountsService.smsReadOtp(rented.requestId).catch(() => ({ status: 'waiting' as const }));
       if (sms.status === 'received' && sms.code) {
         otp = String(sms.code).replace(/\D/g, '').slice(0, 6);
-        await prisma.generatedAccount.update({ where: { id: acc.id }, data: { otpCodeEnc: encryptString(otp) } });
+        // otpCodeEnc is written in the atomic claim below (not here) so the write and
+        // the "still ours?" status gate happen together — avoids a torn state where the
+        // code is saved but the operator flow has already taken over.
         break;
       }
       await sleep(5000);
     }
     if (!otp) return fail('OTP_TIMEOUT', 'OTP gelmedi (9 dk beklendi, numara WhatsApp kodunu almadı)');
 
+    // ★Atomically CLAIM the account before dispatching job2. On OTP_WAIT the shared
+    // completion hook flips this account to AWAITING_OTP, which opens the panel's OTP
+    // box — an operator could enter the code themselves (provideOperatorOtp), which
+    // claims REGISTERING→dispatches its OWN job2. Without this guard, our loop would
+    // ALSO write otpCodeEnc and dispatch a SECOND job2 (same OTP, same device) and then
+    // clobber the operator flow by force-writing ACTIVE/FAILED. updateMany with a status
+    // gate makes the claim exclusive: count 0 → the operator already took over, so we
+    // bow out and let their flow finish.
+    const claim = await prisma.generatedAccount.updateMany({
+      where: { id: acc.id, status: { in: ['REGISTERING', 'AWAITING_OTP'] } },
+      data: { status: 'REGISTERING', otpCodeEnc: encryptString(otp) }
+    });
+    if (claim.count === 0) {
+      await releaseNumber();
+      return { ok: true, status: 'OPERATOR_TOOK_OVER', phoneNumber: phoneE164, note: 'Operatör OTP akışını devraldı — otomatik akış çekildi', account: toPublic(await prisma.generatedAccount.findUniqueOrThrow({ where: { id: acc.id } })) };
+    }
+
     // 6) Second on-device pass: enter the OTP, finish the profile.
     const job2 = await createJobRecord(
       'REGISTER_WHATSAPP',
-      { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName, otpCode: otp } as unknown as JobPayload,
+      // OTP travels ENCRYPTED (otpCodeEnc); agent.materializePayload decrypts it to
+      // otpCode at claim time, so the stored payload / GET /jobs/:id never expose the
+      // plaintext code (it's a live account-takeover secret for ~10 min).
+      { deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName, otpCodeEnc: encryptString(otp) } as unknown as JobPayload,
       undefined,
       workspaceId,
       { skipBusyCheck: true } // OTP continuation of the same registration flow
@@ -1012,7 +1079,10 @@ export class BatchService {
           deviceId,
           accountId: acc.id,
           email,
-          password,
+          // Encrypt the freshly-generated password; agent.materializePayload restores
+          // passwordEnc→password at claim time. Prevents the plaintext password from
+          // sitting in Job.payload / GET /jobs/:id.
+          passwordEnc: encryptString(password),
           fullName,
           birthYear
         } as unknown as JobPayload,

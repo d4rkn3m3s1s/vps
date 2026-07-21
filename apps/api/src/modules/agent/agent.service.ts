@@ -378,12 +378,15 @@ export class AgentService {
         // The step-by-step screenshots the agent captured (bug-tracking) live on
         // Job.result.shots — the dashboard loads them via the account's last
         // REGISTER_WHATSAPP job to show exactly where a failed run stalled.
+        // Log a dropped status transition instead of swallowing it: a silently-failed
+        // write here leaves the account stuck in REGISTERING while the job shows terminal
+        // — an invisible desync. quiet() leaves a diagnosable trail (job id + step).
         void prisma.generatedAccount
           .update({
             where: { id: accountId },
             data: { status: nextStatus, ...(error !== null ? { error } : { error: null }) }
           })
-          .catch(() => undefined);
+          .catch(quiet('register.status', updated.id));
 
         // ── Global "operator action needed" alert ────────────────────────────
         // When a registration lands in a state that needs a human (waiting for the
@@ -1109,6 +1112,64 @@ export class AgentService {
     });
   }
 
+  // Proactive health-watch alert from the host-side wd-health-watch.sh script: a
+  // device's real exit IP drifted to the datacenter (proxy leak, imminent ban) or a
+  // device went unreachable and was auto-reconnected. We surface it through the SAME
+  // channels operators already watch — a webhook event + an alert-rule evaluation
+  // (Telegram/Slack/Discord) — instead of the script needing the encrypted channel
+  // config. Best-effort: an unresolved device still logs + webhooks.
+  async recordHealthAlert(
+    host: { id: string; workspaceId: string | null },
+    input: { kind: string; instance?: string | undefined; deviceId?: string | undefined; detail: string; fixed?: boolean | undefined }
+  ): Promise<{ ok: true }> {
+    // Resolve the device by explicit id or by metadata.instance so the alert links to it.
+    let device: { id: string; name: string; workspaceId: string | null } | null = null;
+    if (input.deviceId) {
+      device = await prisma.device
+        .findUnique({ where: { id: input.deviceId }, select: { id: true, name: true, workspaceId: true } })
+        .catch(() => null);
+    }
+    if (!device && input.instance) {
+      device = await prisma.device
+        .findFirst({
+          where: { metadata: { path: ['instance'], equals: input.instance } },
+          select: { id: true, name: true, workspaceId: true }
+        })
+        .catch(() => null);
+    }
+    const wsId = device?.workspaceId ?? host.workspaceId ?? undefined;
+    const label = device?.name || input.instance || input.deviceId || 'cihaz';
+    const title =
+      input.kind === 'PROXY_LEAK'
+        ? `⚠️ Proxy sızıntısı: ${label}${input.fixed ? ' (otomatik düzeltildi)' : ''}`
+        : input.kind === 'AUTO_RECONNECT'
+          ? `🔄 Cihaz yeniden bağlandı: ${label}`
+          : `Sağlık uyarısı: ${label}`;
+
+    logger.warn('health-watch alert', { kind: input.kind, device: label, detail: input.detail, fixed: input.fixed });
+
+    void webhooksService
+      .dispatch(
+        'WHATSAPP_ACCOUNT_HEALTH',
+        {
+          kind: input.kind,
+          deviceId: device?.id ?? input.deviceId ?? null,
+          instance: input.instance ?? null,
+          detail: input.detail,
+          fixed: Boolean(input.fixed),
+          ts: new Date().toISOString()
+        },
+        wsId
+      )
+      .catch(() => undefined);
+
+    void alertsService
+      .evaluate(wsId, 'DEVICE_OFFLINE', { title, detail: input.detail })
+      .catch(() => undefined);
+
+    return { ok: true };
+  }
+
   // Decrypt any secret fields so the agent receives ready-to-use values. The
   // proxy password is stored AES-256-GCM encrypted; the agent never sees the key.
   // Handles BOTH the top-level SET_PROXY payload (payload.passwordEnc) and the
@@ -1116,14 +1177,26 @@ export class AgentService {
   // stores/serves plaintext (GET /jobs/:id) — the plaintext exists only in the
   // materialized copy the agent claims.
   private materializePayload(payload: Record<string, unknown>): Record<string, unknown> {
+    // Decrypt any "<field>Enc" secret into "<field>" and strip the ciphertext, so the
+    // stored payload / GET /jobs/:id only ever holds ciphertext — the plaintext exists
+    // only in the materialized copy the agent claims. Covers proxy passwords AND the
+    // register secrets (OTP code, account password) that were previously carried in the
+    // clear in Job.payload and leaked via GET /jobs/:id.
+    const encPairs: Array<[string, string]> = [
+      ['passwordEnc', 'password'],
+      ['otpCodeEnc', 'otpCode'],
+      ['accountPasswordEnc', 'accountPassword']
+    ];
     const decEnc = (obj: Record<string, unknown>): Record<string, unknown> => {
-      if (typeof obj.passwordEnc === 'string' && obj.passwordEnc) {
-        try {
-          obj.password = decryptString(obj.passwordEnc);
-        } catch {
-          /* leave it absent if decryption fails */
+      for (const [encKey, plainKey] of encPairs) {
+        if (typeof obj[encKey] === 'string' && obj[encKey]) {
+          try {
+            obj[plainKey] = decryptString(obj[encKey] as string);
+          } catch {
+            /* leave it absent if decryption fails */
+          }
+          delete obj[encKey];
         }
-        delete obj.passwordEnc;
       }
       return obj;
     };

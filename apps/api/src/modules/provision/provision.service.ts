@@ -7,6 +7,10 @@ import { createJobRecord } from '../jobs/jobs.service';
 import { deviceHub } from '../devices/device.hub';
 import { DeviceService } from '../devices/device.service';
 import { fingerprintService } from '../fingerprint/fingerprint.service';
+// thordata proxy account selection (TR → mobile, others → residential) lives in a
+// shared module so provision and the one-click WhatsApp auto-proxy can never pick
+// different accounts for the same country. See proxy-accounts.ts for the why.
+import { proxyCredsFor } from '../accounts/proxy-accounts';
 
 const deviceService = new DeviceService();
 
@@ -75,58 +79,6 @@ export type CreateInstanceInput = {
   // Country-matched residential proxy (WhatsApp needs number-country == exit-IP).
   proxyCountry?: string | undefined;
 };
-
-// thordata proxy (proven). Credentials come from env so they aren't baked into the
-// repo; the username country suffix is appended host-side.
-//
-// TWO thordata accounts, picked by country: RESIDENTIAL (AL/BG/US) and MOBILE. TR's
-// residential pool is dead, so TR numbers MUST exit through the mobile account or
-// WhatsApp sees a country mismatch and blocks registration. Without this, TR devices
-// were provisioned onto the (dead) residential creds and only fixed later by the
-// host-side restore script — this makes the very first provision land on the right
-// account. AL/BG/US stay on residential (works first-try).
-const PROXY_HOST = process.env.FLEET_PROXY_HOST || '';
-// Residential account (default; AL/BG/US).
-const PROXY_PORT = Number(process.env.FLEET_PROXY_PORT || 5555);
-const PROXY_USER = process.env.FLEET_PROXY_USER || '';
-const PROXY_PASS = process.env.FLEET_PROXY_PASS || '';
-// Mobile account (TR). Falls back to the residential creds if the mobile env vars
-// aren't set, so an incomplete deployment degrades to the old behaviour rather than
-// producing a proxy with empty credentials.
-const PROXY_MOBILE_HOST = process.env.FLEET_PROXY_MOBILE_HOST || PROXY_HOST;
-const PROXY_MOBILE_PORT = Number(process.env.FLEET_PROXY_MOBILE_PORT || 9999);
-const PROXY_MOBILE_USER = process.env.FLEET_PROXY_MOBILE_USER || PROXY_USER;
-const PROXY_MOBILE_PASS = process.env.FLEET_PROXY_MOBILE_PASS || PROXY_PASS;
-
-// Countries that must use the mobile account (residential pool dead/unavailable).
-const MOBILE_PROXY_COUNTRIES = new Set(
-  (process.env.FLEET_PROXY_MOBILE_COUNTRIES || 'TR')
-    .split(',')
-    .map((c) => c.trim().toUpperCase())
-    .filter(Boolean)
-);
-
-// Pick the right thordata account for a country. Returns null when no proxy is
-// configured at all (host/user empty) so the caller can skip proxy assignment.
-function proxyCredsFor(country: string): {
-  host: string;
-  port: number;
-  user: string;
-  pass: string;
-} | null {
-  const cc = country.toUpperCase();
-  if (MOBILE_PROXY_COUNTRIES.has(cc)) {
-    if (!PROXY_MOBILE_HOST || !PROXY_MOBILE_USER) return null;
-    return {
-      host: PROXY_MOBILE_HOST,
-      port: PROXY_MOBILE_PORT,
-      user: PROXY_MOBILE_USER,
-      pass: PROXY_MOBILE_PASS
-    };
-  }
-  if (!PROXY_HOST || !PROXY_USER) return null;
-  return { host: PROXY_HOST, port: PROXY_PORT, user: PROXY_USER, pass: PROXY_PASS };
-}
 
 function stepFor(key: string): ProvisionStep {
   return PROVISION_STEPS.find((s) => s.key === key) ?? PROVISION_STEPS[0]!;
@@ -459,10 +411,30 @@ class ProvisionService {
 
     // Record the provision job id on the device so a "⚡ Kuruluyor" badge in the
     // profiles list can reopen the modal with the right job (restore live log).
+    // MERGE into existing metadata — a bare object write would wipe anything already
+    // on the device (fingerprint hints, proxyCountry from a prior assign, etc.). Spread
+    // first, matching every other metadata write in this codebase.
+    const curMeta = (await prisma.device
+      .findUnique({ where: { id: device.id }, select: { metadata: true } })
+      .catch(() => null))?.metadata as Record<string, unknown> | null | undefined;
     await prisma.device
       .update({
         where: { id: device.id },
-        data: { metadata: { instance, subnetId, provisionStatus: 'PROVISIONING', provisionJobId: job.id } as Prisma.InputJsonValue }
+        data: {
+          metadata: {
+            ...(curMeta ?? {}),
+            instance,
+            subnetId,
+            provisionStatus: 'PROVISIONING',
+            provisionJobId: job.id,
+            // ★Persist proxyCountry so reboot-restore (wd-proxy-restore.sh) can re-apply
+            // the RIGHT country after a reboot. Without this, a device provisioned with a
+            // proxy but NO WhatsApp number yet (metadata.proxyCountry unset + no phone to
+            // derive from) was silently SKIPPED on reboot → it came back on the datacenter
+            // IP. The restore script treats metadata.proxyCountry as its primary source.
+            ...(proxy ? { proxyCountry: proxy.country } : {})
+          } as Prisma.InputJsonValue
+        }
       })
       .catch(() => undefined);
 

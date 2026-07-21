@@ -124,8 +124,20 @@ export class WaRegisterService {
       if (input.deviceId) {
         const dev = await prisma.device.findUnique({ where: { id: input.deviceId }, select: { metadata: true } }).catch(() => null);
         if (dev) {
-          const md = { ...((dev.metadata as Record<string, unknown>) ?? {}), waRegisterStatus: 'FAILED' };
-          await prisma.device.update({ where: { id: input.deviceId }, data: { metadata: md as Prisma.InputJsonValue } }).catch(() => undefined);
+          const md = { ...((dev.metadata as Record<string, unknown>) ?? {}) };
+          // OWNERSHIP GUARD: only touch the badge if THIS account owns the device's
+          // in-flight register. A newer register (different account) may already own the
+          // device — writing FAILED here would clobber ITS live badge. Mirror the same
+          // guard the agent.service terminal block uses (waRegisterAccountId check).
+          if (md.waRegisterAccountId === undefined || md.waRegisterAccountId === input.accountId) {
+            md.waRegisterStatus = 'FAILED';
+            // Clear the transient register keys too (this run is terminal) so a stale
+            // waRegisterAccountId/Phone/JobId can't leave the card pointing at a dead run.
+            delete md.waRegisterAccountId;
+            delete md.waRegisterPhone;
+            delete md.waRegisterJobId;
+            await prisma.device.update({ where: { id: input.deviceId }, data: { metadata: md as Prisma.InputJsonValue } }).catch(() => undefined);
+          }
         }
       }
     }
@@ -151,10 +163,33 @@ export class WaRegisterService {
     return (event.note ?? '').startsWith('📸');
   }
 
+  // Per-account write serializer for appendLog. The append is a read-modify-write on
+  // registerLog.log; two progress frames for the SAME account arriving ~together both
+  // read the old array and the second update overwrites the first's push → lost log
+  // lines and a stale lastProgress. All progress flows through this single API process,
+  // so a per-account promise chain (mutex) makes each account's appends run one-at-a-time
+  // without a DB advisory lock. Different accounts still run concurrently.
+  private appendChains = new Map<string, Promise<void>>();
+
   // Append to GeneratedAccount.registerLog = { log: [...capped], lastProgress }.
   private async appendLog(accountId: string, event: Omit<WaRegisterProgress, 'shot'>): Promise<void> {
     // Heartbeat frames are transient live-view ticks — never persist them at all.
     if (this.isHeartbeatFrame(event)) return;
+    // Chain this append after any in-flight append for the same account (serialize).
+    const prev = this.appendChains.get(accountId) ?? Promise.resolve();
+    const next = prev
+      .catch(() => undefined) // a failed prior append must not break the chain
+      .then(() => this.appendLogInner(accountId, event));
+    this.appendChains.set(accountId, next);
+    // Housekeeping: drop the chain entry once it's the tail and settled, so the map
+    // doesn't grow unbounded across many accounts.
+    void next.finally(() => {
+      if (this.appendChains.get(accountId) === next) this.appendChains.delete(accountId);
+    });
+    return next;
+  }
+
+  private async appendLogInner(accountId: string, event: Omit<WaRegisterProgress, 'shot'>): Promise<void> {
     const acc = await prisma.generatedAccount.findUnique({ where: { id: accountId }, select: { registerLog: true } });
     if (!acc) return;
     const cur = (acc.registerLog ?? {}) as Record<string, unknown>;

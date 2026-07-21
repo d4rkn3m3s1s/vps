@@ -5,7 +5,8 @@ import { deviceHub } from '../devices/device.hub';
 import { AppError } from '../../lib/errors';
 import { EXCLUSIVE_JOB_TYPES, type JobPayload, type JobType } from './job.types';
 import { waRegisterService } from '../accounts/wa-register.service';
-import { encryptString } from '../../lib/crypto';
+import { encryptString, sha256 } from '../../lib/crypto';
+import { logger } from '../../lib/logger';
 import { webhooksService } from '../webhooks/webhooks.service';
 
 // Local copy of whatsapp.service.normalizePeer's phone-canonicalisation, inlined
@@ -239,6 +240,10 @@ export async function listJobs(workspaceId?: string, limit = 100) {
 const PENDING_STALE_MS = 6 * 60 * 1000;
 const RUNNING_STALE_MS = 15 * 60 * 1000;
 const RUNNING_STALE_SHORT_MS = 4 * 60 * 1000; // send/media: tight cap
+// How many times a transient (reaper-timed-out) WhatsApp send is auto-re-dispatched
+// before it becomes a permanent FAILED bubble. 2 retries = 3 total attempts, enough to
+// ride out a brief agent-busy/proxy blip without hammering a genuinely dead device.
+const MAX_SEND_RETRY = 2;
 const SHORT_RUNNING_TYPES: ReadonlySet<JobType> = new Set<JobType>(['WHATSAPP_SEND', 'WHATSAPP_SEND_MEDIA']);
 
 export async function reapStaleJobs(): Promise<number> {
@@ -326,8 +331,33 @@ export async function reapStaleJobs(): Promise<number> {
     // so a reaper-killed send left NO trace in the chat thread. Mirror that here so
     // the operator sees a "gönderilemedi" bubble instead of the message vanishing.
     if ((job.type === 'WHATSAPP_SEND' || job.type === 'WHATSAPP_SEND_MEDIA') && deviceId) {
-      const pl = (job.payload as { to?: string; message?: string; broadcastId?: string } | null) ?? {};
+      const pl = (job.payload as { to?: string; message?: string; broadcastId?: string; sendAttempt?: number } | null) ?? {};
       if (pl.to && pl.message) {
+        // ── AUTO-RETRY on a TRANSIENT failure ──────────────────────────────────
+        // A reaper timeout is transient by nature: the agent was busy/disconnected or a
+        // proxy blipped, NOT a hard "banned/no-chat" reject (those come through the
+        // agent's own complete() with a specific status, never here). So instead of
+        // burning the message on the first timeout, re-dispatch it up to MAX_SEND_RETRY
+        // times with a growing sendAttempt counter. Only after the last attempt do we
+        // fall through and write the permanent FAILED bubble below. Broadcast sends are
+        // exempt — they're paced intentionally and re-queuing 1000s would amplify load.
+        const attempt = Number(pl.sendAttempt ?? 0);
+        if (!pl.broadcastId && attempt < MAX_SEND_RETRY) {
+          try {
+            await createJobRecord(
+              job.type,
+              { ...pl, sendAttempt: attempt + 1, retryOfJobId: job.id } as unknown as JobPayload,
+              deviceId,
+              job.workspaceId ?? undefined,
+              { skipBusyCheck: true } // it's a retry of an already-authorized send
+            );
+            logger.info('reaper re-queued transient WhatsApp send', { deviceId, attempt: attempt + 1, of: MAX_SEND_RETRY });
+            continue; // retry queued → do NOT write a permanent FAILED bubble this round
+          } catch (e) {
+            // Re-dispatch itself failed (e.g. device gone) → fall through to FAILED bubble.
+            logger.warn('reaper send retry dispatch failed', { deviceId, error: String(e) });
+          }
+        }
         const outPeer = canonicalPeer(String(pl.to));
         const outBody = String(pl.message).slice(0, 4096);
         const outAt = new Date();
@@ -342,11 +372,18 @@ export async function reapStaleJobs(): Promise<number> {
               read: true,
               status: 'FAILED',
               statusAt: outAt,
+              // Unique dedupeKey (mirrors the agent.service OUT path). Without it the row
+              // was created with dedupeKey=null; combined with the swallowed .catch below
+              // this is the same class as the "vanishing outbound message" bug — a null
+              // key + a silently-dropped insert means a reaper-killed send left no trace.
+              dedupeKey: sha256(`out|${deviceId}|${outPeer}|${outBody}|${outAt.getTime()}`),
               failReason: reason.slice(0, 200),
               waTimestamp: outAt
             }
           })
-          .catch(() => undefined);
+          // Log the real reason instead of swallowing it (a dropped insert here is
+          // exactly how the reaper-killed-send-vanishes bug would hide).
+          .catch((e) => { logger.warn('reaper outbound WhatsappMessage create failed', { error: String(e), deviceId, peer: outPeer }); });
         // Denormalise the FAILED status onto the thread (list tick) without pulling
         // in whatsappService (import-cycle): upsert the conversation row directly.
         await prisma.whatsappConversation

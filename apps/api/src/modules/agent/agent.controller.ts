@@ -67,6 +67,14 @@ const whatsappReceiptSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+const healthAlertSchema = z.object({
+  kind: z.enum(['PROXY_LEAK', 'AUTO_RECONNECT', 'UNREACHABLE']),
+  instance: z.string().min(1).optional(),
+  deviceId: z.string().min(1).optional(),
+  detail: z.string().min(1).max(500),
+  fixed: z.coerce.boolean().optional()
+});
+
 const progressSchema = z.object({
   step: z.string().min(1),
   percent: z.coerce.number().min(0).max(100).optional(),
@@ -137,6 +145,15 @@ export async function whatsappReceiptHandler(req: Request, res: Response): Promi
   const host = requireHost(req);
   const input = whatsappReceiptSchema.parse(req.body);
   res.json({ data: await agentService.recordWhatsappReceipt(host, input) });
+}
+
+// Proactive health-watch alert (wd-health-watch.sh → here). Reports a proxy leak
+// (device drifted to the datacenter exit IP) or an auto-reconnect, so operators get a
+// Telegram/webhook ping. Requires host-agent auth like every /agent/* route.
+export async function healthAlertHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = healthAlertSchema.parse(req.body);
+  res.json({ data: await agentService.recordHealthAlert(host, input) });
 }
 
 // Vision fallback: locate a tap target on a screenshot the agent couldn't parse

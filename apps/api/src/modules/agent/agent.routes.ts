@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappReceiptHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappReceiptHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -24,3 +24,4 @@ agentRouter.post('/whatsapp/inbound', asyncHandler(whatsappInboundHandler));
 // is a TODO; the endpoint exists so the webhook/enum half is deployable now.
 agentRouter.post('/whatsapp/receipt', asyncHandler(whatsappReceiptHandler));
 agentRouter.post('/vision/analyze', asyncHandler(visionAnalyzeHandler));
+agentRouter.post('/health-alert', asyncHandler(healthAlertHandler));

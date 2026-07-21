@@ -15,3 +15,4 @@ apps/api/storage/logs/
 
 # build cache
 *.tsbuildinfo
+.audit-host-snapshot/

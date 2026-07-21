@@ -9,8 +9,10 @@
 // sticky -country-<CC> login.
 
 import { prisma } from '../../db/prisma';
+import { encryptString } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
+import { proxyCredsFor } from './proxy-accounts';
 
 // Longest-prefix E.164 calling-code → ISO-3166-1 alpha-2. Ordered so the matcher
 // tries the longest codes first (e.g. 355 before 35, 1 last). Not exhaustive for
@@ -66,31 +68,83 @@ export async function autoAttachCountryProxyByCountry(
   try {
     const cc = String(countryCode || '').trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(cc)) return null;
-    // Accept BOTH provider groups. One-click provision mirrors its country-matched
-    // residential exit as `group:'residential'` (provision.service), while manually
-    // imported upstreams land as `group:'provider'`. Looking up ONLY 'provider' meant
-    // a device provisioned with a residential proxy found NO match here → the
-    // EMULATOR_SET_PROXY job was silently skipped → registration ran on the host's
-    // datacenter IP → "Login not available". Matching either group closes that gap.
-    const provider = await prisma.proxy.findFirst({
-      where: { group: { in: ['provider', 'residential'] }, ...(workspaceId ? { workspaceId } : {}) },
-      orderBy: { createdAt: 'desc' }
-    });
-    if (!provider) return null;
+
+    // ★ ACCOUNT SELECTION BY COUNTRY. Prefer the env-configured thordata account for
+    // this country (proxyCredsFor: TR → mobile 9999, others → residential 5555). This
+    // is the SAME selection provision uses, so the account attached when a WhatsApp
+    // number is entered is guaranteed to match the number's country — a TR number can
+    // never land on the (dead) residential pool. Without this, this flow did a plain
+    // `findFirst(... orderBy createdAt desc)` that returned whatever proxy was added
+    // LAST regardless of country: enter a TR number right after an AL provision and it
+    // would route TR through the AL account → "Login not available".
+    const creds = proxyCredsFor(cc);
+    let host: string;
+    let port: number;
+    let username: string;
+    let passwordEnc: string | undefined;
+    if (creds) {
+      host = creds.host;
+      port = creds.port;
+      username = creds.user;
+      // proxyCredsFor returns the plaintext env password; encrypt it so the stored job
+      // payload / GET /jobs/:id never expose it (agent decrypts at claim time).
+      passwordEnc = creds.pass ? encryptString(creds.pass) : undefined;
+    } else {
+      // Fallback (no env proxy configured): accept BOTH provider groups. One-click
+      // provision mirrors its country-matched exit as `group:'residential'`, manually
+      // imported upstreams land as `group:'provider'`. Prefer a row whose countryCode
+      // matches so we don't grab an unrelated country's proxy; fall back to the newest.
+      // status:{not:'FAILED'} — never route through a proxy a health-check already
+      // marked dead. Without it, if the newest matching row was FAILED (or an OK row
+      // later flipped to FAILED), we'd send the register through a dead exit → the very
+      // "Login not available"/ban this function exists to prevent. Prefer a country
+      // match, then any healthy provider; newest first within each.
+      const healthy = { status: { not: 'FAILED' as const } };
+      const provider =
+        (await prisma.proxy.findFirst({
+          where: { group: { in: ['provider', 'residential'] }, countryCode: cc, ...healthy, ...(workspaceId ? { workspaceId } : {}) },
+          orderBy: { createdAt: 'desc' }
+        })) ??
+        (await prisma.proxy.findFirst({
+          where: { group: { in: ['provider', 'residential'] }, ...healthy, ...(workspaceId ? { workspaceId } : {}) },
+          orderBy: { createdAt: 'desc' }
+        }));
+      if (!provider) {
+        // ★A country WAS resolved (cc is valid) but NO healthy proxy exists for it and
+        // no env account is configured. Returning null here makes the caller treat it as
+        // "no proxy needed" and register on the raw datacenter IP → guaranteed country
+        // mismatch/ban. We can't block from here (best-effort contract), but we make the
+        // gap LOUD and durable: log it and stamp the device so the panel/operator can see
+        // "no country proxy — datacenter IP" instead of a silent burn.
+        console.warn(`[auto-proxy] ${cc} için sağlıklı proxy YOK ve env hesap tanımsız — cihaz ${deviceId} datacenter IP'de kayıt olur (ban riski)`);
+        const warnMeta = (await prisma.device
+          .findUnique({ where: { id: deviceId }, select: { metadata: true } })
+          .catch(() => null))?.metadata as Record<string, unknown> | null | undefined;
+        await prisma.device
+          .update({ where: { id: deviceId }, data: { metadata: { ...(warnMeta ?? {}), proxyWarning: `no-proxy-${cc}` } as never } })
+          .catch(() => undefined);
+        return null;
+      }
+      host = provider.host;
+      port = provider.port;
+      username = provider.username ?? '';
+      // Already ciphertext in the DB — carry as-is.
+      passwordEnc = provider.password ?? undefined;
+    }
+
     await createJobRecord(
       'EMULATOR_SET_PROXY',
       {
         deviceId,
         instance,
         country: cc,
-        host: provider.host,
-        port: provider.port,
-        username: provider.username ?? '',
+        host,
+        port,
+        username,
         // Carry the ciphertext (not plaintext): agent.service.materializePayload
         // decrypts passwordEnc at claim time, so the stored payload / GET /jobs/:id
-        // never expose the residential-proxy password. Matches the SET_PROXY pattern
-        // in proxy.service / bulk.service / provision.service.
-        ...(provider.password ? { passwordEnc: provider.password } : {})
+        // never expose the proxy password. Matches proxy/bulk/provision SET_PROXY.
+        ...(passwordEnc ? { passwordEnc } : {})
       } as unknown as JobPayload,
       deviceId,
       workspaceId

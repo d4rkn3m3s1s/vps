@@ -715,6 +715,69 @@ paths:
                 deviceId: { type: string }
       responses:
         '200': { description: '{ data: { jobId, status } } — result: { count, labels: [{ id, name, color, predefined, chatCount }] }' }
+  /public/v1/whatsapp/view-once:
+    post:
+      summary: Pull view-once (tek görünümlük) media as base64, even after opened if the file remains (write scope, root)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 30, description: 'default: 10' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, items: [{ ts, fromMe, peer, mime, state, base64|null, pending? }] }' }
+  /public/v1/whatsapp/voice-notes:
+    post:
+      summary: The account''s voice notes (PTT audio), optionally with base64 audio (write scope, root)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: 'E.164 number (omit for whole device)' }
+                limit: { type: integer, minimum: 1, maximum: 30, description: 'default: 10' }
+                withAudio: { type: boolean, description: 'false = metadata only (no base64)' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, items: [{ ts, fromMe, peer, durationSec, size, base64|null }] }' }
+  /public/v1/whatsapp/deleted:
+    post:
+      summary: Messages the peer deleted "for everyone" that survive in the DB — anti-delete (write scope, root)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, deleted: [{ ts, revokedAt, fromMe, peer, text }] }' }
+  /public/v1/whatsapp/links:
+    post:
+      summary: Every URL shared in the account''s chats (optionally one chat) (write scope, root)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: 'E.164 number (omit for whole device)' }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, links: [{ ts, fromMe, peer, url, text }] }' }
   /public/v1/whatsapp/conversations/labels:
     post:
       summary: Assign categories to a chat (write scope)

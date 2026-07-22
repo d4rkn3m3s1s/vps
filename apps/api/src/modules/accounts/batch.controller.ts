@@ -209,6 +209,22 @@ const waLabelsSchema = z.object({ deviceId: z.string().min(1) });
 export async function whatsAppLabelsHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.waLabels(getWorkspaceId(req), waLabelsSchema.parse(req.body)) });
 }
+const waViewOnceSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(30).optional() });
+export async function whatsAppViewOnceHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waViewOnce(getWorkspaceId(req), waViewOnceSchema.parse(req.body)) });
+}
+const waVoiceNotesSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(30).optional(), withAudio: z.boolean().optional() });
+export async function whatsAppVoiceNotesHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waVoiceNotes(getWorkspaceId(req), waVoiceNotesSchema.parse(req.body)) });
+}
+const waDeletedSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppDeletedHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waDeleted(getWorkspaceId(req), waDeletedSchema.parse(req.body)) });
+}
+const waLinksSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppLinksHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waLinks(getWorkspaceId(req), waLinksSchema.parse(req.body)) });
+}
 
 // Send a media message (image/document) from a device — device-scoped.
 const sendMediaSchema = z.object({

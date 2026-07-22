@@ -372,6 +372,51 @@ export async function labelsListHandler(req: Request, res: Response): Promise<vo
   res.json({ data: { jobId: job.id, status: job.status } });
 }
 
+// POST /public/v1/whatsapp/view-once — pull view-once (tek görünümlük) media as
+// base64 (root sees the file even after the UI marks it opened). write scope.
+const viewOnceSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(30).optional() });
+export async function viewOnceHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = viewOnceSchema.parse(req.body);
+  const { job } = await batchService.waViewOnce(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/voice-notes — the account's voice notes (PTT), optionally
+// with base64 audio. Set withAudio:false for metadata only (faster). write scope.
+const voiceNotesSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(30).optional(), withAudio: z.boolean().optional() });
+export async function voiceNotesHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = voiceNotesSchema.parse(req.body);
+  const { job } = await batchService.waVoiceNotes(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/deleted — messages the peer deleted "for everyone" that
+// survive in the DB (anti-delete): what was deleted, by whom, when + original text.
+// write scope.
+const deletedSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function deletedHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = deletedSchema.parse(req.body);
+  const { job } = await batchService.waDeleted(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/links — every URL shared in the account's chats
+// (optionally one chat). write scope.
+const linksSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function linksHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = linksSchema.parse(req.body);
+  const { job } = await batchService.waLinks(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
 // GET /public/v1/whatsapp/messages?deviceId=&limit=&direction=IN|OUT — stored
 // conversation history (inbound captured by the agent + outbound we sent),
 // bodies decrypted. Device-scoped to the caller's workspace.

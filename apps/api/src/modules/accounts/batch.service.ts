@@ -625,6 +625,30 @@ export class BatchService {
     const payload = { deviceId: input.deviceId } as unknown as JobPayload;
     return { job: await createJobRecord('WHATSAPP_LABELS', payload, input.deviceId, workspaceId) };
   }
+  // View-once media pulled as base64 (even after opened, if the file remains) — root.
+  async waViewOnce(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_VIEW_ONCE', payload, input.deviceId, workspaceId) };
+  }
+  // Voice notes (PTT audio), optionally with base64 audio — root.
+  async waVoiceNotes(workspaceId: string | undefined, input: { deviceId: string; to?: string | undefined; limit?: number | undefined; withAudio?: boolean | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.to ? { to: input.to } : {}), ...(input.limit ? { limit: input.limit } : {}), ...(input.withAudio === false ? { withAudio: false } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_VOICE_NOTES', payload, input.deviceId, workspaceId) };
+  }
+  // Deleted ("delete for everyone") messages that survive in the DB — anti-delete, root.
+  async waDeleted(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_DELETED', payload, input.deviceId, workspaceId) };
+  }
+  // Every URL shared in the account's chats (optionally one chat) — root.
+  async waLinks(workspaceId: string | undefined, input: { deviceId: string; to?: string | undefined; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.to ? { to: input.to } : {}), ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_LINKS', payload, input.deviceId, workspaceId) };
+  }
 
   // Send a media message (image/document) from a device to a peer. mediaUrl must
   // be a public URL (SSRF-guarded on the agent when it downloads). Device-scoped.

@@ -50,6 +50,10 @@ import {
   whatsAppReadByHandler,
   whatsAppStarredHandler,
   whatsAppLabelsHandler,
+  whatsAppViewOnceHandler,
+  whatsAppVoiceNotesHandler,
+  whatsAppDeletedHandler,
+  whatsAppLinksHandler,
   sendWhatsAppMediaHandler,
   deleteWhatsAppMessageHandler,
   clearWhatsAppChatHandler,
@@ -145,6 +149,10 @@ accountsRouter.post('/whatsapp/polls', requireApiKey, authenticateJwt, heavyOper
 accountsRouter.post('/whatsapp/read-by', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppReadByHandler));
 accountsRouter.post('/whatsapp/starred', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppStarredHandler));
 accountsRouter.post('/whatsapp/labels', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppLabelsHandler));
+accountsRouter.post('/whatsapp/view-once', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppViewOnceHandler));
+accountsRouter.post('/whatsapp/voice-notes', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppVoiceNotesHandler));
+accountsRouter.post('/whatsapp/deleted', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppDeletedHandler));
+accountsRouter.post('/whatsapp/links', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppLinksHandler));
 accountsRouter.post('/whatsapp/send-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppMediaHandler));
 accountsRouter.post('/whatsapp/delete-message', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(deleteWhatsAppMessageHandler));
 accountsRouter.post('/whatsapp/clear-chat', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(clearWhatsAppChatHandler));

@@ -66,6 +66,12 @@ enum JobType {
   WHATSAPP_READ_BY
   WHATSAPP_STARRED
   WHATSAPP_LABELS
+  // Root-only capture: view-once media (pull even after opened), voice notes,
+  // deleted ("delete for everyone" — anti-delete), and shared links.
+  WHATSAPP_VIEW_ONCE
+  WHATSAPP_VOICE_NOTES
+  WHATSAPP_DELETED
+  WHATSAPP_LINKS
   // Fetch a contact's profile: avatar screenshot (cropped to a data-URI) + name/
   // about/last-seen text scraped from the contact-info screen.
   WHATSAPP_PROFILE
@@ -1123,6 +1129,9 @@ enum WebhookEvent {
   WHATSAPP_MESSAGE
   WHATSAPP_SENT
   WHATSAPP_FAILED
+  // Media auto-capture: a new file landed in the device's WhatsApp Media folder
+  // (opt-in FLEET_WA_CAPTURE=1). Metadata only; pull the bytes with fetch-media.
+  WHATSAPP_MEDIA_CAPTURED
   // Registration/provision lifecycle — so integrators can react to the two flagship
   // async flows without poll loops (register/provision were poll-only before).
   WHATSAPP_AWAITING_OTP

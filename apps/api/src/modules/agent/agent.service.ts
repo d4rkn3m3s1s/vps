@@ -1170,6 +1170,55 @@ export class AgentService {
     return { stored: true, id: msg.id };
   }
 
+  // Auto-capture: the agent's media poll found a NEW file in the device's WhatsApp
+  // Media folder (opt-in FLEET_WA_CAPTURE=1). We fan it out to the operator's webhook
+  // + notification channels so they learn about it the moment it lands — before a
+  // view-once is opened or a message deleted. We report METADATA only (the bytes stay
+  // on-device; the operator pulls them with fetch-media). No DB row / no thread change.
+  async mediaCaptured(
+    host: Host,
+    input: { serial: string; path: string; size: number; kind: string; folder?: string | undefined; ts?: number | undefined }
+  ): Promise<{ ok: boolean }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true, name: true }
+    });
+    const device = devices.find(
+      (d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial
+    );
+    if (!device) return { ok: false };
+    const fileName = String(input.path).split('/').pop() || '';
+    const at = input.ts && input.ts > 0 ? new Date(input.ts) : new Date();
+
+    // Live push to dashboards.
+    deviceHub.broadcast({
+      type: 'whatsapp.media',
+      deviceId: device.id,
+      payload: { path: input.path, fileName, size: input.size, kind: input.kind, folder: input.folder ?? '' },
+      timestamp: new Date().toISOString(),
+      workspaceId: device.workspaceId ?? undefined
+    });
+
+    // Webhook fan-out — external integrators subscribe to WHATSAPP_MEDIA_CAPTURED.
+    void webhooksService.dispatch(
+      'WHATSAPP_MEDIA_CAPTURED',
+      { deviceId: device.id, deviceName: device.name, fileName, path: input.path, size: input.size, kind: input.kind, folder: input.folder ?? '', ts: at.toISOString() },
+      device.workspaceId ?? undefined
+    );
+
+    // Notification channels (Telegram/Slack/Discord) — at-a-glance.
+    const kindEmoji = input.kind === 'image' ? '🖼️' : input.kind === 'video' ? '🎬' : input.kind === 'audio' ? '🎤' : input.kind === 'document' ? '📄' : '📎';
+    const when = at.toLocaleString('tr-TR', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+    void notificationsService
+      .dispatch(device.workspaceId ?? '', {
+        title: `${kindEmoji} WhatsApp medya yakalandı — ${device.name}`,
+        detail: `${kindEmoji} ${input.kind} · ${fileName}\n📁 ${input.folder ?? ''}\n📦 ${(input.size / 1024).toFixed(0)} KB\n🕒 ${when}`.slice(0, 900)
+      })
+      .catch(() => undefined);
+
+    return { ok: true };
+  }
+
   // Record an outbound delivery receipt the agent read off a sent bubble's tick
   // glyph (✓✓ = DELIVERED, blue = READ). Resolves the device by ADB serial among
   // this host's devices (same mapping as inboundWhatsapp/updateDeviceMetrics), then

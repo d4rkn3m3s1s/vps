@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappReceiptHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, mediaCapturedHandler, whatsappReceiptHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -23,6 +23,8 @@ agentRouter.post('/jobs/:id/progress', asyncHandler(agentProgressHandler));
 agentRouter.post('/heartbeat', asyncHandler(agentHeartbeatHandler));
 agentRouter.post('/device-metrics', asyncHandler(updateDeviceMetricsHandler));
 agentRouter.post('/whatsapp/inbound', asyncHandler(whatsappInboundHandler));
+// Agent media-capture poll → new-media metadata (opt-in FLEET_WA_CAPTURE=1).
+agentRouter.post('/whatsapp/media-captured', asyncHandler(mediaCapturedHandler));
 // Outbound delivery receipt (✓✓ delivered / blue-tick read). Agent-side tick read
 // is a TODO; the endpoint exists so the webhook/enum half is deployable now.
 agentRouter.post('/whatsapp/receipt', asyncHandler(whatsappReceiptHandler));

@@ -18,6 +18,7 @@ export type DeviceHubEvent = {
     | 'job.updated'
     | 'alert.fired'
     | 'whatsapp.message'
+    | 'whatsapp.media'
     | 'provision.progress'
     | 'whatsapp.register.progress'
     | 'instagram.register.progress';

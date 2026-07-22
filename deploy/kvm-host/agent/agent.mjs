@@ -234,11 +234,19 @@ const WA_MSG_STATUS = { 5: 'SENT', 6: 'DELIVERED', 13: 'READ' };
 function waStatusName(code) { return WA_MSG_STATUS[Number(code)] || 'PENDING'; }
 
 // A reusable "chat_row_id for this number" sub-select — LID path UNION direct path.
+// VERIFIED-LIVE FIX: on modern WA every chat is keyed by a LID jid (server='lid'); the
+// real number is reached via jid_map (lid_row_id → jid_row_id). Two subtleties the old
+// filter got wrong, causing empty results (0||||) on real devices:
+//   1. A number can have MORE THAN ONE jid row (e.g. one 's.whatsapp.net' + a second
+//      row) and jid_map may point at either — so we match jid_map's target by user ONLY
+//      (numbers are globally unique), not user+server, or the mapping row is missed.
+//   2. Keep the direct-jid path (older accounts / self-chats where the chat is keyed by
+//      the number's own jid, not a LID) — matched by user, any server.
 function waChatFilter(num) {
   return (
     `c.jid_row_id IN (` +
-    `SELECT jm.lid_row_id FROM jid_map jm JOIN jid j ON j._id=jm.jid_row_id WHERE j.user='${num}' AND j.server='s.whatsapp.net' ` +
-    `UNION SELECT j._id FROM jid j WHERE j.user='${num}' AND j.server='s.whatsapp.net')`
+    `SELECT jm.lid_row_id FROM jid_map jm JOIN jid j ON j._id=jm.jid_row_id WHERE j.user='${num}' ` +
+    `UNION SELECT j._id FROM jid j WHERE j.user='${num}')`
   );
 }
 
@@ -431,26 +439,213 @@ async function readWaChatSummary(serial, number) {
   };
 }
 
-// Account health straight from the device: registered number (wa.db props /
-// registration jid), WhatsApp version, and a coarse "registered?" flag. Reads
-// several sources and merges; returns { number, waVersion, registered } (any field
-// may be null) — always an object when root works, or null when it doesn't.
+// Read a value out of one of WhatsApp's shared_prefs XML files via root. Returns the
+// first <string name="KEY">VALUE</string> match, or null. VERIFIED LIVE: the modern
+// WA build (2.26.x) keeps the registered number in shared_prefs, NOT the props table —
+// registration_jid="905380525622" + cc="90" live in com.whatsapp_preferences_light.xml.
+async function readWaPref(serial, key, files = ['com.whatsapp_preferences_light.xml', 'com.whatsapp_preferences.xml', 'startup_prefs.xml']) {
+  for (const f of files) {
+    const raw = await adbT(serial, ['shell', 'su', '-c', `cat /data/data/com.whatsapp/shared_prefs/${f}`], 6000).catch(() => '');
+    if (!raw) continue;
+    // <string name="cc">90</string>  |  <string name="registration_jid">9053...</string>
+    const m = String(raw).match(new RegExp(`<(?:string|long|int)\\s+name="${key}"(?:\\s+value="([^"]*)")?\\s*>?([^<]*)</?`, 'i'));
+    if (m) {
+      const v = (m[1] !== undefined ? m[1] : m[2]) || '';
+      if (v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+
+// Account health straight from the device: registered number + display name +
+// WhatsApp version + a coarse "registered?" flag. VERIFIED-LIVE FIX: the number is
+// NOT in wa.db props on modern builds (that table lacks registration_jid); it lives in
+// shared_prefs (registration_jid + cc). We read there first, fall back to props, and
+// add the push (display) name from msgstore props. Returns { number, name, waVersion,
+// registered } (any field may be null) — an object when root works, null when it doesn't.
 async function readWaAccountHealth(serial) {
-  // Registered number: props table key 'registration_jid' → "<number>@s.whatsapp.net".
-  const jidRows = await waSql(serial, 'wa', `SELECT value FROM props WHERE key='registration_jid' LIMIT 1`);
-  if (jidRows === null) return null; // root/db unavailable
+  // Primary source: shared_prefs registration_jid (bare number) — VERIFIED LIVE.
   let number = null;
-  if (jidRows.length) {
-    const d = (jidRows[0] || '').replace(/@.*/, '').replace(/[^\d]/g, '');
+  const regJid = await readWaPref(serial, 'registration_jid');
+  if (regJid) {
+    const d = regJid.replace(/@.*/, '').replace(/[^\d]/g, '');
     if (d) number = `+${d}`;
   }
-  // WhatsApp package version via the platform (not the db) — dumpsys is cheap + always
-  // present. Absent → null (we don't fail the whole health read for it).
+  // Fallback: legacy wa.db props table (older builds). null here also tells us whether
+  // root/db is reachable at all — if BOTH the pref read and this fail, treat as no-root.
+  let dbReachable = regJid !== null;
+  if (!number) {
+    const jidRows = await waSql(serial, 'wa', `SELECT value FROM props WHERE key='registration_jid' LIMIT 1`);
+    if (jidRows !== null) {
+      dbReachable = true;
+      if (jidRows.length) {
+        const d = (jidRows[0] || '').replace(/@.*/, '').replace(/[^\d]/g, '');
+        if (d) number = `+${d}`;
+      }
+    }
+  }
+  if (!dbReachable && number === null) return null; // root/db truly unavailable
+  // Display (push) name — msgstore props key 'user_push_name' (VERIFIED LIVE).
+  let name = null;
+  const nameRows = await waSql(serial, 'msgstore', `SELECT value FROM props WHERE key='user_push_name' LIMIT 1`);
+  if (nameRows && nameRows.length && nameRows[0]) name = nameRows[0];
+  // WhatsApp package version via dumpsys — cheap + always present. Absent → null.
   let waVersion = null;
   const dump = await adb(serial, ['shell', 'dumpsys', 'package', 'com.whatsapp']).catch(() => '');
   const vm = String(dump).match(/versionName=([^\s]+)/);
   if (vm) waVersion = vm[1];
-  return { number, waVersion, registered: !!number };
+  return { number, name, waVersion, registered: !!number };
+}
+
+// ── MEDIA FETCH (root pull of a DOWNLOADED media file) ───────────────────────
+// Pull an already-DOWNLOADED media file off the device as base64. VERIFIED LIVE:
+// `adb exec-out su -c "cat <path>"` streams a root-owned file over stdout (dodging the
+// `adb pull` permission wall), and `| base64` makes it safe to carry in JSON. WhatsApp
+// only writes a media file to disk once it's been downloaded (auto-download or a tap);
+// until then message_media.file_path is empty and the bytes live only as an encrypted
+// CDN blob — so this returns { pending:true } for not-yet-downloaded media rather than
+// guessing. Returns { found, pending, items:[{ ts, fromMe, mime, name, size, base64 }] }.
+// `max` caps how many files we base64 (each is inlined into the job result).
+async function readWaFetchMedia(serial, number, limit = 5, maxBytes = 8 * 1024 * 1024) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 20);
+  const where = num ? `WHERE ${waChatFilter(num)}` : '';
+  const sql =
+    `SELECT m.timestamp, m.from_me, mm.mime_type, mm.media_name, mm.file_size, mm.file_path ` +
+    `FROM message_media mm JOIN message m ON m._id=mm.message_row_id JOIN chat c ON c._id=m.chat_row_id ` +
+    `${where} ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null; // root/db unavailable
+  const items = [];
+  let pending = 0;
+  for (const line of rows) {
+    const parts = line.split('|');
+    if (parts.length < 6) continue;
+    const ts = Number(parts[0]) || 0;
+    const fromMe = parts[1] === '1';
+    const mime = parts[2] || '';
+    const name = parts[3] || '';
+    const size = Number(parts[4]) || 0;
+    const path = parts.slice(5).join('|');
+    // No file_path → not downloaded to disk yet (only an encrypted CDN blob exists).
+    if (!path) { pending++; items.push({ ts, fromMe, mime, name, size, base64: null, pending: true }); continue; }
+    // Resolve to an absolute path if WhatsApp stored a relative one.
+    const full = path.startsWith('/') ? path : `/data/media/0/${path}`;
+    // Guard against inlining a huge file: skip base64 if the DB size is over the cap.
+    if (size > maxBytes) { items.push({ ts, fromMe, mime, name, size, base64: null, tooLarge: true }); continue; }
+    // Root-cat the file → base64. exec-out keeps the bytes binary-clean over stdout.
+    const b64 = await adbT(serial, ['exec-out', 'su', '-c', `cat '${full.replace(/'/g, "'\\''")}' | base64`], 20000)
+      .then((s) => String(s).replace(/[\r\n]/g, ''))
+      .catch(() => '');
+    if (b64) items.push({ ts, fromMe, mime, name, size, base64: b64 });
+    else { pending++; items.push({ ts, fromMe, mime, name, size, base64: null, unreadable: true }); }
+  }
+  return { found: items.length, pending, items };
+}
+
+// ── REACTIONS (emoji tepkileri) ──────────────────────────────────────────────
+// Emoji reactions on a peer's messages, from message_add_on_reaction. Returns
+// [{ ts, emoji, fromMe }] newest-first, or null. New WA stores reactions as add-ons.
+async function readWaReactions(serial, number, limit = 50) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const where = num ? `AND ${waChatFilter(num)}` : '';
+  const sql =
+    `SELECT r.timestamp, r.reaction, r.sender_timestamp FROM message_add_on_reaction r ` +
+    `JOIN message_add_on ao ON ao._id=r.message_add_on_row_id ` +
+    `JOIN message m ON m._id=ao.parent_message_row_id JOIN chat c ON c._id=m.chat_row_id ` +
+    `WHERE r.reaction IS NOT NULL ${where} ORDER BY r.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) {
+    // Fallback schema: some builds keep reactions inline on message_add_on.
+    const alt = await waSql(serial, 'msgstore', `SELECT timestamp, reaction FROM message_add_on WHERE reaction IS NOT NULL ORDER BY timestamp DESC LIMIT ${n}`);
+    if (alt === null) return null;
+    return alt.map((l) => { const a = l.indexOf('|'); return a < 0 ? null : { ts: Number(l.slice(0, a)) || 0, emoji: l.slice(a + 1), fromMe: false }; }).filter(Boolean);
+  }
+  return rows
+    .map((line) => { const p = line.split('|'); if (p.length < 2) return null; return { ts: Number(p[0]) || 0, emoji: p[1] || '', fromMe: false }; })
+    .filter(Boolean);
+}
+
+// ── POLLS (anketler) ─────────────────────────────────────────────────────────
+// Polls the account has in its chats, from message_poll + options. Returns
+// [{ ts, question, options:[{ name, votes }] }] newest-first, or null.
+async function readWaPolls(serial, limit = 20) {
+  const n = Math.min(Math.max(1, limit | 0), 100);
+  // VERIFIED-LIVE FIX: message_poll has NO poll_name column — the poll question is the
+  // poll message's own text (message.text_data). Join it for the question text.
+  const sql =
+    `SELECT mp.message_row_id, m.timestamp, substr(m.text_data,1,200) FROM message_poll mp ` +
+    `JOIN message m ON m._id=mp.message_row_id ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  const polls = [];
+  for (const line of rows) {
+    const p = line.split('|');
+    if (p.length < 3) continue;
+    const msgId = p[0];
+    const ts = Number(p[1]) || 0;
+    const question = p.slice(2).join('|');
+    // Option names + vote counts for this poll.
+    const opts = await waSql(serial, 'msgstore',
+      `SELECT po.option_name, (SELECT COUNT(*) FROM message_poll_vote pv WHERE pv.poll_option_id=po._id) ` +
+      `FROM message_poll_option po WHERE po.message_row_id=${Number(msgId) || 0}`);
+    const options = (opts || []).map((o) => { const a = o.lastIndexOf('|'); return { name: a < 0 ? o : o.slice(0, a), votes: a < 0 ? 0 : Number(o.slice(a + 1)) || 0 }; });
+    polls.push({ ts, question, options });
+  }
+  return polls;
+}
+
+// ── READ-BY (grup mesajını kim okudu) ────────────────────────────────────────
+// Per-recipient delivery/read receipts for the account's OWN sent messages in a chat,
+// from receipt_user — in a group this tells you WHICH members read a message. Returns
+// [{ ts, member, deliveredTs, readTs }] or null.
+async function readWaReadBy(serial, number, limit = 50) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  if (!num) return null;
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql =
+    `SELECT m.timestamp, j.user, ru.receipt_device_timestamp, ru.read_timestamp ` +
+    `FROM receipt_user ru JOIN message m ON m._id=ru.message_row_id ` +
+    `JOIN jid j ON j._id=ru.receipt_user_jid_row_id JOIN chat c ON c._id=m.chat_row_id ` +
+    `WHERE ${waChatFilter(num)} AND m.from_me=1 ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => { const p = line.split('|'); if (p.length < 4) return null; const mem = (p[1] || '').replace(/[^\d]/g, ''); return { ts: Number(p[0]) || 0, member: mem ? `+${mem}` : '', deliveredTs: Number(p[2]) || 0, readTs: Number(p[3]) || 0 }; })
+    .filter(Boolean);
+}
+
+// ── STARRED (yıldızlı mesajlar) ──────────────────────────────────────────────
+// The account's starred (bookmarked) messages across all chats. Returns
+// [{ ts, fromMe, peer, text }] newest-first, or null.
+async function readWaStarred(serial, limit = 50) {
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql =
+    `SELECT m.timestamp, m.from_me, COALESCE(jn.user, j.user), substr(m.text_data,1,120) ` +
+    `FROM message m JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `WHERE m.starred=1 ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => { const p = line.split('|'); if (p.length < 4) return null; const peer = (p[2] || '').replace(/[^\d]/g, ''); return { ts: Number(p[0]) || 0, fromMe: p[1] === '1', peer: peer ? `+${peer}` : '', text: p.slice(3).join('|') }; })
+    .filter(Boolean);
+}
+
+// ── LABELS (Business etiketleri + etiketli sohbetler) ────────────────────────
+// WhatsApp Business labels (name/color) + how many chats carry each. Returns
+// [{ id, name, color, chatCount }] or null. Empty array on a non-Business account.
+async function readWaLabels(serial) {
+  // predefined_id > 0 → a built-in WhatsApp label (Unread/Favorites/Groups); 0 → a real
+  // user-created Business label. We surface `predefined` so callers can filter.
+  const rows = await waSql(serial, 'msgstore',
+    `SELECT l._id, l.label_name, l.color_id, l.predefined_id, (SELECT COUNT(*) FROM labeled_jid lj WHERE lj.label_id=l._id) ` +
+    `FROM labels l ORDER BY l.predefined_id`);
+  if (rows === null) return null;
+  return rows
+    .map((line) => { const p = line.split('|'); if (p.length < 5) return null; return { id: p[0], name: p[1] || '', color: Number(p[2]) || 0, predefined: (Number(p[3]) || 0) > 0, chatCount: Number(p[4]) || 0 }; })
+    .filter(Boolean);
 }
 
 // Contact display name for a number from wa.db (rehber/display name). Returns string|null.
@@ -1033,6 +1228,41 @@ async function runJob(job) {
       const h = await readWaAccountHealth(serial);
       if (h === null) return { status: 'NO_ROOT', note: 'Hesap durumu okunamadı (root/db yok)' };
       return { status: 'OK', ...h };
+    }
+    case 'WHATSAPP_FETCH_MEDIA': {
+      // Pull DOWNLOADED media off the device as base64 (root cat). Not-yet-downloaded
+      // media comes back with pending:true (only an encrypted CDN blob exists).
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const r = await readWaFetchMedia(serial, to, Number(p(payload, 'limit', 5)) || 5);
+      if (r === null) return { status: 'NO_ROOT', note: 'Medya okunamadı (root/db yok)', found: 0, pending: 0, items: [] };
+      return { status: 'OK', ...r };
+    }
+    case 'WHATSAPP_REACTIONS': {
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const r = await readWaReactions(serial, to, Number(p(payload, 'limit', 50)) || 50);
+      if (r === null) return { status: 'NO_ROOT', note: 'Tepkiler okunamadı (root/db yok)', count: 0, reactions: [] };
+      return { status: 'OK', count: r.length, reactions: r };
+    }
+    case 'WHATSAPP_POLLS': {
+      const r = await readWaPolls(serial, Number(p(payload, 'limit', 20)) || 20);
+      if (r === null) return { status: 'NO_ROOT', note: 'Anketler okunamadı (root/db yok)', count: 0, polls: [] };
+      return { status: 'OK', count: r.length, polls: r };
+    }
+    case 'WHATSAPP_READ_BY': {
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const r = to ? await readWaReadBy(serial, to, Number(p(payload, 'limit', 50)) || 50) : null;
+      if (r === null) return { status: 'NO_ROOT', note: to ? 'Okuyanlar okunamadı (root/db yok)' : 'to gerekli', count: 0, readers: [] };
+      return { status: 'OK', count: r.length, readers: r };
+    }
+    case 'WHATSAPP_STARRED': {
+      const r = await readWaStarred(serial, Number(p(payload, 'limit', 50)) || 50);
+      if (r === null) return { status: 'NO_ROOT', note: 'Yıldızlı mesajlar okunamadı (root/db yok)', count: 0, starred: [] };
+      return { status: 'OK', count: r.length, starred: r };
+    }
+    case 'WHATSAPP_LABELS': {
+      const r = await readWaLabels(serial);
+      if (r === null) return { status: 'NO_ROOT', note: 'Etiketler okunamadı (root/db yok)', count: 0, labels: [] };
+      return { status: 'OK', count: r.length, labels: r };
     }
 
     case 'WHATSAPP_PROFILE':

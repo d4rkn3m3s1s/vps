@@ -185,6 +185,30 @@ const waAccountHealthSchema = z.object({ deviceId: z.string().min(1) });
 export async function whatsAppAccountHealthHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.waAccountHealth(getWorkspaceId(req), waAccountHealthSchema.parse(req.body)) });
 }
+const waFetchMediaSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(20).optional() });
+export async function whatsAppFetchMediaHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waFetchMedia(getWorkspaceId(req), waFetchMediaSchema.parse(req.body)) });
+}
+const waReactionsSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppReactionsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waReactions(getWorkspaceId(req), waReactionsSchema.parse(req.body)) });
+}
+const waPollsSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(100).optional() });
+export async function whatsAppPollsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waPolls(getWorkspaceId(req), waPollsSchema.parse(req.body)) });
+}
+const waReadBySchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppReadByHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waReadBy(getWorkspaceId(req), waReadBySchema.parse(req.body)) });
+}
+const waStarredSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppStarredHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waStarred(getWorkspaceId(req), waStarredSchema.parse(req.body)) });
+}
+const waLabelsSchema = z.object({ deviceId: z.string().min(1) });
+export async function whatsAppLabelsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waLabels(getWorkspaceId(req), waLabelsSchema.parse(req.body)) });
+}
 
 // Send a media message (image/document) from a device — device-scoped.
 const sendMediaSchema = z.object({

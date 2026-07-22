@@ -57,6 +57,15 @@ enum JobType {
   WHATSAPP_GROUP_MEMBERS
   WHATSAPP_CHAT_SUMMARY
   WHATSAPP_ACCOUNT_HEALTH
+  // Even more root-DB reads: pull downloaded media as base64, emoji reactions,
+  // polls, per-recipient read receipts (who-read-in-group), starred messages,
+  // and Business labels.
+  WHATSAPP_FETCH_MEDIA
+  WHATSAPP_REACTIONS
+  WHATSAPP_POLLS
+  WHATSAPP_READ_BY
+  WHATSAPP_STARRED
+  WHATSAPP_LABELS
   // Fetch a contact's profile: avatar screenshot (cropped to a data-URI) + name/
   // about/last-seen text scraped from the contact-info screen.
   WHATSAPP_PROFILE

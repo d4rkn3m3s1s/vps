@@ -611,7 +611,7 @@ paths:
         '200': { description: '{ data: { jobId, status } } — result: { total, inbound, outbound, media, firstTs, lastTs }' }
   /public/v1/whatsapp/account-health:
     post:
-      summary: Device account health — registered number + WhatsApp version + registered flag (write scope, root-DB)
+      summary: Device account health — registered number + name + WhatsApp version + registered flag (write scope, root-DB)
       security: [ { apiKeyAuth: [] } ]
       requestBody:
         content:
@@ -622,7 +622,99 @@ paths:
               properties:
                 deviceId: { type: string }
       responses:
-        '200': { description: '{ data: { jobId, status } } — result: { number, waVersion, registered }' }
+        '200': { description: '{ data: { jobId, status } } — result: { number, name, waVersion, registered }' }
+  /public/v1/whatsapp/fetch-media:
+    post:
+      summary: Pull a chat''s DOWNLOADED media off the device as base64 (write scope, root-DB; pending for not-yet-downloaded)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: 'E.164 number (omit for whole device)' }
+                limit: { type: integer, minimum: 1, maximum: 20, description: 'default: 5' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { found, pending, items: [{ ts, fromMe, mime, name, size, base64|null, pending? }] }' }
+  /public/v1/whatsapp/reactions:
+    post:
+      summary: Emoji reactions on messages (optionally one chat), from message_add_on_reaction (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: 'E.164 number (omit for whole device)' }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, reactions: [{ ts, emoji, fromMe }] }' }
+  /public/v1/whatsapp/polls:
+    post:
+      summary: Polls (question + options + vote counts), from message_poll (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 100, description: 'default: 20' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, polls: [{ ts, question, options: [{ name, votes }] }] }' }
+  /public/v1/whatsapp/read-by:
+    post:
+      summary: Per-recipient read receipts for own sent messages in a chat — who-read-in-group (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number / group }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, readers: [{ ts, member, deliveredTs, readTs }] }' }
+  /public/v1/whatsapp/starred:
+    post:
+      summary: The account''s starred (bookmarked) messages across all chats (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, starred: [{ ts, fromMe, peer, text }] }' }
+  /public/v1/whatsapp/labels-list:
+    post:
+      summary: WhatsApp Business labels on the device (name/color/chat-count + predefined flag) (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, labels: [{ id, name, color, predefined, chatCount }] }' }
   /public/v1/whatsapp/conversations/labels:
     post:
       summary: Assign categories to a chat (write scope)

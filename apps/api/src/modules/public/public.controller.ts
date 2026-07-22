@@ -299,6 +299,79 @@ export async function accountHealthHandler(req: Request, res: Response): Promise
   res.json({ data: { jobId: job.id, status: job.status } });
 }
 
+// POST /public/v1/whatsapp/fetch-media — pull a chat's DOWNLOADED media off the
+// device as base64 (root). Not-yet-downloaded media comes back pending:true (only an
+// encrypted CDN blob exists on the device until it's opened). write scope.
+const fetchMediaSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(1).optional(),
+  limit: z.coerce.number().int().positive().max(20).optional()
+});
+export async function fetchMediaHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = fetchMediaSchema.parse(req.body);
+  const { job } = await batchService.waFetchMedia(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/reactions — emoji reactions (optionally one chat). write scope.
+const reactionsSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(1).optional(),
+  limit: z.coerce.number().int().positive().max(200).optional()
+});
+export async function reactionsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = reactionsSchema.parse(req.body);
+  const { job } = await batchService.waReactions(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/polls — polls (question + options + vote counts). write scope.
+const pollsSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(100).optional() });
+export async function pollsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = pollsSchema.parse(req.body);
+  const { job } = await batchService.waPolls(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/read-by — per-recipient read receipts for the account's own
+// sent messages in a chat (in a group: WHICH members read a message). write scope.
+const readBySchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function readByHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = readBySchema.parse(req.body);
+  const { job } = await batchService.waReadBy(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/starred — the account's starred (bookmarked) messages. write scope.
+const starredSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function starredHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = starredSchema.parse(req.body);
+  const { job } = await batchService.waStarred(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/labels-list — WhatsApp Business labels (name/color/chat-count
+// + predefined flag). Read-only device labels; distinct from the /labels category API
+// (which manages OUR workspace's chat categories). write scope.
+const labelsListSchema = z.object({ deviceId: z.string().min(1) });
+export async function labelsListHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = labelsListSchema.parse(req.body);
+  const { job } = await batchService.waLabels(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
 // GET /public/v1/whatsapp/messages?deviceId=&limit=&direction=IN|OUT — stored
 // conversation history (inbound captured by the agent + outbound we sent),
 // bodies decrypted. Device-scoped to the caller's workspace.

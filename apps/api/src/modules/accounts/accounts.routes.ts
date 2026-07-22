@@ -44,6 +44,12 @@ import {
   whatsAppGroupMembersHandler,
   whatsAppChatSummaryHandler,
   whatsAppAccountHealthHandler,
+  whatsAppFetchMediaHandler,
+  whatsAppReactionsHandler,
+  whatsAppPollsHandler,
+  whatsAppReadByHandler,
+  whatsAppStarredHandler,
+  whatsAppLabelsHandler,
   sendWhatsAppMediaHandler,
   deleteWhatsAppMessageHandler,
   clearWhatsAppChatHandler,
@@ -133,6 +139,12 @@ accountsRouter.post('/whatsapp/contacts', requireApiKey, authenticateJwt, heavyO
 accountsRouter.post('/whatsapp/group-members', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppGroupMembersHandler));
 accountsRouter.post('/whatsapp/chat-summary', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppChatSummaryHandler));
 accountsRouter.post('/whatsapp/account-health', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppAccountHealthHandler));
+accountsRouter.post('/whatsapp/fetch-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppFetchMediaHandler));
+accountsRouter.post('/whatsapp/reactions', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppReactionsHandler));
+accountsRouter.post('/whatsapp/polls', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppPollsHandler));
+accountsRouter.post('/whatsapp/read-by', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppReadByHandler));
+accountsRouter.post('/whatsapp/starred', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppStarredHandler));
+accountsRouter.post('/whatsapp/labels', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppLabelsHandler));
 accountsRouter.post('/whatsapp/send-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppMediaHandler));
 accountsRouter.post('/whatsapp/delete-message', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(deleteWhatsAppMessageHandler));
 accountsRouter.post('/whatsapp/clear-chat', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(clearWhatsAppChatHandler));

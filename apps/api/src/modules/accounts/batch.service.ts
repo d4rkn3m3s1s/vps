@@ -588,6 +588,43 @@ export class BatchService {
     const payload = { deviceId: input.deviceId } as unknown as JobPayload;
     return { job: await createJobRecord('WHATSAPP_ACCOUNT_HEALTH', payload, input.deviceId, workspaceId) };
   }
+  // Pull DOWNLOADED media off the device as base64 (root cat) — not-yet-downloaded
+  // media comes back pending. Optional `to` scopes to one chat.
+  async waFetchMedia(workspaceId: string | undefined, input: { deviceId: string; to?: string | undefined; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.to ? { to: input.to } : {}), ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_FETCH_MEDIA', payload, input.deviceId, workspaceId) };
+  }
+  // Emoji reactions (optionally scoped to one chat) — message_add_on_reaction.
+  async waReactions(workspaceId: string | undefined, input: { deviceId: string; to?: string | undefined; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.to ? { to: input.to } : {}), ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_REACTIONS', payload, input.deviceId, workspaceId) };
+  }
+  // Polls (question + options + vote counts) — message_poll.
+  async waPolls(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_POLLS', payload, input.deviceId, workspaceId) };
+  }
+  // Per-recipient read receipts for own sent messages in a chat (who-read-in-group) — receipt_user.
+  async waReadBy(workspaceId: string | undefined, input: { deviceId: string; to: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, to: input.to, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_READ_BY', payload, input.deviceId, workspaceId) };
+  }
+  // Starred (bookmarked) messages across all chats — message.starred.
+  async waStarred(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_STARRED', payload, input.deviceId, workspaceId) };
+  }
+  // WhatsApp Business labels (name/color/chat-count + predefined flag) — labels.
+  async waLabels(workspaceId: string | undefined, input: { deviceId: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_LABELS', payload, input.deviceId, workspaceId) };
+  }
 
   // Send a media message (image/document) from a device to a peer. mediaUrl must
   // be a public URL (SSRF-guarded on the agent when it downloads). Device-scoped.

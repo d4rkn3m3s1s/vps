@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
+import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
@@ -55,6 +55,12 @@ publicRouter.post('/v1/whatsapp/contacts', apiRateLimiter, asyncHandler(contacts
 publicRouter.post('/v1/whatsapp/group-members', apiRateLimiter, asyncHandler(groupMembersHandler));
 publicRouter.post('/v1/whatsapp/chat-summary', apiRateLimiter, asyncHandler(chatSummaryHandler));
 publicRouter.post('/v1/whatsapp/account-health', apiRateLimiter, asyncHandler(accountHealthHandler));
+publicRouter.post('/v1/whatsapp/fetch-media', apiRateLimiter, asyncHandler(fetchMediaHandler));
+publicRouter.post('/v1/whatsapp/reactions', apiRateLimiter, asyncHandler(reactionsHandler));
+publicRouter.post('/v1/whatsapp/polls', apiRateLimiter, asyncHandler(pollsHandler));
+publicRouter.post('/v1/whatsapp/read-by', apiRateLimiter, asyncHandler(readByHandler));
+publicRouter.post('/v1/whatsapp/starred', apiRateLimiter, asyncHandler(starredHandler));
+publicRouter.post('/v1/whatsapp/labels-list', apiRateLimiter, asyncHandler(labelsListHandler));
 
 // ── One-click provision + WhatsApp registration (write scope, heavily throttled
 // because they spin up instances / rent-free operator numbers and drive a real

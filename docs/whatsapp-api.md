@@ -38,7 +38,7 @@ Anahtarlar `read`, `write` veya `admin` kapsamına sahip olabilir.
 | İşlem türü | Gereken kapsam |
 |---|---|
 | **Okuma** (GET): cihazlar, mesajlar, sohbetler, istatistik, etiketler | Herhangi bir geçerli anahtar |
-| **Yazma / cihaz sürme** (POST): send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, etiket oluştur/ata, sohbet durumu | `write` **veya** `admin` |
+| **Yazma / cihaz sürme** (POST): send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, fetch-media, reactions, polls, read-by, starred, labels-list, etiket oluştur/ata, sohbet durumu | `write` **veya** `admin` |
 
 Yetersiz kapsamda `403 INSUFFICIENT_SCOPE` döner.
 
@@ -53,7 +53,8 @@ Tüm başarılı yanıtlar `{ "data": ... }` zarfıyla döner. Hatalar
 
 > **Önemli:** Cihaz süren işlerin (send, send-media, delete-message, clear-chat,
 > block, profile, blocklist, mynumber, ve root-DB okuma uçları: receipts, media,
-> calls, search, unread, contacts, group-members, chat-summary, account-health)
+> calls, search, unread, contacts, group-members, chat-summary, account-health,
+> fetch-media, reactions, polls, read-by, starred, labels-list)
 > hepsi **asenkron** çalışır. Root-DB okuma uçları ekran gezmediği için çok daha
 > hızlıdır (~1–2 sn) — bunları `GET /v1/jobs/:jobId/wait` ile tek istekte bekleyin.
 
@@ -689,7 +690,109 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/account-health \
   -d '{ "deviceId": "cmr3..." }'
 ```
 
-İş sonucu (örnek): `{ "status": "OK", "number": "+90…", "waVersion": "2.24.x", "registered": true }`
+İş sonucu (örnek): `{ "status": "OK", "number": "+90…", "name": "Ad Soyad", "waVersion": "2.26.x", "registered": true }`
+(Numara cihazın `shared_prefs`'inden, ad `user_push_name`'den okunur; ikisi de yoksa `registered:false`.)
+
+---
+
+### POST /v1/whatsapp/fetch-media
+
+Bir sohbetteki **indirilmiş** medya dosyalarını cihazdan **base64** olarak çeker
+(root ile). WhatsApp bir medyayı yalnızca **açıldığında/indirildiğinde** diske
+yazar; henüz inmemiş medya için (sadece şifreli CDN blob'u varken) `pending: true`
+döner — base64 dönmez. **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | – | Kişi numarası (yoksa son medyalar, tüm cihaz) |
+| `limit` | integer | – | Dosya sayısı (1–20, varsayılan 5) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/fetch-media \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "to": "90XXXXXXXXXX", "limit": 5 }'
+```
+
+İş sonucu (örnek):
+`{ "status": "OK", "found": 2, "pending": 1, "items": [ { "ts": …, "fromMe": false, "mime": "image/jpeg", "name": "IMG.jpg", "size": 84213, "base64": "/9j/4AAQ…" }, { "mime": "video/mp4", "base64": null, "pending": true } ] }`
+(İnmemiş medya `pending:true`; 8 MB üstü dosya `tooLarge:true` ile base64'süz döner.)
+
+---
+
+### POST /v1/whatsapp/reactions
+
+Mesajlara verilen **emoji tepkilerini** okur (`message_add_on_reaction`). İsteğe
+bağlı `to` ile tek sohbete daraltılır. **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | – | Kişi numarası (yoksa tüm cihaz) |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+İş sonucu (örnek): `{ "status": "OK", "count": 3, "reactions": [ { "ts": …, "emoji": "👍", "fromMe": false } ] }`
+
+---
+
+### POST /v1/whatsapp/polls
+
+Hesabın sohbetlerindeki **anketleri** (soru + seçenekler + oy sayıları) okur
+(`message_poll`). **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `limit` | integer | – | Anket sayısı (1–100, varsayılan 20) |
+
+İş sonucu (örnek): `{ "status": "OK", "count": 1, "polls": [ { "ts": …, "question": "Nerede buluşalım?", "options": [ { "name": "Kafe", "votes": 3 }, { "name": "Park", "votes": 1 } ] } ] }`
+
+---
+
+### POST /v1/whatsapp/read-by
+
+Hesabın bir sohbette **gönderdiği** mesajları alıcı-bazında kimin
+okuduğunu/aldığını verir (`receipt_user`). Grupta **hangi üyenin** mesajı
+okuduğunu gösterir. **write kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | ✔ | Sohbet (kişi/grup numarası) |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+İş sonucu (örnek): `{ "status": "OK", "count": 2, "readers": [ { "ts": …, "member": "+90…", "deliveredTs": …, "readTs": … } ] }`
+(`readTs=0` → henüz okumamış, sadece iletilmiş.)
+
+---
+
+### POST /v1/whatsapp/starred
+
+Hesabın **yıldızlı (kaydedilmiş)** mesajlarını tüm sohbetlerden okur. **write
+kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+İş sonucu (örnek): `{ "status": "OK", "count": 1, "starred": [ { "ts": …, "fromMe": false, "peer": "+90…", "text": "önemli not" } ] }`
+
+---
+
+### POST /v1/whatsapp/labels-list
+
+Cihazdaki **WhatsApp Business etiketlerini** (ad/renk/sohbet-sayısı) okur.
+`predefined:true` → WhatsApp'ın hazır etiketi (Okunmamış/Favoriler/Gruplar);
+`false` → kullanıcının oluşturduğu Business etiketi. Bu, **cihazdaki** etiketleri
+okur — çalışma alanının kendi kategori API'sinden (`/labels`) farklıdır. **write
+kapsamı gerekir.**
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+
+İş sonucu (örnek): `{ "status": "OK", "count": 3, "labels": [ { "id": "1", "name": "Müşteri", "color": 5, "predefined": false, "chatCount": 12 } ] }`
 
 ---
 
@@ -953,7 +1056,13 @@ olduğunda sonuç `result` alanında durur; `FAILED` ise sebep `error` alanında
 | `WHATSAPP_CONTACTS` | `{ "status": "OK", "count": 2, "contacts": [ { "number": "+90…", "name": "…" } ] }` |
 | `WHATSAPP_GROUP_MEMBERS` | `{ "status": "OK", "count": 2, "members": [ { "number": "+90…", "admin": true } ] }` |
 | `WHATSAPP_CHAT_SUMMARY` | `{ "status": "OK", "total": 240, "inbound": 130, "outbound": 110, "media": 18 }` |
-| `WHATSAPP_ACCOUNT_HEALTH` | `{ "status": "OK", "number": "+90…", "waVersion": "2.24.x", "registered": true }` |
+| `WHATSAPP_ACCOUNT_HEALTH` | `{ "status": "OK", "number": "+90…", "name": "…", "waVersion": "2.26.x", "registered": true }` |
+| `WHATSAPP_FETCH_MEDIA` | `{ "status": "OK", "found": 2, "pending": 1, "items": [ { "mime": "image/jpeg", "size": …, "base64": "…" } ] }` |
+| `WHATSAPP_REACTIONS` | `{ "status": "OK", "count": 3, "reactions": [ { "ts": …, "emoji": "👍" } ] }` |
+| `WHATSAPP_POLLS` | `{ "status": "OK", "count": 1, "polls": [ { "question": "…", "options": [ { "name": "…", "votes": 3 } ] } ] }` |
+| `WHATSAPP_READ_BY` | `{ "status": "OK", "count": 2, "readers": [ { "member": "+90…", "deliveredTs": …, "readTs": … } ] }` |
+| `WHATSAPP_STARRED` | `{ "status": "OK", "count": 1, "starred": [ { "peer": "+90…", "text": "…" } ] }` |
+| `WHATSAPP_LABELS` | `{ "status": "OK", "count": 3, "labels": [ { "name": "…", "predefined": false, "chatCount": 12 } ] }` |
 
 > Cihaz root'lu değilse root-DB okuma işleri `{ "status": "NO_ROOT", "note": "…" }`
 > ile döner (hata değil — o cihazda o okuma yapılamıyor demektir).
@@ -1190,7 +1299,7 @@ Sınırlar uç türüne göre farklıdır — tek bir "IP başına" sınır **yo
 
 | Uç grubu | Sınır | Anahtar (bucket) |
 |---|---|---|
-| Yazma POST'ları (send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, `/register/:id/otp`, `/register/:id/verify-method`) | **~120 istek/dakika** | IP başına |
+| Yazma POST'ları (send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, fetch-media, reactions, polls, read-by, starred, labels-list, `/register/:id/otp`, `/register/:id/verify-method`) | **~120 istek/dakika** | IP başına |
 | Ağır işlemler: `POST /v1/devices/provision`, `POST /v1/whatsapp/register` | **~20 istek/dakika** | **API anahtarı başına** |
 | GET okuma uçları (devices, messages, conversations, thread, stats, labels, provision-status, register-status, jobs, jobs/:id/wait) + etiket/durum POST'ları (`/labels`, `/conversations/labels`, `/conversations/state`) | **Sınırsız** | — |
 

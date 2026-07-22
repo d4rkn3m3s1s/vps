@@ -10,6 +10,7 @@
 set -uo pipefail
 
 WP="/opt/fleet-agent/waydroid/wd-proxy.sh"
+WD_RUN="/opt/fleet-agent/waydroid/wd-run.sh"   # zombie instance restart (self-heal)
 LOG="/var/log/wd-health-watch.log"
 ADB="${FLEET_ADB:-/usr/bin/adb}"
 # Host'un kendi (datacenter) çıkış IP'si — bir cihaz BUNDAN çıkıyorsa proxy sızmış demektir.
@@ -91,10 +92,40 @@ while IFS='|' read -r inst meta_cc phone; do
       notify AUTO_RECONNECT "$inst" "Cihaz ADB'den erişilemiyordu, otomatik yeniden baglandi" true
       RECONN=$((RECONN+1))
     else
-      log "✗ $inst: erişilemiyor, reconnect başarısız"
-      notify UNREACHABLE "$inst" "Cihaz ADB'den erişilemiyor, reconnect basarisiz" false
-      UNREACH=$((UNREACH+1))
-      continue
+      # ★ZOMBIE-TESPİT + INSTANCE-RESTART: adb reconnect YETMEDİ. Uzun-çalışan Waydroid
+      # instance'ları zamanla İÇERİDEN çöküyor (Android donuyor: ADB-daemon ölü + ping
+      # kayıp) ama host-wrapper (wd-run.sh/weston) ayakta kalıyor → "zombie". adb
+      # reconnect bağlanacak bir daemon bulamaz. TEK çözüm instance'ı taze boot etmek.
+      # KANITLANDI: mi68 + mi7 aynı şekilde çöktü, sadece reconnect kurtaramadı.
+      # Şart: host-wrapper AYAKTA (wd-run.sh $inst süreci var) → gerçekten bu instance,
+      # yeni provision değil. wd-run zombie'yi temizleyip Android'i sıfırdan boot eder.
+      if pgrep -f "wd-run.sh $inst" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst\|lxc-start.*waydroid.$inst" >/dev/null 2>&1; then
+        log "🧟 $inst: ADB reconnect başarısız + host-süreç ayakta = ZOMBIE → runtime temizlenip yeniden başlatılıyor"
+        # ★TAM RUNTIME TEMİZLİĞİ ŞART, sonra wd-run. Sadece wd-run.sh çağırmak YETMEZ:
+        # bir zombie'de asılı bir lxc-start ve BOZUK DBus soketi kalır; wd-run yeni boot'u
+        # başlatsa da container o bozuk runtime'a bağlanamaz ve ~30s sonra kendini durdurur
+        # ("Terminating session because the container was stopped" + DBus Disconnected).
+        # KANITLANDI (mi7): asılı lxc-start + /run/xdg-mi7 DBus kalıntısı boot'u engelledi;
+        # bunları silince temiz boot etti. Öldür → runtime sil → taze wd-run.
+        pkill -9 -f "wayland-$inst" 2>/dev/null || true
+        pkill -9 -f "xdg-$inst" 2>/dev/null || true
+        pkill -9 -f "waydroid.*--instance $inst" 2>/dev/null || true
+        pkill -9 -f "lxc-start.*waydroid.$inst" 2>/dev/null || true
+        pkill -9 -f "dnsmasq.*waydroid-$inst" 2>/dev/null || true
+        lxc-stop -n waydroid -P "/var/lib/waydroid.$inst/lxc" -k 2>/dev/null || true
+        rm -rf "/run/xdg-$inst" "/run/wd-$inst" "/run/waydroid-$inst-lxc" 2>/dev/null || true
+        sleep 3
+        # setsid + arka plan: wd-run uzun sürer (~90s boot), bu döngüyü bloklamasın.
+        setsid bash "$WD_RUN" "$inst" >/dev/null 2>&1 < /dev/null &
+        notify AUTO_RECONNECT "$inst" "Instance cokmustu (zombie) - runtime temizlenip yeniden baslatildi" true
+        RECONN=$((RECONN+1))
+        continue  # boot devam ediyor; proxy'yi bir sonraki tur (cihaz ONLINE olunca) uygular
+      else
+        log "✗ $inst: erişilemiyor, reconnect başarısız (host-wrapper da yok)"
+        notify UNREACHABLE "$inst" "Cihaz ADB'den erişilemiyor, reconnect basarisiz" false
+        UNREACH=$((UNREACH+1))
+        continue
+      fi
     fi
   fi
 

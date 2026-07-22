@@ -99,10 +99,28 @@ async function adb(serial, args) {
 // WhatsApp Conversation screen under Waydroid) can HANG indefinitely instead of
 // erroring — a plain await never returns and no .catch() fires. This kills the
 // child after `ms` and rejects, so callers can fall back. Returns stdout.
-async function adbT(serial, args, ms = 12000) {
+async function adbT(serial, args, ms = 12000, stdin = undefined) {
   const full = serial ? ['-s', serial, ...args] : args;
-  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
-  return stdout;
+  // No stdin → the fast, simple execFile path (unchanged).
+  if (stdin === undefined) {
+    const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
+    return stdout;
+  }
+  // WITH stdin → spawn so we can write to the child's stdin. This lets callers feed data
+  // (e.g. SQL) on stdin instead of quoting it into the command — the adb→su→sh→sqlite
+  // layers mangle any inline SQL ("syntax error near x27SELECT"), but stdin passes through
+  // cleanly. promisify(execFile) can't do stdin (that's execFileSync-only), hence spawn.
+  return await new Promise((resolve, reject) => {
+    const child = spawn(ADB, full, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let done = false;
+    const finish = (fn, v) => { if (!done) { done = true; clearTimeout(timer); fn(v); } };
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(reject, new Error('adbT stdin timeout')); }, ms);
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.on('error', (e) => finish(reject, e));
+    child.on('close', () => finish(resolve, out));
+    try { child.stdin.write(stdin); child.stdin.end(); } catch (e) { finish(reject, e); }
+  });
 }
 
 // Run a shell command as root via Magisk su. Used by the inbound notification
@@ -122,6 +140,89 @@ async function adbSu(serial, cmd) {
   } catch {
     return '';
   }
+}
+
+// ── ROOT SQLITE (stdin-safe) ─────────────────────────────────────────────────
+// Run SQL against a WhatsApp DB as root, feeding the SQL on STDIN (NOT inline) so the
+// adb→su→sh→sqlite quote layers can't mangle it. Appends a numeric sentinel row (the
+// caller must include `SELECT 987654321;` LAST) so we can tell "query ran, empty result"
+// from "root/sqlite unavailable" — returns null on the latter, an array of rows on the
+// former. Rows are '|'-joined columns (sqlite default). db: 'msgstore'|'wa'.
+async function waSql(serial, db, sql) {
+  const path = `/data/data/com.whatsapp/databases/${db}.db`;
+  const full = sql.trimEnd().endsWith(';') ? `${sql}\nSELECT 987654321;\n` : `${sql};\nSELECT 987654321;\n`;
+  const raw = await adbT(serial, ['shell', 'su', '-c', `sqlite3 ${path}`], 8000, full).catch(() => '');
+  const lines = String(raw).split('\n');
+  const idx = lines.findIndex((l) => l.trim() === '987654321');
+  if (idx < 0) return null; // sentinel missing → root/sqlite/db unavailable
+  return lines.slice(0, idx).filter((l) => l.length > 0);
+}
+
+// Read a peer's messages straight from msgstore.db (no UI). Resolves the modern LID
+// mapping (jid_map) AND the classic direct s.whatsapp.net chat with a UNION, so it works
+// on both new and old accounts. Returns [{ fromMe, ts, text }] newest-first, or null if
+// root/db is unavailable (caller falls back to UI scraping). Text is sqlite-escaped-safe
+// because it travels on stdin; we only split on the FIRST two '|' so message bodies that
+// contain '|' stay intact.
+async function readWaMessages(serial, number, limit = 50) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  if (!num) return null;
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  // Two chat-resolution paths UNION'd: (A) LID → jid_map → number, (B) direct number jid.
+  const sql =
+    `SELECT m.from_me, m.timestamp, m.text_data FROM message m ` +
+    `JOIN chat c ON c._id=m.chat_row_id ` +
+    `JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id ` +
+    `JOIN jid j ON j._id=jm.jid_row_id ` +
+    `WHERE j.user='${num}' AND j.server='s.whatsapp.net' AND m.text_data IS NOT NULL ` +
+    `UNION ` +
+    `SELECT m.from_me, m.timestamp, m.text_data FROM message m ` +
+    `JOIN chat c ON c._id=m.chat_row_id ` +
+    `JOIN jid j ON j._id=c.jid_row_id ` +
+    `WHERE j.user='${num}' AND j.server='s.whatsapp.net' AND m.text_data IS NOT NULL ` +
+    `ORDER BY 2 DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const a = line.indexOf('|');
+      const b = line.indexOf('|', a + 1);
+      if (a < 0 || b < 0) return null;
+      return { fromMe: line.slice(0, a) === '1', ts: Number(line.slice(a + 1, b)) || 0, text: line.slice(b + 1) };
+    })
+    .filter(Boolean);
+}
+
+// List the device's conversations straight from msgstore.db (no UI) — like reading the
+// WhatsApp home screen via SQL. Returns [{ peer, unread, ts, lastText }] newest-first, or
+// null if root/db is unavailable. New WA builds key EVERY chat by a LID, so we resolve the
+// real number through jid_map (falling back to the direct jid.user when there's no map).
+async function readWaConversations(serial, limit = 50) {
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql =
+    `SELECT COALESCE(jn.user, j.user), c.unseen_message_count, c.sort_timestamp, substr(lm.text_data,1,120) ` +
+    `FROM chat c JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id ` +
+    `LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `LEFT JOIN message lm ON lm._id=c.last_message_row_id ` +
+    `WHERE c.sort_timestamp>0 AND COALESCE(jn.server,j.server) IN ('s.whatsapp.net','lid') ` +
+    `ORDER BY c.sort_timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const parts = line.split('|');
+      if (parts.length < 3) return null;
+      const peer = (parts[0] || '').replace(/[^\d]/g, '');
+      if (!peer) return null;
+      return {
+        peer: `+${peer}`,
+        unread: Number(parts[1]) || 0,
+        ts: Number(parts[2]) || 0,
+        lastText: parts.slice(3).join('|') // body may contain '|'
+      };
+    })
+    .filter(Boolean);
 }
 
 // Map an E.164 phone number's calling code → ISO-2 country (mirrors the API's
@@ -633,6 +734,13 @@ async function runJob(job) {
 
     case 'WHATSAPP_READ':
       return whatsappRead(serial, payload);
+
+    case 'WHATSAPP_CONVERSATIONS': {
+      // List the device's chats straight from msgstore.db (no UI, zero ban surface).
+      const convos = await readWaConversations(serial, Number(p(payload, 'limit', 50)) || 50);
+      if (convos === null) return { status: 'NO_ROOT', note: 'Sohbet listesi okunamadı (root/db yok)', count: 0, conversations: [] };
+      return { status: 'OK', count: convos.length, conversations: convos };
+    }
 
     case 'WHATSAPP_PROFILE':
       return whatsappProfile(serial, payload);
@@ -2836,6 +2944,15 @@ async function whatsappSend(serial, payload) {
   // report the ACTUAL reason (account review / ban / rate-limit) instead of hanging.
   if (!chatOpened) {
     const notice = await h.screenText().catch(() => '');
+    // ★BAN detection via the ACTIVITY name first — the most reliable signal. WhatsApp's
+    // ban screen is BanAppealActivity ("This account can't use WhatsApp" + REQUEST/
+    // REVIEW). VERIFIED LIVE (mi7 +355…): the account was banned but agent reported a
+    // vague CHAT_NOT_OPENED, because the old text regex missed "can't use WhatsApp" (no
+    // banned/suspended/violat word). So the operator kept retrying a dead account.
+    const focBan = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/BanAppeal|userban/i.test(focBan) || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz/i.test(notice)) {
+      return { status: 'ACCOUNT_BANNED', note: 'Bu WhatsApp hesabı YASAKLI (ban) — mesaj gönderilemez, hesap ölü', to, screenTexts: notice.slice(0, 400) };
+    }
     if (/account.{0,3}(is|being)?.{0,3}(in )?review|hesab\w* incelen|inceleme|no longer restricted/i.test(notice)) {
       return { status: 'ACCOUNT_REVIEW', note: 'Bu WhatsApp hesabı incelemede/kısıtlı — mesaj gönderilemez (genelde 24s sürer)', to, screenTexts: notice.slice(0, 400) };
     }
@@ -4466,6 +4583,19 @@ async function registerTelegram(job, legacyPayload) {
 async function whatsappRead(serial, payload) {
   const from = String(p(payload, 'from', '')).trim();
   const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+
+  // ── ★ROOT FAST PATH (~1s vs ~6s, and NEVER changes the screen → zero ban surface):
+  // read the thread straight from msgstore.db instead of deep-linking the chat and
+  // scraping message_text bubbles off the UI. Resolves the modern LID mapping so it works
+  // on new WA builds. Only when we have a NUMBER (to); name-only (from) still needs the UI
+  // to locate the chat. Falls through to the UI scrape if root/db is unavailable (null).
+  if (to) {
+    const msgs = await readWaMessages(serial, to, 50).catch(() => null);
+    if (msgs) {
+      return { status: 'OK', count: msgs.length, messages: msgs.map((m) => m.text).slice(-50), source: 'db' };
+    }
+  }
+
   const h = waHelpers(serial);
   await h.ensureTouch();
   await h.ensureAdbKeyboard();
@@ -4946,8 +5076,40 @@ async function whatsappBlock(serial, payload) {
 async function whatsappBlocklist(serial /*, payload */) {
   const h = waHelpers(serial);
   await h.ensureTouch();
-  const { sw, sh } = await wmSize(serial);
 
+  // ── ★ROOT FAST PATH (~1s vs ~34s): read the block list straight from WhatsApp's DB.
+  // The UI walk below is Settings → Privacy → Blocked contacts — 3 screens, a dump+tap
+  // each, ~34s (measured live). wa.db's wa_block_list table holds one row per blocked
+  // contact as "<number>@s.whatsapp.net" (schema: jid TEXT). Reading it needs no UI, no
+  // screen change → zero ban surface, and is exact. Falls through to the UI walk only if
+  // root/sqlite/db are unavailable.
+  // ── ★ROOT FAST PATH (~1s vs ~34s): read the block list from wa.db instead of walking
+  // Settings → Privacy → Blocked (3 screens, ~34s live). wa_block_list holds one row per
+  // blocked contact as "<number>@s.whatsapp.net". We run sqlite3 UNDER su and feed the
+  // SQL on STDIN via `sqlite-cli.sh` (a tiny host-side helper) — NOT inline, because the
+  // adb→su→sh→sqlite quote layers mangle any inline SQL ("syntax error near x27SELECT").
+  // A sentinel line (999999) proves sqlite actually ran, so an empty result is a real
+  // "nobody blocked", not a failed query. Falls through to the UI walk if root/sqlite/db
+  // are unavailable (no sentinel).
+  {
+    const raw = await adbT(
+      serial,
+      ['shell', 'su', '-c', 'sqlite3 /data/data/com.whatsapp/databases/wa.db'],
+      8000,
+      'SELECT jid FROM wa_block_list;\nSELECT 999999;\n'
+    ).catch(() => '');
+    if (/(^|\n)999999(\n|$)/.test(String(raw))) {
+      const blocked = String(raw)
+        .split('\n')
+        .map((l) => (l.match(/^(\d{6,15})@/) || [])[1])
+        .filter(Boolean)
+        .map((n) => `+${n}`);
+      return { status: 'OK', count: blocked.length, blocked };
+    }
+    // else: root/sqlite unavailable → fall through to the UI walk below.
+  }
+
+  const { sw, sh } = await wmSize(serial);
   const ok = await waOpenSettings(serial, h);
   if (!ok) return { status: 'NO_LIST', note: 'Ayarlar ekranı açılamadı', blocked: [], count: 0 };
 
@@ -5032,6 +5194,26 @@ async function whatsappMyNumber(serial /*, payload */) {
   const h = waHelpers(serial);
   await h.ensureTouch();
   const looksPhone = (t) => /^\+?\d[\d\s()+-]{8,}$/.test(String(t || '').trim());
+
+  // ── ★ROOT FAST PATH (~1s, 100% reliable): read the registered number straight from
+  // WhatsApp's own prefs file. The UI paths below are FRAGILE — the self-chat "(You)"
+  // row only exists if the account ever messaged itself, and the Settings→Profile walk
+  // often fails to find the number on the new WA layout → "okunamadı" (the #1 error in
+  // the live logs). registration_jid holds the full E.164 (VERIFIED across mi9/mi22/mi27:
+  // 905394660382 / 905392555512 / 355683175346). No UI navigation → no screen change →
+  // zero ban surface. Falls through to the UI paths only if root/prefs are unavailable.
+  {
+    const prefs = await adbSu(
+      serial,
+      "cat /data/data/com.whatsapp/shared_prefs/com.whatsapp_preferences_light.xml 2>/dev/null"
+    ).catch(() => '');
+    const jid = (String(prefs).match(/registration_jid">(\d{8,15})/) || [])[1];
+    if (jid) return { status: 'OK', number: `+${jid}` };
+    // Secondary: assemble from cc + ph if registration_jid is absent on some builds.
+    const cc = (String(prefs).match(/"cc">(\d{1,4})/) || [])[1];
+    const ph = (String(prefs).match(/"ph">(\d{6,14})/) || [])[1];
+    if (cc && ph) return { status: 'OK', number: `+${cc}${ph}` };
+  }
 
   // ── FAST PATH (~5s vs ~22s): the chat list shows the account's own number as a
   // self-chat row "＋90 … (You)". Open Home, take ONE dump, and read it directly —

@@ -531,6 +531,40 @@ export class BatchService {
     return { job };
   }
 
+  // ── Root-DB read jobs (no UI on the device — read WhatsApp's own SQLite). All
+  // dispatch a job the agent answers from msgstore.db/wa.db; the result lands on
+  // Job.result. Same shape as myNumber: assert device, record job, return it.
+  async waReceipts(workspaceId: string | undefined, input: { deviceId: string; to: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, to: input.to, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_RECEIPTS', payload, input.deviceId, workspaceId) };
+  }
+  async waMedia(workspaceId: string | undefined, input: { deviceId: string; to?: string | undefined; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.to ? { to: input.to } : {}), ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_MEDIA', payload, input.deviceId, workspaceId) };
+  }
+  async waCalls(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_CALLS', payload, input.deviceId, workspaceId) };
+  }
+  async waSearch(workspaceId: string | undefined, input: { deviceId: string; query: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, query: input.query, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_SEARCH', payload, input.deviceId, workspaceId) };
+  }
+  async waUnread(workspaceId: string | undefined, input: { deviceId: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_UNREAD', payload, input.deviceId, workspaceId) };
+  }
+  async waConversations(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_CONVERSATIONS', payload, input.deviceId, workspaceId) };
+  }
+
   // Send a media message (image/document) from a device to a peer. mediaUrl must
   // be a public URL (SSRF-guarded on the agent when it downloads). Device-scoped.
   async sendMedia(

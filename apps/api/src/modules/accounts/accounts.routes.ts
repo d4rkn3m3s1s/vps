@@ -34,6 +34,12 @@ import {
   blockWhatsAppContactHandler,
   listWhatsAppBlockedHandler,
   whatsAppMyNumberHandler,
+  whatsAppReceiptsHandler,
+  whatsAppMediaHandler,
+  whatsAppCallsHandler,
+  whatsAppSearchHandler,
+  whatsAppUnreadHandler,
+  whatsAppConversationsHandler,
   sendWhatsAppMediaHandler,
   deleteWhatsAppMessageHandler,
   clearWhatsAppChatHandler,
@@ -112,6 +118,13 @@ accountsRouter.post('/whatsapp/blocklist', requireApiKey, authenticateJwt, heavy
 
 // Own number, media send, message delete, and clear chat — device-scoped.
 accountsRouter.post('/whatsapp/mynumber', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppMyNumberHandler));
+// Root-DB read endpoints (no UI on device): receipts, media, calls, search, unread, conversations.
+accountsRouter.post('/whatsapp/receipts', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppReceiptsHandler));
+accountsRouter.post('/whatsapp/media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppMediaHandler));
+accountsRouter.post('/whatsapp/calls', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppCallsHandler));
+accountsRouter.post('/whatsapp/search', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppSearchHandler));
+accountsRouter.post('/whatsapp/unread', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppUnreadHandler));
+accountsRouter.post('/whatsapp/conversations', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppConversationsHandler));
 accountsRouter.post('/whatsapp/send-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppMediaHandler));
 accountsRouter.post('/whatsapp/delete-message', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(deleteWhatsAppMessageHandler));
 accountsRouter.post('/whatsapp/clear-chat', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(clearWhatsAppChatHandler));

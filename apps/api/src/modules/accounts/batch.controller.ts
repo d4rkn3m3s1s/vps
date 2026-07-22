@@ -144,6 +144,32 @@ export async function whatsAppMyNumberHandler(req: Request, res: Response): Prom
   res.json({ data: await batchService.myNumber(getWorkspaceId(req), input) });
 }
 
+// ── Root-DB read endpoints (no UI on device — read WhatsApp's own SQLite) ─────
+const waReceiptsSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1), limit: z.coerce.number().int().positive().max(100).optional() });
+export async function whatsAppReceiptsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waReceipts(getWorkspaceId(req), waReceiptsSchema.parse(req.body)) });
+}
+const waMediaSchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1).optional(), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppMediaHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waMedia(getWorkspaceId(req), waMediaSchema.parse(req.body)) });
+}
+const waCallsSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppCallsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waCalls(getWorkspaceId(req), waCallsSchema.parse(req.body)) });
+}
+const waSearchSchema = z.object({ deviceId: z.string().min(1), query: z.string().min(1).max(100), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppSearchHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waSearch(getWorkspaceId(req), waSearchSchema.parse(req.body)) });
+}
+const waUnreadSchema = z.object({ deviceId: z.string().min(1) });
+export async function whatsAppUnreadHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waUnread(getWorkspaceId(req), waUnreadSchema.parse(req.body)) });
+}
+const waConversationsSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(200).optional() });
+export async function whatsAppConversationsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waConversations(getWorkspaceId(req), waConversationsSchema.parse(req.body)) });
+}
+
 // Send a media message (image/document) from a device — device-scoped.
 const sendMediaSchema = z.object({
   deviceId: z.string().min(1),

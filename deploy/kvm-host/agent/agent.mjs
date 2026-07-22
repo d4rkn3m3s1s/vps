@@ -225,6 +225,119 @@ async function readWaConversations(serial, limit = 50) {
     .filter(Boolean);
 }
 
+// ── ROOT-DB READ HELPERS (msgstore.db / wa.db, no UI) ────────────────────────
+// All share the LID-resolving chat lookup: new WhatsApp keys every chat by a LID
+// (jid_map.lid_row_id → the real number jid). Each helper returns null on root/db
+// failure so callers can fall back. status codes (VERIFIED LIVE across mi2/4/8/11):
+//   5 = SENT (single tick) · 6 = DELIVERED (double grey) · 13 = READ (blue).
+const WA_MSG_STATUS = { 5: 'SENT', 6: 'DELIVERED', 13: 'READ' };
+function waStatusName(code) { return WA_MSG_STATUS[Number(code)] || 'PENDING'; }
+
+// A reusable "chat_row_id for this number" sub-select — LID path UNION direct path.
+function waChatFilter(num) {
+  return (
+    `c.jid_row_id IN (` +
+    `SELECT jm.lid_row_id FROM jid_map jm JOIN jid j ON j._id=jm.jid_row_id WHERE j.user='${num}' AND j.server='s.whatsapp.net' ` +
+    `UNION SELECT j._id FROM jid j WHERE j.user='${num}' AND j.server='s.whatsapp.net')`
+  );
+}
+
+// Outbound delivery/read status for a peer's recent sent messages (tick tracking).
+// Returns [{ ts, status, text }] newest-first, or null.
+async function readWaReceipts(serial, number, limit = 20) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  if (!num) return null;
+  const n = Math.min(Math.max(1, limit | 0), 100);
+  const sql =
+    `SELECT m.timestamp, m.status, substr(m.text_data,1,80) FROM message m JOIN chat c ON c._id=m.chat_row_id ` +
+    `WHERE ${waChatFilter(num)} AND m.from_me=1 AND m.text_data IS NOT NULL ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const a = line.indexOf('|'), b = line.indexOf('|', a + 1);
+      if (a < 0 || b < 0) return null;
+      return { ts: Number(line.slice(0, a)) || 0, status: waStatusName(line.slice(a + 1, b)), text: line.slice(b + 1) };
+    })
+    .filter(Boolean);
+}
+
+// Media inventory for a peer (or whole device if number omitted). Returns
+// [{ ts, fromMe, mime, name, size, caption, path }] newest-first, or null.
+async function readWaMedia(serial, number, limit = 50) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const where = num ? `WHERE ${waChatFilter(num)}` : '';
+  const sql =
+    `SELECT m.timestamp, m.from_me, mm.mime_type, mm.media_name, mm.file_size, substr(mm.media_caption,1,60), mm.file_path ` +
+    `FROM message_media mm JOIN message m ON m._id=mm.message_row_id JOIN chat c ON c._id=m.chat_row_id ` +
+    `${where} ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const p = line.split('|');
+      if (p.length < 7) return null;
+      return { ts: Number(p[0]) || 0, fromMe: p[1] === '1', mime: p[2] || '', name: p[3] || '', size: Number(p[4]) || 0, caption: p[5] || '', path: p.slice(6).join('|') };
+    })
+    .filter(Boolean);
+}
+
+// Call history from call_log. Returns [{ ts, fromMe, video, durationSec, result }], or null.
+async function readWaCallLog(serial, limit = 50) {
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql = `SELECT timestamp, from_me, video_call, duration, call_result FROM call_log ORDER BY timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const p = line.split('|');
+      if (p.length < 5) return null;
+      return { ts: Number(p[0]) || 0, fromMe: p[1] === '1', video: p[2] === '1', durationSec: Number(p[3]) || 0, result: Number(p[4]) || 0 };
+    })
+    .filter(Boolean);
+}
+
+// Full-text-ish message search across all chats on the device (LIKE — robust across
+// WA builds; FTS table names vary). Returns [{ ts, fromMe, peer, text }], or null.
+async function readWaSearch(serial, query, limit = 50) {
+  const q = String(query || '').replace(/'/g, "''").slice(0, 100);
+  if (!q) return null;
+  const n = Math.min(Math.max(1, limit | 0), 200);
+  const sql =
+    `SELECT m.timestamp, m.from_me, COALESCE(jn.user, j.user), substr(m.text_data,1,120) ` +
+    `FROM message m JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `WHERE m.text_data LIKE '%${q}%' ORDER BY m.timestamp DESC LIMIT ${n}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const p = line.split('|');
+      if (p.length < 4) return null;
+      const peer = (p[2] || '').replace(/[^\d]/g, '');
+      return { ts: Number(p[0]) || 0, fromMe: p[1] === '1', peer: peer ? `+${peer}` : '', text: p.slice(3).join('|') };
+    })
+    .filter(Boolean);
+}
+
+// Total unread across the device: sum of chat.unseen_message_count + unread chat count.
+async function readWaUnread(serial) {
+  const rows = await waSql(serial, 'msgstore', `SELECT COALESCE(SUM(unseen_message_count),0), COUNT(CASE WHEN unseen_message_count>0 THEN 1 END) FROM chat`);
+  if (rows === null || !rows.length) return null;
+  const p = rows[0].split('|');
+  return { totalUnread: Number(p[0]) || 0, unreadChats: Number(p[1]) || 0 };
+}
+
+// Contact display name for a number from wa.db (rehber/display name). Returns string|null.
+async function readWaContactName(serial, number) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  if (!num) return null;
+  const rows = await waSql(serial, 'wa', `SELECT COALESCE(display_name, wa_name) FROM wa_contacts WHERE jid LIKE '${num}@%' AND COALESCE(display_name, wa_name) IS NOT NULL LIMIT 1`);
+  if (rows === null || !rows.length) return null;
+  return rows[0] || null;
+}
+
 // Map an E.164 phone number's calling code → ISO-2 country (mirrors the API's
 // CC_TO_ISO). Used to check whether the proxy exit country matches the number before
 // registration, so a +90 number on a US exit is flagged instead of silently burned.
@@ -740,6 +853,36 @@ async function runJob(job) {
       const convos = await readWaConversations(serial, Number(p(payload, 'limit', 50)) || 50);
       if (convos === null) return { status: 'NO_ROOT', note: 'Sohbet listesi okunamadı (root/db yok)', count: 0, conversations: [] };
       return { status: 'OK', count: convos.length, conversations: convos };
+    }
+
+    // ── Root-DB read jobs (all no-UI, zero ban surface) ──────────────────────
+    case 'WHATSAPP_RECEIPTS': {
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const r = to ? await readWaReceipts(serial, to, Number(p(payload, 'limit', 20)) || 20) : null;
+      if (r === null) return { status: 'NO_ROOT', note: to ? 'Tik durumu okunamadı (root/db yok)' : 'to gerekli', count: 0, receipts: [] };
+      return { status: 'OK', count: r.length, receipts: r };
+    }
+    case 'WHATSAPP_MEDIA': {
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const m = await readWaMedia(serial, to, Number(p(payload, 'limit', 50)) || 50);
+      if (m === null) return { status: 'NO_ROOT', note: 'Medya listesi okunamadı (root/db yok)', count: 0, media: [] };
+      return { status: 'OK', count: m.length, media: m };
+    }
+    case 'WHATSAPP_CALLS': {
+      const c = await readWaCallLog(serial, Number(p(payload, 'limit', 50)) || 50);
+      if (c === null) return { status: 'NO_ROOT', note: 'Arama geçmişi okunamadı (root/db yok)', count: 0, calls: [] };
+      return { status: 'OK', count: c.length, calls: c };
+    }
+    case 'WHATSAPP_SEARCH': {
+      const q = String(p(payload, 'query', p(payload, 'q', '')));
+      const s = q ? await readWaSearch(serial, q, Number(p(payload, 'limit', 50)) || 50) : null;
+      if (s === null) return { status: 'NO_ROOT', note: q ? 'Arama yapılamadı (root/db yok)' : 'query gerekli', count: 0, results: [] };
+      return { status: 'OK', count: s.length, results: s };
+    }
+    case 'WHATSAPP_UNREAD': {
+      const u = await readWaUnread(serial);
+      if (u === null) return { status: 'NO_ROOT', note: 'Okunmamış sayısı okunamadı (root/db yok)' };
+      return { status: 'OK', ...u };
     }
 
     case 'WHATSAPP_PROFILE':

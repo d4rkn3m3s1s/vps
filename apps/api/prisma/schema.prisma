@@ -46,6 +46,11 @@ enum JobType {
   WHATSAPP_SEND
   WHATSAPP_READ
   WHATSAPP_CONVERSATIONS
+  WHATSAPP_RECEIPTS
+  WHATSAPP_MEDIA
+  WHATSAPP_CALLS
+  WHATSAPP_SEARCH
+  WHATSAPP_UNREAD
   // Fetch a contact's profile: avatar screenshot (cropped to a data-URI) + name/
   // about/last-seen text scraped from the contact-info screen.
   WHATSAPP_PROFILE
@@ -1115,6 +1120,11 @@ enum WebhookEvent {
   WHATSAPP_DELIVERED
   WHATSAPP_READ
   WHATSAPP_CONVERSATIONS
+  WHATSAPP_RECEIPTS
+  WHATSAPP_MEDIA
+  WHATSAPP_CALLS
+  WHATSAPP_SEARCH
+  WHATSAPP_UNREAD
   // Account health transition detected on-device: an ACTIVE account became
   // RESTRICTED (in review / rate-limited), BANNED (suspended), or LOGGED_OUT.
   // Payload carries { deviceId, phoneNumber, health, note }.

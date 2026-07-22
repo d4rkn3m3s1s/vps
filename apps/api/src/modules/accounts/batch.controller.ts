@@ -169,6 +169,22 @@ const waConversationsSchema = z.object({ deviceId: z.string().min(1), limit: z.c
 export async function whatsAppConversationsHandler(req: Request, res: Response): Promise<void> {
   res.json({ data: await batchService.waConversations(getWorkspaceId(req), waConversationsSchema.parse(req.body)) });
 }
+const waContactsSchema = z.object({ deviceId: z.string().min(1), limit: z.coerce.number().int().positive().max(500).optional() });
+export async function whatsAppContactsHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waContacts(getWorkspaceId(req), waContactsSchema.parse(req.body)) });
+}
+const waGroupMembersSchema = z.object({ deviceId: z.string().min(1), group: z.string().min(1).max(120), limit: z.coerce.number().int().positive().max(1000).optional() });
+export async function whatsAppGroupMembersHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waGroupMembers(getWorkspaceId(req), waGroupMembersSchema.parse(req.body)) });
+}
+const waChatSummarySchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1) });
+export async function whatsAppChatSummaryHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waChatSummary(getWorkspaceId(req), waChatSummarySchema.parse(req.body)) });
+}
+const waAccountHealthSchema = z.object({ deviceId: z.string().min(1) });
+export async function whatsAppAccountHealthHandler(req: Request, res: Response): Promise<void> {
+  res.json({ data: await batchService.waAccountHealth(getWorkspaceId(req), waAccountHealthSchema.parse(req.body)) });
+}
 
 // Send a media message (image/document) from a device — device-scoped.
 const sendMediaSchema = z.object({

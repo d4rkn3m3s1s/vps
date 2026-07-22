@@ -486,6 +486,143 @@ paths:
                 to: { type: string, description: E.164 number }
       responses:
         '200': { description: '{ data: { jobId, status: PENDING } }' }
+  /public/v1/whatsapp/receipts:
+    post:
+      summary: Per-message delivery/read receipts for a chat, from msgstore.db (write scope, root-DB, zero ban risk)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number }
+                limit: { type: integer, minimum: 1, maximum: 100, description: 'default: 20' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, receipts: [{ ts, status: SENT|DELIVERED|READ, text }] }' }
+  /public/v1/whatsapp/media:
+    post:
+      summary: Media inventory for a chat (or whole device), from message_media (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: 'E.164 number (omit for whole device)' }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, media: [{ ts, fromMe, mime, name, size, caption, path }] }' }
+  /public/v1/whatsapp/calls:
+    post:
+      summary: WhatsApp call log (voice/video, in/out/missed), from call_log (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, calls: [{ ts, fromMe, video, durationSec, result }] }' }
+  /public/v1/whatsapp/search:
+    post:
+      summary: Full-text search across all of the account''s messages (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, query]
+              properties:
+                deviceId: { type: string }
+                query: { type: string, minLength: 1, maxLength: 100 }
+                limit: { type: integer, minimum: 1, maximum: 200, description: 'default: 50' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, results: [{ ts, fromMe, peer, text }] }' }
+  /public/v1/whatsapp/unread:
+    post:
+      summary: Total unread messages + unread chat count, from chat.unseen_message_count (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { totalUnread, unreadChats }' }
+  /public/v1/whatsapp/contacts:
+    post:
+      summary: Full WhatsApp address book (number + display name), from wa.db (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+                limit: { type: integer, minimum: 1, maximum: 500, description: 'default: 200' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, contacts: [{ number, name }] }' }
+  /public/v1/whatsapp/group-members:
+    post:
+      summary: Members of a group chat (by subject or jid id), from msgstore.db (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, group]
+              properties:
+                deviceId: { type: string }
+                group: { type: string, minLength: 1, maxLength: 120, description: group subject (name) or jid number }
+                limit: { type: integer, minimum: 1, maximum: 1000, description: 'default: 500' }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { count, members: [{ number, admin }] }' }
+  /public/v1/whatsapp/chat-summary:
+    post:
+      summary: One chat''s aggregate stats (message/media counts, first/last ts), from msgstore.db (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, description: E.164 number }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { total, inbound, outbound, media, firstTs, lastTs }' }
+  /public/v1/whatsapp/account-health:
+    post:
+      summary: Device account health — registered number + WhatsApp version + registered flag (write scope, root-DB)
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status } } — result: { number, waVersion, registered }' }
   /public/v1/whatsapp/conversations/labels:
     post:
       summary: Assign categories to a chat (write scope)
@@ -677,6 +814,33 @@ paths:
       responses:
         '200':
           description: Job status + result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicJobResponse'
+        '404':
+          description: '{ error: JOB_NOT_FOUND }'
+  /public/v1/jobs/{jobId}/wait:
+    get:
+      summary: Long-poll a job until it finishes or the timeout elapses (read)
+      description: >
+        Like GET /public/v1/jobs/{jobId}, but blocks server-side until the job
+        reaches a terminal state (COMPLETED / FAILED / CANCELLED) or ?timeout
+        seconds elapse — turning the integrator's poll loop into ONE request. If it
+        finishes first, the body matches GET /jobs/{jobId}. If the timeout hits, the
+        current (still PENDING/RUNNING) job is returned with timedOut:true so the
+        caller can wait again. Any valid key (read). Workspace-scoped.
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string } }
+        - name: timeout
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 60 }
+          description: 'Seconds to wait (default 30). Clamped to [1,60].'
+      responses:
+        '200':
+          description: Job status + result (with timedOut:true if the wait elapsed first)
           content:
             application/json:
               schema:

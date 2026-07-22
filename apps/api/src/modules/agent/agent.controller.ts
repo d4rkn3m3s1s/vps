@@ -98,6 +98,17 @@ export async function claimNextJobHandler(req: Request, res: Response): Promise<
   res.json({ data: job });
 }
 
+// Batch claim: return up to ?max (default 8, capped at 25) PENDING jobs in one
+// round-trip so the agent can drain a burst without one poll per job. Falls back
+// gracefully — an agent that doesn't send ?max still gets a sane default.
+export async function claimJobsBatchHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const raw = Number(req.query.max);
+  const max = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 8;
+  const jobs = await agentService.claimBatch(host, max);
+  res.json({ data: jobs });
+}
+
 export async function completeJobHandler(req: Request, res: Response): Promise<void> {
   const host = requireHost(req);
   const jobId = req.params.id;

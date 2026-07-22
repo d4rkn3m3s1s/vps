@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappReceiptHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappReceiptHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -15,6 +15,9 @@ export const agentRouter = Router();
 agentRouter.use(requireApiKey, requireHostAgent, verifyAgentSignature);
 
 agentRouter.get('/jobs/next', asyncHandler(claimNextJobHandler));
+// Batch variant: up to ?max jobs in one round-trip (poll-Hz bottleneck fix). An
+// older agent that only knows /jobs/next keeps working unchanged.
+agentRouter.get('/jobs/next-batch', asyncHandler(claimJobsBatchHandler));
 agentRouter.post('/jobs/:id/complete', asyncHandler(completeJobHandler));
 agentRouter.post('/jobs/:id/progress', asyncHandler(agentProgressHandler));
 agentRouter.post('/heartbeat', asyncHandler(agentHeartbeatHandler));

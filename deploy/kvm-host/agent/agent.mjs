@@ -329,6 +329,130 @@ async function readWaUnread(serial) {
   return { totalUnread: Number(p[0]) || 0, unreadChats: Number(p[1]) || 0 };
 }
 
+// Full contacts list from wa.db (wa_contacts) — every WhatsApp contact the account
+// knows with a display name + number, straight from the device's own address book.
+// Only rows that are actual WhatsApp users (is_whatsapp_user=1) with a name, so we
+// skip the noise of every phone-book entry. Returns [{ number, name }] or null.
+async function readWaContactsList(serial, limit = 200) {
+  const n = Math.min(Math.max(1, limit | 0), 500);
+  // jid is like "<number>@s.whatsapp.net"; strip to digits. Some builds lack
+  // is_whatsapp_user — the COALESCE-name filter + jid shape already keep it sane.
+  const sql =
+    `SELECT jid, COALESCE(display_name, wa_name, nullptr) FROM wa_contacts ` +
+    `WHERE jid LIKE '%@s.whatsapp.net' AND COALESCE(display_name, wa_name) IS NOT NULL ` +
+    `AND COALESCE(display_name, wa_name) <> '' ORDER BY COALESCE(display_name, wa_name) LIMIT ${n}`;
+  // `nullptr` isn't valid SQL — guard the query with a plain form (older schemas
+  // choke on unknown funcs); build the real SQL without the stray token.
+  const realSql =
+    `SELECT jid, COALESCE(display_name, wa_name) FROM wa_contacts ` +
+    `WHERE jid LIKE '%@s.whatsapp.net' AND COALESCE(display_name, wa_name) IS NOT NULL ` +
+    `AND COALESCE(display_name, wa_name) <> '' ORDER BY COALESCE(display_name, wa_name) LIMIT ${n}`;
+  void sql;
+  const rows = await waSql(serial, 'wa', realSql);
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const a = line.indexOf('|');
+      if (a < 0) return null;
+      const number = (line.slice(0, a) || '').replace(/@.*/, '').replace(/[^\d]/g, '');
+      const name = line.slice(a + 1);
+      if (!number) return null;
+      return { number: `+${number}`, name };
+    })
+    .filter(Boolean);
+}
+
+// Members of a group chat, from msgstore.db. Groups are keyed by a jid whose server is
+// 'g.us'; membership lives in group_participant_user (newer) or group_participants
+// (older). We resolve the group by its subject (name) OR its raw jid user id, then join
+// participant jids. Returns [{ number, admin }] or null. `group` = subject or jid id.
+async function readWaGroupMembers(serial, group, limit = 500) {
+  const g = String(group || '').replace(/'/g, "''").slice(0, 120);
+  if (!g) return null;
+  const gDigits = g.replace(/[^\d]/g, '');
+  const n = Math.min(Math.max(1, limit | 0), 1000);
+  // Newer schema: group_participant_user(group_jid_row_id, user_jid_row_id, rank).
+  // Match the group by subject (chat + jid) or by its numeric jid user. rank>=1 = admin.
+  const sqlNew =
+    `SELECT uj.user, gpu.rank FROM group_participant_user gpu ` +
+    `JOIN jid gj ON gj._id=gpu.group_jid_row_id ` +
+    `JOIN jid uj ON uj._id=gpu.user_jid_row_id ` +
+    `LEFT JOIN chat c ON c.jid_row_id=gj._id ` +
+    `WHERE gj.server='g.us' AND (gj.user='${gDigits}' OR c.subject='${g}') ` +
+    `LIMIT ${n}`;
+  let rows = await waSql(serial, 'msgstore', sqlNew);
+  // Fallback to the legacy table if the modern one is missing (rows===null AND the
+  // db is actually reachable). We can't tell "no root" from "no table" via null alone,
+  // so probe the legacy table only when the new query yielded nothing.
+  if (rows === null || rows.length === 0) {
+    const sqlOld =
+      `SELECT j.user, gp.admin FROM group_participants gp ` +
+      `JOIN jid j ON j.raw_string LIKE gp.jid ` +
+      `WHERE gp.gjid LIKE '%${gDigits}%' LIMIT ${n}`;
+    const legacy = await waSql(serial, 'msgstore', sqlOld);
+    if (legacy && legacy.length) rows = legacy;
+  }
+  if (rows === null) return null;
+  return rows
+    .map((line) => {
+      const a = line.indexOf('|');
+      const number = (a < 0 ? line : line.slice(0, a)).replace(/[^\d]/g, '');
+      const rank = a < 0 ? 0 : Number(line.slice(a + 1)) || 0;
+      if (!number) return null;
+      return { number: `+${number}`, admin: rank >= 1 };
+    })
+    .filter(Boolean);
+}
+
+// One chat's aggregate summary from msgstore.db: total messages, in/out split, media
+// count, first & last message timestamps. Cheap analytics with zero UI. Resolves the
+// chat via the LID-aware filter. Returns { total, inbound, outbound, media, firstTs,
+// lastTs } or null.
+async function readWaChatSummary(serial, number) {
+  const num = String(number || '').replace(/[^\d]/g, '');
+  if (!num) return null;
+  const sql =
+    `SELECT COUNT(*), SUM(CASE WHEN m.from_me=0 THEN 1 ELSE 0 END), ` +
+    `SUM(CASE WHEN m.from_me=1 THEN 1 ELSE 0 END), ` +
+    `SUM(CASE WHEN m.message_type IN (1,2,3,9,13,20) THEN 1 ELSE 0 END), ` +
+    `MIN(m.timestamp), MAX(m.timestamp) ` +
+    `FROM message m JOIN chat c ON c._id=m.chat_row_id WHERE ${waChatFilter(num)}`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null || !rows.length) return null;
+  const p = rows[0].split('|');
+  const total = Number(p[0]) || 0;
+  return {
+    total,
+    inbound: Number(p[1]) || 0,
+    outbound: Number(p[2]) || 0,
+    media: Number(p[3]) || 0,
+    firstTs: Number(p[4]) || 0,
+    lastTs: Number(p[5]) || 0
+  };
+}
+
+// Account health straight from the device: registered number (wa.db props /
+// registration jid), WhatsApp version, and a coarse "registered?" flag. Reads
+// several sources and merges; returns { number, waVersion, registered } (any field
+// may be null) — always an object when root works, or null when it doesn't.
+async function readWaAccountHealth(serial) {
+  // Registered number: props table key 'registration_jid' → "<number>@s.whatsapp.net".
+  const jidRows = await waSql(serial, 'wa', `SELECT value FROM props WHERE key='registration_jid' LIMIT 1`);
+  if (jidRows === null) return null; // root/db unavailable
+  let number = null;
+  if (jidRows.length) {
+    const d = (jidRows[0] || '').replace(/@.*/, '').replace(/[^\d]/g, '');
+    if (d) number = `+${d}`;
+  }
+  // WhatsApp package version via the platform (not the db) — dumpsys is cheap + always
+  // present. Absent → null (we don't fail the whole health read for it).
+  let waVersion = null;
+  const dump = await adb(serial, ['shell', 'dumpsys', 'package', 'com.whatsapp']).catch(() => '');
+  const vm = String(dump).match(/versionName=([^\s]+)/);
+  if (vm) waVersion = vm[1];
+  return { number, waVersion, registered: !!number };
+}
+
 // Contact display name for a number from wa.db (rehber/display name). Returns string|null.
 async function readWaContactName(serial, number) {
   const num = String(number || '').replace(/[^\d]/g, '');
@@ -883,6 +1007,32 @@ async function runJob(job) {
       const u = await readWaUnread(serial);
       if (u === null) return { status: 'NO_ROOT', note: 'Okunmamış sayısı okunamadı (root/db yok)' };
       return { status: 'OK', ...u };
+    }
+    case 'WHATSAPP_CONTACTS': {
+      // Full address book (WhatsApp users the account knows) from wa.db.
+      const list = await readWaContactsList(serial, Number(p(payload, 'limit', 200)) || 200);
+      if (list === null) return { status: 'NO_ROOT', note: 'Rehber okunamadı (root/db yok)', count: 0, contacts: [] };
+      return { status: 'OK', count: list.length, contacts: list };
+    }
+    case 'WHATSAPP_GROUP_MEMBERS': {
+      // Members of a group chat (by subject or jid id) from msgstore.db.
+      const group = String(p(payload, 'group', p(payload, 'to', '')));
+      const mem = group ? await readWaGroupMembers(serial, group, Number(p(payload, 'limit', 500)) || 500) : null;
+      if (mem === null) return { status: 'NO_ROOT', note: group ? 'Grup üyeleri okunamadı (root/db yok)' : 'group gerekli', count: 0, members: [] };
+      return { status: 'OK', count: mem.length, members: mem };
+    }
+    case 'WHATSAPP_CHAT_SUMMARY': {
+      // Per-chat aggregate stats (message/media counts, first/last ts) from msgstore.db.
+      const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
+      const sum = to ? await readWaChatSummary(serial, to) : null;
+      if (sum === null) return { status: 'NO_ROOT', note: to ? 'Sohbet özeti okunamadı (root/db yok)' : 'to gerekli' };
+      return { status: 'OK', ...sum };
+    }
+    case 'WHATSAPP_ACCOUNT_HEALTH': {
+      // Registered number + WhatsApp version + registered flag, no UI.
+      const h = await readWaAccountHealth(serial);
+      if (h === null) return { status: 'NO_ROOT', note: 'Hesap durumu okunamadı (root/db yok)' };
+      return { status: 'OK', ...h };
     }
 
     case 'WHATSAPP_PROFILE':
@@ -7872,6 +8022,31 @@ async function claimNext() {
   return data; // job or null
 }
 
+// Batch claim: ask for up to `max` jobs in ONE round-trip. Kills the poll-Hz
+// bottleneck — a burst of light root-DB jobs used to be gated by one /jobs/next
+// per job (≈ N × POLL_MS wall-clock); now we drain them in ⌈N/max⌉ round-trips
+// and run them concurrently. Falls back to the single /jobs/next endpoint if the
+// API is older (404/param error) so a new agent still works against an old API.
+let batchClaimUnsupported = false;
+async function claimBatch(max) {
+  if (batchClaimUnsupported) {
+    const one = await claimNext();
+    return one ? [one] : [];
+  }
+  try {
+    const { data } = await api(`/agent/jobs/next-batch?max=${max | 0}`, { method: 'GET' });
+    return Array.isArray(data) ? data : data ? [data] : [];
+  } catch (err) {
+    // Old API without the batch route → remember and use the single endpoint.
+    if (/->\s*404\b/.test(String(err && err.message))) {
+      batchClaimUnsupported = true;
+      const one = await claimNext();
+      return one ? [one] : [];
+    }
+    throw err;
+  }
+}
+
 async function reportComplete(jobId, status, payload) {
   await api(`/agent/jobs/${jobId}/complete`, { method: 'POST', body: JSON.stringify({ status, ...payload }) });
 }
@@ -9269,20 +9444,26 @@ async function loop() {
       continue;
     }
 
-    let job = null;
+    // Claim as many jobs as we have free slots for, in ONE round-trip (batch),
+    // instead of one poll per job. This is the poll-Hz bottleneck fix: a burst of
+    // N light jobs now drains in ⌈N/slots⌉ round-trips, not N. Each claimed job is
+    // still dispatched fire-and-forget below (true per-device parallelism).
+    const freeSlots = Math.max(1, MAX_CONCURRENT_JOBS - activeJobCount);
+    let jobs = [];
     try {
-      job = await claimNext();
+      jobs = await claimBatch(Math.min(freeSlots, 12));
     } catch (err) {
       log('claim failed:', err.message);
       await sleep(POLL_MS * 2);
       continue;
     }
 
-    if (!job) {
+    if (!jobs.length) {
       await sleep(POLL_MS);
       continue;
     }
 
+    for (const job of jobs) {
     // ★PROVISION boot-stagger (#3/#9): a provision boots a full Android → CPU spike. If
     // we're already at the provision cap, don't start another boot right now. runJobTask
     // waits for a provision slot (not the whole job cap) before booting, so a batch of 10
@@ -9315,6 +9496,7 @@ async function loop() {
     // Fire-and-forget: start the job task WITHOUT awaiting so the loop immediately
     // goes back to claim the NEXT job (for a DIFFERENT device) → true parallelism.
     void runJobTask(job, false);
+    } // end for (job of this batch)
   }
 
   // Graceful drain: let in-flight jobs finish (bounded wait) before tearing down.

@@ -40,6 +40,10 @@ import {
   whatsAppSearchHandler,
   whatsAppUnreadHandler,
   whatsAppConversationsHandler,
+  whatsAppContactsHandler,
+  whatsAppGroupMembersHandler,
+  whatsAppChatSummaryHandler,
+  whatsAppAccountHealthHandler,
   sendWhatsAppMediaHandler,
   deleteWhatsAppMessageHandler,
   clearWhatsAppChatHandler,
@@ -125,6 +129,10 @@ accountsRouter.post('/whatsapp/calls', requireApiKey, authenticateJwt, heavyOper
 accountsRouter.post('/whatsapp/search', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppSearchHandler));
 accountsRouter.post('/whatsapp/unread', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppUnreadHandler));
 accountsRouter.post('/whatsapp/conversations', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppConversationsHandler));
+accountsRouter.post('/whatsapp/contacts', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppContactsHandler));
+accountsRouter.post('/whatsapp/group-members', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppGroupMembersHandler));
+accountsRouter.post('/whatsapp/chat-summary', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppChatSummaryHandler));
+accountsRouter.post('/whatsapp/account-health', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(whatsAppAccountHealthHandler));
 accountsRouter.post('/whatsapp/send-media', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendWhatsAppMediaHandler));
 accountsRouter.post('/whatsapp/delete-message', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(deleteWhatsAppMessageHandler));
 accountsRouter.post('/whatsapp/clear-chat', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(clearWhatsAppChatHandler));

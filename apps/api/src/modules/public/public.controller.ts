@@ -169,6 +169,136 @@ export async function clearChatHandler(req: Request, res: Response): Promise<voi
   res.json({ data: { jobId: job.id, status: job.status } });
 }
 
+// ── Root-DB read endpoints (read WhatsApp's own SQLite via the agent — no UI on
+// the device). Each dispatches an on-device job and returns a jobId to poll with
+// GET /v1/jobs/:jobId. They're WRITE scope + apiRateLimiter because they drive a
+// real device (root sqlite read), same as the other on-device jobs. ──────────
+
+// POST /public/v1/whatsapp/receipts — per-message delivery/read receipts (✓/✓✓/
+// blue) for a chat, straight from msgstore.db. Far richer than the OUT thread's
+// coarse status: shows exactly which messages were delivered vs read + timestamps.
+const receiptsSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(1),
+  limit: z.coerce.number().int().positive().max(100).optional()
+});
+export async function receiptsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = receiptsSchema.parse(req.body);
+  const { job } = await batchService.waReceipts(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/media — media gallery (images/video/docs/audio) the
+// account has in a chat (or across all chats), from message_media. Returns file
+// name/type/size + on-device path; no UI walk, pure DB read.
+const mediaSchema = z.object({
+  deviceId: z.string().min(1),
+  to: z.string().min(1).optional(),
+  limit: z.coerce.number().int().positive().max(200).optional()
+});
+export async function mediaHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = mediaSchema.parse(req.body);
+  const { job } = await batchService.waMedia(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/calls — the account's WhatsApp call log (voice/video,
+// in/out/missed) from call_log. No UI on the device exposes this over an API.
+const callsSchema = z.object({
+  deviceId: z.string().min(1),
+  limit: z.coerce.number().int().positive().max(200).optional()
+});
+export async function callsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = callsSchema.parse(req.body);
+  const { job } = await batchService.waCalls(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/search — full-text search across ALL of the account's
+// messages (message_ftsv2), server-side. Matching bubbles + which chat + when.
+const searchSchema = z.object({
+  deviceId: z.string().min(1),
+  query: z.string().min(1).max(100),
+  limit: z.coerce.number().int().positive().max(200).optional()
+});
+export async function searchHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = searchSchema.parse(req.body);
+  const { job } = await batchService.waSearch(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/unread — every chat with unread messages + its unread
+// count, from chat.unseen_message_count. The device's own truth (vs our captured
+// mirror), so it reflects reads/writes that happened outside our pipeline too.
+const unreadSchema = z.object({ deviceId: z.string().min(1) });
+export async function unreadHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = unreadSchema.parse(req.body);
+  const { job } = await batchService.waUnread(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/contacts — the account's full WhatsApp address book
+// (every contact it knows: number + display name), from wa.db. write scope.
+const contactsSchema = z.object({
+  deviceId: z.string().min(1),
+  limit: z.coerce.number().int().positive().max(500).optional()
+});
+export async function contactsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = contactsSchema.parse(req.body);
+  const { job } = await batchService.waContacts(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/group-members — members of a group chat (by subject or
+// jid id): each member's number + admin flag, from msgstore.db. write scope.
+const groupMembersSchema = z.object({
+  deviceId: z.string().min(1),
+  group: z.string().min(1).max(120),
+  limit: z.coerce.number().int().positive().max(1000).optional()
+});
+export async function groupMembersHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = groupMembersSchema.parse(req.body);
+  const { job } = await batchService.waGroupMembers(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/chat-summary — one chat's aggregate stats (total /
+// inbound / outbound / media counts + first & last message ts). write scope.
+const chatSummarySchema = z.object({ deviceId: z.string().min(1), to: z.string().min(1) });
+export async function chatSummaryHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = chatSummarySchema.parse(req.body);
+  const { job } = await batchService.waChatSummary(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/account-health — the device account's own health:
+// registered number, WhatsApp version, registered flag. Straight from the device
+// (no UI), so it reflects the real logged-in account. write scope.
+const accountHealthSchema = z.object({ deviceId: z.string().min(1) });
+export async function accountHealthHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = accountHealthSchema.parse(req.body);
+  const { job } = await batchService.waAccountHealth(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
 // GET /public/v1/whatsapp/messages?deviceId=&limit=&direction=IN|OUT — stored
 // conversation history (inbound captured by the agent + outbound we sent),
 // bodies decrypted. Device-scoped to the caller's workspace.
@@ -509,4 +639,56 @@ export async function jobHandler(req: Request, res: Response): Promise<void> {
       updatedAt: job.updatedAt
     }
   });
+}
+
+// GET /public/v1/jobs/:jobId/wait?timeout=30 — LONG-POLL: block server-side until
+// the job reaches a terminal state (COMPLETED / FAILED / CANCELLED) or ?timeout=
+// seconds elapse, then return the same shape as GET /v1/jobs/:jobId. This turns
+// the integrator's poll loop into ONE request: dispatch a send/receipts/etc job,
+// then GET .../wait to receive the result the moment it's ready — no polling, no
+// wasted round-trips. If the timeout hits first, the current (still-PENDING/RUNNING)
+// job is returned with `timedOut: true` so the caller can decide to wait again.
+// Workspace-scoped (getJob filters by workspaceId → a foreign jobId 404s).
+const TERMINAL_JOB = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
+const jobWaitQuerySchema = z.object({
+  // Clamp to [1,60]s. We DON'T hold the socket forever — a very long client wait
+  // should re-issue the call (the default 30s already covers most on-device jobs).
+  timeout: z.coerce.number().int().min(1).max(60).optional()
+});
+export async function jobWaitHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const jobId = typeof req.params.jobId === 'string' ? req.params.jobId : '';
+  if (!jobId) throw new AppError('jobId gerekli', 400, 'MISSING_JOB_ID');
+  const { timeout } = jobWaitQuerySchema.parse(req.query);
+  const deadline = Date.now() + (timeout ?? 30) * 1000;
+  // Poll the DB on a short interval (300ms) rather than the client hammering us
+  // every few seconds over the network. First hit checks immediately so an already-
+  // finished job returns without any delay.
+  const STEP_MS = 300;
+  // Detect a client that gives up mid-wait so we stop looping and free the handler.
+  let aborted = false;
+  req.on('close', () => { aborted = true; });
+  for (;;) {
+    const job = await getJob(jobId, workspaceId);
+    if (!job) throw new AppError('İş bulunamadı', 404, 'JOB_NOT_FOUND');
+    const done = TERMINAL_JOB.has(job.status);
+    const timedOut = Date.now() >= deadline;
+    if (done || timedOut || aborted) {
+      if (aborted) return; // client hung up — nothing to send
+      res.json({
+        data: {
+          id: job.id,
+          type: job.type,
+          status: job.status,
+          result: job.result ?? null,
+          error: job.error ?? null,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          ...(done ? {} : { timedOut: true })
+        }
+      });
+      return;
+    }
+    await new Promise((r) => setTimeout(r, STEP_MS));
+  }
 }

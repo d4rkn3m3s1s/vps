@@ -128,6 +128,79 @@ export class AgentService {
     return null;
   }
 
+  // Batch claim: hand the agent up to `max` PENDING jobs in ONE round-trip instead
+  // of one-job-per-poll. This kills the poll-Hz bottleneck — a burst of N root-DB
+  // read jobs (each ~100ms of work) was previously gated by N sequential
+  // /agent/jobs/next round-trips (≈ N × POLL_MS wall-clock); now the agent drains
+  // them in ⌈N/max⌉ round-trips and runs them concurrently up to its own cap.
+  //
+  // Same tenant + race guards as claimNext, PLUS one extra invariant: AT MOST ONE
+  // job per device per batch. On-device work is serialised per phone (the agent
+  // runs one job at a time on a given serial), so claiming 10 jobs for the same
+  // device would just make 9 of them sit RUNNING-but-waiting and inflate the
+  // stale-reaper's workload. One-per-device keeps the batch spread across phones,
+  // which is exactly where the parallelism is. The remaining same-device jobs stay
+  // PENDING and get claimed on the next poll once the device frees.
+  async claimBatch(host: Host, max: number): Promise<AgentJob[]> {
+    const cap = Math.min(Math.max(1, max | 0), 25);
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true }
+    });
+    if (devices.length === 0) return [];
+
+    const deviceIds = devices.map((d) => d.id);
+    const serialById = new Map(
+      devices.map((d) => [d.id, d.ipAddress && d.adbPort ? `${d.ipAddress}:${d.adbPort}` : null])
+    );
+    const workspaceByDevice = new Map(devices.map((d) => [d.id, d.workspaceId]));
+
+    // Pull a generous candidate window (more than `cap`) so that after skipping
+    // same-device duplicates and lost races we still have enough to fill the batch.
+    const candidates = await prisma.job.findMany({
+      where: {
+        status: 'PENDING',
+        claimedByHostId: null,
+        OR: [
+          { deviceId: { in: deviceIds } },
+          { emulatorId: { in: deviceIds } },
+          { AND: [{ deviceId: null }, { emulatorId: null }] }
+        ]
+      },
+      orderBy: { createdAt: 'asc' },
+      take: Math.min(cap * 4, 100)
+    });
+
+    const claimedJobs: AgentJob[] = [];
+    const claimedDevices = new Set<string>();
+    for (const job of candidates) {
+      if (claimedJobs.length >= cap) break;
+      const payload = (job.payload as Record<string, unknown>) ?? {};
+      const deviceId = (payload.deviceId as string | undefined) ?? job.emulatorId ?? undefined;
+      if (!deviceId || !deviceIds.includes(deviceId)) continue;
+      // One job per device per batch (see method doc).
+      if (claimedDevices.has(deviceId)) continue;
+      // Cross-tenant guard (same as claimNext).
+      if (job.workspaceId && workspaceByDevice.get(deviceId) !== job.workspaceId) continue;
+
+      const claimed = await prisma.job.updateMany({
+        where: { id: job.id, status: 'PENDING', claimedByHostId: null },
+        data: { status: 'RUNNING', claimedByHostId: host.id, claimedAt: new Date(), startedAt: new Date() }
+      });
+      if (claimed.count === 0) continue; // lost the race; skip
+
+      claimedDevices.add(deviceId);
+      claimedJobs.push({
+        id: job.id,
+        type: job.type,
+        payload: this.materializePayload(payload),
+        serial: serialById.get(deviceId) ?? null
+      });
+    }
+
+    return claimedJobs;
+  }
+
   // Records a job result reported by the agent and fires terminal webhooks.
   // A host may only complete jobs it actually claimed.
   async complete(

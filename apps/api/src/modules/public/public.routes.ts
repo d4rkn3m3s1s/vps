@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, meHandler } from './public.controller';
+import { listDevicesHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
@@ -44,6 +44,18 @@ publicRouter.post('/v1/whatsapp/send-media', apiRateLimiter, asyncHandler(sendMe
 publicRouter.post('/v1/whatsapp/delete-message', apiRateLimiter, asyncHandler(deleteMessageHandler));
 publicRouter.post('/v1/whatsapp/clear-chat', apiRateLimiter, asyncHandler(clearChatHandler));
 
+// ── Root-DB reads (agent reads WhatsApp's own SQLite — no UI walk). On-device
+// jobs → return a jobId to poll. write scope, rate-limited. ─────────────────
+publicRouter.post('/v1/whatsapp/receipts', apiRateLimiter, asyncHandler(receiptsHandler));
+publicRouter.post('/v1/whatsapp/media', apiRateLimiter, asyncHandler(mediaHandler));
+publicRouter.post('/v1/whatsapp/calls', apiRateLimiter, asyncHandler(callsHandler));
+publicRouter.post('/v1/whatsapp/search', apiRateLimiter, asyncHandler(searchHandler));
+publicRouter.post('/v1/whatsapp/unread', apiRateLimiter, asyncHandler(unreadHandler));
+publicRouter.post('/v1/whatsapp/contacts', apiRateLimiter, asyncHandler(contactsHandler));
+publicRouter.post('/v1/whatsapp/group-members', apiRateLimiter, asyncHandler(groupMembersHandler));
+publicRouter.post('/v1/whatsapp/chat-summary', apiRateLimiter, asyncHandler(chatSummaryHandler));
+publicRouter.post('/v1/whatsapp/account-health', apiRateLimiter, asyncHandler(accountHealthHandler));
+
 // ── One-click provision + WhatsApp registration (write scope, heavily throttled
 // because they spin up instances / rent-free operator numbers and drive a real
 // device end-to-end). ──────────────────────────────────────────────────────
@@ -59,3 +71,6 @@ publicRouter.get('/v1/whatsapp/register/:id/status', asyncHandler(registerWhatsa
 // Universal async-job poll: read the result/status of any jobId an on-device write
 // endpoint returned (send, blocklist, mynumber, profile, delete-message, …).
 publicRouter.get('/v1/jobs/:jobId', asyncHandler(jobHandler));
+// Long-poll variant: block (server-side) until the job finishes or ?timeout= s
+// elapses, so an integrator gets the result in ONE request instead of a poll loop.
+publicRouter.get('/v1/jobs/:jobId/wait', asyncHandler(jobWaitHandler));

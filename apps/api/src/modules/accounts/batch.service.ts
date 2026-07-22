@@ -564,6 +564,30 @@ export class BatchService {
     const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
     return { job: await createJobRecord('WHATSAPP_CONVERSATIONS', payload, input.deviceId, workspaceId) };
   }
+  // Full address book (WhatsApp contacts the account knows) — read from wa.db.
+  async waContacts(workspaceId: string | undefined, input: { deviceId: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_CONTACTS', payload, input.deviceId, workspaceId) };
+  }
+  // Members of a group chat (by subject or jid id) — read from msgstore.db.
+  async waGroupMembers(workspaceId: string | undefined, input: { deviceId: string; group: string; limit?: number | undefined }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, group: input.group, ...(input.limit ? { limit: input.limit } : {}) } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_GROUP_MEMBERS', payload, input.deviceId, workspaceId) };
+  }
+  // Per-chat aggregate stats (message/media counts, first/last ts) — msgstore.db.
+  async waChatSummary(workspaceId: string | undefined, input: { deviceId: string; to: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId, to: input.to } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_CHAT_SUMMARY', payload, input.deviceId, workspaceId) };
+  }
+  // Account health: registered number + WhatsApp version + registered flag — no UI.
+  async waAccountHealth(workspaceId: string | undefined, input: { deviceId: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const payload = { deviceId: input.deviceId } as unknown as JobPayload;
+    return { job: await createJobRecord('WHATSAPP_ACCOUNT_HEALTH', payload, input.deviceId, workspaceId) };
+  }
 
   // Send a media message (image/document) from a device to a peer. mediaUrl must
   // be a public URL (SSRF-guarded on the agent when it downloads). Device-scoped.

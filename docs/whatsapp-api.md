@@ -38,7 +38,7 @@ Anahtarlar `read`, `write` veya `admin` kapsamına sahip olabilir.
 | İşlem türü | Gereken kapsam |
 |---|---|
 | **Okuma** (GET): cihazlar, mesajlar, sohbetler, istatistik, etiketler | Herhangi bir geçerli anahtar |
-| **Yazma / cihaz sürme** (POST): send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, etiket oluştur/ata, sohbet durumu | `write` **veya** `admin` |
+| **Yazma / cihaz sürme** (POST): send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, etiket oluştur/ata, sohbet durumu | `write` **veya** `admin` |
 
 Yetersiz kapsamda `403 INSUFFICIENT_SCOPE` döner.
 
@@ -52,7 +52,10 @@ Tüm başarılı yanıtlar `{ "data": ... }` zarfıyla döner. Hatalar
 ## 2. Asenkron iş (job) modeli
 
 > **Önemli:** Cihaz süren işlerin (send, send-media, delete-message, clear-chat,
-> block, profile, blocklist, mynumber) hepsi **asenkron** çalışır.
+> block, profile, blocklist, mynumber, ve root-DB okuma uçları: receipts, media,
+> calls, search, unread, contacts, group-members, chat-summary, account-health)
+> hepsi **asenkron** çalışır. Root-DB okuma uçları ekran gezmediği için çok daha
+> hızlıdır (~1–2 sn) — bunları `GET /v1/jobs/:jobId/wait` ile tek istekte bekleyin.
 
 1. İstek anında bir **iş (job)** oluşturur ve `{ "jobId": "...", "status": "PENDING" }`
    döner.
@@ -494,6 +497,202 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/clear-chat \
 
 ---
 
+## 3.1. Root-DB okuma uçları (ekran gezinmeden — sıfır ban riski)
+
+> Aşağıdaki uçlar cihazdaki WhatsApp'ın **kendi veritabanını** (msgstore.db / wa.db)
+> host-agent aracılığıyla **doğrudan** okur — hiçbir ekran gezme/dokunma yapmaz.
+> Bu yüzden **çok hızlıdır (~1–2 sn)** ve **ban riski taşımaz** (WhatsApp
+> otomasyon olarak algılayamaz). Hepsi asenkrondur: anında `jobId` döner,
+> sonucu `GET /v1/jobs/:jobId` (veya `.../wait`) ile okuyun. **write kapsamı
+> gerekir.** Cihaz root'lu değilse iş sonucu `{ "status": "NO_ROOT", ... }` döner.
+
+### POST /v1/whatsapp/receipts
+
+Bir sohbetteki **giden** mesajların tik durumunu (gönderildi/iletildi/okundu) tek
+tek, zaman damgalarıyla verir. Thread'in kaba `status` alanından çok daha
+ayrıntılıdır — hangi mesajın tam olarak okunduğunu gösterir.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | ✔ | Kişi numarası (E.164) |
+| `limit` | integer | – | Kayıt sayısı (1–100, varsayılan 20) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/receipts \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "to": "90XXXXXXXXXX", "limit": 20 }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 2, "receipts": [ { "ts": 1721640000000, "status": "READ", "text": "Merhaba" } ] }`
+(`status`: `SENT` ✓ · `DELIVERED` ✓✓ · `READ` mavi ✓✓ · `PENDING`)
+
+---
+
+### POST /v1/whatsapp/media
+
+Bir sohbetteki (veya `to` verilmezse tüm cihazdaki) medya envanterini
+(görsel/video/belge/ses) `message_media`'dan okur: dosya adı/tür/boyut + cihazdaki
+yol. Ekran gezmesi yok, saf DB okuma.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | – | Kişi numarası (yoksa tüm cihaz) |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/media \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "to": "90XXXXXXXXXX" }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 1, "media": [ { "ts": …, "fromMe": false, "mime": "image/jpeg", "name": "IMG.jpg", "size": 84213, "caption": "", "path": "/storage/…" } ] }`
+
+---
+
+### POST /v1/whatsapp/calls
+
+Hesabın WhatsApp arama geçmişini (sesli/görüntülü, gelen/giden/cevapsız)
+`call_log`'dan okur.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/calls \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "limit": 50 }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 1, "calls": [ { "ts": …, "fromMe": true, "video": false, "durationSec": 42, "result": 5 } ] }`
+
+---
+
+### POST /v1/whatsapp/search
+
+Hesabın **tüm** mesajlarında sunucu-taraflı metin araması yapar (`message` tablosu).
+Eşleşen mesajları, hangi sohbette olduklarını ve tarihini döndürür.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `query` | string | ✔ | Aranacak metin (1–100 krktr) |
+| `limit` | integer | – | Kayıt sayısı (1–200, varsayılan 50) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/search \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "query": "sipariş" }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 2, "results": [ { "ts": …, "fromMe": false, "peer": "+90…", "text": "sipariş no 123" } ] }`
+
+---
+
+### POST /v1/whatsapp/unread
+
+Cihazdaki toplam okunmamış mesaj sayısını + okunmamış sohbet sayısını
+(`chat.unseen_message_count`) verir. Cihazın **kendi gerçeği** — bizim yakaladığımız
+aynadan bağımsız (pipeline dışı okumaları da yansıtır).
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/unread \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3..." }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "totalUnread": 7, "unreadChats": 3 }`
+
+---
+
+### POST /v1/whatsapp/contacts
+
+Hesabın **tüm rehberini** (bildiği WhatsApp kişileri: numara + görünen ad)
+`wa.db`'den okur.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `limit` | integer | – | Kayıt sayısı (1–500, varsayılan 200) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/contacts \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "limit": 200 }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 2, "contacts": [ { "number": "+90…", "name": "Ahmet" } ] }`
+
+---
+
+### POST /v1/whatsapp/group-members
+
+Bir grup sohbetinin üyelerini (konu adı **veya** grup jid numarasıyla) verir:
+her üyenin numarası + yönetici (admin) bayrağı. `msgstore.db`'den okunur.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `group` | string | ✔ | Grup konusu (adı) veya grup jid numarası (1–120 krktr) |
+| `limit` | integer | – | Üye sayısı (1–1000, varsayılan 500) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/group-members \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "group": "Ekip Sohbeti" }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "count": 2, "members": [ { "number": "+90…", "admin": true } ] }`
+
+---
+
+### POST /v1/whatsapp/chat-summary
+
+Bir sohbetin **toplu istatistiği**: toplam / gelen / giden mesaj sayısı, medya
+sayısı, ilk & son mesaj zaman damgaları. Ucuz analitik, sıfır ekran gezme.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+| `to` | string | ✔ | Kişi numarası (E.164) |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/chat-summary \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3...", "to": "90XXXXXXXXXX" }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "total": 240, "inbound": 130, "outbound": 110, "media": 18, "firstTs": …, "lastTs": … }`
+
+---
+
+### POST /v1/whatsapp/account-health
+
+Cihazdaki **oturum açık hesabın** kendi durumu: kayıtlı numara, WhatsApp sürümü,
+kayıtlı-mı bayrağı. Doğrudan cihazdan (ekran gezme yok) okunur, gerçek hesabı
+yansıtır. Botların hâlâ oturumda ve doğru numaraya kayıtlı olduğunu doğrulamak için.
+
+| Alan | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `deviceId` | string | ✔ | Hedef cihaz |
+
+```bash
+curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/account-health \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId": "cmr3..." }'
+```
+
+İş sonucu (örnek): `{ "status": "OK", "number": "+90…", "waVersion": "2.24.x", "registered": true }`
+
+---
+
 ### POST /v1/whatsapp/conversations/labels
 
 Bir sohbete kategori (etiket) atar. **write kapsamı gerekir.**
@@ -745,12 +944,67 @@ olduğunda sonuç `result` alanında durur; `FAILED` ise sebep `error` alanında
 |---|---|
 | `WHATSAPP_MYNUMBER` | `{ "status": "OK", "number": "+90 …" }` |
 | `WHATSAPP_BLOCKLIST` | `{ "status": "OK", "count": 1, "blocked": ["+90 …"] }` |
-| `WHATSAPP_DELETE_MESSAGE` | `{ "status": "DELETED", "scope": "everyone" }` |
+| `WHATSAPP_DELETE_MSG` | `{ "status": "DELETED", "scope": "everyone" }` |
+| `WHATSAPP_RECEIPTS` | `{ "status": "OK", "count": 2, "receipts": [ { "ts": …, "status": "READ", "text": "…" } ] }` |
+| `WHATSAPP_MEDIA` | `{ "status": "OK", "count": 1, "media": [ { "ts": …, "mime": "image/jpeg", "name": "…", "size": …, "path": "…" } ] }` |
+| `WHATSAPP_CALLS` | `{ "status": "OK", "count": 1, "calls": [ { "ts": …, "fromMe": true, "video": false, "durationSec": 42 } ] }` |
+| `WHATSAPP_SEARCH` | `{ "status": "OK", "count": 2, "results": [ { "ts": …, "peer": "+90…", "text": "…" } ] }` |
+| `WHATSAPP_UNREAD` | `{ "status": "OK", "totalUnread": 7, "unreadChats": 3 }` |
+| `WHATSAPP_CONTACTS` | `{ "status": "OK", "count": 2, "contacts": [ { "number": "+90…", "name": "…" } ] }` |
+| `WHATSAPP_GROUP_MEMBERS` | `{ "status": "OK", "count": 2, "members": [ { "number": "+90…", "admin": true } ] }` |
+| `WHATSAPP_CHAT_SUMMARY` | `{ "status": "OK", "total": 240, "inbound": 130, "outbound": 110, "media": 18 }` |
+| `WHATSAPP_ACCOUNT_HEALTH` | `{ "status": "OK", "number": "+90…", "waVersion": "2.24.x", "registered": true }` |
+
+> Cihaz root'lu değilse root-DB okuma işleri `{ "status": "NO_ROOT", "note": "…" }`
+> ile döner (hata değil — o cihazda o okuma yapılamıyor demektir).
 
 > **Yoklama (polling):** `jobId`'yi alın, birkaç saniyede bir `GET /v1/jobs/:jobId`
 > çağırın; `status` `COMPLETED`/`FAILED` olana kadar bekleyin. Alternatif olarak
 > webhook (`WHATSAPP_SENT` / `WHATSAPP_FAILED`) veya Telegram/Slack bildirimiyle de
-> sonucu öğrenebilirsiniz (yukarıdaki §2'ye bakın).
+> sonucu öğrenebilirsiniz (yukarıdaki §2'ye bakın). **Daha basiti:** aşağıdaki
+> long-poll ucu ile tek istekte sonucu bekleyin — yoklama döngüsü kurmanıza gerek
+> kalmaz.
+
+---
+
+### GET /v1/jobs/:jobId/wait — İş bitene kadar bekle (long-poll)
+
+`GET /v1/jobs/:jobId` gibidir; **ama** iş bitene (`COMPLETED`/`FAILED`/`CANCELLED`)
+**veya** `?timeout` saniye dolana kadar **sunucu tarafında bekler** ve sonucu
+öyle döner. Böylece yoklama döngüsü yerine **tek istekte** sonucu alırsınız —
+gönderdiğiniz işin sonucunu hazır olur olmaz alırsınız, boşa dönen istek olmaz.
+Okuma — **her geçerli anahtar erişir** (write gerekmez).
+
+| Parametre | Tip | Zorunlu | Açıklama |
+|---|---|---|---|
+| `timeout` | integer | – | Kaç saniye beklensin (1–60, varsayılan 30) |
+
+- İş süre dolmadan biterse: `GET /v1/jobs/:jobId` ile **aynı** gövde döner.
+- Süre dolarsa (iş hâlâ PENDING/RUNNING): mevcut durum döner **ve** `timedOut: true`
+  işaretlenir — çağrıyı yineleyerek beklemeye devam edebilirsiniz.
+
+```bash
+# İşi gönder, jobId'yi al, sonra tek istekte bitmesini bekle:
+JOB=$(curl -s -X POST https://<host>/public/v1/whatsapp/unread \
+  -H "x-api-key: flk_..." -H "content-type: application/json" \
+  -d '{ "deviceId":"cmr3..." }' | jq -r .data.jobId)
+
+curl -s "https://<host>/public/v1/jobs/$JOB/wait?timeout=30" -H "x-api-key: flk_..."
+```
+
+```json
+{
+  "data": {
+    "id": "cmr9dd...",
+    "type": "WHATSAPP_UNREAD",
+    "status": "COMPLETED",
+    "result": { "status": "OK", "totalUnread": 7, "unreadChats": 3 },
+    "error": null,
+    "createdAt": "2026-07-22T09:00:00.000Z",
+    "updatedAt": "2026-07-22T09:00:02.000Z"
+  }
+}
+```
 
 ---
 
@@ -936,9 +1190,9 @@ Sınırlar uç türüne göre farklıdır — tek bir "IP başına" sınır **yo
 
 | Uç grubu | Sınır | Anahtar (bucket) |
 |---|---|---|
-| Yazma POST'ları (send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, `/register/:id/otp`, `/register/:id/verify-method`) | **~120 istek/dakika** | IP başına |
+| Yazma POST'ları (send, broadcast, profile, block, blocklist, mynumber, send-media, delete-message, clear-chat, receipts, media, calls, search, unread, contacts, group-members, chat-summary, account-health, `/register/:id/otp`, `/register/:id/verify-method`) | **~120 istek/dakika** | IP başına |
 | Ağır işlemler: `POST /v1/devices/provision`, `POST /v1/whatsapp/register` | **~20 istek/dakika** | **API anahtarı başına** |
-| GET okuma uçları (devices, messages, conversations, thread, stats, labels, provision-status, register-status, jobs) + etiket/durum POST'ları (`/labels`, `/conversations/labels`, `/conversations/state`) | **Sınırsız** | — |
+| GET okuma uçları (devices, messages, conversations, thread, stats, labels, provision-status, register-status, jobs, jobs/:id/wait) + etiket/durum POST'ları (`/labels`, `/conversations/labels`, `/conversations/state`) | **Sınırsız** | — |
 
 Sınıra takılan istekler `429 RATE_LIMITED` döner. Her yanıtta `RateLimit-Limit`,
 `RateLimit-Remaining` ve `RateLimit-Reset` başlıkları ile kalan kotanızı görebilirsiniz.

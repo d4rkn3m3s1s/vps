@@ -7,7 +7,7 @@ import { alertsService } from './alerts.service';
 
 const createSchema = z.object({
   name: z.string().min(1),
-  trigger: z.enum(['JOB_FAILED', 'DEVICE_OFFLINE', 'QUOTA_HIGH', 'HOST_OFFLINE', 'FARM_BAN_RISK']),
+  trigger: z.enum(['JOB_FAILED', 'DEVICE_OFFLINE', 'QUOTA_HIGH', 'HOST_OFFLINE', 'FARM_BAN_RISK', 'ACCOUNT_BANNED', 'HOST_SATURATED', 'PROXY_UNHEALTHY', 'FLEET_MASS_OFFLINE']),
   threshold: z.coerce.number().int().min(0).max(100).optional(),
   notify: z.boolean().optional(),
   webhook: z.boolean().optional(),
@@ -76,7 +76,11 @@ export function listTriggersHandler(_req: Request, res: Response): void {
       { key: 'DEVICE_OFFLINE', label: 'Device goes offline', hasThreshold: false },
       { key: 'QUOTA_HIGH', label: 'Device quota high', hasThreshold: true },
       { key: 'HOST_OFFLINE', label: 'Host goes offline', hasThreshold: false },
-      { key: 'FARM_BAN_RISK', label: 'Farm account ban risk', hasThreshold: true }
+      { key: 'FARM_BAN_RISK', label: 'Farm account ban risk', hasThreshold: true },
+      { key: 'ACCOUNT_BANNED', label: 'WhatsApp hesabı banlandı / kısıtlandı / çıkış yaptı', hasThreshold: false },
+      { key: 'HOST_SATURATED', label: 'Sunucu yükü / disk kritik', hasThreshold: false },
+      { key: 'PROXY_UNHEALTHY', label: 'Proxy sızıntısı / redsocks öldü', hasThreshold: false },
+      { key: 'FLEET_MASS_OFFLINE', label: 'Filoda toplu düşüş (birçok cihaz aynı anda)', hasThreshold: false }
     ]
   });
 }

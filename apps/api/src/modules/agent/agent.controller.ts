@@ -79,8 +79,12 @@ const whatsappReceiptSchema = z.object({
 });
 
 const healthAlertSchema = z.object({
-  kind: z.enum(['PROXY_LEAK', 'AUTO_RECONNECT', 'UNREACHABLE']),
-  instance: z.string().min(1).optional(),
+  // ★2026-07-23 (Faz-4): + PROXY_DEAD (dead redsocks — health-watch already emits it) and
+  // HEALTH_WATCH_HEARTBEAT (dead-man's-switch ping). Without these the API 400'd them.
+  kind: z.enum(['PROXY_LEAK', 'PROXY_DEAD', 'AUTO_RECONNECT', 'UNREACHABLE', 'HEALTH_WATCH_HEARTBEAT']),
+  // notify() always sends "instance":"..." — for HEALTH_WATCH_HEARTBEAT it's "" (empty),
+  // so accept empty and normalize to undefined instead of rejecting with a 400.
+  instance: z.string().optional().transform((v) => (v && v.length ? v : undefined)),
   deviceId: z.string().min(1).optional(),
   detail: z.string().min(1).max(500),
   fixed: z.coerce.boolean().optional()

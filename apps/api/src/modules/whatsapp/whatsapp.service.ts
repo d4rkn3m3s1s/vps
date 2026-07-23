@@ -17,6 +17,8 @@ import { encryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { alertsService } from '../alerts/alerts.service';
+import { notificationsService } from '../notifications/notifications.service';
 import { logger } from '../../lib/logger';
 
 // Kept in sync with the dashboard label picker + Telegram chip rendering.
@@ -241,6 +243,28 @@ export async function setAccountHealth(input: {
     },
     input.workspaceId ?? undefined
   );
+
+  // ★2026-07-23 (M-1): a ban/restriction/logout is a CRITICAL account event, but before
+  // this it ONLY fired the webhook — an operator without a webhook configured never learned
+  // their account got banned (the exact "found out by looking manually" gap). Now:
+  //  1) run the alert engine (ACCOUNT_BANNED) so any matching rule + its channels fire, AND
+  //  2) push a Telegram/Slack/Discord notification UNCONDITIONALLY (no rule needed) — a ban
+  //     is too important to depend on the operator having pre-created an alert rule.
+  const num = account.phoneNumber ?? input.deviceId;
+  const healthTr: Record<string, string> = { BANNED: '🚫 BANLANDI', RESTRICTED: '⚠️ KISITLANDI', LOGGED_OUT: '🔒 ÇIKIŞ YAPILDI' };
+  const label = healthTr[input.health] ?? input.health;
+  void alertsService
+    .evaluate(input.workspaceId ?? undefined, 'ACCOUNT_BANNED', {
+      title: `WhatsApp hesabı ${label} — ${num}`,
+      detail: `${label}\n📱 ${num}${input.note ? `\n📝 ${input.note.slice(0, 200)}` : ''}`
+    })
+    .catch(() => undefined);
+  void notificationsService
+    .dispatch(input.workspaceId ?? '', {
+      title: `${label} — WhatsApp hesabı`,
+      detail: `${label}\n📱 Numara: ${num}${input.note ? `\n📝 ${input.note.slice(0, 200)}` : ''}`.slice(0, 900)
+    })
+    .catch(() => undefined);
   return { changed: true };
 }
 

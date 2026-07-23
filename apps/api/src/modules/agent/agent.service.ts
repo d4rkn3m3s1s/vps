@@ -1,4 +1,4 @@
-import type { GeneratedAccountStatus, Host } from '@prisma/client';
+import type { AlertTrigger, GeneratedAccountStatus, Host } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../lib/errors';
@@ -1262,6 +1262,13 @@ export class AgentService {
     host: { id: string; workspaceId: string | null },
     input: { kind: string; instance?: string | undefined; deviceId?: string | undefined; detail: string; fixed?: boolean | undefined }
   ): Promise<{ ok: true }> {
+    // ★2026-07-23 (M-3): the monitor's dead-man's-switch heartbeat. wd-health-watch sends
+    // this once per run; we stamp Host.lastHealthWatchAt so the offline tick can detect a
+    // monitor that has stopped reporting (stale >20min = the proactive layer is down).
+    if (input.kind === 'HEALTH_WATCH_HEARTBEAT') {
+      await prisma.host.update({ where: { id: host.id }, data: { lastHealthWatchAt: new Date() } }).catch(() => undefined);
+      return { ok: true };
+    }
     // Resolve the device by explicit id or by metadata.instance so the alert links to it.
     let device: { id: string; name: string; workspaceId: string | null } | null = null;
     if (input.deviceId) {
@@ -1279,12 +1286,25 @@ export class AgentService {
     }
     const wsId = device?.workspaceId ?? host.workspaceId ?? undefined;
     const label = device?.name || input.instance || input.deviceId || 'cihaz';
+    // ★2026-07-23 (M-6): route each health-watch kind to its OWN AlertTrigger instead of
+    // funnelling everything into DEVICE_OFFLINE. Before, an operator couldn't make a
+    // proxy-specific rule, and a PROXY_DEAD (redsocks down = active ban risk, the #1 cause
+    // of bans) hid inside device-offline noise — and if no DEVICE_OFFLINE rule existed, it
+    // fired NOTHING. Also: `fixed === false` means the leak/dead-proxy is STILL live (the
+    // device is exiting from the datacenter IP right now) → mark it urgent so it stands out.
+    const isProxyKind = input.kind === 'PROXY_LEAK' || input.kind === 'PROXY_DEAD';
+    const unresolved = input.fixed === false; // still leaking / still down → needs a human NOW
+    const urgent = unresolved ? '🔴 DÜZELTİLEMEDİ — ' : '';
     const title =
       input.kind === 'PROXY_LEAK'
-        ? `⚠️ Proxy sızıntısı: ${label}${input.fixed ? ' (otomatik düzeltildi)' : ''}`
-        : input.kind === 'AUTO_RECONNECT'
-          ? `🔄 Cihaz yeniden bağlandı: ${label}`
-          : `Sağlık uyarısı: ${label}`;
+        ? `${urgent}⚠️ Proxy sızıntısı: ${label}${input.fixed ? ' (otomatik düzeltildi)' : ''}`
+        : input.kind === 'PROXY_DEAD'
+          ? `${urgent}⚠️ Proxy öldü (redsocks): ${label}${input.fixed ? ' (yeniden başlatıldı)' : ''}`
+          : input.kind === 'AUTO_RECONNECT'
+            ? `🔄 Cihaz yeniden bağlandı: ${label}`
+            : input.kind === 'UNREACHABLE'
+              ? `⛔ Cihaz erişilemiyor: ${label}`
+              : `Sağlık uyarısı: ${label}`;
 
     logger.warn('health-watch alert', { kind: input.kind, device: label, detail: input.detail, fixed: input.fixed });
 
@@ -1303,9 +1323,24 @@ export class AgentService {
       )
       .catch(() => undefined);
 
-    void alertsService
-      .evaluate(wsId, 'DEVICE_OFFLINE', { title, detail: input.detail })
-      .catch(() => undefined);
+    // Pick the trigger by kind. AUTO_RECONNECT is informational (self-healed) → no alert.
+    const trigger: AlertTrigger | null = isProxyKind
+      ? 'PROXY_UNHEALTHY'
+      : input.kind === 'UNREACHABLE'
+        ? 'DEVICE_OFFLINE'
+        : null;
+    if (trigger) {
+      void alertsService
+        .evaluate(wsId, trigger, { title, detail: input.detail })
+        .catch(() => undefined);
+      // An UNRESOLVED proxy problem is an active ban risk — push it unconditionally too
+      // (a leaked device shouldn't wait for the operator to have pre-made a rule).
+      if (unresolved && isProxyKind) {
+        void notificationsService
+          .dispatch(wsId ?? '', { title, detail: input.detail.slice(0, 900) })
+          .catch(() => undefined);
+      }
+    }
 
     return { ok: true };
   }

@@ -138,6 +138,12 @@ model Host {
   kvm            Boolean    @default(true)
   agentKeyHash   String?
   lastSeenAt     DateTime?
+  // ★2026-07-23 (M-3): last time the wd-health-watch proactive monitor reported in.
+  // The monitor can die silently (env missing, DB query fail → exit 1), taking the whole
+  // proxy-leak/zombie-detection layer down with it — but with no alert, "all is well" is
+  // assumed. The offline tick compares this to now(); if it's >20min stale the monitor is
+  // considered down and an alert fires. Updated on every health-watch heartbeat.
+  lastHealthWatchAt DateTime?
   // Cloud provider this host was provisioned from (e.g. "vast"), and the
   // provider-side instance/contract id so we can manage (destroy) it later.
   provider       String?
@@ -302,6 +308,14 @@ enum AlertTrigger {
   QUOTA_HIGH
   HOST_OFFLINE
   FARM_BAN_RISK
+  // ★2026-07-23 (Faz-4 observability): a WhatsApp account was detected BANNED /
+  // RESTRICTED / LOGGED_OUT on-device; the host itself is saturated (load/disk) or
+  // its proxy is unhealthy (leak/dead redsocks); or a large share of the fleet went
+  // offline at once. These were previously invisible until an operator looked manually.
+  ACCOUNT_BANNED
+  HOST_SATURATED
+  PROXY_UNHEALTHY
+  FLEET_MASS_OFFLINE
 }
 
 // A user-defined alerting rule, scoped to a workspace. When its trigger

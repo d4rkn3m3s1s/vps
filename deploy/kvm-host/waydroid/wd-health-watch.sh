@@ -220,4 +220,8 @@ while IFS='|' read -r inst meta_cc phone; do
 done <<< "$ROWS"
 
 log "TAMAM: $OK sağlıklı, $LEAK sızıntı-düzeltildi, $RECONN reconnect, $UNREACH erişilemez"
+# ★2026-07-23 (M-3): dead-man's-switch heartbeat. Report "I ran" so the API can detect if
+# this monitor ever stops (env/DB failure → silent exit). The API stamps Host.lastHealthWatchAt
+# and alerts if it goes >20min stale. Best-effort; never blocks the run.
+notify HEALTH_WATCH_HEARTBEAT "" "health-watch turu tamamlandi ($OK saglikli, $LEAK sizinti, $RECONN reconnect)" true
 exit 0

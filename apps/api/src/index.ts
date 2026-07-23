@@ -131,6 +131,27 @@ async function main(): Promise<void> {
           // Also fire the DEVICE_OFFLINE webhook event (was defined but never dispatched).
           void webhooksService.dispatch('DEVICE_OFFLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
         }
+        // ★2026-07-23 (M-4): FLEET-WIDE BURST alert. Per-device DEVICE_OFFLINE alerts turn a
+        // systemic outage (host crash, proxy-provider drop, network) into 50 separate pings
+        // that drown each other out — the exact opposite of an early warning. When a large
+        // SHARE of a workspace's fleet goes offline in ONE tick, fire a single aggregate
+        // FLEET_MASS_OFFLINE per workspace. Grouped so one bad host doesn't alert another
+        // tenant. Threshold: ≥3 devices AND ≥30% of that workspace's fleet in one tick.
+        if (stale.length >= 3) {
+          const byWs = new Map<string, number>();
+          for (const d of stale) if (d.workspaceId) byWs.set(d.workspaceId, (byWs.get(d.workspaceId) ?? 0) + 1);
+          for (const [ws, count] of byWs) {
+            if (count < 3) continue;
+            const total = await prisma.device.count({ where: { workspaceId: ws } }).catch(() => 0);
+            const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+            if (pct < 30) continue;
+            void alertsService.evaluate(ws, 'FLEET_MASS_OFFLINE', {
+              title: `🚨 Filoda toplu düşüş — ${count} cihaz (%${pct}) aynı anda çevrimdışı`,
+              detail: `Tek bir kontrol turunda ${count} cihaz (filonun %${pct}'i) çevrimdışı oldu — sistemik bir olay olabilir (sunucu/proxy/ağ). Hemen kontrol edin.`,
+              value: pct
+            });
+          }
+        }
         return stale.length;
       })(),
       (async () => {
@@ -143,6 +164,52 @@ async function main(): Promise<void> {
           void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_OFFLINE', {
             title: `Sunucu çevrimdışı: ${h.name}`,
             detail: 'Sunucu heartbeat zaman aşımına uğradı (>5 dk).'
+          });
+        }
+        // ★2026-07-23 (M-2): HOST SATURATION alert. The agent already reports loadAvg1m /
+        // cpuCores / diskFreeGb, but nothing alerted on them — the host had to fully DIE
+        // (HOST_OFFLINE) before any warning. That's "after", not "before". Now: for each
+        // LIVE host, warn when load ≥ cores×0.9 (CPU saturated — the load-100 storms devices
+        // fall from) or free disk < 15GB (a full disk silently breaks provision/snapshot).
+        const liveHosts = await prisma.host
+          .findMany({
+            where: { status: 'ONLINE' },
+            select: { id: true, name: true, workspaceId: true, loadAvg1m: true, cpuCores: true, diskFreeGb: true }
+          })
+          .catch(() => []);
+        for (const h of liveHosts) {
+          const cores = h.cpuCores ?? 0;
+          const load = h.loadAvg1m ?? 0;
+          const disk = h.diskFreeGb ?? 999;
+          const cpuSat = cores > 0 && load >= cores * 0.9;
+          const diskLow = disk < 15;
+          if (!cpuSat && !diskLow) continue;
+          const parts: string[] = [];
+          if (cpuSat) parts.push(`CPU yükü ${load.toFixed(0)}/${cores} (satürasyon)`);
+          if (diskLow) parts.push(`boş disk ${disk}GB (kritik)`);
+          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', {
+            title: `⚠️ Sunucu kaynağı kritik: ${h.name}`,
+            detail: `${h.name}: ${parts.join(' · ')}. Cihazlar yavaşlayabilir/donabilir; boşta cihazları uyutmayı veya kapasiteyi artırmayı düşünün.`,
+            ...(cores > 0 ? { value: Math.round((load / cores) * 100) } : {})
+          });
+        }
+        // ★2026-07-23 (M-3): dead-man's switch. A LIVE host whose wd-health-watch monitor
+        // hasn't reported in >20min = the proactive proxy-leak/zombie layer is silently down.
+        // Only check hosts that have EVER reported (lastHealthWatchAt not null) so a brand-new
+        // host without the heartbeat wired doesn't false-alarm.
+        const monitorStale = new Date(Date.now() - 20 * 60 * 1000);
+        const monitorDown = liveHosts.length
+          ? await prisma.host
+              .findMany({
+                where: { status: 'ONLINE', lastHealthWatchAt: { not: null, lt: monitorStale } },
+                select: { id: true, name: true, workspaceId: true }
+              })
+              .catch(() => [])
+          : [];
+        for (const h of monitorDown) {
+          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', {
+            title: `🛑 Sağlık izleyici durdu: ${h.name}`,
+            detail: `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 20+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Sunucuyu kontrol edin.`
           });
         }
         return stale.length;

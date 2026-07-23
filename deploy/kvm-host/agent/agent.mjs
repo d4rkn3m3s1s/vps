@@ -400,11 +400,17 @@ async function readWaGroupMembers(serial, group, limit = 500) {
   // Fallback to the legacy table if the modern one is missing (rows===null AND the
   // db is actually reachable). We can't tell "no root" from "no table" via null alone,
   // so probe the legacy table only when the new query yielded nothing.
-  if (rows === null || rows.length === 0) {
+  // ★2026-07-23 (C-4): legacy fallback matched with `gjid LIKE '%digits%'` — a SUBSTRING
+  // match that returns members of EVERY group whose jid CONTAINS the digit string (e.g.
+  // group="12345" matched 120123456789@g.us), and when the caller passed a subject (gDigits
+  // empty) it became `LIKE '%%'` = ALL groups. Both silently return the WRONG members list.
+  // Fix: anchor the match to the exact group jid (`<digits>@g.us`), and skip the legacy path
+  // entirely when we have no numeric group id to anchor on.
+  if ((rows === null || rows.length === 0) && gDigits) {
     const sqlOld =
       `SELECT j.user, gp.admin FROM group_participants gp ` +
       `JOIN jid j ON j.raw_string LIKE gp.jid ` +
-      `WHERE gp.gjid LIKE '%${gDigits}%' LIMIT ${n}`;
+      `WHERE gp.gjid LIKE '${gDigits}@%' LIMIT ${n}`;
     const legacy = await waSql(serial, 'msgstore', sqlOld);
     if (legacy && legacy.length) rows = legacy;
   }
@@ -3831,12 +3837,27 @@ async function whatsappSend(serial, payload) {
   }
 
   // Final confirmation if the loop couldn't confirm (null path): one more dump.
+  // ★2026-07-23 (C-2): STRONGER SENT proof. "Compose box cleared" is NECESSARY but NOT
+  // SUFFICIENT: a stray tap landing on the mic/another field, an ANR "Wait" dismissal, or
+  // WhatsApp auto-clearing the draft on a screen change all empty the box WITHOUT the
+  // message going out → a false SENT (operator sees "gönderildi", recipient gets nothing).
+  // So when the box cleared, still require a positive outgoing-bubble sighting; give it a
+  // short grace for slow devices before deciding. Only fall back to box-cleared-alone if
+  // the bubble check itself is unreadable (dump keeps failing) — never claim SENT purely
+  // from an empty box when we CAN read the thread and no bubble is there.
   if (!sent) {
     const still = await composeStillFull();
-    if (still === false) sent = true; // box cleared after all → sent
-    // SHOT-2: even if the box read was inconclusive (null, blank dump), a visible
-    // outgoing bubble with our text is positive proof the message landed.
-    else if (still === null && await outgoingBubbleAppeared()) sent = true;
+    if (still === false) {
+      // Box cleared — now demand positive proof via the outgoing bubble (with grace).
+      let bubble = await outgoingBubbleAppeared().catch(() => null);
+      if (bubble !== true) { await h.sleep(1500); bubble = await outgoingBubbleAppeared().catch(() => null); }
+      if (bubble === true) sent = true;
+      else if (bubble === null) sent = true; // bubble unreadable (blank dump) → box-cleared is best evidence we have
+      // bubble === false (thread readable, NO bubble) → do NOT claim SENT; fall through to failure/receipt paths
+    } else if (still === null && await outgoingBubbleAppeared()) {
+      // Box read inconclusive but a visible outgoing bubble with our text = positive proof.
+      sent = true;
+    }
   }
   // After a Try-Again, re-check delivery: if the compose box is empty AND no "not
   // sent" dialog remains, treat as sent.

@@ -171,10 +171,16 @@ export async function createJobRecord(
   // not be rejected as "busy".
   const targetDeviceId =
     ((finalPayload as Record<string, unknown>).deviceId as string | undefined) ?? emulatorId;
+  // ★2026-07-23 (C-5): strip undefined before persisting. A payload field set to
+  // `undefined` (e.g. a conditional that assigned undefined instead of omitting) is
+  // SILENTLY DROPPED by Prisma's JSON serializer — the agent then reads a payload missing
+  // `to`/`message`/etc. and behaves wrongly with no error. A JSON round-trip removes any
+  // undefined key so what's stored is exactly what a reader will get back.
+  const cleanPayload = JSON.parse(JSON.stringify(finalPayload ?? {}));
   const jobData = {
     type,
     status: 'PENDING' as const,
-    payload: finalPayload as Prisma.InputJsonValue,
+    payload: cleanPayload as Prisma.InputJsonValue,
     // Mirror the target device into the indexed first-class column so the idle
     // guard + agent claim don't have to filter on a JSON path.
     ...(targetDeviceId ? { deviceId: targetDeviceId } : {}),
@@ -239,7 +245,13 @@ export async function listJobs(workspaceId?: string, limit = 100) {
 // only flipped the Job to FAILED — the thread showed nothing).
 const PENDING_STALE_MS = 6 * 60 * 1000;
 const RUNNING_STALE_MS = 15 * 60 * 1000;
-const RUNNING_STALE_SHORT_MS = 4 * 60 * 1000; // send/media: tight cap
+// ★2026-07-23 (C-3): 4min → 6min. The agent retries a transient WHATSAPP_SEND up to 3×
+// (100s wall-cap each) + backoff (2.5s+5s) ≈ 307s ≈ 5.1min TOTAL before giving up. A 4min
+// reaper cutoff fired WHILE the agent was still on attempt 2/3 — so a send that the agent
+// then SUCCEEDED on got a "failed" bubble + inflated broadcast failCount, and the agent's
+// later complete(COMPLETED) hit the terminal guard (JOB_ALREADY_FINALIZED). 6min sits
+// safely above the agent's real ceiling so the reaper only reaps genuinely-dead jobs.
+const RUNNING_STALE_SHORT_MS = 6 * 60 * 1000; // send/media: above agent retry ceiling (~5.1min)
 // How many times a transient (reaper-timed-out) WhatsApp send is auto-re-dispatched
 // before it becomes a permanent FAILED bubble. 2 retries = 3 total attempts, enough to
 // ride out a brief agent-busy/proxy blip without hammering a genuinely dead device.

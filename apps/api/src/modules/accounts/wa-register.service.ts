@@ -238,6 +238,16 @@ export class WaRegisterService {
     steps: WaStep[];
     lastProgress: Omit<WaRegisterProgress, 'shot'> | null;
     log: unknown[];
+    // ★2026-07-23: which verification channel the registration is parked on, so an API
+    // integrator can react WITHOUT guessing. Mirrors what the dashboard modal shows:
+    //  - otpChannel: 'sms' | 'other_phone' | 'method_select' | 'rate_limited' | null
+    //  - awaitingOtp: true when we're waiting for an SMS code (call /otp)
+    //  - awaitingMethod: true when WhatsApp's "Choose how to verify" sheet is up — the
+    //    integrator must call /verify-method (sms | voice | missed_call) to continue.
+    otpChannel: string | null;
+    awaitingOtp: boolean;
+    awaitingMethod: boolean;
+    note: string | null;
     startedAt: string | null;
   }> {
     const acc = await prisma.generatedAccount.findFirst({
@@ -255,6 +265,26 @@ export class WaRegisterService {
     // shows the real elapsed time no matter WHEN the operator opens it — it was
     // previously counting from modal-open, which reset to 00:00 on every reopen.
     const first = log[0] as { ts?: string } | undefined;
+    // otpChannel lives on the REGISTER_WHATSAPP job's result (the agent writes it there
+    // when it parks on OTP_WAIT / the method sheet), NOT on registerLog. Read the newest
+    // register job for this device so the API surfaces the parked channel — otherwise an
+    // integrator can't tell "waiting for SMS" from "must pick a verify method".
+    let otpChannel: string | null = null;
+    let note: string | null = (last?.note as string | undefined) ?? null;
+    if (acc.status === 'AWAITING_OTP' && acc.deviceId) {
+      const job = await prisma.job
+        .findFirst({
+          where: { type: 'REGISTER_WHATSAPP', deviceId: acc.deviceId, ...(workspaceId ? { workspaceId } : {}) },
+          orderBy: { createdAt: 'desc' },
+          select: { result: true }
+        })
+        .catch(() => null);
+      const r = (job?.result ?? {}) as Record<string, unknown>;
+      if (typeof r.otpChannel === 'string') otpChannel = r.otpChannel;
+      if (!note && typeof r.note === 'string') note = r.note;
+    }
+    const awaitingMethod = otpChannel === 'method_select';
+    const awaitingOtp = acc.status === 'AWAITING_OTP' && !awaitingMethod && otpChannel !== 'rate_limited';
     return {
       accountId: acc.id,
       deviceId: acc.deviceId ?? '',
@@ -264,6 +294,10 @@ export class WaRegisterService {
       steps: WA_REGISTER_STEPS,
       lastProgress: last,
       log,
+      otpChannel,
+      awaitingOtp,
+      awaitingMethod,
+      note,
       startedAt: (first?.ts as string) ?? null
     };
   }

@@ -56,6 +56,24 @@ function barTone(p: number): string {
   return 'bar-ok';
 }
 
+// Map an AlertTrigger to a banner severity class. Bans / mass-offline are critical;
+// saturation / proxy / device-offline are warnings; the rest neutral.
+function alertTone(trigger?: string): string {
+  switch (trigger) {
+    case 'ACCOUNT_BANNED':
+    case 'FLEET_MASS_OFFLINE':
+    case 'HOST_OFFLINE':
+      return 'alert-crit';
+    case 'HOST_SATURATED':
+    case 'PROXY_UNHEALTHY':
+    case 'DEVICE_OFFLINE':
+    case 'FARM_BAN_RISK':
+      return 'alert-warn';
+    default:
+      return 'alert-info';
+  }
+}
+
 function ago(iso?: string | null): string {
   if (!iso) return 'hiç';
   const diff = Date.now() - new Date(iso).getTime();
@@ -67,11 +85,21 @@ function ago(iso?: string | null): string {
   return `${Math.floor(h / 24)} gün önce`;
 }
 
+type HostRow = {
+  id: string; name: string; status: string;
+  load1: number | null; cpuCores: number | null; saturationPct: number | null;
+  diskFreeGb: number | null; ramFreeGb: number | null; monitorStale: boolean;
+};
 type FleetHealth = {
   devices: { total: number; online: number; offline: number; error: number };
   waAccounts: { total: number; active: number; restricted: number; banned: number; loggedOut: number; awaitingOtp: number; awaitingManual: number; failed: number };
   today: { started: number; active: number; failed: number; successRate: number };
   host: { avgCpu: number; avgMem: number; avgDisk: number; onlineDevices: number };
+  hosts?: HostRow[];
+};
+type AlertEvent = {
+  id: string; title: string; detail: string; createdAt: string;
+  rule?: { name?: string; trigger?: string } | null;
 };
 type Bucket = { key: string; total: number; active: number; failed: number; successRate: number };
 type RegisterAnalytics = {
@@ -83,6 +111,7 @@ export function HealthView() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [health, setHealth] = useState<FleetHealth | null>(null);
   const [analytics, setAnalytics] = useState<RegisterAnalytics | null>(null);
+  const [alerts, setAlerts] = useState<AlertEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -90,16 +119,18 @@ export function HealthView() {
   async function load(isRefresh = false) {
     if (isRefresh) setRefreshing(true);
     try {
-      const [devRes, healthRes, anaRes] = await Promise.all([
+      const [devRes, healthRes, anaRes, alertRes] = await Promise.all([
         fetch('/api/devices'),
         fetch('/api/fleet-health/summary'),
-        fetch('/api/fleet-health/register-analytics?days=30')
+        fetch('/api/fleet-health/register-analytics?days=30'),
+        fetch('/api/alerts/events')
       ]);
       if (!devRes.ok) throw new Error('fetch failed');
       const devJson = await devRes.json();
       if (Array.isArray(devJson.data)) setDevices(devJson.data);
       if (healthRes.ok) { const j = await healthRes.json(); if (j?.data) setHealth(j.data as FleetHealth); }
       if (anaRes.ok) { const j = await anaRes.json(); if (j?.data) setAnalytics(j.data as RegisterAnalytics); }
+      if (alertRes.ok) { const j = await alertRes.json(); if (Array.isArray(j?.data)) setAlerts(j.data as AlertEvent[]); }
       setError(false);
     } catch {
       setError(true);
@@ -132,6 +163,14 @@ export function HealthView() {
     [devices]
   );
 
+  // Alerts from the last 6 hours — the "something is wrong" banner. Freshest first.
+  const recentAlerts = useMemo(() => {
+    const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+    return alerts.filter((a) => new Date(a.createdAt).getTime() >= cutoff).slice(0, 6);
+  }, [alerts]);
+
+  const hosts = health?.hosts ?? [];
+
   return (
     <PageMotion className="page">
       <HoloHeader
@@ -144,6 +183,68 @@ export function HealthView() {
           </button>
         }
       />
+
+      {/* Alert banner — anything fired in the last 6h. The "something is wrong" strip. */}
+      {recentAlerts.length > 0 ? (
+        <div className="health-alert-banner">
+          {recentAlerts.map((a) => (
+            <div className={`health-alert ${alertTone(a.rule?.trigger)}`} key={a.id}>
+              <AlertTriangle size={14} className="health-alert-ico" />
+              <span className="health-alert-title">{a.title}</span>
+              <span className="health-alert-ago mono">{ago(a.createdAt)}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Host machines — the servers' OWN load/disk (not device averages). */}
+      {hosts.length > 0 ? (
+        <HoloPanel title="Sunucular" icon={<ServerCog size={16} />}>
+          <div className="host-grid">
+            {hosts.map((h) => {
+              const sat = h.saturationPct ?? 0;
+              const diskLow = h.diskFreeGb != null && h.diskFreeGb < 15;
+              const cpuBad = sat >= 90;
+              return (
+                <div className={`host-card ${h.status !== 'ONLINE' ? 'host-off' : ''}`} key={h.id}>
+                  <div className="host-head">
+                    <span className="host-name">{h.name}</span>
+                    <span className="status-chip">
+                      <span className={statusClass(h.status)} />
+                      {STATUS_LABEL[h.status] ?? h.status}
+                    </span>
+                  </div>
+                  <div className="host-metrics">
+                    <div className="host-metric">
+                      <span className="host-metric-label"><Cpu size={12} /> Yük</span>
+                      <span className={`host-metric-val mono ${cpuBad ? 'host-crit' : sat >= 70 ? 'host-warn' : ''}`}>
+                        {h.load1 != null ? h.load1.toFixed(1) : '—'}
+                        {h.cpuCores ? <span className="host-metric-sub"> / {h.cpuCores}</span> : null}
+                        {h.saturationPct != null ? <span className="host-metric-sub"> ({h.saturationPct}%)</span> : null}
+                      </span>
+                    </div>
+                    <div className="host-metric">
+                      <span className="host-metric-label"><HardDrive size={12} /> Boş disk</span>
+                      <span className={`host-metric-val mono ${diskLow ? 'host-crit' : ''}`}>
+                        {h.diskFreeGb != null ? `${h.diskFreeGb} GB` : '—'}
+                      </span>
+                    </div>
+                    <div className="host-metric">
+                      <span className="host-metric-label"><MemoryStick size={12} /> Boş RAM</span>
+                      <span className="host-metric-val mono">{h.ramFreeGb != null ? `${h.ramFreeGb} GB` : '—'}</span>
+                    </div>
+                  </div>
+                  {h.monitorStale ? (
+                    <div className="host-monitor-down">
+                      <AlertTriangle size={12} /> Sağlık izleyici 20+ dk sessiz
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </HoloPanel>
+      ) : null}
 
       {/* Top summary */}
       <div className="holo-stats-grid">

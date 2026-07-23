@@ -7875,6 +7875,38 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
 .holo-span-2 { grid-column: span 2; }
 
 /* HealthView card layout (classes were referenced but never defined) */
+/* ★2026-07-23 (M-5): fleet-health alert banner + host-machine cards. */
+.health-alert-banner { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 1rem; }
+.health-alert {
+  display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 0.85rem;
+  border-radius: 0.55rem; border: 1px solid; font-size: 0.82rem;
+}
+.health-alert-ico  { flex: none; }
+.health-alert-title{ flex: 1; font-weight: 600; }
+.health-alert-ago  { flex: none; font-size: 0.72rem; opacity: 0.7; }
+.health-alert.alert-crit { border-color: rgba(239,68,68,0.45); background: rgba(239,68,68,0.10); color: #fca5a5; }
+.health-alert.alert-warn { border-color: rgba(234,179,8,0.42);  background: rgba(234,179,8,0.10);  color: #fde047; }
+.health-alert.alert-info { border-color: rgba(255,255,255,0.14); background: rgba(255,255,255,0.05); color: var(--muted); }
+
+.host-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.75rem; }
+.host-card {
+  display: flex; flex-direction: column; gap: 0.6rem; padding: 0.85rem 1rem;
+  border: 1px solid rgba(255,255,255,0.10); border-radius: 0.7rem; background: rgba(255,255,255,0.025);
+}
+.host-card.host-off { opacity: 0.6; }
+.host-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.host-name { font-weight: 700; font-size: 0.92rem; }
+.host-metrics { display: flex; flex-direction: column; gap: 0.4rem; }
+.host-metric { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; font-size: 0.8rem; }
+.host-metric-label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--muted); }
+.host-metric-val { font-weight: 600; }
+.host-metric-sub { color: var(--muted); font-weight: 400; }
+.host-metric-val.host-warn { color: #fde047; }
+.host-metric-val.host-crit { color: #fca5a5; }
+.host-monitor-down {
+  display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem;
+  color: #fca5a5; padding-top: 0.35rem; border-top: 1px solid rgba(239,68,68,0.2);
+}
 .health-card        { display: flex; flex-direction: column; gap: 0.65rem; padding: 0.9rem 1rem; }
 .health-card-head   { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .health-card-metrics{ display: flex; flex-direction: column; gap: 0.5rem; }

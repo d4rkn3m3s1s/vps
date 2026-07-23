@@ -16,6 +16,15 @@ export type FleetHealth = {
   };
   today: { started: number; active: number; failed: number; successRate: number };
   host: { avgCpu: number; avgMem: number; avgDisk: number; onlineDevices: number };
+  // ★2026-07-23 (M-5): the REAL per-host rows (the host machine's own load/disk, not the
+  // device-metric averages above). saturationPct = load1/cores*100; monitorStale = the
+  // wd-health-watch dead-man's switch (>20min since it last reported).
+  hosts: Array<{
+    id: string; name: string; status: string;
+    load1: number | null; cpuCores: number | null; saturationPct: number | null;
+    diskFreeGb: number | null; ramFreeGb: number | null;
+    monitorStale: boolean;
+  }>;
 };
 
 export type RegisterAnalytics = {
@@ -44,7 +53,7 @@ class FleetHealthService {
 
     const [
       total, online, offline, errorCount,
-      waRows, todayRows, devMetrics
+      waRows, todayRows, devMetrics, hostRows
     ] = await Promise.all([
       prisma.device.count({ where: { ...ws } }),
       prisma.device.count({ where: { status: 'ONLINE', ...ws } }),
@@ -65,6 +74,15 @@ class FleetHealthService {
       prisma.device.findMany({
         where: { status: 'ONLINE', ...ws },
         select: { cpuUsage: true, memoryUsage: true, diskUsage: true }
+      }),
+      // ★2026-07-23 (M-5): the real host machines (KVM/cloud) with their own load/disk.
+      prisma.host.findMany({
+        where: { ...ws },
+        select: {
+          id: true, name: true, status: true,
+          loadAvg1m: true, cpuCores: true, diskFreeGb: true, ramFreeGb: true, lastHealthWatchAt: true
+        },
+        orderBy: { name: 'asc' }
       })
     ]);
 
@@ -93,7 +111,20 @@ class FleetHealthService {
         failed: waCount('FAILED')
       },
       today: { started: todayStarted, active: todayActive, failed: todayFailed, successRate: rate(todayActive, todayStarted) },
-      host: { avgCpu: avg('cpuUsage'), avgMem: avg('memoryUsage'), avgDisk: avg('diskUsage'), onlineDevices: online }
+      host: { avgCpu: avg('cpuUsage'), avgMem: avg('memoryUsage'), avgDisk: avg('diskUsage'), onlineDevices: online },
+      hosts: hostRows.map((h) => {
+        const load1 = h.loadAvg1m ?? null;
+        const cores = h.cpuCores ?? null;
+        const satur = load1 !== null && cores && cores > 0 ? Math.round((load1 / cores) * 100) : null;
+        // Dead-man's switch: monitor considered down if it reported once but >20min ago.
+        const monitorStale = h.status === 'ONLINE' && h.lastHealthWatchAt != null && (Date.now() - h.lastHealthWatchAt.getTime()) > 20 * 60 * 1000;
+        return {
+          id: h.id, name: h.name, status: h.status,
+          load1, cpuCores: cores, saturationPct: satur,
+          diskFreeGb: h.diskFreeGb ?? null, ramFreeGb: h.ramFreeGb ?? null,
+          monitorStale
+        };
+      })
     };
   }
 

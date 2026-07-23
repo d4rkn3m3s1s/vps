@@ -301,14 +301,33 @@ export class DeviceService {
   async deleteDevice(id: string, workspaceId?: string) {
     // Protected devices (e.g. one holding an active WhatsApp account) refuse
     // deletion — an operator must unprotect it first. Workspace-scoped lookup so
-    // a cross-tenant device is treated as not-found.
+    // a cross-tenant device is treated as not-found. Also read the instance name so
+    // we can tear the Waydroid instance down on the host (see below).
     const dev = await prisma.device.findFirst({
       where: { id, ...(workspaceId ? { workspaceId } : {}) },
-      select: { protected: true }
+      select: { protected: true, metadata: true, hostId: true }
     });
     if (!dev) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     if (dev.protected) {
       throw new AppError('Bu cihaz korumalı — silmeden önce korumayı kaldırın', 409, 'DEVICE_PROTECTED');
+    }
+    // ★2026-07-24: destroy the Waydroid instance on the host, not just the DB row.
+    // BUG: delete previously did ONLY the DB delete — the host instance (lxc-start +
+    // weston + surfaceflinger + WhatsApp) kept running forever as an orphan, so
+    // deleting a device did NOT free CPU/RAM/disk (verified: 5 orphans running for
+    // deleted devices). We now dispatch a DEVICE_DESTROY job BEFORE deleting the row.
+    // It carries the instance NAME (not deviceId) so the agent's wd-destroy.sh runs
+    // even though the Device row is about to vanish; the job is workspace-scoped but
+    // not device-scoped (deviceId=null), so it survives the delete. Best-effort: a
+    // missing instance name (manual/legacy device) just skips the host teardown.
+    const instance = ((dev.metadata as { instance?: string } | null)?.instance || '').trim();
+    if (instance) {
+      await createJobRecord(
+        'DEVICE_DESTROY',
+        { instance } as unknown as JobPayload,
+        undefined,
+        workspaceId
+      ).catch(() => undefined); // never block the delete on job-dispatch failure
     }
     // Workspace-scoped, atomic delete: a device outside the caller's workspace is
     // never matched (no cross-tenant delete, no TOCTOU window).

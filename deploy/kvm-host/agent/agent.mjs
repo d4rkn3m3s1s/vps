@@ -1122,7 +1122,7 @@ async function runJob(job) {
   const { type, payload, serial } = job;
   // These job types operate on a Waydroid INSTANCE (host-level), not an ADB
   // endpoint — a stopped device has no serial yet. Exempt them from the guard.
-  const instanceLevel = type === 'PROVISION_DEVICE' || type === 'DEVICE_WAKE' || type === 'DEVICE_SLEEP';
+  const instanceLevel = type === 'PROVISION_DEVICE' || type === 'DEVICE_WAKE' || type === 'DEVICE_SLEEP' || type === 'DEVICE_DESTROY';
   if (!serial && type !== 'NOOP' && !instanceLevel) {
     throw new Error('Job targets a device with no ADB endpoint on this host');
   }
@@ -1520,6 +1520,9 @@ async function runJob(job) {
 
     case 'DEVICE_SLEEP':
       return sleepDevice(job);
+
+    case 'DEVICE_DESTROY':
+      return destroyDevice(job);
 
     default:
       throw new Error(`Unsupported job type: ${type}`);
@@ -8229,6 +8232,24 @@ async function sleepDevice(job) {
   if (!instance) throw new Error('sleep: instance name required');
   const out = await hostSh('wd-stop.sh', [instance], 60000).catch((e) => ({ stdout: '', stderr: e.message }));
   return { instance, status: 'OFFLINE', stopped: true, note: out.stdout.trim().split('\n').pop() || out.stderr };
+}
+
+// DEVICE_DESTROY — FULLY tear down a Waydroid instance when its device is deleted:
+// stop it (wd-stop) then destroy its userdata/container/bridge (wd-destroy). payload:
+// { instance }. Carries NO deviceId — the Device row is deleted right after this is
+// dispatched, so we key on the instance NAME only. FIX (2026-07-24): delete used to
+// leave the host instance running forever (orphan burning CPU/RAM/disk); this makes
+// "delete" actually free the box. Idempotent: destroying an already-gone instance is a
+// no-op. Best-effort per step so a partial teardown still frees most resources.
+async function destroyDevice(job) {
+  const payload = job.payload || {};
+  const instance = String(payload.instance || '').trim();
+  if (!instance) throw new Error('destroy: instance name required');
+  // 1) stop the running session/container first so destroy isn't fighting a live lock.
+  await hostSh('wd-stop.sh', [instance], 60000).catch(() => undefined);
+  // 2) destroy userdata + container + bridge (full cleanup, reclaims disk).
+  const out = await hostSh('wd-destroy.sh', [instance], 120000).catch((e) => ({ stdout: '', stderr: e.message }));
+  return { instance, status: 'DESTROYED', destroyed: true, note: (out.stdout || '').trim().split('\n').pop() || out.stderr || 'destroyed' };
 }
 
 async function runRpaStep(serial, step) {

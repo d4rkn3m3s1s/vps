@@ -73,7 +73,11 @@ export const JobTypes = [
   // desteklemiyordu — sadece ack ediyordu). WAKE: wd-run.sh + boot + route,
   // SLEEP: wd-stop.sh. Reboot = SLEEP + WAKE.
   'DEVICE_WAKE',
-  'DEVICE_SLEEP'
+  'DEVICE_SLEEP',
+  // Waydroid instance'ını TAMAMEN yok et (wd-destroy.sh: durdur + userdata/container
+  // sil). Cihaz silinince tetiklenir; instance adına göre çalışır (deviceId'ye bağlı
+  // DEĞİL — DB satırı silinmiş olabilir). Böylece "sil" host'ta gerçekten temizler.
+  'DEVICE_DESTROY'
 ] as const;
 
 export type JobStatus = (typeof JobStatuses)[number];

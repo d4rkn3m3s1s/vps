@@ -103,6 +103,22 @@ export class AgentService {
     for (const job of candidates) {
       const payload = (job.payload as Record<string, unknown>) ?? {};
       const deviceId = (payload.deviceId as string | undefined) ?? job.emulatorId ?? undefined;
+      // ★2026-07-24: instance-level jobs (DEVICE_DESTROY) carry NO deviceId — the Device
+      // row is deleted the moment the job is dispatched, so it can only key on the
+      // Waydroid instance NAME. Such a job is claimable by any host that RUNS that
+      // instance. This host runs an instance iff one of its devices has that
+      // metadata.instance; but by delete-time the device is gone, so we can't map it
+      // back. Since the fleet is single-host, an instance-level job with no deviceId is
+      // this host's to run. (If multi-host is ever added, gate this on a host<->instance
+      // registry.) Workspace guard still applies below via job.workspaceId.
+      if (!deviceId && job.type === 'DEVICE_DESTROY' && typeof payload.instance === 'string' && payload.instance) {
+        const claimed = await prisma.job.updateMany({
+          where: { id: job.id, status: 'PENDING', claimedByHostId: null },
+          data: { status: 'RUNNING', claimedByHostId: host.id, claimedAt: new Date(), startedAt: new Date() }
+        });
+        if (claimed.count === 0) continue; // lost the race
+        return { id: job.id, type: job.type, payload: this.materializePayload(payload), serial: null };
+      }
       if (!deviceId || !deviceIds.includes(deviceId)) continue;
 
       // Cross-tenant guard: refuse to run a job on a device that belongs to a
@@ -177,6 +193,19 @@ export class AgentService {
       if (claimedJobs.length >= cap) break;
       const payload = (job.payload as Record<string, unknown>) ?? {};
       const deviceId = (payload.deviceId as string | undefined) ?? job.emulatorId ?? undefined;
+      // ★2026-07-24: instance-level DEVICE_DESTROY carries NO deviceId (its Device row is
+      // already deleted) — key on the instance name. Single-host fleet, so it's this
+      // host's to run. Mirrors the claimNext branch. (The agent actually claims via this
+      // batch endpoint, so the fix MUST live here too.)
+      if (!deviceId && job.type === 'DEVICE_DESTROY' && typeof payload.instance === 'string' && payload.instance) {
+        const claimed = await prisma.job.updateMany({
+          where: { id: job.id, status: 'PENDING', claimedByHostId: null },
+          data: { status: 'RUNNING', claimedByHostId: host.id, claimedAt: new Date(), startedAt: new Date() }
+        });
+        if (claimed.count === 0) continue;
+        claimedJobs.push({ id: job.id, type: job.type, payload: this.materializePayload(payload), serial: null });
+        continue;
+      }
       if (!deviceId || !deviceIds.includes(deviceId)) continue;
       // One job per device per batch (see method doc).
       if (claimedDevices.has(deviceId)) continue;

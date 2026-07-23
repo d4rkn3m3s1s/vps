@@ -98,6 +98,7 @@ enum JobType {
   PROVISION_DEVICE
   DEVICE_WAKE
   DEVICE_SLEEP
+  DEVICE_DESTROY
 }
 
 // Lifecycle of an AI Device Agent run (Claude autonomously driving a phone).

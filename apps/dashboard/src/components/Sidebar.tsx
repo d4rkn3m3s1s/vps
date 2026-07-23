@@ -10,7 +10,7 @@ import {
   AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone,
   BookOpen, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
-  Settings, UserPlus, Bot, MessageCircle
+  Settings, UserPlus, Bot, MessageCircle, Code2
 } from 'lucide-react';
 import { useI18n, LanguageSwitcher } from '../lib/i18n';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -69,6 +69,7 @@ const NAV: NavGroup[] = [
       { href: '/billing', tkey: 'nav.billing', icon: CreditCard },
       { href: '/members', tkey: 'nav.members', icon: Users },
       { href: '/webhooks', tkey: 'nav.webhooks', icon: Webhook },
+      { href: '/api-docs', tkey: 'nav.apiDocs', icon: Code2 },
       { href: '/logs', tkey: 'nav.logs', icon: ScrollText },
       { href: '/admin', tkey: 'nav.admin', icon: ShieldCheck },
       { href: '/settings', tkey: 'nav.settings', icon: Settings }

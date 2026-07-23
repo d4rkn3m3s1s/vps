@@ -40,6 +40,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.billing': { en: 'Billing', tr: 'Faturalama' },
   'nav.members': { en: 'Members', tr: 'Üyeler' },
   'nav.webhooks': { en: 'Webhooks', tr: 'Webhook’lar' },
+  'nav.apiDocs': { en: 'API Docs', tr: 'API Dokümantasyonu' },
   'nav.jobs': { en: 'Jobs', tr: 'Görevler' },
   'nav.audit': { en: 'Audit', tr: 'Denetim' },
   'nav.logs': { en: 'Logs', tr: 'Kayıtlar' },

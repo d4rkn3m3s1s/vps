@@ -55,5 +55,7 @@ export const config = {
   // otherwise a logged-out request for a .woff2 gets redirected to /welcome (307)
   // and the display face never loads, so headings silently fall back to the
   // system font. Excluding `fonts/` + common asset extensions keeps them public.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|fonts/|.*\\.(?:woff2?|ttf|otf|png|jpg|jpeg|gif|svg|webp|ico)$).*)']
+  // The public Postman collection (API schema, no secrets) is exempted by name so
+  // the "İndir" button on /api-docs downloads the file instead of login HTML.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|fonts/|fleet-whatsapp-api\\.postman_collection\\.json|.*\\.(?:woff2?|ttf|otf|png|jpg|jpeg|gif|svg|webp|ico)$).*)']
 };

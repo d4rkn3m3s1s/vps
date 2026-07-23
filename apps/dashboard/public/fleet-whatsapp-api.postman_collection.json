@@ -1,0 +1,176 @@
+{
+  "info": {
+    "name": "Fleet WhatsApp Public API",
+    "description": "Cloud-phone fleet — public WhatsApp API. Tüm istekler `x-api-key` (flk_ ile başlayan workspace key) ile kimlik doğrular; JWT gerekmez. Başlamadan önce Variables sekmesinden `base_url` ve `api_key` doldurun. On-device işlemler (send/root-DB/provision/register) hemen bir `jobId` döner; sonucu 'İşler > Job sonucu (bekle)' ile alın — cevapta `ok`, `retryable` ve okunabilir `warning` alanları gelir.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://125.253.73.45", "description": "API kök adresi (Caddy :80 → API). Örn: http://125.253.73.45 veya https://alan-adiniz" },
+    { "key": "api_key", "value": "flk_XXXXXXXX", "description": "Workspace API anahtarı (Admin > API Keys'ten üretilir, flk_ ile başlar)" },
+    { "key": "device_id", "value": "", "description": "Hedef cihaz id (GET /v1/devices ile alın)" },
+    { "key": "to", "value": "905400403800", "description": "Hedef WhatsApp numarası (sadece rakam, ülke koduyla)" },
+    { "key": "job_id", "value": "", "description": "Bir on-device işlemin döndürdüğü jobId" }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "x-api-key", "type": "string" },
+      { "key": "value", "value": "{{api_key}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "item": [
+    {
+      "name": "Hesap & Cihazlar",
+      "item": [
+        {
+          "name": "Kimlik (GET /me)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/me", "host": ["{{base_url}}"], "path": ["public","v1","me"] }, "description": "Bu API anahtarının workspace'i, scope'ları ve cihaz sayısı." }
+        },
+        {
+          "name": "Cihazları listele (GET /devices)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/devices", "host": ["{{base_url}}"], "path": ["public","v1","devices"] }, "description": "Workspace cihazları. Her cihaz: id, name, status, whatsappNumber (kayıtlı WA numarası), whatsappHealth (null | RESTRICTED | BANNED | LOGGED_OUT), whatsappReady (mesaj atılabilir mi), tags." }
+        },
+        {
+          "name": "Cihaza etiket ekle/çıkar (POST /devices/:id/tags)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"tags\": [\"#test\"],\n  \"mode\": \"add\"\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/devices/{{device_id}}/tags", "host": ["{{base_url}}"], "path": ["public","v1","devices","{{device_id}}","tags"] },
+            "description": "Cihaza etiket ekle/çıkar/değiştir. mode: add (varsayılan, ekler) | remove (siler) | set (tümünü değiştirir). '#test' → 'test' (baştaki # atılır, küçük harfe çevrilir). Örnekler:\n- Ekle: {\"tags\":[\"#test\",\"#satis\"],\"mode\":\"add\"}\n- Sil: {\"tags\":[\"test\"],\"mode\":\"remove\"}\n- Tümünü değiştir: {\"tags\":[\"#aktif\"],\"mode\":\"set\"}\nDöner: {id, name, tags}."
+          }
+        }
+      ]
+    },
+    {
+      "name": "WhatsApp — Gönderim",
+      "item": [
+        {
+          "name": "Mesaj gönder (POST /whatsapp/send)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\",\n  \"message\": \"Merhaba, bu bir test mesajıdır.\"\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/whatsapp/send", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","send"] },
+            "description": "Bir cihazdan WhatsApp mesajı gönderir. jobId döner (sonucu Job endpoint'iyle alın). Cihazın hesabı BANNED/LOGGED_OUT ise anında 409 döner (boşuna denemez). İsteğe bağlı Idempotency-Key header'ı: aynı key ile tekrar → aynı job (çift göndermez)."
+          }
+        },
+        {
+          "name": "Toplu gönder (POST /whatsapp/send/bulk)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"messages\": [\n    { \"deviceId\": \"{{device_id}}\", \"to\": \"905400403800\", \"message\": \"Mesaj 1\" },\n    { \"deviceId\": \"{{device_id}}\", \"to\": \"905400403801\", \"message\": \"Mesaj 2\" }\n  ]\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/whatsapp/send/bulk", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","send","bulk"] },
+            "description": "Tek çağrıda çok sayıda FARKLI mesaj (en fazla 100). Her biri için {to, jobId, status} döner. 100 kişiye kişiselleştirilmiş mesaj → tek HTTP isteği."
+          }
+        },
+        {
+          "name": "Yayın / broadcast (POST /whatsapp/broadcast)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"message\": \"Herkese aynı duyuru.\",\n  \"peers\": [\"905400403800\", \"905400403801\"]\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/whatsapp/broadcast", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","broadcast"] },
+            "description": "Aynı mesajı çok kişiye (throttle'lı) gönderir. peers[] VEYA labelId gerekli. {broadcastId, queued} döner."
+          }
+        },
+        {
+          "name": "Medya gönder (POST /whatsapp/send-media)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\",\n  \"mediaUrl\": \"https://ornek.com/resim.jpg\",\n  \"caption\": \"Açıklama\",\n  \"kind\": \"image\"\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/whatsapp/send-media", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","send-media"] },
+            "description": "Bir kişiye resim/belge gönderir. kind: image | document."
+          }
+        }
+      ]
+    },
+    {
+      "name": "WhatsApp — Sohbetler & Etiketler",
+      "item": [
+        {
+          "name": "Sohbet listesi (GET /conversations)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/conversations?deviceId={{device_id}}&limit=50", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","conversations"], "query": [ { "key": "deviceId", "value": "{{device_id}}" }, { "key": "limit", "value": "50" }, { "key": "filter", "value": "all", "disabled": true }, { "key": "search", "value": "", "disabled": true } ] }, "description": "WhatsApp-Web tarzı sohbet listesi: kişi başına son mesaj + okunmamış sayısı. filter: all | unread | favorite | archived." }
+        },
+        {
+          "name": "Sohbet geçmişi (GET /thread)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/thread?deviceId={{device_id}}&peer={{to}}&limit=50", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","thread"], "query": [ { "key": "deviceId", "value": "{{device_id}}" }, { "key": "peer", "value": "{{to}}" }, { "key": "limit", "value": "50" } ] }, "description": "Bir sohbetin mesaj geçmişi (eski→yeni), yukarı kaydırma sayfalaması (before)." }
+        },
+        {
+          "name": "Mesajları oku (GET /messages)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/messages?deviceId={{device_id}}&limit=100", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","messages"], "query": [ { "key": "deviceId", "value": "{{device_id}}" }, { "key": "limit", "value": "100" }, { "key": "direction", "value": "IN", "disabled": true } ] }, "description": "Kaydedilmiş konuşma geçmişi (gelen+giden). direction: IN | OUT (opsiyonel)." }
+        },
+        {
+          "name": "Sohbeti okundu işaretle (POST /thread/read)",
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"peer\": \"{{to}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/thread/read", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","thread","read"] }, "description": "Bir sohbetin okunmamış rozetini sıfırlar." }
+        },
+        {
+          "name": "İstatistik (GET /stats)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/stats?deviceId={{device_id}}&sinceHours=24", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","stats"], "query": [ { "key": "deviceId", "value": "{{device_id}}" }, { "key": "sinceHours", "value": "24" } ] }, "description": "Mesaj sayıları + SLA (cihaz opsiyonel)." }
+        },
+        {
+          "name": "Etiketleri listele (GET /labels)",
+          "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/labels", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","labels"] }, "description": "Workspace'in sohbet kategorileri (etiketleri)." }
+        },
+        {
+          "name": "Etiket oluştur (POST /labels)",
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"name\": \"#test\",\n  \"color\": \"#e11d48\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/labels", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","labels"] }, "description": "Yeni bir sohbet kategorisi (etiket) oluşturur, örn '#test'. Dönen id ile sohbetlere atayabilirsiniz." }
+        },
+        {
+          "name": "Sohbete etiket ata (POST /conversations/labels)",
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"peer\": \"{{to}}\",\n  \"labelIds\": [\"ETIKET_ID\"]\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/conversations/labels", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","conversations","labels"] }, "description": "Bir sohbete kategori (etiket) atar. labelIds, POST /labels'ten dönen id'ler." }
+        },
+        {
+          "name": "Sohbet durumu (POST /conversations/state)",
+          "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"peer\": \"{{to}}\",\n  \"favorite\": true,\n  \"archived\": false,\n  \"pinned\": false\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/conversations/state", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","conversations","state"] }, "description": "Sohbeti favori / arşiv / sabitle olarak işaretler." }
+        }
+      ]
+    },
+    {
+      "name": "WhatsApp — Kişi işlemleri",
+      "item": [
+        { "name": "Profil getir (POST /profile)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/profile", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","profile"] }, "description": "Kişinin avatar + ismini çeker. jobId döner." } },
+        { "name": "Engelle/engel kaldır (POST /block)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\",\n  \"block\": true\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/block", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","block"] }, "description": "Kişiyi engeller/engeli kaldırır (block, varsayılan true)." } },
+        { "name": "Engellenenler listesi (POST /blocklist)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/blocklist", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","blocklist"] }, "description": "Cihazın engellenen kişiler listesi. jobId döner." } },
+        { "name": "Kendi numaram (POST /mynumber)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/mynumber", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","mynumber"] }, "description": "Cihazdaki hesabın kendi numarasını okur. jobId döner." } },
+        { "name": "Kişileri listele (POST /contacts)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"limit\": 200\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/contacts", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","contacts"] }, "description": "Hesabın rehberi (numara + isim). jobId döner." } }
+      ]
+    },
+    {
+      "name": "WhatsApp — Root-DB Okuma",
+      "item": [
+        { "name": "Hesap sağlığı (POST /account-health)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/account-health", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","account-health"] }, "description": "Cihaz hesabının sağlığı: kayıtlı numara, WA sürümü, kayıt durumu. jobId döner." } },
+        { "name": "Teslim/okundu (POST /receipts)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\",\n  \"limit\": 50\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/receipts", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","receipts"] }, "description": "Bir sohbetteki mesajların teslim/okundu bilgisi (✓/✓✓/mavi), msgstore.db'den. jobId döner." } },
+        { "name": "Okunmamışlar (POST /unread)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/unread", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","unread"] }, "description": "Okunmamış mesajı olan her sohbet + sayısı. jobId döner." } },
+        { "name": "Ara / arama (POST /search)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"query\": \"merhaba\",\n  \"limit\": 50\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/search", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","search"] }, "description": "Hesabın TÜM mesajlarında tam-metin arama (FTS). jobId döner." } },
+        { "name": "Medya listesi (POST /media)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\",\n  \"limit\": 100\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/media", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","media"] }, "description": "Sohbetteki (veya tüm) medya galerisi. jobId döner." } },
+        { "name": "Arama kaydı (POST /calls)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"limit\": 100\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/calls", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","calls"] }, "description": "Hesabın WhatsApp arama kaydı (sesli/görüntülü, gelen/giden/cevapsız). jobId döner." } },
+        { "name": "Grup üyeleri (POST /group-members)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"group\": \"Grup adı veya jid\",\n  \"limit\": 200\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/group-members", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","group-members"] }, "description": "Bir grubun üyeleri (numara + admin). jobId döner." } },
+        { "name": "Sohbet özeti (POST /chat-summary)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"to\": \"{{to}}\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/chat-summary", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","chat-summary"] }, "description": "Bir sohbetin toplam/gelen/giden/medya sayıları + ilk-son mesaj zamanı. jobId döner." } },
+        { "name": "Silinen mesajlar (POST /deleted)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"limit\": 100\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/deleted", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","deleted"] }, "description": "Karşı tarafın 'herkesten sil' ile sildiği ama DB'de kalan mesajlar (anti-delete). jobId döner." } },
+        { "name": "Paylaşılan linkler (POST /links)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"limit\": 100\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/links", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","links"] }, "description": "Sohbetlerde paylaşılan URL'ler. jobId döner." } }
+      ]
+    },
+    {
+      "name": "Cihaz Kurma & WA Kayıt",
+      "item": [
+        { "name": "Cihaz kur (POST /devices/provision)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"name\": \"yeni-cihaz\",\n  \"proxyCountry\": \"tr\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/devices/provision", "host": ["{{base_url}}"], "path": ["public","v1","devices","provision"] }, "description": "Sıfırdan yeni bir cloud phone kurar (boot→root→kimlik→proxy→app→WA-hazır). {deviceId, jobId} döner; ilerlemeyi status ile izleyin. proxyCountry = numara alacağınız ülke (ISO-2)." } },
+        { "name": "Kurulum durumu (GET /provision/:jobId/status)", "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/devices/provision/{{job_id}}/status", "host": ["{{base_url}}"], "path": ["public","v1","devices","provision","{{job_id}}","status"] }, "description": "Kurulumun adım-adım ilerlemesi (mevcut adım, yüzde, log)." } },
+        { "name": "WA kayıt başlat (POST /whatsapp/register)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"deviceId\": \"{{device_id}}\",\n  \"phoneNumber\": \"905XXXXXXXXX\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/register", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","register"] }, "description": "Kendi numaranızla otonom WhatsApp kaydı başlatır. Ajan SMS-kod ekranına kadar sürer, durur (AWAITING_OTP). Gelen kodu /register/:id/otp ile gönderin. accountId döner." } },
+        { "name": "OTP gönder (POST /register/:id/otp)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"otpCode\": \"123456\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/register/ACCOUNT_ID/otp", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","register","ACCOUNT_ID","otp"] }, "description": "SMS kodunu gönderir; ajan girer + profili tamamlar. Hesap ACTIVE (veya FAILED) olur. URL'deki ACCOUNT_ID = register'dan dönen accountId." } },
+        { "name": "Doğrulama yöntemi seç (POST /register/:id/verify-method)", "request": { "method": "POST", "header": [ { "key": "Content-Type", "value": "application/json" } ], "body": { "mode": "raw", "raw": "{\n  \"method\": \"sms\"\n}" }, "url": { "raw": "{{base_url}}/public/v1/whatsapp/register/ACCOUNT_ID/verify-method", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","register","ACCOUNT_ID","verify-method"] }, "description": "Kayıt 'nasıl doğrulansın' ekranında durduysa yöntem seçer: sms | voice | missed_call." } },
+        { "name": "Kayıt durumu (GET /register/:id/status)", "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/whatsapp/register/ACCOUNT_ID/status", "host": ["{{base_url}}"], "path": ["public","v1","whatsapp","register","ACCOUNT_ID","status"] }, "description": "Kaydın canlı ilerlemesi (adım, yüzde, log)." } }
+      ]
+    },
+    {
+      "name": "İşler (Job sonucu)",
+      "item": [
+        { "name": "Job sonucu (GET /jobs/:jobId)", "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/jobs/{{job_id}}", "host": ["{{base_url}}"], "path": ["public","v1","jobs","{{job_id}}"] }, "description": "Herhangi bir on-device işlemin (send/root-DB/…) sonucunu okur. Cevap: status + result + ok (gerçekten başarılı mı?) + retryable (tekrar denemeye değer mi?) + warning (okunabilir Türkçe sebep, örn 'Hesap KISITLI — yeni sohbet başlatamıyor')." } },
+        { "name": "Job sonucu — bekle (GET /jobs/:jobId/wait)", "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/jobs/{{job_id}}/wait?timeout=30", "host": ["{{base_url}}"], "path": ["public","v1","jobs","{{job_id}}","wait"], "query": [ { "key": "timeout", "value": "30" } ] }, "description": "Long-poll: iş bitene (veya timeout saniyesine) kadar bekler, sonucu TEK istekte döndürür. Poll döngüsü yerine bunu kullanın. Aynı ok/retryable/warning alanları gelir." } }
+      ]
+    }
+  ]
+}

@@ -7839,8 +7839,16 @@ async function provisionDevice(job) {
     await ensureConnected(serial).catch(() => undefined);
     await adb(serial, ['shell', 'wm size 1080x2400']).catch((e) => log('screen:', e.message));
     await adb(serial, ['shell', 'wm density 421']).catch((e) => log('screen:', e.message));
+    // ★2026-07-24: disable all UI animations. GPU-less Waydroid renders animations in
+    // software (swiftshader) — a spinning EULA/loading animation costs 3-4 CPU cores.
+    // Zeroing the three scales removes that render cost fleet-wide without affecting
+    // WhatsApp function or the agent's tap/a11y automation. (Runtime devices got this
+    // applied live; this bakes it into every new provision so it survives from boot.)
+    await adb(serial, ['shell', 'settings put global window_animation_scale 0']).catch(() => undefined);
+    await adb(serial, ['shell', 'settings put global transition_animation_scale 0']).catch(() => undefined);
+    await adb(serial, ['shell', 'settings put global animator_duration_scale 0']).catch(() => undefined);
     vtouchCache.delete(serial);
-    await logLine('✓ Ekran 1080x2400 @ 421 dpi ayarlandı');
+    await logLine('✓ Ekran 1080x2400 @ 421 dpi + animasyonlar kapalı');
   });
 
   // 5) vtouch + unique identity — stream vtouch into the container, spoof a
@@ -9916,6 +9924,48 @@ const otpCapturing = new Set();
 const sameDeviceWaiters = new Set();
 const OTP_WATCH_MS = Number(process.env.FLEET_OTP_WATCH_MS || 10000);
 const OTP_WATCH_TTL_MS = Number(process.env.FLEET_OTP_WATCH_TTL_MS || 15 * 60 * 1000); // stop after 15 min
+
+// ★EULA-STUCK REAPER (2026-07-24): a device left on WhatsApp's Welcome/registration/EULA
+// screen renders the animated spinner at 60fps in software (no GPU) → one such device
+// burns 3-4 CPU cores indefinitely. VERIFIED LIVE: 4 devices stuck on
+// com.whatsapp.registration.app.EULA for 1-5 DAYS were eating ~12 cores (96% of all
+// surfaceflinger CPU) and pushed host load to ~98; force-stopping WhatsApp on them
+// dropped load 98→4 and CPU to 95% idle. These are abandoned/failed registrations (WA
+// open, spinner spinning, nobody advancing). This ticker catches them structurally so it
+// can never recur: any ADB-reachable device whose foreground has been a WA registration/
+// EULA screen for longer than the grace window — AND that has NO in-flight job (not in
+// busyDevices, so we never interrupt a live registration/OTP flow) — gets a HOME + WA
+// force-stop. Idle/launcher/chat screens are untouched; only the stuck-registration case.
+const EULA_REAPER_MS = Number(process.env.FLEET_EULA_REAPER_MS || 60000); // check every 60s
+const EULA_GRACE_MS = Number(process.env.FLEET_EULA_GRACE_MS || 8 * 60 * 1000); // stuck > 8 min → reap
+// serial → first time we saw it stuck on a registration screen (reset when it leaves).
+const eulaStuckSince = new Map();
+async function eulaReaperTick() {
+  let serials;
+  try { serials = await reachableSerials(); } catch { return; }
+  if (!serials || !serials.length) return;
+  const now = Date.now();
+  for (const serial of serials) {
+    // NEVER touch a device with a live job — a real registration/OTP flow legitimately
+    // sits on these screens while the agent drives it. busyDevices is the job lock.
+    if (busyDevices.has(serial) || otpCapturing.has(serial)) { eulaStuckSince.delete(serial); continue; }
+    let foc = '';
+    try { foc = await adb(serial, ['shell', 'dumpsys', 'window'], 8000); } catch { eulaStuckSince.delete(serial); continue; }
+    // Is the foreground a WhatsApp registration/EULA/welcome screen? (the CPU-burning states)
+    const onReg = /mCurrentFocus[^\n]*com\.whatsapp\/[^\n]*(registration|\.EULA|EulaActivity|verifynumber|RegisterName)/i.test(foc);
+    if (!onReg) { eulaStuckSince.delete(serial); continue; }
+    const since = eulaStuckSince.get(serial);
+    if (!since) { eulaStuckSince.set(serial, now); continue; } // first sighting — start the clock
+    if (now - since < EULA_GRACE_MS) continue; // still within grace — give a real registration time
+    // Stuck past the grace window with no job → abandoned registration burning CPU. Reap it.
+    log(`eula-reaper: ${serial} stuck on WA registration ${Math.round((now - since) / 60000)}min → force-stop + HOME`);
+    try {
+      await adb(serial, ['shell', 'am', 'force-stop', 'com.whatsapp'], 8000);
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME'], 5000);
+    } catch { /* best-effort; next tick retries */ }
+    eulaStuckSince.delete(serial);
+  }
+}
 // Push one downscaled thumbnail per parked device. Skips the device that's currently busy
 // with a claimed job (the job's own progress/heartbeat covers it), and drops expired
 // entries. Best-effort throughout — a frame error never breaks the loop.
@@ -10113,6 +10163,9 @@ async function loop() {
   const waCapture = WA_CAPTURE_ENABLED ? setInterval(() => { mediaCaptureTick().catch(() => undefined); }, WA_CAPTURE_MS) : null;
   // ★OTP-WATCH ticker: keeps the panel's live thumbnail fresh for devices parked at OTP_WAIT.
   const otpWatchT = setInterval(() => { otpWatchTick().catch(() => undefined); }, OTP_WATCH_MS);
+  // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA
+  // screen (60fps software spinner = 3-4 wasted cores each). Skips devices with a live job.
+  const eulaReaperT = setInterval(() => { eulaReaperTick().catch(() => undefined); }, EULA_REAPER_MS);
   startStreamClient();
 
   // Dispatch loop: claim jobs and run them CONCURRENTLY across devices, up to
@@ -10197,6 +10250,7 @@ async function loop() {
   if (waInbox) clearInterval(waInbox);
   if (waCapture) clearInterval(waCapture);
   clearInterval(otpWatchT);
+  clearInterval(eulaReaperT);
   log('shutting down.');
 }
 

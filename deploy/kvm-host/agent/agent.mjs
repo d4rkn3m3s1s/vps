@@ -19,7 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, loadavg, cpus as osCpus } from 'node:os';
 import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { inflateSync, deflateSync, crc32 } from 'node:zlib';
@@ -89,6 +89,33 @@ const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 
 // --- ADB helpers ------------------------------------------------------------
 
+// ★2026-07-23 (P-2): GLOBAL ADB CONCURRENCY SEMAPHORE. busyDevices only serialises jobs
+// PER DEVICE; nothing bounded the HOST-WIDE total of concurrent adb children. Up to
+// MAX_CONCURRENT_JOBS (24) jobs + 3 tickers' device loops + stream capture + otp-watch
+// could fire 40-60 simultaneous `adb`/`dumpsys` commands at a SINGLE adbd — which
+// serialises them internally anyway, so the surplus just spikes host load and triggers the
+// uiautomator/dump hangs the code elsewhere calls "adb instability". This gate caps the
+// number of adb children in flight at once (default 20, tuned for the 80-core host); excess
+// callers queue and run as slots free. Per-device serialisation still lives in busyDevices;
+// this is the host-wide ceiling on top of it.
+const ADB_MAX_INFLIGHT = Number(process.env.FLEET_ADB_MAX_INFLIGHT || 20);
+let _adbInflight = 0;
+const _adbWaiters = [];
+function _adbAcquire() {
+  if (_adbInflight < ADB_MAX_INFLIGHT) { _adbInflight++; return Promise.resolve(); }
+  return new Promise((resolve) => _adbWaiters.push(resolve));
+}
+function _adbRelease() {
+  const next = _adbWaiters.shift();
+  if (next) next(); // hand the slot straight to a waiter (count stays the same)
+  else _adbInflight--;
+}
+async function withAdbSlot(fn) {
+  await _adbAcquire();
+  try { return await fn(); }
+  finally { _adbRelease(); }
+}
+
 // ★2026-07-23 (C-1): HARD TIMEOUT + SIGKILL. The old adb() had NO timeout — the comment
 // claiming "adb calls have their own short timeouts" was WRONG. On Waydroid, an adb shell
 // (input/tap/dumpsys) can HANG indefinitely when adbd/uiautomator wedges; without a
@@ -99,8 +126,10 @@ const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 const ADB_DEFAULT_TIMEOUT = Number(process.env.FLEET_ADB_TIMEOUT_MS || 30000);
 async function adb(serial, args, ms = ADB_DEFAULT_TIMEOUT) {
   const full = serial ? ['-s', serial, ...args] : args;
-  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
-  return stdout;
+  return withAdbSlot(async () => {
+    const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
+    return stdout;
+  });
 }
 
 // adb with a hard timeout. Some commands (notably `uiautomator dump` on the
@@ -109,25 +138,28 @@ async function adb(serial, args, ms = ADB_DEFAULT_TIMEOUT) {
 // child after `ms` and rejects, so callers can fall back. Returns stdout.
 async function adbT(serial, args, ms = 12000, stdin = undefined) {
   const full = serial ? ['-s', serial, ...args] : args;
-  // No stdin → the fast, simple execFile path (unchanged).
-  if (stdin === undefined) {
-    const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
-    return stdout;
-  }
-  // WITH stdin → spawn so we can write to the child's stdin. This lets callers feed data
-  // (e.g. SQL) on stdin instead of quoting it into the command — the adb→su→sh→sqlite
-  // layers mangle any inline SQL ("syntax error near x27SELECT"), but stdin passes through
-  // cleanly. promisify(execFile) can't do stdin (that's execFileSync-only), hence spawn.
-  return await new Promise((resolve, reject) => {
-    const child = spawn(ADB, full, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let out = '';
-    let done = false;
-    const finish = (fn, v) => { if (!done) { done = true; clearTimeout(timer); fn(v); } };
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(reject, new Error('adbT stdin timeout')); }, ms);
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.on('error', (e) => finish(reject, e));
-    child.on('close', () => finish(resolve, out));
-    try { child.stdin.write(stdin); child.stdin.end(); } catch (e) { finish(reject, e); }
+  // ★2026-07-23 (P-2): count against the global ADB inflight cap (same as adb()).
+  return withAdbSlot(async () => {
+    // No stdin → the fast, simple execFile path (unchanged).
+    if (stdin === undefined) {
+      const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
+      return stdout;
+    }
+    // WITH stdin → spawn so we can write to the child's stdin. This lets callers feed data
+    // (e.g. SQL) on stdin instead of quoting it into the command — the adb→su→sh→sqlite
+    // layers mangle any inline SQL ("syntax error near x27SELECT"), but stdin passes through
+    // cleanly. promisify(execFile) can't do stdin (that's execFileSync-only), hence spawn.
+    return await new Promise((resolve, reject) => {
+      const child = spawn(ADB, full, { stdio: ['pipe', 'pipe', 'pipe'] });
+      let out = '';
+      let done = false;
+      const finish = (fn, v) => { if (!done) { done = true; clearTimeout(timer); fn(v); } };
+      const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(reject, new Error('adbT stdin timeout')); }, ms);
+      child.stdout.on('data', (d) => { out += d.toString(); });
+      child.on('error', (e) => finish(reject, e));
+      child.on('close', () => finish(resolve, out));
+      try { child.stdin.write(stdin); child.stdin.end(); } catch (e) { finish(reject, e); }
+    });
   });
 }
 
@@ -8506,19 +8538,47 @@ async function reportComplete(jobId, status, payload) {
 // The ADB serials currently reporting "device" (reachable — not offline/
 // unauthorized/missing). The API uses this exact set to mark only the phones
 // that are truly up as ONLINE, instead of assuming every bound device is live.
+// ★2026-07-23 (P-1): short TTL CACHE. Three tickers (inbox 3s, capture 5s, metrics per
+// heartbeat) each ran `adb devices` independently every tick — a needless extra ADB
+// round-trip several times a second. The reachable set barely changes second-to-second,
+// so cache it for ~2.5s and let all callers share one result. `adb devices` failures
+// return the last good set (not empty) so a transient blip doesn't flap devices offline.
+let _reachCache = { at: 0, val: [] };
+const REACH_TTL_MS = 2500;
 async function reachableSerials() {
+  const nowMs = Date.now();
+  if (nowMs - _reachCache.at < REACH_TTL_MS) return _reachCache.val;
   try {
     const out = await adb(null, ['devices']);
-    return out
+    const val = out
       .split('\n')
       .slice(1)
       .map((l) => l.trim())
       .filter((l) => /\sdevice$/.test(l))
       .map((l) => l.split(/\s+/)[0])
       .filter(Boolean);
+    _reachCache = { at: nowMs, val };
+    return val;
   } catch {
-    return [];
+    // Keep the last good set on a transient failure rather than flapping to empty.
+    return _reachCache.val;
   }
+}
+
+// ★2026-07-23 (P-6): purge per-serial state for devices that no longer exist. Several
+// Maps/Sets are keyed by ADB serial (waSeen, waCaptureSeen, waReceiptState, waLastSentPeer,
+// adbKbReady). When a device is removed or re-provisioned its subnet (hence serial)
+// changes, and the OLD key is never deleted → a slow memory leak over a long-running agent
+// (dozens of dead serials × several maps). This drops any key not in the current reachable
+// set. Called periodically from the heartbeat; only runs against a NON-EMPTY reachable set
+// so a transient `adb devices` blip can't wipe live state.
+async function purgeStaleSerialState() {
+  const live = new Set(await reachableSerials());
+  if (live.size === 0) return; // don't purge on an empty/failed read
+  for (const m of [waSeen, waCaptureSeen, waReceiptState, waLastSentPeer]) {
+    for (const k of m.keys()) if (!live.has(k)) m.delete(k);
+  }
+  for (const k of adbKbReady) if (!live.has(k)) adbKbReady.delete(k);
 }
 
 // Collect per-device CPU / memory / disk usage over ADB. Uses /proc + df (works
@@ -8608,7 +8668,11 @@ async function sampleCpu(serial) {
 // POST /agent/whatsapp/inbound, which persists them, fans out a webhook, a WS
 // event, and a Telegram/Slack/Discord notification. No APK / accessibility
 // service needed — works with the screen off.
-const WA_INBOX_MS = Number(process.env.FLEET_WA_INBOX_MS || 3000);
+// ★2026-07-23 (P-1): 3s → 5s default. With the re-entrancy guard preventing overlap, a
+// slightly longer interval cuts steady-state ADB/dumpsys volume across ~25 devices with
+// only a ~2s worst-case extra latency on inbound capture (still near-real-time). Override
+// with FLEET_WA_INBOX_MS if a faster poll is wanted.
+const WA_INBOX_MS = Number(process.env.FLEET_WA_INBOX_MS || 5000);
 const WA_INBOX_ENABLED = process.env.FLEET_WA_INBOX !== '0';
 // ── Media auto-capture: poll the WhatsApp Media folder as root and report any NEW
 // file the moment it lands — before a view-once is opened or a message is deleted.
@@ -9110,8 +9174,17 @@ async function pollWhatsappInbox(serial) {
 
 // Poll every reachable device for new WhatsApp notifications. Devices without
 // root / WhatsApp simply return nothing (adbSu → '' on failure).
+// ★2026-07-23 (P-1): RE-ENTRANCY GUARD. This tick scans every idle device SERIALLY
+// (dumpsys per device — hundreds of ms each on a busy host); with 25 devices it can't
+// finish in WA_INBOX_MS (3s), so the interval would fire again and pile OVERLAPPING ADB
+// storms on top of each other — a leading driver of load 100. The flag makes a tick skip
+// if the previous one is still running; it resumes cleanly on the next interval.
+let _inboxRunning = false;
 async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
+  if (_inboxRunning) return; // previous tick still draining — skip this fire
+  _inboxRunning = true;
+  try {
   // Skip the inbox poll ONLY for devices that currently have a job running. A job's
   // WhatsApp RPA (uiautomator dump / screencap / taps) and the inbox poll's own
   // dumpsys/screencap on the SAME device race each other on this Waydroid host — that
@@ -9119,7 +9192,6 @@ async function whatsappInboxTick() {
   // instability. With per-device concurrency the poll now yields PER DEVICE
   // (busyDevices.has(serial)) instead of stopping for the whole host whenever any job
   // runs — so inbound capture keeps working on idle devices during parallel sends.
-  try {
     const serials = await reachableSerials();
     for (const serial of serials) {
       if (busyDevices.has(serial)) continue; // a job owns this device — skip it, poll the rest
@@ -9127,6 +9199,8 @@ async function whatsappInboxTick() {
     }
   } catch (err) {
     log('wa inbox tick failed:', err.message);
+  } finally {
+    _inboxRunning = false;
   }
 }
 
@@ -9199,8 +9273,13 @@ async function pollMediaCapture(serial) {
 }
 
 // Poll every idle device's Media folder for new files (opt-in via FLEET_WA_CAPTURE=1).
+// ★2026-07-23 (P-1): re-entrancy guard — a filesystem scan across every device can exceed
+// WA_CAPTURE_MS on a busy host; skip if the prior tick is still running (no overlap storm).
+let _captureRunning = false;
 async function mediaCaptureTick() {
   if (!WA_CAPTURE_ENABLED) return;
+  if (_captureRunning) return;
+  _captureRunning = true;
   try {
     const serials = await reachableSerials();
     for (const serial of serials) {
@@ -9209,6 +9288,8 @@ async function mediaCaptureTick() {
     }
   } catch (err) {
     log('wa media capture tick failed:', err.message);
+  } finally {
+    _captureRunning = false;
   }
 }
 
@@ -9244,6 +9325,7 @@ async function hostCapacityMetrics() {
   return out;
 }
 
+let _heartbeatPurgeAt = 0;
 async function heartbeat() {
   try {
     const serials = await reachableSerials();
@@ -9256,6 +9338,12 @@ async function heartbeat() {
     const devices = await collectDeviceMetrics();
     if (devices.length > 0) {
       await api('/agent/device-metrics', { method: 'POST', body: JSON.stringify({ devices }) }).catch(() => undefined);
+    }
+    // ★2026-07-23 (P-6): every ~5min, drop per-serial state for devices that vanished
+    // (removed / re-provisioned to a new subnet) so the seen-sets don't leak forever.
+    if (Date.now() - _heartbeatPurgeAt > 5 * 60 * 1000) {
+      _heartbeatPurgeAt = Date.now();
+      await purgeStaleSerialState().catch(() => undefined);
     }
   } catch (err) {
     log('heartbeat failed:', err.message);
@@ -9766,6 +9854,16 @@ const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 24);
 // batch of 10 doesn't boot all at once, while light jobs (send/read) still run up to
 // MAX_CONCURRENT_JOBS. Staggered boot = fast AND stable. Override via env.
 const MAX_CONCURRENT_PROVISIONS = Number(process.env.FLEET_MAX_CONCURRENT_PROVISIONS || 4);
+// ★2026-07-23 (P-3): LOAD-AWARE boot gate. Booting a Waydroid instance spikes CPU (the
+// code's own measure: 3 concurrent boots → load 49). The old gate was a FIXED count (4)
+// and never looked at actual load, so it would start 4 MORE boots even when the host was
+// already at load 80+ → the load-100 storms seen this session. This threshold (cores*0.7)
+// is checked before entering a boot; if the host is already saturated the provision waits
+// for it to drop, staggering boots to the machine's real headroom. os.loadavg()[0] is the
+// 1-minute load (zero-cost, no child process). Cache cpu count once.
+const _CPU_COUNT = (() => { try { return osCpus().length || 1; } catch { return 1; } })();
+const PROVISION_LOAD_MAX = Number(process.env.FLEET_PROVISION_LOAD_MAX || Math.round(_CPU_COUNT * 0.7));
+function load1() { try { return loadavg()[0] || 0; } catch { return 0; } }
 let activeJobCount = 0;
 let activeProvisionCount = 0;
 // Back-compat shim: some helpers (otpWatchTick, whatsappInboxTick) historically read
@@ -9856,7 +9954,11 @@ async function runJobTask(job, waitForDevice) {
   // batch doesn't spike CPU by booting every instance at once. Bounded (~10 min) so a
   // wedged provision can't strand the rest; light jobs never enter this gate.
   if (isProvision) {
-    for (let i = 0; i < 1200 && activeProvisionCount >= MAX_CONCURRENT_PROVISIONS; i++) await sleep(500);
+    // ★2026-07-23 (P-3): wait for BOTH a provision slot AND acceptable host load. Booting
+    // when already saturated (load ≥ cores*0.7) just deepens a load-100 storm; hold until
+    // the machine has headroom. Bounded ~10min so a stuck host can't strand a provision
+    // forever (it proceeds after the cap even under load rather than failing outright).
+    for (let i = 0; i < 1200 && (activeProvisionCount >= MAX_CONCURRENT_PROVISIONS || load1() >= PROVISION_LOAD_MAX); i++) await sleep(500);
     activeProvisionCount++;
   }
   if (serial) busyDevices.add(serial);

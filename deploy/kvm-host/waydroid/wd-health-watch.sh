@@ -119,6 +119,16 @@ while IFS='|' read -r inst meta_cc phone; do
             continue
           fi
         fi
+        # ★LOAD-GATE (2026-07-23, P-3): a zombie-restart boots a fresh Android → CPU spike.
+        # If the host is ALREADY saturated (load ≥ cores*0.9), starting another boot deepens
+        # a load-100 storm and makes the boot itself crawl/fail. Skip this instance THIS tick;
+        # the next run (~7min) retries once load has dropped. Uses /proc/loadavg (cheap).
+        _load1=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null || echo 0)
+        _load_max=$(awk -v n="$(nproc)" 'BEGIN{printf "%.0f", n*0.9}')
+        if [ "${_load1:-0}" -ge "${_load_max:-999}" ]; then
+          log "⏸ $inst: zombie ama host yükü yüksek (load=$_load1 ≥ $_load_max) → restart ERTELENDİ (sonraki tur)"
+          continue
+        fi
         log "🧟 $inst: ADB reconnect başarısız + host-süreç ayakta = ZOMBIE → runtime temizlenip yeniden başlatılıyor"
         # ★TAM RUNTIME TEMİZLİĞİ ŞART, sonra wd-run. Sadece wd-run.sh çağırmak YETMEZ:
         # bir zombie'de asılı bir lxc-start ve BOZUK DBus soketi kalır; wd-run yeni boot'u

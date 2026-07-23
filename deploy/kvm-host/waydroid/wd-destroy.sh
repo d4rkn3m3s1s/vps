@@ -43,6 +43,24 @@ if [ -x "$HERE/wd-stop.sh" ]; then
   log "session stopped"
 fi
 
+# 1b) ★2026-07-24: wd-stop tears down the Waydroid SESSION but leaves the per-instance
+# SUPERVISOR + sidecars running: the wd-run.sh shell, its session dbus-daemon (xdg-<inst>),
+# the per-instance redsocks proxy daemon, and any lingering weston (wayland-<inst>). VERIFIED
+# LIVE: after deleting watest56 these 3-4 processes kept running (redsocks holding a proxy
+# port, wd-run shell + dbus). Kill them by their instance-scoped patterns so "destroy" really
+# frees everything. Patterns are anchored to THIS instance name (guarded [A-Za-z0-9_-] above),
+# so they can't match another instance. Best-effort; SIGTERM then SIGKILL for stragglers.
+for pat in "wd-run.sh $INSTANCE" "wd-run.sh $INSTANCE\$" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE" "wayland-$INSTANCE" "dnsmasq.*waydroid-$INSTANCE"; do
+  pkill -f "$pat" 2>/dev/null || true
+done
+sleep 1
+for pat in "wd-run.sh $INSTANCE" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE" "wayland-$INSTANCE"; do
+  pkill -9 -f "$pat" 2>/dev/null || true
+done
+# Remove this instance's redsocks config (else /etc fills with dead per-instance confs).
+rm -f "/etc/redsocks-inst-$INSTANCE.conf" 2>/dev/null || true
+log "supervisor + redsocks + dbus sidecars killed"
+
 # 2) Disable + remove the per-instance systemd unit.
 if [ -f "$UNIT" ]; then
   systemctl disable --now "waydroid-$INSTANCE.service" >/dev/null 2>&1 || true

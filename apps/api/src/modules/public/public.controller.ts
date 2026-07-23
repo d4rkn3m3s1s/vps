@@ -101,6 +101,20 @@ export async function deviceTagsHandler(req: Request, res: Response): Promise<vo
   res.json({ data: { id: updated.id, name: updated.name, tags: updated.tags } });
 }
 
+// POST /public/v1/devices/:id/rename — rename a device (cosmetic label only; the
+// instance / WhatsApp account / proxy are untouched, exactly like the dashboard's inline
+// rename). write scope, workspace-scoped (updateDevice 404s a foreign device id).
+const deviceRenameSchema = z.object({ name: z.string().min(1).max(60) });
+export async function deviceRenameHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const deviceId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!deviceId) throw new AppError('deviceId gerekli', 400, 'MISSING_DEVICE_ID');
+  const { name } = deviceRenameSchema.parse(req.body);
+  const updated = await deviceService.updateDevice(deviceId, { name: name.trim() }, workspaceId);
+  res.json({ data: { id: updated.id, name: updated.name, status: updated.status } });
+}
+
 // POST /public/v1/whatsapp/send — dispatch a WhatsApp send from one device.
 // Reuses the same workspace-scoped service the dashboard uses (it verifies the
 // device belongs to this workspace before dispatching).

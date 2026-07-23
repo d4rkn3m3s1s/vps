@@ -32,6 +32,16 @@
           "request": { "method": "GET", "url": { "raw": "{{base_url}}/public/v1/devices", "host": ["{{base_url}}"], "path": ["public","v1","devices"] }, "description": "Workspace cihazları. Her cihaz: id, name, status, whatsappNumber (kayıtlı WA numarası), whatsappHealth (null | RESTRICTED | BANNED | LOGGED_OUT), whatsappReady (mesaj atılabilir mi), tags." }
         },
         {
+          "name": "Cihaz adını değiştir (POST /devices/:id/rename)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"yeni-cihaz-adi\"\n}" },
+            "url": { "raw": "{{base_url}}/public/v1/devices/{{device_id}}/rename", "host": ["{{base_url}}"], "path": ["public","v1","devices","{{device_id}}","rename"] },
+            "description": "Cihazın adını (görünen etiket) değiştirir. Kozmetik — instance / WhatsApp hesabı / proxy etkilenmez. Döner: {id, name, status}."
+          }
+        },
+        {
           "name": "Cihaza etiket ekle/çıkar (POST /devices/:id/tags)",
           "request": {
             "method": "POST",

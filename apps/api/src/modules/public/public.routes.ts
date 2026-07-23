@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, deviceTagsHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
+import { listDevicesHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
@@ -17,6 +17,8 @@ publicRouter.get('/v1/me', asyncHandler(meHandler));
 publicRouter.get('/v1/devices', asyncHandler(listDevicesHandler));
 // Add / remove / replace a device's tags (e.g. "#test") — write scope, rate-limited.
 publicRouter.post('/v1/devices/:id/tags', apiRateLimiter, asyncHandler(deviceTagsHandler));
+// Rename a device (cosmetic label only) — write scope, rate-limited.
+publicRouter.post('/v1/devices/:id/rename', apiRateLimiter, asyncHandler(deviceRenameHandler));
 publicRouter.get('/v1/whatsapp/messages', asyncHandler(messagesHandler));
 // WhatsApp-Web-style chat list + per-thread history for external integrations.
 publicRouter.get('/v1/whatsapp/conversations', asyncHandler(conversationsHandler));

@@ -24,6 +24,7 @@ const GROUPS: Group[] = [
     endpoints: [
       { method: 'GET', path: '/public/v1/me', title: 'Kimlik', desc: 'Bu API anahtarının workspace’i, scope’ları ve cihaz sayısı.' },
       { method: 'GET', path: '/public/v1/devices', title: 'Cihazları listele', desc: 'Her cihaz: id, name, status, whatsappNumber (kayıtlı WA numarası), whatsappHealth (null | RESTRICTED | BANNED | LOGGED_OUT), whatsappReady (mesaj atılabilir mi), tags.' },
+      { method: 'POST', path: '/public/v1/devices/:id/rename', title: 'Cihaz adını değiştir', desc: 'Cihazın adını (görünen etiket) değiştirir. Kozmetik — instance / WhatsApp hesabı / proxy etkilenmez. Döner: {id, name, status}.', body: '{\n  "name": "yeni-cihaz-adi"\n}' },
       { method: 'POST', path: '/public/v1/devices/:id/tags', title: 'Cihaza etiket ekle/çıkar', desc: 'Cihaza etiket ekle/çıkar/değiştir. mode: add (varsayılan) | remove | set. "#test" → "test" (baştaki # atılır, küçük harfe çevrilir).', body: '{\n  "tags": ["#test"],\n  "mode": "add"\n}' }
     ]
   },

@@ -9387,7 +9387,13 @@ async function heartbeat() {
     const cap = await hostCapacityMetrics();
     // Send the count (host capacity gauge) + reachable serials (so the API marks
     // only live phones ONLINE) + host disk/RAM (for the "N devices fit" estimate).
-    await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones: serials.length, serials, ...cap }) });
+    const hb = await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones: serials.length, serials, ...cap }) });
+    // ★2026-07-24: cache the DB's known instance list (returned on the heartbeat) so the
+    // orphan-reaper can spot host instances whose Device row is gone. null = unknown
+    // (older API / error) → reaper stays disabled that round (never reaps blindly).
+    const inst = hb && hb.data && hb.data.instances;
+    knownInstances = Array.isArray(inst) ? new Set(inst) : null;
+    knownInstancesAt = Date.now();
     // Per-device metrics are best-effort and reported separately so a slow
     // collection never delays/blocks the host heartbeat itself.
     const devices = await collectDeviceMetrics();
@@ -9950,6 +9956,13 @@ async function hasBootHeadroom() {
 function load1() { try { return loadavg()[0] || 0; } catch { return 0; } }
 let activeJobCount = 0;
 let activeProvisionCount = 0;
+// ★ORPHAN-INSTANCE REAPER state: the DB's known instance set (from the heartbeat) + when
+// we last learned it. null = unknown → reaper disabled that round (never reap blind).
+let knownInstances = null;
+let knownInstancesAt = 0;
+// instance → first time we saw it running-but-unknown. Reaped only after a grace window,
+// so a just-provisioned instance not yet written to the DB is never destroyed.
+const orphanSince = new Map();
 // Back-compat shim: some helpers (otpWatchTick, whatsappInboxTick) historically read
 // a global `jobBusy`. They now ask "is ANY job running?" via this getter, but the
 // hot path uses busyDevices.has(serial) for per-device decisions.
@@ -10016,6 +10029,45 @@ async function eulaReaperTick() {
     } catch { /* best-effort; next tick retries */ }
     eulaStuckSince.delete(serial);
   }
+}
+
+// ★ORPHAN-INSTANCE REAPER (2026-07-24): destroy Waydroid instances that are RUNNING on the
+// host but whose Device row is GONE from the DB. VERIFIED LIVE: deleting a device left its
+// instance (lxc-start + weston + surfaceflinger + WhatsApp + redsocks) running forever as an
+// orphan burning CPU/RAM/disk. The delete path now dispatches a DEVICE_DESTROY job, but a
+// lost job / legacy delete / crash-mid-delete could still strand one — this is the backstop.
+// SAFETY (never kill a live device):
+//  - knownInstances comes from the heartbeat (the DB's authoritative list for THIS host).
+//    If it's null (older API / heartbeat failed) we do NOTHING — never reap on a guess.
+//  - a running instance ABSENT from that list starts a grace clock; only after
+//    ORPHAN_GRACE_MS of being continuously unknown is it destroyed. This spans several
+//    provisions/heartbeats, so a just-booted instance not yet written to the DB is safe.
+//  - if it reappears in the DB (or the list) the clock resets.
+const ORPHAN_REAPER_MS = Number(process.env.FLEET_ORPHAN_REAPER_MS || 120000); // check every 2min
+const ORPHAN_GRACE_MS = Number(process.env.FLEET_ORPHAN_GRACE_MS || 10 * 60 * 1000); // unknown >10min → destroy
+async function orphanReaperTick() {
+  // Need a FRESH, known DB instance list (from a recent heartbeat). Stale/unknown → skip.
+  if (!knownInstances || (Date.now() - knownInstancesAt) > 3 * ORPHAN_REAPER_MS) return;
+  // Enumerate instances actually running on the host (one wd-run.sh shell per instance).
+  let running;
+  try {
+    const { stdout } = await execFileAsync('bash', ['-c', "pgrep -af 'wd-run.sh' 2>/dev/null | grep -oE 'wd-run.sh mi[0-9]+' | grep -oE 'mi[0-9]+' | sort -u"]);
+    running = String(stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch { return; }
+  if (!running.length) { orphanSince.clear(); return; }
+  const now = Date.now();
+  for (const inst of running) {
+    if (knownInstances.has(inst)) { orphanSince.delete(inst); continue; } // in DB → healthy
+    const since = orphanSince.get(inst);
+    if (!since) { orphanSince.set(inst, now); continue; } // first sighting — start grace clock
+    if (now - since < ORPHAN_GRACE_MS) continue; // still within grace — a fresh provision is safe
+    // Running >10min with NO Device row anywhere on this host → true orphan. Destroy it.
+    log(`orphan-reaper: instance ${inst} running but not in DB for ${Math.round((now - since) / 60000)}min → wd-destroy`);
+    await hostSh('wd-destroy.sh', [inst], 120000).catch(() => undefined);
+    orphanSince.delete(inst);
+  }
+  // Drop clock entries for instances that stopped running on their own.
+  for (const inst of orphanSince.keys()) if (!running.includes(inst)) orphanSince.delete(inst);
 }
 // Push one downscaled thumbnail per parked device. Skips the device that's currently busy
 // with a claimed job (the job's own progress/heartbeat covers it), and drops expired
@@ -10223,6 +10275,9 @@ async function loop() {
   // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA
   // screen (60fps software spinner = 3-4 wasted cores each). Skips devices with a live job.
   const eulaReaperT = setInterval(() => { eulaReaperTick().catch(() => undefined); }, EULA_REAPER_MS);
+  // ★ORPHAN-INSTANCE REAPER: destroys Waydroid instances running on the host but no longer
+  // in the DB (a delete whose DEVICE_DESTROY was lost, or a legacy pre-destroy delete).
+  const orphanReaperT = setInterval(() => { orphanReaperTick().catch(() => undefined); }, ORPHAN_REAPER_MS);
   startStreamClient();
 
   // Dispatch loop: claim jobs and run them CONCURRENTLY across devices, up to
@@ -10308,6 +10363,7 @@ async function loop() {
   if (waCapture) clearInterval(waCapture);
   clearInterval(otpWatchT);
   clearInterval(eulaReaperT);
+  clearInterval(orphanReaperT);
   log('shutting down.');
 }
 

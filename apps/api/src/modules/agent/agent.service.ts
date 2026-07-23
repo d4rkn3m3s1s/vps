@@ -929,6 +929,23 @@ export class AgentService {
     return { ok: true };
   }
 
+  // The Waydroid instance names of every device bound to this host (from
+  // Device.metadata.instance). The agent's orphan-reaper compares this to what's actually
+  // running on the box and destroys instances present on the host but ABSENT here (their
+  // Device row was deleted but the instance kept running). Returned on the heartbeat.
+  async listHostInstances(host: Host): Promise<string[]> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { metadata: true }
+    });
+    const names: string[] = [];
+    for (const d of devices) {
+      const inst = (d.metadata as { instance?: string } | null)?.instance;
+      if (typeof inst === 'string' && inst.trim()) names.push(inst.trim());
+    }
+    return names;
+  }
+
   async heartbeat(
     host: Host,
     input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined }

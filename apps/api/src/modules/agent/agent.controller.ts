@@ -155,7 +155,20 @@ export async function agentHeartbeatHandler(req: Request, res: Response): Promis
   const host = requireHost(req);
   const input = heartbeatSchema.parse(req.body);
   const updated = await agentService.heartbeat(host, input);
-  res.json({ data: { id: updated.id, status: updated.status, lastSeenAt: updated.lastSeenAt } });
+  // ★2026-07-24: return this host's KNOWN instance names so the agent's orphan-reaper can
+  // destroy Waydroid instances that are running on the host but no longer exist in the DB
+  // (e.g. a delete whose DEVICE_DESTROY job was lost, or a legacy device removed before the
+  // destroy path existed). The agent only reaps an instance absent from THIS list, and only
+  // after a grace window, so a just-provisioned instance not yet in the DB is never killed.
+  const instances = await agentService.listHostInstances(host).catch(() => null);
+  res.json({
+    data: {
+      id: updated.id,
+      status: updated.status,
+      lastSeenAt: updated.lastSeenAt,
+      ...(instances ? { instances } : {})
+    }
+  });
 }
 
 // Agent reports per-device CPU/mem/disk; we map serial -> deviceId and persist.

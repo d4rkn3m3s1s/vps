@@ -58,7 +58,9 @@ const GROUPS: Group[] = [
       { method: 'POST', path: '/public/v1/whatsapp/block', title: 'Engelle / engel kaldır', desc: 'Kişiyi engeller/engeli kaldırır (block, varsayılan true).', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "block": true\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/blocklist', title: 'Engellenenler listesi', desc: 'Cihazın engellenen kişiler listesi. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID"\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/mynumber', title: 'Kendi numaram', desc: 'Cihazdaki hesabın kendi numarasını okur. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID"\n}' },
-      { method: 'POST', path: '/public/v1/whatsapp/contacts', title: 'Kişileri listele', desc: 'Hesabın rehberi (numara + isim). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 200\n}' }
+      { method: 'POST', path: '/public/v1/whatsapp/contacts', title: 'Kişileri listele', desc: 'Hesabın rehberi (numara + isim). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 200\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/delete-message', title: 'Mesaj sil', desc: 'Bir mesajı siler. scope: me (bende) | everyone (herkesten). matchText ile eşleşen mesajı hedefler. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "scope": "everyone",\n  "matchText": "silinecek metin"\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/clear-chat', title: 'Sohbeti temizle', desc: 'Bir sohbetteki tüm yerel mesajları temizler. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800"\n}' }
     ]
   },
   {
@@ -73,7 +75,15 @@ const GROUPS: Group[] = [
       { method: 'POST', path: '/public/v1/whatsapp/group-members', title: 'Grup üyeleri', desc: 'Bir grubun üyeleri (numara + admin). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "group": "Grup adı veya jid",\n  "limit": 200\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/chat-summary', title: 'Sohbet özeti', desc: 'Bir sohbetin toplam/gelen/giden/medya sayıları + ilk-son mesaj zamanı. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800"\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/deleted', title: 'Silinen mesajlar', desc: 'Karşı tarafın "herkesten sil" ile sildiği ama DB’de kalan mesajlar (anti-delete). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 100\n}' },
-      { method: 'POST', path: '/public/v1/whatsapp/links', title: 'Paylaşılan linkler', desc: 'Sohbetlerde paylaşılan URL’ler. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 100\n}' }
+      { method: 'POST', path: '/public/v1/whatsapp/links', title: 'Paylaşılan linkler', desc: 'Sohbetlerde paylaşılan URL’ler. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 100\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/reactions', title: 'Emoji tepkileri', desc: 'Mesajlara verilen emoji tepkileri (isteğe bağlı tek sohbet). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "limit": 100\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/polls', title: 'Anketler', desc: 'Anketler (soru + seçenekler + oy sayıları). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 50\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/read-by', title: 'Kim okudu (read-by)', desc: 'Gönderdiğiniz mesajları kimin okuduğu (grupta hangi üyeler okudu). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "limit": 100\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/starred', title: 'Yıldızlı mesajlar', desc: 'Hesabın yıldızladığı (kaydettiği) mesajlar. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 100\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/labels-list', title: 'İş etiketleri (Business)', desc: 'WhatsApp Business etiketleri (isim/renk/sohbet sayısı). Sohbet kategorilerinden (/labels) ayrıdır. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID"\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/view-once', title: 'Tek görünümlük medya', desc: 'Tek-görünümlük (view-once) medyayı base64 çeker (root, UI açılmış saysa bile görür). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "limit": 20\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/voice-notes', title: 'Sesli notlar (PTT)', desc: 'Hesabın sesli notları. withAudio:false sadece meta (daha hızlı). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "limit": 20,\n  "withAudio": false\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/fetch-media', title: 'Medya indir (base64)', desc: 'İndirilmiş medyayı base64 olarak çeker. İndirilmemişse pending:true döner (cihazda şifreli blob var). jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "limit": 10\n}' }
     ]
   },
   {

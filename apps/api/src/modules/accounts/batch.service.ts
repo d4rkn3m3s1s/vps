@@ -439,6 +439,23 @@ export class BatchService {
       select: { id: true }
     });
     if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+    // ★2026-07-23: fail fast on a known-dead account. If the device's WhatsApp account is
+    // already BANNED or LOGGED_OUT (stamped by a prior send outcome / health-watch), a new
+    // send WILL fail on-device — so reject it up front with a clear 409 instead of queuing
+    // a job that burns a device slot and returns an opaque CHAT_NOT_OPENED minutes later.
+    // We deliberately DON'T block RESTRICTED: a restricted account can still reply in
+    // EXISTING threads (only new-chat starts fail), so we let it try and report per-send.
+    const acct = await prisma.generatedAccount.findFirst({
+      where: { deviceId: input.deviceId, platform: 'whatsapp', status: { in: ['BANNED', 'LOGGED_OUT'] } },
+      select: { status: true, phoneNumber: true },
+      orderBy: { updatedAt: 'desc' }
+    }).catch(() => null);
+    if (acct) {
+      const dead = acct.status === 'BANNED'
+        ? 'Bu cihazın WhatsApp hesabı YASAKLI (ban) — mesaj gönderilemez.'
+        : 'Bu cihazın WhatsApp hesabı ÇIKIŞ YAPMIŞ / kayıt silinmiş — mesaj gönderilemez, yeniden kayıt gerekir.';
+      throw new AppError(dead, 409, `ACCOUNT_${acct.status}`);
+    }
     const to = input.to.replace(/[^\d]/g, '');
     if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
     const payload = { deviceId: input.deviceId, to, message: input.message } as unknown as JobPayload;

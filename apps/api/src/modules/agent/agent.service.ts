@@ -353,13 +353,23 @@ export class AgentService {
         // it reports ACCOUNT_RESTRICTED and we stamp the health so the profile card shows
         // ⚠️ KISITLANDI and the alert fires. RESTRICTED rank is below BANNED/LOGGED_OUT so
         // it can't clobber a harder state (setAccountHealth is monotonic + idempotent).
-        const HEALTH_STATUSES = new Set(['ACCOUNT_BANNED', 'ACCOUNT_REVIEW', 'ACCOUNT_RESTRICTED']);
-        if (!ok && HEALTH_STATUSES.has(String(res.status))) {
+        // Map an account-health send outcome to the stored WaAccountHealth. LOGGED_OUT
+        // (VERIFIED mi68/watest47 2026-07-23): send landed on the Welcome/registration
+        // screen = the account is gone; it must re-register. ACCOUNT_LOGGED_OUT is worse
+        // than RESTRICTED (rank 2 vs 1) so it can't be masked by a later restricted signal.
+        const HEALTH_MAP: Record<string, 'BANNED' | 'RESTRICTED' | 'LOGGED_OUT'> = {
+          ACCOUNT_BANNED: 'BANNED',
+          ACCOUNT_REVIEW: 'RESTRICTED',
+          ACCOUNT_RESTRICTED: 'RESTRICTED',
+          ACCOUNT_LOGGED_OUT: 'LOGGED_OUT'
+        };
+        const mappedHealth = HEALTH_MAP[String(res.status)];
+        if (!ok && mappedHealth) {
           void whatsappService
             .setAccountHealth({
               deviceId: pl.deviceId,
               workspaceId: updated.workspaceId ?? null,
-              health: res.status === 'ACCOUNT_BANNED' ? 'BANNED' : 'RESTRICTED',
+              health: mappedHealth,
               ...(res.note ? { note: String(res.note) } : {})
             })
             .catch(() => undefined);

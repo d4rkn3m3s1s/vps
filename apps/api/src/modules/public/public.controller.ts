@@ -12,6 +12,33 @@ import { withIdempotency, readIdempotencyKey } from './idempotency.service';
 
 const deviceService = new DeviceService();
 
+// Map an on-device job's raw result.status code to a human-readable warning for the
+// external caller. A public integrator polling a jobId used to get only the bare code
+// (e.g. "CHAT_NOT_OPENED") with no idea what to do about it; this surfaces the reason +
+// whether it's worth retrying, so a failed send never looks like an opaque success.
+// `ok:false` marks a delivered job that nonetheless did NOT succeed (COMPLETED with a
+// failure status) — the #1 thing an integrator needs to branch on.
+const JOB_WARNING: Record<string, { ok: boolean; retryable: boolean; message: string }> = {
+  SENT: { ok: true, retryable: false, message: 'Mesaj gönderildi.' },
+  OK: { ok: true, retryable: false, message: 'İşlem başarılı.' },
+  ACCOUNT_BANNED: { ok: false, retryable: false, message: 'Bu WhatsApp hesabı YASAKLI (ban) — hesap ölü, mesaj gönderilemez. Yeniden denemeyin.' },
+  ACCOUNT_LOGGED_OUT: { ok: false, retryable: false, message: 'Bu WhatsApp hesabı ÇIKIŞ YAPMIŞ / kayıt silinmiş — yeniden kayıt gerekir.' },
+  ACCOUNT_RESTRICTED: { ok: false, retryable: false, message: 'Hesap KISITLI — yeni sohbet başlatamıyor (ban öncesi durum). Bu numaraya ilk kez yazıyorsanız gitmez.' },
+  ACCOUNT_REVIEW: { ok: false, retryable: true, message: 'Hesap incelemede — genelde ~24 saatte açılır, sonra tekrar deneyin.' },
+  RATE_LIMITED: { ok: false, retryable: true, message: 'Bu cihaz geçici olarak hız-sınırlı ("wait N min") — belirtilen süre sonra tekrar deneyin.' },
+  INVALID_RECIPIENT: { ok: false, retryable: false, message: 'Hedef numara WhatsApp\'ta değil veya geçersiz.' },
+  CHAT_NOT_OPENED: { ok: false, retryable: true, message: 'Sohbet ekranı açılamadı — cihaz meşgul/kararsız olabilir ya da hesap çıkış yapmış olabilir. Tekrar deneyin; sürekli tekrarlıyorsa cihaz sağlığını kontrol edin.' },
+  COMPOSE_FAILED: { ok: false, retryable: true, message: 'Mesaj kutusuna yazılamadı — tekrar deneyin.' }
+};
+function jobWarning(job: { status: string; result: unknown; error: string | null }): { ok: boolean; retryable: boolean; message: string } | null {
+  if (job.status === 'FAILED') {
+    return { ok: false, retryable: true, message: job.error ? String(job.error) : 'İş başarısız oldu — tekrar deneyin.' };
+  }
+  const rstatus = (job.result as { status?: string } | null)?.status;
+  if (!rstatus) return null;
+  return JOB_WARNING[rstatus] ?? null;
+}
+
 // GET /public/v1/devices — the workspace's devices, trimmed to the fields an
 // external integration needs to pick a target. Workspace-scoped (never leaks
 // other tenants; see requirePublicWorkspace).
@@ -746,6 +773,7 @@ export async function jobHandler(req: Request, res: Response): Promise<void> {
   if (!jobId) throw new AppError('jobId gerekli', 400, 'MISSING_JOB_ID');
   const job = await getJob(jobId, workspaceId);
   if (!job) throw new AppError('İş bulunamadı', 404, 'JOB_NOT_FOUND');
+  const warn = jobWarning(job);
   res.json({
     data: {
       id: job.id,
@@ -753,6 +781,10 @@ export async function jobHandler(req: Request, res: Response): Promise<void> {
       status: job.status,
       result: job.result ?? null,
       error: job.error ?? null,
+      // Human-readable outcome for the integrator: ok (did it truly succeed?),
+      // retryable (worth trying again?), and a Turkish reason. Absent when the job
+      // hasn't produced a classifiable result yet (still PENDING/RUNNING).
+      ...(warn ? { ok: warn.ok, retryable: warn.retryable, warning: warn.message } : {}),
       createdAt: job.createdAt,
       updatedAt: job.updatedAt
     }
@@ -793,6 +825,7 @@ export async function jobWaitHandler(req: Request, res: Response): Promise<void>
     const timedOut = Date.now() >= deadline;
     if (done || timedOut || aborted) {
       if (aborted) return; // client hung up — nothing to send
+      const warn = jobWarning(job);
       res.json({
         data: {
           id: job.id,
@@ -800,6 +833,7 @@ export async function jobWaitHandler(req: Request, res: Response): Promise<void>
           status: job.status,
           result: job.result ?? null,
           error: job.error ?? null,
+          ...(warn ? { ok: warn.ok, retryable: warn.retryable, warning: warn.message } : {}),
           createdAt: job.createdAt,
           updatedAt: job.updatedAt,
           ...(done ? {} : { timedOut: true })

@@ -3699,6 +3699,18 @@ async function whatsappSend(serial, payload) {
     if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(notice) || readOnlyChat) {
       return { status: 'ACCOUNT_RESTRICTED', note: '⚠️ Bu WhatsApp hesabı KISITLI — yeni sohbet başlatamıyor (mevcut sohbetlere yanıt verebilir). Genelde ban öncesi durum.', to, screenTexts: notice.slice(0, 400) };
     }
+    // ★LOGGED_OUT detection — VERIFIED LIVE (mi68/watest47 2026-07-23): opening WA to
+    // send landed on the "Welcome to WhatsApp" / "Agree and continue" registration screen
+    // (activity com.whatsapp.registration.*), which means the ACCOUNT IS GONE — logged
+    // out / cleared, not just a stubborn chat. The account must re-register before it can
+    // send anything. The old code returned CHAT_NOT_OPENED here too, so watest47 failed
+    // EVERY send for THREE days looking merely "stuck". Activity name is the reliable
+    // signal (registration/EULA/eula); the welcome/agree text is the backup.
+    const focReg = focBan || await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/whatsapp\/.*(registration|\.EULA|RegisterName|verifynumber)/i.test(focReg)
+        || /welcome to whatsapp|agree and continue|read our privacy policy|kabul et ve devam/i.test(notice)) {
+      return { status: 'ACCOUNT_LOGGED_OUT', note: '🔒 Bu WhatsApp hesabı ÇIKIŞ YAPMIŞ / kayıt silinmiş (Welcome/kayıt ekranı) — mesaj gönderilemez, yeniden kayıt gerekir.', to, screenTexts: notice.slice(0, 400) };
+    }
     if (/banned|suspended|violat|yasakl|askıya|Terms of Service/i.test(notice)) {
       return { status: 'ACCOUNT_BANNED', note: 'Bu WhatsApp hesabı yasaklı/askıda — mesaj gönderilemez', to, screenTexts: notice.slice(0, 400) };
     }

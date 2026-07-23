@@ -32,6 +32,47 @@ export class AlertsService {
     });
   }
 
+  // ★2026-07-24: seed a sensible default AlertRule set for every workspace so proactive
+  // alerts actually fire out of the box. VERIFIED LIVE: workspaces had ZERO rules, so the
+  // whole alert engine was silent. Idempotent — only creates a rule for a trigger the
+  // workspace doesn't already have one for, so it never duplicates or overwrites an
+  // operator's own rules. Called on boot for every existing workspace.
+  async seedDefaultRules(workspaceId: string): Promise<number> {
+    const DEFAULTS: Array<{ name: string; trigger: AlertTrigger; threshold?: number }> = [
+      { name: 'Host çevrimdışı', trigger: 'HOST_OFFLINE' },
+      { name: 'Filo toplu düşüş', trigger: 'FLEET_MASS_OFFLINE' },
+      { name: 'Host doygun (yük/disk)', trigger: 'HOST_SATURATED' },
+      { name: 'WhatsApp hesabı banlandı', trigger: 'ACCOUNT_BANNED' },
+      { name: 'Proxy sağlıksız', trigger: 'PROXY_UNHEALTHY' },
+      { name: 'Cihaz çevrimdışı', trigger: 'DEVICE_OFFLINE' },
+      { name: 'İş başarısız', trigger: 'JOB_FAILED' }
+    ];
+    const existing = await prisma.alertRule.findMany({ where: { workspaceId }, select: { trigger: true } });
+    const have = new Set(existing.map((r) => r.trigger));
+    let created = 0;
+    for (const d of DEFAULTS) {
+      if (have.has(d.trigger)) continue;
+      await prisma.alertRule
+        .create({ data: { workspaceId, name: d.name, trigger: d.trigger, threshold: d.threshold ?? 0, notify: true, webhook: false, email: false, active: true } })
+        .then(() => { created++; })
+        .catch(() => undefined); // race with a concurrent create → ignore
+    }
+    return created;
+  }
+
+  // Seed defaults for ALL workspaces (boot-time). Best-effort per workspace.
+  async seedDefaultRulesAllWorkspaces(): Promise<void> {
+    try {
+      const workspaces = await prisma.workspace.findMany({ select: { id: true } });
+      for (const ws of workspaces) {
+        const n = await this.seedDefaultRules(ws.id).catch(() => 0);
+        if (n > 0) logger.info('seeded default alert rules', { workspaceId: ws.id, created: n });
+      }
+    } catch (error) {
+      logger.warn('seedDefaultRulesAllWorkspaces failed', { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   async createRule(workspaceId: string, input: AlertRuleInput) {
     return prisma.alertRule.create({
       data: {
@@ -97,6 +138,20 @@ export class AlertsService {
     if (!workspaceId) return;
     try {
       const rules = await prisma.alertRule.findMany({ where: { workspaceId, trigger, active: true } });
+      // ★2026-07-24 FAIL-OPEN: if NO AlertRule matches, critical triggers still reach the
+      // operator. VERIFIED LIVE: a fresh workspace has zero AlertRules, so the loop below
+      // never ran and EVERY proactive alert (host-down, mass-offline, ban, proxy) was
+      // silently swallowed — the whole alert engine produced nothing. A missing rule must
+      // mean "not customised", NOT "muted". So for the CRITICAL triggers we push a Telegram/
+      // Slack notification directly (the same channel the rule path uses) even with no rule.
+      // Non-critical triggers (QUOTA_HIGH etc.) still require an explicit rule (opt-in).
+      const CRITICAL_FAILOPEN = new Set<AlertTrigger>([
+        'HOST_OFFLINE', 'FLEET_MASS_OFFLINE', 'HOST_SATURATED',
+        'ACCOUNT_BANNED', 'PROXY_UNHEALTHY', 'DEVICE_OFFLINE', 'JOB_FAILED'
+      ]);
+      if (rules.length === 0 && CRITICAL_FAILOPEN.has(trigger)) {
+        void notificationsDispatch(workspaceId, { title: context.title, detail: context.detail });
+      }
       for (const rule of rules) {
         // Threshold rules (QUOTA_HIGH) only fire when the value MEETS the threshold.
         // FAIL-CLOSED: a threshold rule invoked with NO numeric value can't be evaluated,

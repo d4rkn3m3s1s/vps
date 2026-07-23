@@ -27,6 +27,14 @@ async function main(): Promise<void> {
 
   const app = createApp();
   const server = createServer(app);
+  // ★2026-07-24: bound HTTP timeouts so a hung handler (slow DB, exhausted pool, a stuck
+  // downstream) can't hold a socket — and its DB connection — open indefinitely. Without
+  // these, an asylum of stuck requests slowly drains the Prisma pool → the whole API
+  // locks up (agent can't claim jobs). requestTimeout is generous (120s) so long flows
+  // (provision, AI) still finish; the point is to kill the truly-hung, not the merely-slow.
+  server.requestTimeout = 120_000;   // whole-request cap
+  server.headersTimeout = 30_000;    // must send headers within 30s
+  server.keepAliveTimeout = 65_000;  // > typical LB idle (avoids premature socket reuse races)
   deviceHub.attach(server);
   streamHub.attach(server);
 
@@ -103,12 +111,25 @@ async function main(): Promise<void> {
   // Proxy revalidation: periodically re-check proxies whose health check is due,
   // updating their rolling score so autoAssign always prefers healthy exits.
   const proxyService = new ProxyService();
+  // Reentrancy guard: a slow round (25 proxies × 8s timeout = 200s) must not overlap the
+  // next tick and double-check / double-write. Skip if the previous run is still going.
+  let proxyRevalRunning = false;
   setInterval(() => {
+    if (proxyRevalRunning) return;
+    proxyRevalRunning = true;
     proxyService.revalidateDue().then((r) => {
       if (r.checked > 0) logger.info('Proxy revalidation', r);
+      // ★2026-07-24: PROXY POOL ALARM. A silently-failing proxy pool is the #1 ban cause —
+      // devices keep routing through a dead/degraded proxy. Before this the result was only
+      // logged (logger.info), so 4/4 FAILED went unnoticed. Now: if a meaningful share of
+      // the checked pool failed, fire PROXY_UNHEALTHY so the operator hears it (fail-open
+      // dispatch reaches Telegram even without a custom rule). Threshold: >=half failed.
+      if (r.checked >= 2 && r.failed >= Math.ceil(r.checked / 2)) {
+        void proxyService.alertUnhealthyPool(r).catch(() => undefined);
+      }
     }).catch((error) => {
       logger.error('Proxy revalidation failed', { error: error instanceof Error ? error.message : String(error) });
-    });
+    }).finally(() => { proxyRevalRunning = false; });
   }, 600_000).unref();
 
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
@@ -229,17 +250,59 @@ async function main(): Promise<void> {
       });
   }, 60_000).unref();
 
+  // ★2026-07-24: BAN-WAVE detection. Single bans already alert one-by-one, but a BURST of
+  // bans in a short window means a SYSTEMIC problem (a proxy IP-pool got flagged, a country
+  // pool burned) — a different, more urgent signal than one ban. Every ~3min, count WhatsApp
+  // accounts that transitioned to BANNED/RESTRICTED in the last 15min per workspace; if a
+  // workspace crosses the threshold, fire a distinct ban-wave alert so the operator can STOP
+  // new registrations before more accounts burn. Reentrancy-guarded; best-effort.
+  let banWaveRunning = false;
+  setInterval(() => {
+    if (banWaveRunning) return;
+    banWaveRunning = true;
+    (async () => {
+      const since = new Date(Date.now() - 15 * 60 * 1000);
+      const recent = await prisma.generatedAccount.groupBy({
+        by: ['workspaceId'],
+        where: { platform: 'whatsapp', status: { in: ['BANNED', 'RESTRICTED'] }, updatedAt: { gte: since } },
+        _count: { _all: true }
+      }).catch(() => [] as Array<{ workspaceId: string | null; _count: { _all: number } }>);
+      const THRESHOLD = Number(process.env.FLEET_BAN_WAVE_THRESHOLD || 3);
+      for (const row of recent) {
+        if (!row.workspaceId || row._count._all < THRESHOLD) continue;
+        void alertsService.evaluate(row.workspaceId, 'ACCOUNT_BANNED', {
+          title: `🔴 BAN DALGASI — 15 dakikada ${row._count._all} hesap banlandı/kısıtlandı`,
+          detail: `Kısa sürede çok sayıda hesap banlandı; bu SİSTEMİK bir sorun (proxy IP-havuzu kirlendi / bir ülke-havuzu flag'lendi) olabilir. YENİ KAYITLARI DURDURUN ve proxy sağlığını kontrol edin — devam ederse daha fazla değerli hesap yanar.`
+        }).catch(() => undefined);
+      }
+    })().catch((e) => logger.error('ban-wave tick failed', { error: e instanceof Error ? e.message : String(e) }))
+      .finally(() => { banWaveRunning = false; });
+  }, 180_000).unref();
+
   server.listen(env.port, () => {
     logger.info(`API server listening on port ${env.port}`);
     // Resume any broadcast whose in-memory dispatcher was killed by a restart, so its
     // un-dispatched recipients aren't stranded forever (broadcast persist/resume).
     void whatsappService.resumeStrandedBroadcasts().catch(() => undefined);
+    // ★2026-07-24: seed default AlertRules for every workspace so proactive alerts fire
+    // out of the box. Idempotent (skips triggers a workspace already has a rule for), so
+    // it's safe to run on every boot and never clobbers an operator's custom rules.
+    void alertsService.seedDefaultRulesAllWorkspaces().catch(() => undefined);
   });
 
-  // Clean up the worker on shutdown so Redis connections drain gracefully.
+  // ★2026-07-24: real graceful shutdown. Stop accepting new connections, drain the Redis
+  // webhook worker AND the Prisma pool (previously $disconnect was never called → the DB
+  // pool + Redis could be left mid-operation on restart, widening the half-write window),
+  // then exit. A 10s cap ensures we exit even if an in-flight request never finishes, so
+  // systemd's Restart=always brings us back cleanly instead of waiting for a SIGKILL.
+  let shuttingDown = false;
   const shutdown = () => {
-    void webhookWorker.close();
-    server.close();
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server.close(); // stop accepting new connections; existing ones drain
+    const done = Promise.allSettled([webhookWorker.close(), prisma.$disconnect()]);
+    const cap = new Promise((r) => setTimeout(r, 10_000).unref());
+    void Promise.race([done, cap]).finally(() => process.exit(0));
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);

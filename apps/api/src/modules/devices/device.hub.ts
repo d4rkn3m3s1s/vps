@@ -6,7 +6,7 @@ import { verifyAccessToken } from '../../lib/jwt';
 
 // A dashboard client socket, tagged with the authenticated viewer's workspace so
 // broadcast() can fan events only to same-tenant clients (no cross-tenant leak).
-type ClientSocket = WebSocket & { workspaceId?: string | undefined };
+type ClientSocket = WebSocket & { workspaceId?: string | undefined; isAlive?: boolean };
 
 export type DeviceHubEvent = {
   type:
@@ -48,11 +48,29 @@ export class DeviceHub {
       // it onto the socket so broadcast() can scope events to this tenant.
       const workspaceId = (req as IncomingMessage & { workspaceId?: string }).workspaceId;
       if (workspaceId) socket.workspaceId = workspaceId;
+      socket.isAlive = true;
       this.clients.add(socket);
       socket.send(JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() }));
+      // ★2026-07-24: pong marks the socket alive. Without a ping/pong keepalive a
+      // half-open TCP connection (client's network dropped, NAT timed out) never emits
+      // 'close', so the socket stayed in `clients` forever → slow memory leak + wasted
+      // broadcast iterations on a dead peer. The interval below terminates the unresponsive.
+      socket.on('pong', () => { socket.isAlive = true; });
       socket.on('close', () => this.clients.delete(socket));
       socket.on('error', (error) => logger.error('Device websocket error', { error: error.message }));
     });
+    // Every 30s, ping each client; a client that didn't pong since the last round is dead
+    // → terminate + drop it. This is the standard `ws` liveness pattern.
+    const HEARTBEAT_MS = 30_000;
+    const pinger = setInterval(() => {
+      for (const socket of this.clients) {
+        if (socket.isAlive === false) { try { socket.terminate(); } catch { /* already gone */ } this.clients.delete(socket); continue; }
+        socket.isAlive = false;
+        try { socket.ping(); } catch { this.clients.delete(socket); }
+      }
+    }, HEARTBEAT_MS);
+    pinger.unref?.();
+    this.wss.on('close', () => clearInterval(pinger));
   }
 
   // Called by StreamHub's upgrade router for the '/ws/devices' path. Authenticates

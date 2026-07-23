@@ -5,6 +5,7 @@ import { AppError } from '../../lib/errors';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import type { ProxyCreateInput, ProxyUpdateInput } from './proxy.types';
+import { alertsService } from '../alerts/alerts.service';
 
 // Public-safe proxy shape: the encrypted password is never returned; clients
 // only learn whether one is set.
@@ -389,6 +390,39 @@ export class ProxyService {
       }
     }
     return { checked: due.length, ok, failed };
+  }
+
+  // ★2026-07-24: fire a PROXY_UNHEALTHY alert per affected workspace when the revalidation
+  // round found a large share of the pool failing. A degraded proxy pool is the #1 WhatsApp
+  // ban cause (devices keep exiting through a dead/slow proxy), and it was previously silent
+  // — only logged. Groups the CURRENTLY-failed proxies by workspace so each tenant hears
+  // about its own pool. Best-effort; never throws into the ticker.
+  async alertUnhealthyPool(round: { checked: number; ok: number; failed: number }): Promise<void> {
+    try {
+      const failedProxies = await prisma.proxy.findMany({
+        where: { status: 'FAILED' },
+        select: { workspaceId: true }
+      });
+      const byWs = new Map<string, number>();
+      for (const p of failedProxies) {
+        if (!p.workspaceId) continue;
+        byWs.set(p.workspaceId, (byWs.get(p.workspaceId) ?? 0) + 1);
+      }
+      const detail = `Proxy sağlık kontrolünde ${round.failed}/${round.checked} proxy BAŞARISIZ. Cihazlar sağlıksız proxy üzerinden çıkıyor olabilir — datacenter-IP sızıntısı = WhatsApp ban riski. Proxy sağlayıcısını (thordata) ve kredi/erişimi kontrol edin.`;
+      for (const [workspaceId, count] of byWs) {
+        void alertsService
+          .evaluate(workspaceId, 'PROXY_UNHEALTHY', { title: `⚠️ Proxy havuzu sağlıksız — ${count} proxy başarısız`, detail })
+          .catch(() => undefined);
+      }
+      // If no failed proxy carries a workspace (service-owned pool), still alert once
+      // globally through any workspace so the operator isn't left blind.
+      if (byWs.size === 0 && failedProxies.length > 0) {
+        const anyWs = await prisma.workspace.findFirst({ select: { id: true } });
+        if (anyWs) void alertsService.evaluate(anyWs.id, 'PROXY_UNHEALTHY', { title: '⚠️ Proxy havuzu sağlıksız', detail }).catch(() => undefined);
+      }
+    } catch {
+      /* never break the ticker */
+    }
   }
 
   // Workspace-scoped ownership check: returns the proxy only if the caller owns

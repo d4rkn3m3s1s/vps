@@ -40,6 +40,11 @@ if [ "${2:-}" = "clear" ]; then
     N=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$SUBNET" | awk '{print $1}' | sort -rn | head -1)
     [ -n "$N" ] && iptables -t nat -D PREROUTING "$N" 2>/dev/null || break
   done
+  # ★2026-07-24: also remove the FORWARD UDP-DROP rule (added on apply) so a cleared
+  # device's UDP exits directly again (correct — no proxy means no leak protection to keep).
+  while iptables -C FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null; do
+    iptables -D FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null || break
+  done
   # Stop THIS instance's redsocks (its config is instance-scoped, so this can't touch
   # another device's daemon).
   pkill -f "redsocks -c /etc/redsocks-inst-$INSTANCE.conf" 2>/dev/null || true
@@ -154,6 +159,17 @@ for NET in 0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168
   iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -d "$NET" -j RETURN
 done
 iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -j REDIRECT --to-ports "$RS_PORT"
+# ★2026-07-24: DROP the instance's UDP (except DNS 53) so QUIC / HTTP-3 (UDP 443) can't
+# bypass redsocks and exit from the DATACENTER IP — the #1 WhatsApp ban cause. iptables
+# only REDIRECTs TCP; UDP was leaving directly. WhatsApp/Chrome fall back to TCP when QUIC
+# is blocked, so this closes the leak without breaking connectivity. DNS stays (dnsmasq).
+# Idempotent: remove any prior copy for this subnet first, then add. filter/FORWARD chain.
+while iptables -C FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null; do
+  iptables -D FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null || break
+done
+iptables -A FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null \
+  && log "UDP (non-DNS) DROP active for $SUBNET (QUIC leak closed)" \
+  || log "WARN: UDP DROP rule for $SUBNET could not be added (non-fatal)"
 # VERIFY the REDIRECT rule actually landed before declaring success.
 if ! iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "-s ${SUBNET}" | grep -F -- "REDIRECT --to-ports ${RS_PORT}" >/dev/null 2>&1; then
   log "ERROR: REDIRECT rule for $SUBNET NOT present after insert"

@@ -9963,6 +9963,9 @@ let knownInstancesAt = 0;
 // instance → first time we saw it running-but-unknown. Reaped only after a grace window,
 // so a just-provisioned instance not yet written to the DB is never destroyed.
 const orphanSince = new Map();
+// ★ADB-SERVER RECOVERY state: last time we bounced the adb server (cooldown so a genuinely-
+// dead fleet doesn't get hammered with kill-server every tick).
+let lastAdbBounceAt = 0;
 // Back-compat shim: some helpers (otpWatchTick, whatsappInboxTick) historically read
 // a global `jobBusy`. They now ask "is ANY job running?" via this getter, but the
 // hot path uses busyDevices.has(serial) for per-device decisions.
@@ -10068,6 +10071,50 @@ async function orphanReaperTick() {
   }
   // Drop clock entries for instances that stopped running on their own.
   for (const inst of orphanSince.keys()) if (!running.includes(inst)) orphanSince.delete(inst);
+}
+
+// ★ADB-SERVER RECOVERY (2026-07-24): the whole fleet can go "offline" not because the
+// devices died but because the host's ADB SERVER wedged (VERIFIED: a past "all devices
+// offline" incident was fixed by hand with `agent restart → adb connect`). ensureConnected
+// only runs `adb connect <serial>` — it never restarts the adb server itself, and the
+// self-watchdog only checks that the dispatch loop is PROGRESSING (it is — every connect
+// just returns "offline"). This tick detects the wedge: if instances are RUNNING on the
+// host but far fewer are ADB-reachable, bounce the adb server once (cooldown'd) and
+// reconnect all. Only fires on the "majority running-but-unreachable" signal, so it can't
+// disrupt a healthy fleet — it recovers an already-broken one.
+const ADB_RECOVERY_MS = Number(process.env.FLEET_ADB_RECOVERY_MS || 90000); // check every 90s
+const ADB_BOUNCE_COOLDOWN_MS = Number(process.env.FLEET_ADB_BOUNCE_COOLDOWN_MS || 5 * 60 * 1000);
+async function adbRecoveryTick() {
+  // Instances actually running on the host (wd-run shells).
+  let running = [];
+  try {
+    const { stdout } = await execFileAsync('bash', ['-c', "pgrep -af 'wd-run.sh' 2>/dev/null | grep -oE 'wd-run.sh mi[0-9]+' | grep -oE 'mi[0-9]+' | sort -u"]);
+    running = String(stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch { return; }
+  if (running.length < 3) return; // too small a fleet to judge; skip
+  // How many are ADB-reachable right now?
+  let reachable = [];
+  try { reachable = await reachableSerials(); } catch { return; }
+  // Signal: many instances up, but fewer than half are ADB-reachable → adb server wedge.
+  if (reachable.length >= Math.ceil(running.length / 2)) return; // healthy enough — do nothing
+  if (Date.now() - lastAdbBounceAt < ADB_BOUNCE_COOLDOWN_MS) return; // just bounced; give it time
+  lastAdbBounceAt = Date.now();
+  log(`adb-recovery: ${running.length} instance up but only ${reachable.length} ADB-reachable → bouncing adb server`);
+  try {
+    await execFileAsync(ADB, ['kill-server']).catch(() => undefined);
+    await sleep(1500);
+    await execFileAsync(ADB, ['start-server']).catch(() => undefined);
+    await sleep(1500);
+    // Reconnect every known instance's serial (192.168.<subnet>.112:5555).
+    for (const inst of running) {
+      try {
+        const { stdout } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
+        const sub = String(stdout || '').trim();
+        if (sub) await execFileAsync(ADB, ['connect', `192.168.${sub}.112:5555`]).catch(() => undefined);
+      } catch { /* per-instance best-effort */ }
+    }
+    log('adb-recovery: server bounced + reconnect issued');
+  } catch (e) { log('adb-recovery failed:', e && e.message); }
 }
 // Push one downscaled thumbnail per parked device. Skips the device that's currently busy
 // with a claimed job (the job's own progress/heartbeat covers it), and drops expired
@@ -10278,6 +10325,9 @@ async function loop() {
   // ★ORPHAN-INSTANCE REAPER: destroys Waydroid instances running on the host but no longer
   // in the DB (a delete whose DEVICE_DESTROY was lost, or a legacy pre-destroy delete).
   const orphanReaperT = setInterval(() => { orphanReaperTick().catch(() => undefined); }, ORPHAN_REAPER_MS);
+  // ★ADB-server recovery: bounces a wedged adb server when the fleet is running but
+  // unreachable (the "all devices offline" incident, now self-healing).
+  const adbRecoveryT = setInterval(() => { adbRecoveryTick().catch(() => undefined); }, ADB_RECOVERY_MS);
   startStreamClient();
 
   // Dispatch loop: claim jobs and run them CONCURRENTLY across devices, up to
@@ -10364,6 +10414,7 @@ async function loop() {
   clearInterval(otpWatchT);
   clearInterval(eulaReaperT);
   clearInterval(orphanReaperT);
+  clearInterval(adbRecoveryT);
   log('shutting down.');
 }
 

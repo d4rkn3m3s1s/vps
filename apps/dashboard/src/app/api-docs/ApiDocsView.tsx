@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { Download, Search, Copy, Check, KeyRound, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Download, Search, Copy, Check, KeyRound, ChevronRight, Rocket, Loader2, Terminal, AlertTriangle } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, Reveal } from '../../components/hud';
 
@@ -79,8 +79,9 @@ const GROUPS: Group[] = [
   {
     title: 'Cihaz Kurma & WA Kayıt',
     endpoints: [
-      { method: 'POST', path: '/public/v1/devices/provision', title: 'Cihaz kur', desc: 'Sıfırdan yeni bir cloud phone kurar (boot→root→kimlik→proxy→app→WA-hazır). {deviceId, jobId} döner. proxyCountry = numara alacağınız ülke (ISO-2).', body: '{\n  "name": "yeni-cihaz",\n  "proxyCountry": "tr"\n}' },
-      { method: 'GET', path: '/public/v1/devices/provision/:jobId/status', title: 'Kurulum durumu', desc: 'Kurulumun adım-adım ilerlemesi (mevcut adım, yüzde, log).' },
+      { method: 'POST', path: '/public/v1/devices/provision', title: 'Cihaz kur (tek)', desc: 'Sıfırdan yeni bir cloud phone kurar (boot→root→kimlik→proxy→app→WA-hazır). {deviceId, jobId} döner. proxyCountry = numara alacağınız ülke (ISO-2). Üstteki "Canlı Dene" kutusuyla deneyebilirsiniz.', body: '{\n  "name": "yeni-cihaz",\n  "proxyCountry": "tr"\n}' },
+      { method: 'POST', path: '/public/v1/devices/provision/batch', title: 'Cihaz kur (toplu, 1–20)', desc: 'Tek çağrıda çok cihaz kurar. count = adet (1–20), namePrefix = isim öneki (watest → watest-a3f…), proxyCountry = ülke. Hataya dayanıklı: host dolarsa başlayanlar started[] içinde, başarısızlar failed[] içinde döner. Her başlayan cihazın kendi {jobId, deviceId}’si vardır — durumu tek tek izleyin.', body: '{\n  "count": 3,\n  "namePrefix": "watest",\n  "proxyCountry": "tr"\n}' },
+      { method: 'GET', path: '/public/v1/devices/provision/:jobId/status', title: 'Kurulum durumu (canlı)', desc: 'Kurulumun canlı ilerlemesi: phase (provisioning | ready | failed), percent, adım-adım log[] (her satır: adım + not + zaman), lastProgress ve başarısızsa error (hata sebebi). Poll edip panel modalı gibi canlı izleyin.' },
       { method: 'POST', path: '/public/v1/whatsapp/register', title: 'WA kayıt başlat', desc: 'Kendi numaranızla otonom WhatsApp kaydı başlatır. SMS-kod ekranında durur (AWAITING_OTP). accountId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "phoneNumber": "905XXXXXXXXX"\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/register/:id/otp', title: 'OTP gönder', desc: 'SMS kodunu gönderir; ajan girer + profili tamamlar. Hesap ACTIVE (veya FAILED) olur.', body: '{\n  "otpCode": "123456"\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/register/:id/verify-method', title: 'Doğrulama yöntemi seç', desc: 'Kayıt "nasıl doğrulansın" ekranında durduysa yöntem seçer: sms | voice | missed_call.', body: '{\n  "method": "sms"\n}' },
@@ -108,6 +109,127 @@ function CopyBtn({ text }: { text: string }) {
     >
       {done ? <Check size={13} /> : <Copy size={13} />}
     </button>
+  );
+}
+
+// ── Canlı "Tek Tık Cihaz Oluştur" denemesi (GERÇEK PUBLIC API) ──────────────
+// Panelin provision modalının API karşılığı — ama gerçek public uçlara, entegratörün
+// yaşayacağı şekilde: kendi flk_ anahtarını gir → POST /public/v1/devices/provision
+// (veya /provision/batch) çağrılır → her jobId'nin GET /provision/:id/status'ü poll
+// edilerek canlı log + yüzde + hata gösterilir. x-api-key ile gider (BFF/JWT DEĞİL),
+// yani tam olarak harici bir istemcinin gördüğü akış. Anahtar sadece tarayıcıda kalır.
+type ProgressLine = { ts: string; step: string; note?: string; status: string };
+type LiveJob = { jobId: string; deviceId: string; name: string; percent: number; phase: string; status: string; log: ProgressLine[]; error: string | null };
+
+function lineColor(note?: string, status?: string): string {
+  if (status === 'FAILED' || (note ?? '').startsWith('❌')) return '#f87171';
+  if ((note ?? '').startsWith('✓')) return '#4ade80';
+  if ((note ?? '').startsWith('⚠')) return '#fbbf24';
+  return '#94a3b8';
+}
+
+function ProvisionTryIt({ baseUrl }: { baseUrl: string }) {
+  const [apiKey, setApiKey] = useState('');
+  const [name, setName] = useState('');
+  const [count, setCount] = useState(1);
+  const [proxyCountry, setProxyCountry] = useState('tr');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [jobs, setJobs] = useState<LiveJob[]>([]);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const keyRef = useRef(apiKey);
+  keyRef.current = apiKey;
+
+  // Poll every started job's status via the REAL public status endpoint (x-api-key)
+  // until all are terminal (ready/failed).
+  useEffect(() => {
+    if (!jobs.length) return;
+    const allDone = jobs.every((j) => j.phase === 'ready' || j.phase === 'failed');
+    if (allDone) { if (pollRef.current) clearInterval(pollRef.current); return; }
+    pollRef.current = setInterval(async () => {
+      const updated = await Promise.all(jobs.map(async (j) => {
+        if (j.phase === 'ready' || j.phase === 'failed') return j;
+        try {
+          const res = await fetch(`${baseUrl}/public/v1/devices/provision/${j.jobId}/status`, { headers: { 'x-api-key': keyRef.current } });
+          const d = (await res.json())?.data;
+          if (!d) return j;
+          return { ...j, percent: d.percent ?? j.percent, phase: d.phase ?? j.phase, status: d.status ?? j.status, log: Array.isArray(d.log) ? d.log : j.log, error: d.error ?? null };
+        } catch { return j; }
+      }));
+      setJobs(updated);
+    }, 2500);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [jobs, baseUrl]);
+
+  async function launch() {
+    if (busy) return;
+    if (!apiKey.trim()) { setErr('Önce API anahtarınızı (flk_…) girin.'); return; }
+    setBusy(true); setErr(null); setJobs([]);
+    try {
+      const single = count <= 1;
+      const url = single ? `${baseUrl}/public/v1/devices/provision` : `${baseUrl}/public/v1/devices/provision/batch`;
+      const body = single
+        ? { ...(name.trim() ? { name: name.trim() } : {}), ...(proxyCountry ? { proxyCountry } : {}) }
+        : { count, ...(name.trim() ? { namePrefix: name.trim() } : {}), ...(proxyCountry ? { proxyCountry } : {}) };
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey.trim() }, body: JSON.stringify(body) });
+      const j = await res.json().catch(() => ({}));
+      const d = j?.data;
+      if (!res.ok || !d) { setErr((j && (j.message || j.error)) || `Kurulum başlatılamadı (HTTP ${res.status})`); return; }
+      const started: LiveJob[] = single
+        ? [{ jobId: d.jobId, deviceId: d.deviceId, name: d.instance ?? name ?? 'cihaz', percent: 3, phase: 'provisioning', status: 'PENDING', log: [], error: null }]
+        : (d.started ?? []).map((s: { jobId: string; deviceId: string; name: string }) => ({ jobId: s.jobId, deviceId: s.deviceId, name: s.name, percent: 3, phase: 'provisioning', status: 'PENDING', log: [], error: null }));
+      if (!started.length) { setErr('Hiç cihaz başlatılamadı (host dolu olabilir).'); return; }
+      setJobs(started);
+    } catch {
+      setErr('Ağ hatası — kurulum başlatılamadı.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="api-try">
+      <label className="api-try-key">API anahtarı (x-api-key)
+        <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="flk_…" autoComplete="off" />
+      </label>
+      <div className="api-try-form">
+        <label>İsim / önek<input value={name} onChange={(e) => setName(e.target.value)} placeholder="watest (boş = rastgele)" /></label>
+        <label>Adet<input type="number" min={1} max={20} value={count} onChange={(e) => setCount(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} /></label>
+        <label>Proxy ülke<input value={proxyCountry} onChange={(e) => setProxyCountry(e.target.value.toLowerCase().slice(0, 2))} placeholder="tr" /></label>
+        <button className="api-try-btn" onClick={launch} disabled={busy}>
+          {busy ? <><Loader2 size={15} className="spin" /> Başlatılıyor…</> : <><Rocket size={15} /> {count > 1 ? `${count} cihaz kur` : 'Cihaz kur'}</>}
+        </button>
+      </div>
+      {err && <p className="api-try-err"><AlertTriangle size={14} /> {err}</p>}
+      {jobs.length > 0 && (
+        <div className="api-try-jobs">
+          {jobs.map((j) => {
+            const done = j.phase === 'ready' || j.percent >= 100;
+            const failed = j.phase === 'failed';
+            const bar = failed ? '#ef4444' : done ? '#22c55e' : 'var(--accent)';
+            return (
+              <div className="api-try-job" key={j.jobId}>
+                <div className="api-try-job-head">
+                  <span className="api-try-job-name">{j.name}</span>
+                  <span className="api-try-job-pct">{failed ? 'Başarısız' : done ? '✓ Hazır' : `%${j.percent}`}</span>
+                </div>
+                <span className="api-try-bar"><span className="api-try-bar-fill" style={{ width: `${Math.min(100, j.percent)}%`, background: bar }} /></span>
+                <div className="api-try-term">
+                  <div className="api-try-term-head"><Terminal size={12} /> Canlı kurulum günlüğü</div>
+                  <div className="api-try-term-body">
+                    {j.log.length === 0 ? <span style={{ opacity: 0.5 }}>Kuruluma başlanıyor…</span> : j.log.map((l, i) => (
+                      <div key={i} style={{ color: lineColor(l.note, l.status) }}><span style={{ opacity: 0.45 }}>{l.step}▸ </span>{l.note ?? l.step}</div>
+                    ))}
+                    {!done && !failed && <div style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: 6 }}><Loader2 size={12} className="spin" /> çalışıyor…</div>}
+                    {failed && j.error && <div style={{ color: '#f87171', marginTop: 4 }}>❌ {j.error}</div>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -182,6 +304,17 @@ export function ApiDocsView() {
               <Download size={16} /> Postman koleksiyonunu indir
             </a>
           </div>
+        </HoloPanel>
+      </Reveal>
+
+      <Reveal>
+        <HoloPanel title="Tek Tık Cihaz Oluştur — Canlı Dene" icon={<Rocket size={16} />}>
+          <p className="api-try-intro">
+            Gerçek <code>POST /public/v1/devices/provision</code> çağrısı. İsim, adet ve proxy ülkesi girin;
+            kurulum <strong>canlı</strong> olarak adım-adım günlük + yüzde ile ilerler (panel modalının API karşılığı).
+            İstek <code>x-api-key</code> ile gider — anahtarınız yalnızca tarayıcıda kalır.
+          </p>
+          <ProvisionTryIt baseUrl={baseUrl} />
         </HoloPanel>
       </Reveal>
 

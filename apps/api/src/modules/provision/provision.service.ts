@@ -514,10 +514,10 @@ class ProvisionService {
   async getStatus(
     jobId: string,
     workspaceId?: string
-  ): Promise<{ jobId: string; deviceId: string; status: string; phase: 'provisioning' | 'ready' | 'failed'; percent: number; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[]; startedAt: string | null }> {
+  ): Promise<{ jobId: string; deviceId: string; status: string; phase: 'provisioning' | 'ready' | 'failed'; percent: number; steps: ProvisionStep[]; lastProgress: ProvisionProgress | null; log: unknown[]; error: string | null; startedAt: string | null }> {
     const job = await prisma.job.findFirst({
       where: { id: jobId, ...(workspaceId ? { workspaceId } : {}) },
-      select: { id: true, status: true, result: true, payload: true }
+      select: { id: true, status: true, result: true, payload: true, error: true }
     });
     if (!job) throw new AppError('Provision job not found', 404, 'JOB_NOT_FOUND');
     const result = (job.result ?? {}) as Record<string, unknown>;
@@ -542,6 +542,10 @@ class ProvisionService {
       steps: PROVISION_STEPS,
       lastProgress: last,
       log,
+      // Surface the failure reason so a polling integrator sees WHY a provision failed
+      // (e.g. "NO_INSTANCE_SLOT: host dolu", a proxy/iptables error) instead of just a
+      // bare phase:'failed'. null while running / on success.
+      error: job.status === 'FAILED' ? (job.error ?? null) : null,
       startedAt: (first?.ts as string) ?? null
     };
   }

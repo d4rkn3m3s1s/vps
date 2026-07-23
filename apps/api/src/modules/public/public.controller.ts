@@ -726,6 +726,46 @@ export async function provisionDeviceHandler(req: Request, res: Response): Promi
   res.status(201).json({ data: { deviceId: result.deviceId, jobId: result.jobId, instance: result.instance, status: 'PROVISIONING' } });
 }
 
+// POST /public/v1/devices/provision/batch — build MANY brand-new devices in one call
+// (1–20). Same one-click pipeline as the single provision, but with a count + optional
+// name prefix. Each device gets a fresh unique name (prefix-xxxx). Fault-tolerant: if the
+// host fills up mid-batch, the ones that started still come back in `started[]` and the
+// failures in `failed[]` — you never lose the whole run to one error. Each started device
+// carries its own {deviceId, jobId}; poll each jobId's status to watch it come online.
+const provisionBatchSchema = z.object({
+  count: z.coerce.number().int().min(1).max(20),
+  // Optional name prefix — "watest" → watest-a3f, watest-9k2, … (unique per device).
+  namePrefix: z.string().min(1).max(40).optional(),
+  // Country-matched residential proxy (ISO-2). WhatsApp needs number-country == exit-IP
+  // country, so set this to the country you'll register numbers from (e.g. "tr", "al").
+  proxyCountry: z.string().length(2).optional(),
+  deviceModel: z.string().max(60).optional(),
+  androidVersion: z.string().max(10).optional()
+});
+export async function provisionBatchHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = provisionBatchSchema.parse(req.body ?? {});
+  const result = await provisionService.createBatch(
+    {
+      count: input.count,
+      ...(input.namePrefix ? { namePrefix: input.namePrefix } : {}),
+      ...(input.proxyCountry ? { proxyCountry: input.proxyCountry } : {}),
+      ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),
+      ...(input.androidVersion ? { androidVersion: input.androidVersion } : {})
+    },
+    workspaceId
+  );
+  res.status(201).json({
+    data: {
+      total: result.total,
+      started: result.started, // [{ jobId, deviceId, instance, name }]
+      failed: result.failed,    // [{ index, error }]
+      status: 'PROVISIONING'
+    }
+  });
+}
+
 // GET /public/v1/devices/provision/:jobId/status — live step-by-step provision
 // progress (current step, percent, full step log), EXACTLY what the dashboard
 // modal shows. Poll this to watch a one-click device build boot → root → identity

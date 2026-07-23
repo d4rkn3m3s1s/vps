@@ -8579,3 +8579,29 @@ a.deck-cell:hover { transform: translateY(-2px) scale(1.08); }
   .api-ep-title { display: none; }
   .api-ep-path { max-width: 100%; }
 }
+
+/* ── /api-docs: "Tek Tık Cihaz Oluştur — Canlı Dene" ─────────────────────── */
+.api-try-intro { margin: 0 0 1rem; font-size: 13.5px; line-height: 1.55; color: var(--text-muted); }
+.api-try-intro code { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 1px 5px; font-size: 12px; color: var(--accent); }
+.api-try-key { display: flex; flex-direction: column; gap: 0.3rem; font-size: 12px; color: var(--text-faint); margin-bottom: 0.85rem; }
+.api-try-key input { padding: 0.55rem 0.7rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 13px; font-family: var(--font-mono, monospace); }
+.api-try-form { display: flex; align-items: flex-end; gap: 0.75rem; flex-wrap: wrap; }
+.api-try-form label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 12px; color: var(--text-faint); flex: 1 1 130px; }
+.api-try-form input { padding: 0.55rem 0.7rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 13.5px; }
+.api-try-form input:focus, .api-try-key input:focus { outline: none; border-color: var(--border-accent); }
+.api-try-btn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.2rem; border-radius: var(--radius-md); background: var(--gradient-accent, var(--accent)); color: #fff; font-weight: 600; font-size: 13.5px; border: 1px solid var(--border-accent); cursor: pointer; transition: transform 0.15s, opacity 0.15s; height: 40px; }
+.api-try-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.api-try-btn:disabled { opacity: 0.6; cursor: default; }
+.api-try-err { display: flex; align-items: center; gap: 0.4rem; margin: 0.85rem 0 0; padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f87171; font-size: 13px; }
+
+.api-try-jobs { display: flex; flex-direction: column; gap: 0.85rem; margin-top: 1.1rem; }
+.api-try-job { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-soft); padding: 0.75rem 0.85rem; }
+.api-try-job-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem; }
+.api-try-job-name { font-size: 13.5px; font-weight: 600; color: var(--text); font-family: var(--font-mono, monospace); }
+.api-try-job-pct { font-size: 12.5px; color: var(--text-muted); }
+.api-try-bar { display: block; height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; margin-bottom: 0.7rem; }
+.api-try-bar-fill { display: block; height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.api-try-term { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: #0b1020; }
+.api-try-term-head { display: flex; align-items: center; gap: 0.35rem; padding: 0.35rem 0.65rem; background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 11px; color: #64748b; }
+.api-try-term-body { max-height: 190px; overflow-y: auto; padding: 0.65rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; color: #94a3b8; white-space: pre-wrap; word-break: break-word; }
+

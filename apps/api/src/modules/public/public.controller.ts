@@ -46,8 +46,59 @@ export async function listDevicesHandler(req: Request, res: Response): Promise<v
   const workspaceId = requirePublicWorkspace(req);
   const devices = await deviceService.listDevices(workspaceId);
   res.json({
-    data: devices.map((d) => ({ id: d.id, name: d.name, status: d.status }))
+    // ★2026-07-23: expose the WhatsApp phone number + account health + tags, not just
+    // id/name/status. An integrator picking a send target needs to know WHICH number a
+    // device holds and whether that account is usable (BANNED/LOGGED_OUT can't send) —
+    // before it wastes a send. listDevices already computes these (no extra query).
+    data: devices.map((d) => {
+      const x = d as Record<string, unknown>;
+      return {
+        id: d.id,
+        name: d.name,
+        status: d.status,
+        // The registered WhatsApp number on this device (null if none / not registered).
+        whatsappNumber: (x.activeWhatsappPhone as string | null) ?? null,
+        // null = healthy/no account; otherwise RESTRICTED | BANNED | LOGGED_OUT.
+        whatsappHealth: (x.waAccountHealth as string | null) ?? null,
+        // true only when the device holds a usable WhatsApp account (ACTIVE-ish).
+        whatsappReady: Boolean(x.hasActiveWhatsapp),
+        tags: Array.isArray(x.tags) ? (x.tags as string[]) : []
+      };
+    })
   });
+}
+
+// POST /public/v1/devices/:id/tags — add / remove / replace a device's tags (e.g. "#test"
+// to group and filter the fleet). Three modes: add (default) appends, remove deletes,
+// set replaces the whole list. A leading "#" is stripped and tags are lower-cased (so
+// "#Test", "test", "TEST" are one tag) — the same normalization the dashboard uses.
+// write scope, workspace-scoped (updateDevice 404s a foreign device id).
+const deviceTagsSchema = z.object({
+  tags: z.array(z.string().min(1).max(40)).min(1).max(20),
+  mode: z.enum(['add', 'remove', 'set']).optional()
+});
+// "#Test" → "test"; drops blanks; caps length. Mirrors updateDevice's own normalize.
+function normalizeTag(t: string): string {
+  return t.trim().replace(/^#+/, '').trim().toLowerCase().slice(0, 32);
+}
+export async function deviceTagsHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const deviceId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!deviceId) throw new AppError('deviceId gerekli', 400, 'MISSING_DEVICE_ID');
+  const { tags, mode = 'add' } = deviceTagsSchema.parse(req.body);
+  const incoming = [...new Set(tags.map(normalizeTag).filter(Boolean))];
+  // Load current tags (workspace-scoped read; a foreign id yields none → 404 on update).
+  const current = await deviceService.getDevice(deviceId, workspaceId);
+  if (!current) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+  const existing = Array.isArray((current as Record<string, unknown>).tags) ? ((current as Record<string, unknown>).tags as string[]) : [];
+  let next: string[];
+  if (mode === 'set') next = incoming;
+  else if (mode === 'remove') next = existing.filter((t) => !incoming.includes(t));
+  else next = [...new Set([...existing, ...incoming])]; // add
+  // updateDevice re-normalizes + caps (20 tags), so this stays consistent with the panel.
+  const updated = await deviceService.updateDevice(deviceId, { tags: next }, workspaceId);
+  res.json({ data: { id: updated.id, name: updated.name, tags: updated.tags } });
 }
 
 // POST /public/v1/whatsapp/send — dispatch a WhatsApp send from one device.

@@ -345,7 +345,15 @@ export class AgentService {
         // banned tells us the account's health, not just this message's fate. Reflect
         // it onto the GeneratedAccount (BANNED / RESTRICTED) + fire the health webhook
         // so the profile card shows it. Monotonic + idempotent inside setAccountHealth.
-        if (!ok && (res.status === 'ACCOUNT_BANNED' || res.status === 'ACCOUNT_REVIEW')) {
+        // ACCOUNT_RESTRICTED (VERIFIED LIVE mi9 2026-07-23): the chat opens read-only
+        // with a "Your account is restricted. You can't start new chats" banner — the
+        // account can still reply in existing threads but can't START new chats, and it's
+        // typically the pre-ban state. The agent used to return a misleading
+        // CHAT_NOT_OPENED here, leaving the account ACTIVE while it silently failed; now
+        // it reports ACCOUNT_RESTRICTED and we stamp the health so the profile card shows
+        // ⚠️ KISITLANDI and the alert fires. RESTRICTED rank is below BANNED/LOGGED_OUT so
+        // it can't clobber a harder state (setAccountHealth is monotonic + idempotent).
+        if (!ok && (res.status === 'ACCOUNT_BANNED' || res.status === 'ACCOUNT_REVIEW' || res.status === 'ACCOUNT_RESTRICTED')) {
           void whatsappService
             .setAccountHealth({
               deviceId: pl.deviceId,

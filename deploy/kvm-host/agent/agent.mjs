@@ -3686,6 +3686,19 @@ async function whatsappSend(serial, payload) {
     if (/account.{0,3}(is|being)?.{0,3}(in )?review|hesab\w* incelen|inceleme|no longer restricted/i.test(notice)) {
       return { status: 'ACCOUNT_REVIEW', note: 'Bu WhatsApp hesabı incelemede/kısıtlı — mesaj gönderilemez (genelde 24s sürer)', to, screenTexts: notice.slice(0, 400) };
     }
+    // ★RESTRICTED detection — VERIFIED LIVE (mi9 +905394660382, 2026-07-23): the
+    // Conversation screen DOES open, but instead of the compose box (id/entry) WhatsApp
+    // shows a read-only chat with a bottom banner "Your account is restricted. You can't
+    // start new chats right now." The account can still reply in EXISTING threads (so it
+    // sent fine hours earlier) but cannot START a NEW chat. The old code missed this —
+    // "restricted" matches no ban/review word — so it returned a misleading CHAT_NOT_OPENED
+    // and the account stayed ACTIVE while silently failing. Two signals: the banner text,
+    // OR the read_only_chat_info node (chat open but no compose = restricted/read-only).
+    const readOnlyChat = await h.find('com.whatsapp:id/read_only_chat_info', 'id').catch(() => null)
+      || await h.find('com.whatsapp:id/read_only_chat_info_content', 'id').catch(() => null);
+    if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(notice) || readOnlyChat) {
+      return { status: 'ACCOUNT_RESTRICTED', note: '⚠️ Bu WhatsApp hesabı KISITLI — yeni sohbet başlatamıyor (mevcut sohbetlere yanıt verebilir). Genelde ban öncesi durum.', to, screenTexts: notice.slice(0, 400) };
+    }
     if (/banned|suspended|violat|yasakl|askıya|Terms of Service/i.test(notice)) {
       return { status: 'ACCOUNT_BANNED', note: 'Bu WhatsApp hesabı yasaklı/askıda — mesaj gönderilemez', to, screenTexts: notice.slice(0, 400) };
     }

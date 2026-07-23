@@ -19,6 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir, loadavg, cpus as osCpus } from 'node:os';
 import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
@@ -9887,15 +9888,44 @@ const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 24);
 // batch of 10 doesn't boot all at once, while light jobs (send/read) still run up to
 // MAX_CONCURRENT_JOBS. Staggered boot = fast AND stable. Override via env.
 const MAX_CONCURRENT_PROVISIONS = Number(process.env.FLEET_MAX_CONCURRENT_PROVISIONS || 4);
-// ★2026-07-23 (P-3): LOAD-AWARE boot gate. Booting a Waydroid instance spikes CPU (the
-// code's own measure: 3 concurrent boots → load 49). The old gate was a FIXED count (4)
-// and never looked at actual load, so it would start 4 MORE boots even when the host was
-// already at load 80+ → the load-100 storms seen this session. This threshold (cores*0.7)
-// is checked before entering a boot; if the host is already saturated the provision waits
-// for it to drop, staggering boots to the machine's real headroom. os.loadavg()[0] is the
-// 1-minute load (zero-cost, no child process). Cache cpu count once.
 const _CPU_COUNT = (() => { try { return osCpus().length || 1; } catch { return 1; } })();
-const PROVISION_LOAD_MAX = Number(process.env.FLEET_PROVISION_LOAD_MAX || Math.round(_CPU_COUNT * 0.7));
+// ★2026-07-24: CPU-IDLE-AWARE boot gate (replaces the old load-average gate).
+// WHY: a 5-agent deep analysis proved load-average is a LIE on GPU-less Waydroid — 29
+// instances × ~30 daemons = 34K mostly-SLEEPING threads inflate the runnable/vsync queue,
+// so os.loadavg() sits at ~98 while the CPU is actually 47% IDLE (no I/O wait, no throttle,
+// no swap). The old gate (load1() >= cores*0.7) blocked provisions for up to 10 minutes
+// whenever load looked high — even with half the cores free — which is exactly why the
+// first device-create this session hung at 0%. The RIGHT signal is real CPU utilisation
+// from /proc/stat, not load. We gate on "keep at least PROVISION_IDLE_MIN% of cores free"
+// so a boot only waits when the machine is GENUINELY saturated, not when load is cosmetic.
+const PROVISION_IDLE_MIN = Number(process.env.FLEET_PROVISION_IDLE_MIN || 15); // need >=15% idle to boot
+// Read aggregate CPU busy% from /proc/stat across a short sample. Returns 0..100 (busy).
+// Falls back to load-based estimate if /proc/stat is unreadable (non-Linux/edge).
+let _cpuPrev = null;
+function _readCpuTimes() {
+  try {
+    const line = readFileSync('/proc/stat', 'utf8').split('\n')[0]; // "cpu  u n s idle iowait irq softirq steal ..."
+    const p = line.trim().split(/\s+/).slice(1).map(Number);
+    const idle = (p[3] || 0) + (p[4] || 0); // idle + iowait
+    const total = p.reduce((a, b) => a + (b || 0), 0);
+    return { idle, total };
+  } catch { return null; }
+}
+async function cpuBusyPct() {
+  const a = _readCpuTimes();
+  if (!a) { const l = (loadavg()[0] || 0) / _CPU_COUNT; return Math.min(100, Math.round(l * 100)); }
+  await sleep(250);
+  const b = _readCpuTimes();
+  if (!b || b.total <= a.total) return 0;
+  const idleDelta = b.idle - a.idle;
+  const totalDelta = b.total - a.total;
+  return Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 100)));
+}
+// True when the host has enough real CPU headroom to safely boot another instance.
+async function hasBootHeadroom() {
+  const busy = await cpuBusyPct();
+  return (100 - busy) >= PROVISION_IDLE_MIN;
+}
 function load1() { try { return loadavg()[0] || 0; } catch { return 0; } }
 let activeJobCount = 0;
 let activeProvisionCount = 0;
@@ -10030,10 +10060,16 @@ async function runJobTask(job, waitForDevice) {
   // wedged provision can't strand the rest; light jobs never enter this gate.
   if (isProvision) {
     // ★2026-07-23 (P-3): wait for BOTH a provision slot AND acceptable host load. Booting
-    // when already saturated (load ≥ cores*0.7) just deepens a load-100 storm; hold until
-    // the machine has headroom. Bounded ~10min so a stuck host can't strand a provision
-    // forever (it proceeds after the cap even under load rather than failing outright).
-    for (let i = 0; i < 1200 && (activeProvisionCount >= MAX_CONCURRENT_PROVISIONS || load1() >= PROVISION_LOAD_MAX); i++) await sleep(500);
+    // when the CPU is GENUINELY saturated (< PROVISION_IDLE_MIN% real idle) just deepens
+    // the storm; hold until there's headroom. Gates on REAL CPU idle from /proc/stat, NOT
+    // load-average (which lies on Waydroid — 34K sleeping threads inflate it to ~98 while
+    // the CPU is 47% idle; the old load-gate blocked boots even with half the cores free).
+    // Bounded ~10min so a stuck host can't strand a provision forever (proceeds after the
+    // cap rather than failing outright). The idle check samples /proc/stat over ~250ms;
+    // the loop cadence is that sample, so we re-measure roughly every ~250ms while waiting.
+    for (let i = 0; i < 2400 && (activeProvisionCount >= MAX_CONCURRENT_PROVISIONS || !(await hasBootHeadroom())); i++) {
+      if (activeProvisionCount >= MAX_CONCURRENT_PROVISIONS) await sleep(500); // slot-bound: cheap wait
+    }
     activeProvisionCount++;
   }
   if (serial) busyDevices.add(serial);

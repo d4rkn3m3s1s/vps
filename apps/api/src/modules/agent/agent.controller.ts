@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { agentService } from './agent.service';
 import { aiService } from '../ai/ai.service';
+import { abandonHostClaimedJobs } from '../jobs/jobs.service';
 
 const completeSchema = z.object({
   status: z.enum(['COMPLETED', 'FAILED']),
@@ -117,6 +118,15 @@ export async function claimJobsBatchHandler(req: Request, res: Response): Promis
   const max = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 8;
   const jobs = await agentService.claimBatch(host, max);
   res.json({ data: jobs });
+}
+
+// ★2026-07-23 (S-1): agent calls this on STARTUP to release the jobs it had claimed
+// before it restarted — retryable ones go back to PENDING, stateful ones FAIL. Frees the
+// device immediately instead of waiting 4-15min for the reaper. Host-scoped.
+export async function abandonClaimedHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const result = await abandonHostClaimedJobs(host.id);
+  res.json({ data: result });
 }
 
 export async function completeJobHandler(req: Request, res: Response): Promise<void> {

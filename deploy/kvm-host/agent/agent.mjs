@@ -89,9 +89,17 @@ const log = (...a) => console.log(`[agent ${new Date().toISOString()}]`, ...a);
 
 // --- ADB helpers ------------------------------------------------------------
 
-async function adb(serial, args) {
+// ★2026-07-23 (C-1): HARD TIMEOUT + SIGKILL. The old adb() had NO timeout — the comment
+// claiming "adb calls have their own short timeouts" was WRONG. On Waydroid, an adb shell
+// (input/tap/dumpsys) can HANG indefinitely when adbd/uiautomator wedges; without a
+// timeout the child never settles, and while withJobTimeout rejects the awaiting job at
+// the wall-clock cap, the underlying ADB child stayed alive and a NEXT job on the SAME
+// device then drove parallel ADB into a half-finished flow (fake-SENT / wrong-screen tap).
+// A generous 30s cap kills any wedge; normal commands finish in well under a second.
+const ADB_DEFAULT_TIMEOUT = Number(process.env.FLEET_ADB_TIMEOUT_MS || 30000);
+async function adb(serial, args, ms = ADB_DEFAULT_TIMEOUT) {
   const full = serial ? ['-s', serial, ...args] : args;
-  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024 });
+  const { stdout } = await execFileAsync(ADB, full, { maxBuffer: 64 * 1024 * 1024, timeout: ms, killSignal: 'SIGKILL' });
   return stdout;
 }
 
@@ -8387,16 +8395,24 @@ function signRequest(method, path, bodyString) {
 // fetch() wrapper that attaches the auth headers PLUS the HMAC signature headers.
 // The signed `path` and `bodyString` must exactly match what the server sees
 // (req.originalUrl and the raw JSON body), so callers pass the same path/body.
-async function signedFetch(path, init) {
+// ★2026-07-23 (S-3): AbortSignal timeout on EVERY request. Node's fetch has no default
+// timeout — if the control plane hangs (network blip, API wedged), a bare fetch never
+// settles. The dispatch-loop watchdog only catches this after WATCHDOG_STALL_MS (5min),
+// during which the whole host's devices sit idle. A 35s per-request cap (above the API's
+// long-poll hold for /jobs/next-batch) makes a stuck request reject in seconds so the
+// loop turns. Callers may pass a smaller timeout for short calls (complete/heartbeat).
+const API_DEFAULT_TIMEOUT = Number(process.env.FLEET_API_TIMEOUT_MS || 35000);
+async function signedFetch(path, init, timeoutMs = API_DEFAULT_TIMEOUT) {
   const method = (init && init.method) || 'GET';
   const bodyString = (init && typeof init.body === 'string') ? init.body : '';
   const { ts, sign } = signRequest(method, path, bodyString);
   const mergedHeaders = { ...headers, ...(init && init.headers ? init.headers : {}), 'x-agent-ts': ts, 'x-agent-sign': sign };
-  return fetch(`${API_URL}${path}`, { ...init, headers: mergedHeaders });
+  const signal = AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
+  return fetch(`${API_URL}${path}`, { ...init, headers: mergedHeaders, ...(signal ? { signal } : {}) });
 }
 
-async function api(path, init) {
-  const res = await signedFetch(path, init);
+async function api(path, init, opts) {
+  const res = await signedFetch(path, init, opts && opts.timeoutMs);
   const text = await res.text();
   let body;
   try {
@@ -8406,6 +8422,27 @@ async function api(path, init) {
   }
   if (!res.ok) throw new Error(`${path} -> ${res.status} ${text}`);
   return body;
+}
+
+// ★2026-07-23 (S-2): api() with bounded retry for transient failures (network / 5xx /
+// abort). A COMPLETED job's result must NOT be lost to a single API blip — otherwise the
+// job stays RUNNING and the reaper later marks a genuinely-successful send FAILED. Retries
+// only on transient errors (not 4xx, which are deterministic). Short backoff; caller sets
+// tries. Used for reportComplete / progress where losing the write is expensive.
+async function apiRetry(path, init, tries = 3, opts) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await api(path, init, opts);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err && err.message);
+      // 4xx = deterministic client error → don't retry (would just fail again).
+      if (/->\s*4\d\d\b/.test(msg)) throw err;
+      if (i < tries - 1) await sleep(800 * (i + 1)); // 0.8s, 1.6s backoff
+    }
+  }
+  throw lastErr;
 }
 
 async function claimNext() {
@@ -8439,7 +8476,10 @@ async function claimBatch(max) {
 }
 
 async function reportComplete(jobId, status, payload) {
-  await api(`/agent/jobs/${jobId}/complete`, { method: 'POST', body: JSON.stringify({ status, ...payload }) });
+  // ★2026-07-23 (S-2): retry — a finished job's result is expensive to lose. A single
+  // API/DB blip here would leave the job RUNNING until the reaper FAILs it (up to 15min),
+  // turning a successful send into a "failed" bubble. Short timeout (10s) + 3 tries.
+  await apiRetry(`/agent/jobs/${jobId}/complete`, { method: 'POST', body: JSON.stringify({ status, ...payload }) }, 3, { timeoutMs: 10000 });
 }
 
 // The ADB serials currently reporting "device" (reachable — not offline/
@@ -9902,6 +9942,19 @@ watchdog.unref?.();
 async function loop() {
   log(`starting — polling ${API_URL} every ${POLL_MS}ms (max ${MAX_CONCURRENT_JOBS} concurrent)`);
   await heartbeat();
+  // ★2026-07-23 (S-1): ORPHAN RECOVERY on startup. If we crashed/were restarted mid-run,
+  // the jobs we had claimed sit RUNNING in the DB with no worker. Tell the API to release
+  // them NOW (retryable → re-queued, stateful → failed) so devices free immediately instead
+  // of waiting 4-15min for the reaper. Best-effort: a failure here just falls back to the
+  // reaper. Falls back silently on an older API (404).
+  try {
+    // No body — the API's signature check treats an empty {} body as '' (see
+    // agent.signature.ts hasBody), so we must sign '' too: send NO body at all.
+    const { data } = await api('/agent/jobs/abandon-claimed', { method: 'POST' }, { timeoutMs: 10000 });
+    if (data && (data.requeued || data.failed)) log(`orphan-recovery: ${data.requeued} re-queued, ${data.failed} failed`);
+  } catch (err) {
+    if (!/->\s*404\b/.test(String(err && err.message))) log('orphan-recovery skipped:', err.message);
+  }
   const hb = setInterval(heartbeat, HEARTBEAT_MS);
   // WhatsApp inbound-message poll (notification-based). Best-effort; failures
   // are logged and never block the job loop. Gated on jobBusy so it never contends
@@ -9986,7 +10039,11 @@ async function loop() {
   }
 
   // Graceful drain: let in-flight jobs finish (bounded wait) before tearing down.
-  for (let i = 0; i < 60 && activeJobCount > 0; i++) await sleep(500);
+  // ★2026-07-23: cap at 8s (was 30s). systemd TimeoutStopSec=15 SIGKILLs us if we drain
+  // longer — a 30s drain made every restart hang ~90s and sometimes left the unit
+  // 'failed' (VERIFIED this session). 8s lets a quick job finish; anything still RUNNING
+  // is re-queued by the API's stale-job reaper, so nothing is lost.
+  for (let i = 0; i < 16 && activeJobCount > 0; i++) await sleep(500);
 
   clearInterval(hb);
   if (waInbox) clearInterval(waInbox);

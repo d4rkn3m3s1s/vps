@@ -1,0 +1,25 @@
+# /etc/systemd/system/waydroid@.service
+# ★2026-07-23 (R-1): Waydroid instance TEMPLATE unit — reboot-persist for ALL cloud
+# phones. Before this, instances were launched as detached `sleep infinity` processes
+# (NOT systemd), so a host reboot left every device down + no service to bring it back →
+# devices never returned and (once booted manually) fell to the datacenter IP because
+# iptables/proxy weren't reapplied → WhatsApp ban risk. `systemctl enable waydroid@<inst>`
+# makes each instance come up on boot; wd-proxy-restore.service (ordered after) reapplies
+# the country-matched proxy. Modeled on the existing per-instance waydroid-mi5.service.
+[Unit]
+Description=Waydroid instance "%i" (fleet cloud phone)
+After=network.target dbus.service waydroid-container.service
+Wants=dbus.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UMask=0022
+ExecStart=/bin/bash /opt/fleet-agent/waydroid/wd-run.sh %i
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

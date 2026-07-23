@@ -246,6 +246,50 @@ const RUNNING_STALE_SHORT_MS = 4 * 60 * 1000; // send/media: tight cap
 const MAX_SEND_RETRY = 2;
 const SHORT_RUNNING_TYPES: ReadonlySet<JobType> = new Set<JobType>(['WHATSAPP_SEND', 'WHATSAPP_SEND_MEDIA']);
 
+// Job types whose on-device flow is STATEFUL — a half-run cannot be safely replayed
+// (an OTP state machine mid-registration, a provision mid-boot). On agent restart these
+// must be FAILED, not re-queued. Everything else (send/read/root-DB) is idempotent enough
+// to re-dispatch cleanly.
+const STATEFUL_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'REGISTER_WHATSAPP', 'REGISTER_INSTAGRAM', 'TELEGRAM_REGISTER', 'PROVISION_DEVICE'
+]);
+
+// ★2026-07-23 (S-1): agent-restart ORPHAN RECOVERY. When the host agent restarts (crash,
+// watchdog exit, deploy), any job it had claimed sits RUNNING in the DB with no worker —
+// and the reaper only frees it after 4-15min, during which the device shows "busy" and the
+// panel spins. The agent calls this on startup to release its own orphans IMMEDIATELY:
+// retryable jobs go back to PENDING (re-claimable), stateful jobs are FAILED (can't replay).
+// Returns { requeued, failed } counts. Scoped to THIS host's claims only.
+export async function abandonHostClaimedJobs(hostId: string): Promise<{ requeued: number; failed: number }> {
+  const orphans = await prisma.job.findMany({
+    where: { status: 'RUNNING', claimedByHostId: hostId },
+    select: { id: true, type: true },
+    take: 1000
+  });
+  if (orphans.length === 0) return { requeued: 0, failed: 0 };
+  const statefulIds = orphans.filter((j) => STATEFUL_JOB_TYPES.has(j.type)).map((j) => j.id);
+  const retryableIds = orphans.filter((j) => !STATEFUL_JOB_TYPES.has(j.type)).map((j) => j.id);
+  let requeued = 0;
+  let failed = 0;
+  if (retryableIds.length) {
+    // Back to PENDING + clear the dead claim so it can be re-dispatched cleanly.
+    const r = await prisma.job.updateMany({
+      where: { id: { in: retryableIds }, status: 'RUNNING', claimedByHostId: hostId },
+      data: { status: 'PENDING', claimedByHostId: null, claimedAt: null, startedAt: null }
+    });
+    requeued = r.count;
+  }
+  if (statefulIds.length) {
+    const f = await prisma.job.updateMany({
+      where: { id: { in: statefulIds }, status: 'RUNNING', claimedByHostId: hostId },
+      data: { status: 'FAILED', error: 'Agent yeniden başladı — yarım kalan işlem tekrar oynatılamaz (abandoned)', finishedAt: new Date(), claimedByHostId: null }
+    });
+    failed = f.count;
+  }
+  logger.info('agent orphan-recovery: released claimed RUNNING jobs', { hostId, requeued, failed });
+  return { requeued, failed };
+}
+
 export async function reapStaleJobs(): Promise<number> {
   const now = Date.now();
   const pendingCutoff = new Date(now - PENDING_STALE_MS);

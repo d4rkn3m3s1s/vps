@@ -83,6 +83,10 @@ while IFS='|' read -r inst meta_cc phone; do
   # NOTE: `</dev/null` on every adb shell — otherwise adb consumes the while-loop's
   # stdin (the ROWS heredoc) and the loop stops after the first device (classic bash
   # trap; this is exactly why the first run only processed mi15).
+  # ★ADB-CONNECT (2026-07-23): önce bir kez connect dene — bir instance boot etse bile
+  # ADB otomatik bağlanmaz (KANITLANDI: recovery sonrası cihazlar 'device' değil ta ki
+  # 'adb connect' yapılana dek). Bu, boot-eden cihazın gereksiz zombie-restart'ını önler.
+  "$ADB" connect "$addr" >/dev/null 2>&1 || true
   if ! timeout 12 "$ADB" -s "$addr" shell 'echo ok' </dev/null 2>/dev/null | grep -q ok; then
     "$ADB" disconnect "$addr" >/dev/null 2>&1 || true
     "$ADB" connect "$addr" >/dev/null 2>&1 || true
@@ -100,6 +104,21 @@ while IFS='|' read -r inst meta_cc phone; do
       # Şart: host-wrapper AYAKTA (wd-run.sh $inst süreci var) → gerçekten bu instance,
       # yeni provision değil. wd-run zombie'yi temizleyip Android'i sıfırdan boot eder.
       if pgrep -f "wd-run.sh $inst" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst\|lxc-start.*waydroid.$inst" >/dev/null 2>&1; then
+        # ★BOOT-GRACE (2026-07-23): bir instance BOOT ederken (henüz ~90s dolmamış) ADB'den
+        # erişilemez — bu ZOMBIE DEĞİL, sadece boot bitmemiş. Onu zombie sanıp yeniden
+        # başlatmak, boot eden instance'ın ÜSTÜNE İKİNCİ bir wd-run başlatır → DUPLICATE
+        # wd-run → aynı binder/DBus runtime'ında çakışma → İKİSİ DE bozulur (KANITLANDI:
+        # 33 wd-run + 14 cihaz düştü). Bu yüzden: wd-run.sh $inst süreci son BOOT_GRACE_S
+        # saniye içinde başlamışsa BEKLE, dokunma. mtime ile yaşını ölç (process start).
+        BOOT_GRACE_S="${WD_BOOT_GRACE_S:-150}"
+        wr_pid=$(pgrep -f "wd-run.sh $inst\$" 2>/dev/null | head -1)
+        if [ -n "$wr_pid" ]; then
+          wr_age=$(($(date +%s) - $(stat -c %Y "/proc/$wr_pid" 2>/dev/null || echo 0)))
+          if [ "$wr_age" -lt "$BOOT_GRACE_S" ]; then
+            log "⏳ $inst: boot sürüyor (wd-run ${wr_age}s < ${BOOT_GRACE_S}s) → zombie-restart ATLANDI, bekleniyor"
+            continue
+          fi
+        fi
         log "🧟 $inst: ADB reconnect başarısız + host-süreç ayakta = ZOMBIE → runtime temizlenip yeniden başlatılıyor"
         # ★TAM RUNTIME TEMİZLİĞİ ŞART, sonra wd-run. Sadece wd-run.sh çağırmak YETMEZ:
         # bir zombie'de asılı bir lxc-start ve BOZUK DBus soketi kalır; wd-run yeni boot'u
@@ -107,6 +126,9 @@ while IFS='|' read -r inst meta_cc phone; do
         # ("Terminating session because the container was stopped" + DBus Disconnected).
         # KANITLANDI (mi7): asılı lxc-start + /run/xdg-mi7 DBus kalıntısı boot'u engelledi;
         # bunları silince temiz boot etti. Öldür → runtime sil → taze wd-run.
+        # ★DUPLICATE-GUARD (2026-07-23): ESKİ wd-run.sh $inst wrapper'ını da öldür — yoksa
+        # eski + yeni wd-run aynı anda çalışıp çakışır (bu oturumun ana bug'ı).
+        pkill -9 -f "wd-run.sh $inst\$" 2>/dev/null || true
         pkill -9 -f "wayland-$inst" 2>/dev/null || true
         pkill -9 -f "xdg-$inst" 2>/dev/null || true
         pkill -9 -f "waydroid.*--instance $inst" 2>/dev/null || true
@@ -132,7 +154,36 @@ while IFS='|' read -r inst meta_cc phone; do
   # 2) Gerçek çıkış-IP'yi Android İÇİNDEN al (app-UID → redsocks; root curl proxy'yi baypaslar).
   exit_ip="$(timeout 20 "$ADB" -s "$addr" shell 'curl -s --max-time 15 https://api.ipify.org' </dev/null 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
   if [ -z "$exit_ip" ]; then
-    log "? $inst: çıkış-IP alınamadı (geçici olabilir)"; continue
+    # ★DEAD-REDSOCKS (2026-07-23): çıkış-IP hiç gelmiyor olabilir çünkü instance'ın
+    # redsocks'u ÖLÜ (recovery/reboot sonrası config+process kaybolur; iptables trafiği
+    # o instance'ın portuna yönlendirir ama dinleyen yoktur → tüm HTTP kara deliğe gider,
+    # ping çalışır ama curl boş). KANITLANDI (mi9): redsocks-inst-5 yok, port 12505
+    # dinlemiyordu. TESPİT: instance'ın redsocks portu (12500+subnetId) dinlemiyorsa +
+    # cihaz ağ olarak canlıysa (ping) → proxy ÖLÜ, yeniden uygula. Aksi halde geçici say.
+    sn=$(grep -w "$inst" /var/lib/waydroid-subnets.map 2>/dev/null | awk '{print $2}')
+    rport=$((12500 + ${sn:-0}))
+    net_alive="$(timeout 12 "$ADB" -s "$addr" shell 'ping -c1 -W2 8.8.8.8 >/dev/null 2>&1 && echo up' </dev/null 2>/dev/null | grep -c up)"
+    if [ -n "$sn" ] && ! ss -tlnH "sport = :$rport" 2>/dev/null | grep -q ":$rport" && [ "${net_alive:-0}" != "0" ]; then
+      log "⚠ $inst: REDSOCKS ÖLÜ (port $rport dinlemiyor, ağ canlı) → proxy yeniden uygulanıyor (cc=${cc:-?})"
+      if [ -n "$cc" ]; then
+        if is_mobile_cc "$cc"; then U="$U_MOB"; P="$P_MOB"; PORT="$PORT_MOB"; else U="$U_RES"; P="$P_RES"; PORT="$PORT_RES"; fi
+        r=$(bash "$WP" "$inst" "$cc" "$U" "$P" "$H" "$PORT" 2>&1 | grep -oE 'PROXY_RESULT.*redsocks=[0-9]+|PROXY_FAIL.*' | head -1)
+        if echo "$r" | grep -q PROXY_RESULT; then
+          log "  ✓ $inst: ölü redsocks yeniden başlatıldı ($cc)"
+          notify PROXY_DEAD "$inst" "Redsocks olmustu (port $rport), $cc proxy yeniden uygulandi" true
+          LEAK=$((LEAK+1))
+        else
+          log "  ✗ $inst: redsocks yeniden başlatılamadı: ${r:-no-result}"
+          notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), yeniden baslatilamadi" false
+        fi
+      else
+        log "  ✗ $inst: ülke bilinmiyor, ölü redsocks düzeltilemiyor"
+        notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), ulke bilinmedigi icin duzeltilemedi" false
+      fi
+    else
+      log "? $inst: çıkış-IP alınamadı (geçici olabilir)"
+    fi
+    continue
   fi
 
   # 3) DATACENTER sızıntısı mı? (cihaz host'un IP'sinden çıkıyorsa proxy düşmüş = ban riski)

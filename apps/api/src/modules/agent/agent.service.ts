@@ -353,7 +353,8 @@ export class AgentService {
         // it reports ACCOUNT_RESTRICTED and we stamp the health so the profile card shows
         // ⚠️ KISITLANDI and the alert fires. RESTRICTED rank is below BANNED/LOGGED_OUT so
         // it can't clobber a harder state (setAccountHealth is monotonic + idempotent).
-        if (!ok && (res.status === 'ACCOUNT_BANNED' || res.status === 'ACCOUNT_REVIEW' || res.status === 'ACCOUNT_RESTRICTED')) {
+        const HEALTH_STATUSES = new Set(['ACCOUNT_BANNED', 'ACCOUNT_REVIEW', 'ACCOUNT_RESTRICTED']);
+        if (!ok && HEALTH_STATUSES.has(String(res.status))) {
           void whatsappService
             .setAccountHealth({
               deviceId: pl.deviceId,
@@ -361,6 +362,30 @@ export class AgentService {
               health: res.status === 'ACCOUNT_BANNED' ? 'BANNED' : 'RESTRICTED',
               ...(res.note ? { note: String(res.note) } : {})
             })
+            .catch(() => undefined);
+        } else if (!ok && !pl.broadcastId) {
+          // ★2026-07-23: a send that failed for a TECHNICAL/non-health reason
+          // (CHAT_NOT_OPENED, COMPOSE_FAILED, INVALID_RECIPIENT, a timeout, …) used to
+          // vanish into a silent WHATSAPP_FAILED webhook — the operator got NO panel or
+          // Telegram notice, so a device stuck failing every send (VERIFIED: mi68/watest47
+          // returned CHAT_NOT_OPENED across THREE days, unseen) looked healthy. Health
+          // reasons already notify via setAccountHealth's alert engine above; here we
+          // surface the technical failures too, so nothing fails quietly. The JOB_FAILED
+          // alert only fires for status=FAILED jobs — a COMPLETED job whose result is
+          // CHAT_NOT_OPENED never triggered it, which is exactly how this hid.
+          // SKIP broadcast members (pl.broadcastId): a 100-recipient broadcast with 30
+          // failures would fire 30 notifications = spam. The broadcast tracks its own
+          // sent/fail counters + reconciles at the end, so per-recipient noise is wrong
+          // there. Only per-device (non-broadcast) sends notify individually.
+          const failTitle = res.status === 'INVALID_RECIPIENT'
+            ? `📵 WhatsApp: numara ulaşılamadı — ${outPeer}`
+            : `⚠️ WhatsApp mesajı gönderilemedi — ${pl.deviceId}`;
+          const failDetail = `${res.note ? String(res.note) : String(res.status || 'SEND_FAILED')} (hedef ${outPeer}, cihaz ${pl.deviceId}). Kod: ${res.status || outcome.error || 'SEND_FAILED'}`;
+          void notificationsService
+            .dispatch(updated.workspaceId ?? '', { title: failTitle, detail: failDetail.slice(0, 900) })
+            .catch(() => undefined);
+          void alertsService
+            .evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', { title: failTitle, detail: failDetail.slice(0, 900) })
             .catch(() => undefined);
         }
         // Update the parent broadcast's counters if this send belonged to one. These

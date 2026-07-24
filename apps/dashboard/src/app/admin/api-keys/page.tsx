@@ -69,7 +69,7 @@ export default function ApiKeysPage() {
   type EndpointKey =
     | 'devices' | 'conversations' | 'thread' | 'send' | 'messages'
     | 'labels' | 'createLabel' | 'setLabels' | 'state' | 'broadcast' | 'stats'
-    | 'profile' | 'block' | 'blocklist'
+    | 'profile' | 'profileName' | 'profileAvatar' | 'block' | 'blocklist'
     | 'sendMedia' | 'deleteMessage' | 'clearChat' | 'myNumber'
     | 'provision' | 'register' | 'registerOtp' | 'registerStatus';
   const [testKey, setTestKey] = useState('');
@@ -82,6 +82,8 @@ export default function ApiKeysPage() {
   const [testLabelIds, setTestLabelIds] = useState('');
   const [testFilter, setTestFilter] = useState('all');
   const [testPhone, setTestPhone] = useState('');
+  const [testProfileName, setTestProfileName] = useState('');
+  const [testAvatarB64, setTestAvatarB64] = useState('');
   const [testAccountId, setTestAccountId] = useState('');
   const [testOtp, setTestOtp] = useState('');
   const [testCountry, setTestCountry] = useState('');
@@ -103,6 +105,8 @@ export default function ApiKeysPage() {
     state:         { label: 'POST /whatsapp/conversations/state — favori/sabit (write)', needs: ['deviceId', 'peer'] },
     broadcast:     { label: 'POST /whatsapp/broadcast — toplu mesaj (write)', needs: ['deviceId', 'labelIds', 'message'] },
     profile:       { label: 'POST /whatsapp/profile — profil (avatar+ad) çek (write)', needs: ['deviceId', 'to'] },
+    profileName:   { label: 'POST /whatsapp/profile/name — KENDİ profil ismini değiştir (write)', needs: ['deviceId', 'profileName'] },
+    profileAvatar: { label: 'POST /whatsapp/profile/avatar — KENDİ profil resmini değiştir (write)', needs: ['deviceId', 'avatarB64'] },
     block:         { label: 'POST /whatsapp/block — kişi engelle/kaldır (write)', needs: ['deviceId', 'to'] },
     blocklist:     { label: 'POST /whatsapp/blocklist — engellenenler listesi (write)', needs: ['deviceId'] },
     sendMedia:     { label: 'POST /whatsapp/send-media — medya (foto/belge) gönder (write)', needs: ['deviceId', 'to', 'message'] },
@@ -139,6 +143,8 @@ export default function ApiKeysPage() {
       case 'state':         return { method: 'POST', path: '/public/v1/whatsapp/conversations/state', body: { deviceId: dev, peer, pinned: true, favorite: true } };
       case 'broadcast':     return { method: 'POST', path: '/public/v1/whatsapp/broadcast', body: { deviceId: dev, ...(ids[0] ? { labelId: ids[0] } : {}), message: testMessage } };
       case 'profile':       return { method: 'POST', path: '/public/v1/whatsapp/profile', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, '') } };
+      case 'profileName':   return { method: 'POST', path: '/public/v1/whatsapp/profile/name', body: { deviceId: dev, name: testProfileName.trim() } };
+      case 'profileAvatar': return { method: 'POST', path: '/public/v1/whatsapp/profile/avatar', body: { deviceId: dev, imageB64: testAvatarB64.trim() } };
       case 'block':         return { method: 'POST', path: '/public/v1/whatsapp/block', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), block: true } };
       case 'blocklist':     return { method: 'POST', path: '/public/v1/whatsapp/blocklist', body: { deviceId: dev } };
       case 'sendMedia':     return { method: 'POST', path: '/public/v1/whatsapp/send-media', body: { deviceId: dev, to: testTo.replace(/[^\d]/g, ''), mediaUrl: 'https://picsum.photos/600', caption: testMessage } };
@@ -912,6 +918,20 @@ export default function ApiKeysPage() {
               <label className="field">
                 <span>Alıcı numara (ülke kodu ile)</span>
                 <input className="field-input" placeholder="905551112233" value={testTo} onChange={(e) => setTestTo(e.target.value)} inputMode="tel" />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('profileName') ? (
+              <label className="field">
+                <span>Yeni profil ismi (maks 25 karakter)</span>
+                <input className="field-input" placeholder="Zara Destek" maxLength={25} value={testProfileName} onChange={(e) => setTestProfileName(e.target.value)} />
+              </label>
+            ) : null}
+
+            {activeNeeds.includes('avatarB64') ? (
+              <label className="field">
+                <span>Profil resmi (base64 PNG/JPEG — data-URI ön eki de kabul)</span>
+                <textarea className="field-input mono" rows={3} placeholder="iVBORw0KGgo..." value={testAvatarB64} onChange={(e) => setTestAvatarB64(e.target.value)} style={{ resize: 'vertical', fontSize: '.7rem' }} />
               </label>
             ) : null}
 

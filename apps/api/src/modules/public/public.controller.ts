@@ -220,6 +220,27 @@ export async function myNumberHandler(req: Request, res: Response): Promise<void
   res.json({ data: { jobId: job.id, status: job.status } });
 }
 
+// POST /public/v1/whatsapp/profile/name — change the device's OWN profile display name.
+const setNameSchema = z.object({ deviceId: z.string().min(1), name: z.string().min(1).max(25) });
+export async function setNameHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = setNameSchema.parse(req.body);
+  const { job } = await batchService.setProfileName(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
+// POST /public/v1/whatsapp/profile/avatar — change the device's OWN profile picture.
+// `imageB64` is a base64 PNG/JPEG (data-URI prefix tolerated).
+const setAvatarSchema = z.object({ deviceId: z.string().min(1), imageB64: z.string().min(1) });
+export async function setAvatarHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  requireScope(req, 'write');
+  const input = setAvatarSchema.parse(req.body);
+  const { job } = await batchService.setAvatar(workspaceId, input);
+  res.json({ data: { jobId: job.id, status: job.status } });
+}
+
 // POST /public/v1/whatsapp/send-media — send an image/document to a peer.
 const sendMediaSchema = z.object({
   deviceId: z.string().min(1),

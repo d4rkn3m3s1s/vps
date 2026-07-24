@@ -55,6 +55,8 @@ const GROUPS: Group[] = [
     title: 'WhatsApp — Kişi işlemleri',
     endpoints: [
       { method: 'POST', path: '/public/v1/whatsapp/profile', title: 'Profil getir', desc: 'Kişinin avatar + ismini çeker. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800"\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/profile/name', title: 'Kendi profil ismini değiştir', desc: 'Cihazın KENDİ WhatsApp profil ismini (görünen ad) değiştirir. Maks 25 karakter. jobId döner — sonucu Görev geçmişinden izleyin.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "name": "Zara Destek"\n}' },
+      { method: 'POST', path: '/public/v1/whatsapp/profile/avatar', title: 'Kendi profil resmini değiştir', desc: 'Cihazın KENDİ WhatsApp profil resmini değiştirir. imageB64 = base64 PNG/JPEG (data-URI ön eki de kabul edilir, maks ~8MB). Kare resim önerilir. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID",\n  "imageB64": "iVBORw0KGgo..."\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/block', title: 'Engelle / engel kaldır', desc: 'Kişiyi engeller/engeli kaldırır (block, varsayılan true).', body: '{\n  "deviceId": "CIHAZ_ID",\n  "to": "905400403800",\n  "block": true\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/blocklist', title: 'Engellenenler listesi', desc: 'Cihazın engellenen kişiler listesi. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID"\n}' },
       { method: 'POST', path: '/public/v1/whatsapp/mynumber', title: 'Kendi numaram', desc: 'Cihazdaki hesabın kendi numarasını okur. jobId döner.', body: '{\n  "deviceId": "CIHAZ_ID"\n}' },

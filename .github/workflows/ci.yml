@@ -15,4 +15,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
+      # Generate the Prisma client so api type-check resolves @prisma/client types.
+      - run: npx prisma generate --schema apps/api/prisma/schema.prisma
+      # Explicit type-checks (build alone can mask a workspace; be unambiguous).
+      - run: npx tsc --noEmit -p apps/api/tsconfig.json
+      - run: cd apps/dashboard && npx tsc --noEmit
+      # ★2026-07-24: parse-check the zero-dep host agent. It's a 10k-line single .mjs that
+      # tsc never sees; a syntax/scope error here has taken down the whole WA pipeline before
+      # (runtime-only, invisible to the type-checker). node --check catches parse errors.
+      - run: node --check deploy/kvm-host/agent/agent.mjs
+      # ★2026-07-24: security-boundary unit tests (crypto round-trip + workspace isolation).
+      - run: cd apps/api && npm test
       - run: npm run build

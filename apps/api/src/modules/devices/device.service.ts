@@ -329,9 +329,20 @@ export class DeviceService {
         workspaceId
       ).catch(() => undefined); // never block the delete on job-dispatch failure
     }
-    // Workspace-scoped, atomic delete: a device outside the caller's workspace is
-    // never matched (no cross-tenant delete, no TOCTOU window).
-    const { count } = await prisma.device.deleteMany({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+    // ★2026-07-24: Job.deviceId and GeneratedAccount.deviceId are plain String columns
+    // (no @relation → no FK cascade), so deleting a device would leave them DANGLING —
+    // pointing at a row that no longer exists (VERIFIED: 146 Job + 7 GA orphans). We keep
+    // the history rows (register logs are valuable) but NULL the broken reference so a later
+    // join/analytics can't silently mis-match. Done in a transaction with the delete so a
+    // crash can't leave a half-cleared state.
+    const { count } = await prisma.$transaction(async (tx) => {
+      await tx.job.updateMany({ where: { deviceId: id }, data: { deviceId: null } });
+      await tx.generatedAccount.updateMany({ where: { deviceId: id }, data: { deviceId: null } });
+      // Workspace-scoped, atomic delete: a device outside the caller's workspace is
+      // never matched (no cross-tenant delete, no TOCTOU window).
+      const res = await tx.device.deleteMany({ where: { id, ...(workspaceId ? { workspaceId } : {}) } });
+      return res;
+    });
     if (count === 0) throw new AppError('Device not found', 404, 'DEVICE_NOT_FOUND');
     return { id };
   }

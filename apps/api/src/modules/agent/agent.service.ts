@@ -1092,12 +1092,10 @@ export class AgentService {
       );
       updated += results.filter(Boolean).length;
     }
-    // Opportunistically prune very old points so the table stays bounded (keep
-    // ~7 days). Runs at most a fraction of the time to avoid a delete every tick.
-    if (updated > 0 && Math.floor(now.getTime() / 1000) % 20 === 0) {
-      const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      await prisma.deviceMetricPoint.deleteMany({ where: { capturedAt: { lt: cutoff } } }).catch(() => undefined);
-    }
+    // ★2026-07-24: metric-point retention MOVED to the deterministic housekeeping timer
+    // in index.ts. The old opportunistic prune here fired only when the epoch-second was
+    // divisible by 20 — which almost never lined up with a heartbeat, so the table grew to
+    // 232K rows unbounded. The housekeeping timer now trims it reliably every 6h.
     return { updated };
   }
 

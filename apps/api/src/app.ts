@@ -14,6 +14,15 @@ import { swaggerSpec } from './swagger';
 export function createApp() {
   const app = express();
 
+  // ★2026-07-24: trust the loopback proxy (Caddy runs on 127.0.0.1 and forwards here).
+  // Without this, Express reads req.ip as Caddy's loopback peer (127.0.0.1) for EVERY
+  // request — so rate-limit + brute-force lockout key on ONE IP for all clients. That
+  // both spams a ValidationError (X-Forwarded-For set but trust-proxy false) AND lets an
+  // attacker fill the 127.0.0.1|email bucket to lock out the real operator (self-DoS).
+  // 'loopback' is the narrowest safe setting: trust ONLY the local Caddy hop, so a client
+  // can't spoof X-Forwarded-For to forge its IP (a bare `true`/`1` would be spoofable).
+  app.set('trust proxy', 'loopback');
+
   app.disable('x-powered-by');
   app.use(requestContext);
   app.use(helmet());

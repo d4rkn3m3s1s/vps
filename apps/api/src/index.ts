@@ -240,10 +240,23 @@ async function main(): Promise<void> {
       reapStaleJobs(),
       // Drop expired public-API Idempotency-Key reservations (24h TTL) so the
       // table stays bounded. Best-effort; a failed sweep just retries next tick.
-      sweepIdempotencyKeys().catch(() => 0)
+      sweepIdempotencyKeys().catch(() => 0),
+      // ★2026-07-24: GeneratedAccount transient-state reaper. reapStaleJobs only fails the
+      // Job row; the account can stay stuck in AWAITING_OTP/REGISTERING forever (VERIFIED: an
+      // account 50h in AWAITING_OTP while its register job was COMPLETED — a live desync).
+      // Move accounts stuck in a transient state past the grace window to FAILED so the panel
+      // stops showing "kayıt sürüyor", the OTP pool + batch counters aren't polluted, and the
+      // device frees. Grace (45min) > any real OTP wait, so a genuine in-flight signup is safe.
+      prisma.generatedAccount.updateMany({
+        where: {
+          status: { in: ['AWAITING_OTP', 'REGISTERING', 'CONTACT_READY', 'IDENTITY_READY', 'PENDING'] },
+          updatedAt: { lt: new Date(Date.now() - Number(process.env.FLEET_GA_STALE_MIN || 45) * 60 * 1000) }
+        },
+        data: { status: 'FAILED', error: 'Zaman aşımı — kayıt/OTP akışı tamamlanmadı (otomatik temizlik)' }
+      }).then((r) => r.count).catch(() => 0)
     ])
-      .then(([devices, hosts, reapedJobs]) => {
-        if (devices > 0 || hosts > 0 || reapedJobs > 0) logger.info('Offline detection', { devices, hosts, reapedJobs });
+      .then(([devices, hosts, reapedJobs, , staleAccounts]) => {
+        if (devices > 0 || hosts > 0 || reapedJobs > 0 || staleAccounts > 0) logger.info('Offline detection', { devices, hosts, reapedJobs, staleAccounts });
       })
       .catch((error) => {
         logger.error('Offline detection tick failed', { error: error instanceof Error ? error.message : String(error) });
@@ -279,8 +292,54 @@ async function main(): Promise<void> {
       .finally(() => { banWaveRunning = false; });
   }, 180_000).unref();
 
-  server.listen(env.port, () => {
-    logger.info(`API server listening on port ${env.port}`);
+  // ★2026-07-24: DATA-RETENTION housekeeping. Several tables grow UNBOUNDED with no cleanup
+  // (VERIFIED: DeviceMetricPoint 232K rows with a broken %20-epoch prune, Job 81MB TOAST bloat
+  // never deleted, RefreshToken 2000+ expired-but-kept, AuditLog/AlertEvent forever). Left
+  // alone they slow every query and bloat the DB over months. One timer (every 6h, unref'd,
+  // reentrancy-guarded) trims each to a sane window. All deletes are on terminal/expired rows
+  // — never live data (an ACTIVE account, a RUNNING job, a valid token). Bounded windows are
+  // env-overridable. Mirrors the existing sweepIdempotencyKeys pattern.
+  let housekeepingRunning = false;
+  const HK_MS = Number(process.env.FLEET_HOUSEKEEPING_MS || 6 * 60 * 60 * 1000); // every 6h
+  const runHousekeeping = async () => {
+    if (housekeepingRunning) return;
+    housekeepingRunning = true;
+    const now = Date.now();
+    const days = (n: number) => new Date(now - n * 24 * 60 * 60 * 1000);
+    try {
+      const results: Record<string, number> = {};
+      // Device metrics: keep 7 days (chart window). The agent's own %20-epoch prune is
+      // unreliable; this deterministic delete is the real retention.
+      results.metrics = (await prisma.deviceMetricPoint.deleteMany({ where: { capturedAt: { lt: days(Number(process.env.FLEET_RETAIN_METRICS_DAYS || 7)) } } }).catch(() => ({ count: 0 }))).count;
+      // Terminal jobs older than 30d — register history lives on GeneratedAccount.registerLog,
+      // so deleting the Job row doesn't lose panel history. Frees the biggest TOAST bloat.
+      results.jobs = (await prisma.job.deleteMany({ where: { status: { in: ['COMPLETED', 'FAILED'] }, createdAt: { lt: days(Number(process.env.FLEET_RETAIN_JOBS_DAYS || 30)) } } }).catch(() => ({ count: 0 }))).count;
+      // Expired or long-revoked refresh tokens — invalid already, safe to drop.
+      results.tokens = (await prisma.refreshToken.deleteMany({ where: { OR: [{ expiresAt: { lt: new Date(now) } }, { AND: [{ revokedAt: { not: null } }, { revokedAt: { lt: days(30) } }] }] } }).catch(() => ({ count: 0 }))).count;
+      // Acknowledged alert events older than 30d (unacked ones stay for the operator).
+      results.alerts = (await prisma.alertEvent.deleteMany({ where: { acknowledged: true, createdAt: { lt: days(30) } } }).catch(() => ({ count: 0 }))).count;
+      // Audit log older than 90d (compliance-tunable via env).
+      results.audit = (await prisma.auditLog.deleteMany({ where: { createdAt: { lt: days(Number(process.env.FLEET_RETAIN_AUDIT_DAYS || 90)) } } }).catch(() => ({ count: 0 }))).count;
+      const total = Object.values(results).reduce((a, b) => a + b, 0);
+      if (total > 0) logger.info('housekeeping: pruned old rows', results);
+    } catch (error) {
+      logger.error('housekeeping tick failed', { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      housekeepingRunning = false;
+    }
+  };
+  setInterval(() => { void runHousekeeping(); }, HK_MS).unref();
+  // Run once ~2min after boot so a long-running instance doesn't wait 6h for the first prune.
+  setTimeout(() => { void runHousekeeping(); }, 120_000).unref();
+
+  // ★2026-07-24: bind to loopback by default so the API is NOT directly reachable from
+  // the public internet on :4000 (bypassing Caddy's /public + /agent filtering). Caddy
+  // reverse-proxies from localhost, so this doesn't change how real traffic arrives — it
+  // just removes the open :4000 that exposed /docs.json + non-BFF routes to the world.
+  // Override with FLEET_BIND_HOST=0.0.0.0 only if you intentionally need external binding.
+  const bindHost = process.env.FLEET_BIND_HOST || '127.0.0.1';
+  server.listen(env.port, bindHost, () => {
+    logger.info(`API server listening on ${bindHost}:${env.port}`);
     // Resume any broadcast whose in-memory dispatcher was killed by a restart, so its
     // un-dispatched recipients aren't stranded forever (broadcast persist/resume).
     void whatsappService.resumeStrandedBroadcasts().catch(() => undefined);

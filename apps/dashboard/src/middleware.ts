@@ -25,6 +25,31 @@ function isSessionValid(token: string | undefined): boolean {
   }
 }
 
+// Ters-proxy (Caddy → 127.0.0.1:3000) arkasında `request.url` iç dinleme
+// adresini (http://localhost:3000) taşır — Host başlığından bağımsız olarak.
+// `new URL('/x', request.url)` bu yüzden `http://localhost:3000/x` üretir ve
+// tarayıcı bu MUTLAK Location'ı takip edince operatörün kendi localhost'una
+// gider (ERR_CONNECTION_RESET). Düzeltme: redirect hedefini, gelen isteğin
+// gerçek dış host'undan (X-Forwarded-Host / Host başlığı) kur. Böylece Location
+// dışarıdan doğru host'a (125.253.73.45) işaret eder.
+function externalUrl(request: NextRequest, path: string): URL {
+  const url = new URL(request.url);
+  const fwdHost = request.headers.get('x-forwarded-host') ?? request.headers.get('host');
+  if (fwdHost) {
+    // `url.host` atarken önce portu temizle: fwdHost porsuz (ör. "125.253.73.45")
+    // gelirse url'in eski iç portu (:3000) korunur ve Location dışarıya kapalı
+    // 3000'e işaret eder. Önce port'u sıfırla, sonra host'u ata — fwdHost kendi
+    // portunu taşıyorsa (ör. "host:8443") o zaten host içinde gelir.
+    url.port = '';
+    url.host = fwdHost;
+  }
+  const fwdProto = request.headers.get('x-forwarded-proto');
+  if (fwdProto) url.protocol = `${fwdProto}:`;
+  url.pathname = path;
+  url.search = '';
+  return url;
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const rawSession = request.cookies.get('fleet_session')?.value;
@@ -34,13 +59,13 @@ export function middleware(request: NextRequest) {
 
   // Logged-in users shouldn't see the login or marketing pages.
   if (session && (pathname === '/login' || pathname === '/welcome')) {
-    return NextResponse.redirect(new URL('/profiles', request.url));
+    return NextResponse.redirect(externalUrl(request, '/profiles'));
   }
 
   // Logged-out (veya geçersiz/süresi dolmuş oturum) ziyaretçiler marketing
   // sayfasına gider. Geçersiz cookie'yi de temizle ki döngüye girmesin.
   if (!session && !isPublic) {
-    const target = new URL('/welcome', request.url);
+    const target = externalUrl(request, '/welcome');
     const res = NextResponse.redirect(target);
     if (rawSession) res.cookies.set('fleet_session', '', { httpOnly: true, path: '/', maxAge: 0 });
     return res;

@@ -103,6 +103,26 @@ export async function sendTelegramFromDeviceHandler(req: Request, res: Response)
   res.json({ data: await batchService.sendTelegramFromDevice(getWorkspaceId(req), input) });
 }
 
+// Change the device's OWN WhatsApp profile display name.
+const setProfileNameSchema = z.object({
+  deviceId: z.string().min(1),
+  name: z.string().min(1).max(25)
+});
+export async function setProfileNameHandler(req: Request, res: Response): Promise<void> {
+  const input = setProfileNameSchema.parse(req.body);
+  res.json({ data: await batchService.setProfileName(getWorkspaceId(req), input) });
+}
+
+// Change the device's OWN WhatsApp profile picture (base64 PNG/JPEG, data-URI ok).
+const setAvatarSchema = z.object({
+  deviceId: z.string().min(1),
+  imageB64: z.string().min(1)
+});
+export async function setAvatarHandler(req: Request, res: Response): Promise<void> {
+  const input = setAvatarSchema.parse(req.body);
+  res.json({ data: await batchService.setAvatar(getWorkspaceId(req), input) });
+}
+
 // Fetch a contact's WhatsApp profile (avatar + name/about) — device-scoped.
 const fetchProfileSchema = z
   .object({

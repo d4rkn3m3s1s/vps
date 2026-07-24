@@ -17,6 +17,8 @@ import { logger } from '../../lib/logger';
 import { batchService } from '../accounts/batch.service';
 import { whatsappService, type ConversationFilter } from '../whatsapp/whatsapp.service';
 import { DeviceService } from '../devices/device.service';
+import { fleetHealthService } from '../fleet-health/fleet-health.service';
+import { provisionService } from '../provision/provision.service';
 
 const deviceService = new DeviceService();
 
@@ -29,7 +31,12 @@ const TG_API = 'https://api.telegram.org';
 
 type TgUser = { id: number; first_name?: string; username?: string };
 type TgChat = { id: number; type: string };
-type TgMessage = { message_id: number; from?: TgUser; chat: TgChat; text?: string };
+type TgPhotoSize = { file_id: string; file_size?: number; width?: number; height?: number };
+type TgMessage = {
+  message_id: number; from?: TgUser; chat: TgChat; text?: string;
+  photo?: TgPhotoSize[];
+  document?: { file_id: string; mime_type?: string; file_size?: number };
+};
 type TgCallbackQuery = { id: string; from: TgUser; message?: TgMessage; data?: string };
 type TgUpdate = {
   update_id: number;
@@ -103,24 +110,66 @@ async function sendPhotoDataUri(
   }
 }
 
+// Download a photo the operator sent to the bot and return it as base64 (no data-URI
+// prefix). Telegram: getFile(file_id) → file_path → https download from the file host.
+// Used by the /profilresim flow to feed WHATSAPP_SET_AVATAR.
+async function downloadTelegramFileB64(token: string, fileId: string): Promise<string | null> {
+  try {
+    const meta = await tgCall(token, 'getFile', { file_id: fileId }) as { file_path?: string };
+    if (!meta?.file_path) return null;
+    const res = await fetch(`${TG_API}/file/bot${token}/${meta.file_path}`, {
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > 8_000_000) return null; // 8MB cap (avatar için fazlasıyla yeter)
+    return buf.toString('base64');
+  } catch (e) {
+    logger.warn('tg getFile failed', { error: String(e) });
+    return null;
+  }
+}
+
 // ── Command palette (Telegram's "/" menu via setMyCommands) ──────────────────
 
 // The commands shown in Telegram's slash-menu / command palette. Registered once
 // per bot token (setMyCommands is idempotent but we skip re-sending to save calls).
 const BOT_COMMANDS: Array<{ command: string; description: string }> = [
-  { command: 'menu', description: '🏠 Ana menü' },
-  { command: 'sohbetler', description: '💬 Sohbet listesi (kategori + sayfalama)' },
-  { command: 'ara', description: '🔎 Sohbet ara (numara/isim)' },
-  { command: 'gonder', description: '✉️ Yeni mesaj gönder' },
-  { command: 'okunmamis', description: '🔵 Okunmamış sohbetler' },
-  { command: 'favoriler', description: '⭐ Favori sohbetler' },
-  { command: 'etiketler', description: '🏷 Etiketleri (kategorileri) yönet' },
-  { command: 'istatistik', description: '📈 Mesaj istatistikleri (24 saat)' },
-  { command: 'cihazlar', description: '📱 Cihazları listele' },
-  { command: 'durum', description: '📊 Özet durum (cihaz + okunmamış)' },
-  { command: 'engellenenler', description: '🚫 Engellenen kişiler' },
-  { command: 'numaram', description: '📞 Kendi WhatsApp numaram' },
-  { command: 'yardim', description: 'ℹ️ Yardım' }
+  { command: 'menu', description: '🏠 Ana menü ve tüm butonlar' },
+  // Mesajlaşma
+  { command: 'gonder', description: '✉️ Tek cihazdan mesaj gönder (cihaz seç)' },
+  { command: 'testmesaj', description: '📢 Bir numaraya TÜM cihazlardan test — /testmesaj 90555… mesaj' },
+  { command: 'profilisim', description: '📝 WA profil ismini değiştir — /profilisim watest48 Zara' },
+  { command: 'profilresim', description: '🖼 WA profil resmini değiştir — /profilresim <cihaz> + foto' },
+  { command: 'sohbetler', description: '💬 Sohbetleri gör (kategori + sayfalama)' },
+  { command: 'ara', description: '🔎 Sohbet ara — /ara Ahmet veya /ara 90555…' },
+  { command: 'okunmamis', description: '🔵 Bir cihazın okunmamış sohbetleri' },
+  { command: 'favoriler', description: '⭐ Favori (yıldızlı) sohbetler' },
+  { command: 'etiketler', description: '🏷 Sohbet etiketlerini (kategori) yönet' },
+  { command: 'engellenenler', description: '🚫 Engellenen kişileri gör' },
+  { command: 'numaram', description: '📞 Cihazın kendi WhatsApp numarasını oku' },
+  // Durum / istatistik
+  { command: 'durum', description: '📊 Özet: cihaz + okunmamış sayısı' },
+  { command: 'istatistik', description: '📈 Son 24 saat mesaj istatistikleri' },
+  { command: 'cihazlar', description: '📱 Tüm cihazları listele (online/offline)' },
+  // 🚨 Acil müdahale
+  { command: 'saglik', description: '🩺 Filo sağlığı: cihaz + WA hesap + sunucu yükü' },
+  { command: 'uyandir', description: '🔆 Offline cihazı uyandır — /uyandir <cihaz>' },
+  { command: 'reboot', description: '♻️ Cihazı yeniden başlat — /reboot <cihaz>' },
+  { command: 'reconnect', description: '🔧 ADB kopan offline cihazları toplu kurtar' },
+  // 🛠 Cihaz yönetimi
+  { command: 'kur', description: '🚀 Toplu cihaz kur — /kur 3 TR (adet + ülke)' },
+  { command: 'etiket', description: '🏷 Cihaz etiketle — /etiket <cihaz> #test' },
+  { command: 'adver', description: '✏️ Cihaz adını değiştir — /adver <cihaz> <ad>' },
+  { command: 'sil', description: '🗑 Cihaz sil (korumalıysa reddedilir) — /sil <cihaz>' },
+  // 💬 WA hesap-sağlık
+  { command: 'hesaplar', description: '💬 WhatsApp hesapları + sağlık rozeti' },
+  { command: 'banlar', description: '⚠️ Son 7 günün ban/kısıt dalgası' },
+  // 📂 Kayıt okuma
+  { command: 'okunmamistum', description: '🔵 TÜM cihazlarda okunmamış (tek liste)' },
+  { command: 'kisiler', description: '👥 İsim verilmiş kayıtlı kişiler' },
+  { command: 'sonmesajlar', description: '📨 Filodaki son gelen mesajlar' },
+  { command: 'yardim', description: 'ℹ️ Komut listesi ve örnekler' }
 ];
 
 // Tokens whose command palette we've already pushed this process life.
@@ -148,9 +197,14 @@ async function ensureCommands(token: string): Promise<void> {
 // "compose" state so a "Mesaj gönder" button flow can collect deviceId → number
 // → text across messages.
 type ChatState = {
-  mode: 'idle' | 'awaiting_number' | 'awaiting_text' | 'awaiting_reply' | 'awaiting_search' | 'awaiting_media';
+  mode: 'idle' | 'awaiting_number' | 'awaiting_text' | 'awaiting_reply' | 'awaiting_search' | 'awaiting_media' | 'awaiting_broadcast_number' | 'awaiting_broadcast_text' | 'awaiting_profile_photo';
   deviceId?: string | undefined;
   to?: string | undefined;
+  // Toplu test-mesajı akışı: numara → mesaj → tüm cihazlardan gönder.
+  broadcastTo?: string | undefined;
+  // Profil-resmi akışı: /profilresim <cihaz> → sonraki fotoğrafı bu cihaza uygula.
+  profileDeviceId?: string | undefined;
+  profileDeviceName?: string | undefined;
   // Conversation-browser state (the /sohbetler flow).
   browseDeviceId?: string | undefined;
   browseFilter?: ConversationFilter | undefined;
@@ -185,7 +239,8 @@ function esc(s: string): string {
 const MAIN_MENU: InlineButton[][] = [
   [{ text: '💬 Sohbetler', callback_data: 'chats' }, { text: '🔎 Ara', callback_data: 'search' }],
   [{ text: '🔵 Okunmamış', callback_data: 'q:unread' }, { text: '⭐ Favoriler', callback_data: 'q:favorite' }],
-  [{ text: '✉️ Mesaj Gönder', callback_data: 'send' }, { text: '📈 İstatistik', callback_data: 'stats' }],
+  [{ text: '✉️ Mesaj Gönder', callback_data: 'send' }, { text: '📢 Toplu Test', callback_data: 'broadcast' }],
+  [{ text: '🩺 Sağlık', callback_data: 'health' }, { text: '📈 İstatistik', callback_data: 'stats' }],
   [{ text: '🏷 Etiketler', callback_data: 'labels' }, { text: '📊 Durum', callback_data: 'status' }],
   [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: 'ℹ️ Yardım', callback_data: 'help' }]
 ];
@@ -193,17 +248,48 @@ const MAIN_MENU: InlineButton[][] = [
 function menuText(): string {
   return [
     '<b>🤖 Fleet WhatsApp Bot</b>',
+    '<i>Aşağıdaki menüden seç, komut yaz ya da klavyedeki <b>/</b> ile paleti aç.</i>',
     '',
-    'Menüden seçin, komut yazın ya da <b>/</b> tuşuyla komut paletini açın:',
-    '• /sohbetler — sohbet listesi (kategori + sayfalama)',
-    '• /ara — sohbet ara (numara/isim)',
-    '• /okunmamis — okunmamış sohbetler',
-    '• /favoriler — favori sohbetler',
-    '• /etiketler — etiketleri (kategorileri) yönet',
-    '• /gonder — yeni mesaj gönder',
-    '• /istatistik — mesaj istatistikleri',
-    '• /durum — özet durum',
-    '• /cihazlar — cihazları listele'
+    '<b>✉️ Mesajlaşma</b>',
+    '• <b>/gonder</b> — tek cihazdan mesaj gönder (cihaz seçtirir)',
+    '• <b>/testmesaj</b> — bir numaraya <b>TÜM WhatsApp\'lı cihazlardan</b> test',
+    '   örn: <code>/testmesaj 905551112233 Merhaba</code>',
+    '   (mesaj yazmazsan "Test mesajı ✅" gönderilir)',
+    '• <b>/sohbetler</b> — sohbetleri gör (kategori + sayfalama)',
+    '• <b>/ara</b> — sohbet ara — <code>/ara Ahmet</code> ya da <code>/ara 90555…</code>',
+    '',
+    '<b>👤 Profil</b>',
+    '• <b>/profilisim</b> &lt;cihaz&gt; &lt;ad&gt; — WA profil ismini değiştir',
+    '   örn: <code>/profilisim watest48 Zara</code>',
+    '• <b>/profilresim</b> &lt;cihaz&gt; — sonra bir foto gönderin (profil resmi olur)',
+    '• <b>/okunmamis</b> · <b>/favoriler</b> · <b>/etiketler</b>',
+    '• <b>/engellenenler</b> · <b>/numaram</b>',
+    '',
+    '<b>📊 Durum & istatistik</b>',
+    '• <b>/durum</b> — özet (cihaz + okunmamış) · <b>/istatistik</b> — 24s mesaj',
+    '• <b>/cihazlar</b> — tüm cihazlar (online/offline)',
+    '',
+    '<b>🚨 Acil müdahale</b>',
+    '• <b>/saglik</b> — filo sağlığı (cihaz + WA hesap + sunucu yükü)',
+    '• <b>/uyandir</b> &lt;cihaz&gt; — offline cihazı uyandır',
+    '• <b>/reboot</b> &lt;cihaz&gt; — cihazı yeniden başlat',
+    '• <b>/reconnect</b> — ADB kopan offline cihazları toplu kurtar',
+    '   <i>(cihaz = isim, numara veya kimlik — örn. /uyandir 90555…)</i>',
+    '',
+    '<b>🛠 Cihaz yönetimi</b>',
+    '• <b>/kur</b> &lt;adet&gt; [ülke] — toplu cihaz kur — <code>/kur 3 TR</code>',
+    '• <b>/etiket</b> &lt;cihaz&gt; #etiket — <code>/etiket watest52 #test</code>',
+    '• <b>/adver</b> &lt;cihaz&gt; &lt;yeni-ad&gt; — cihaz adını değiştir',
+    '• <b>/sil</b> &lt;cihaz&gt; — cihaz sil (korumalıysa reddedilir)',
+    '',
+    '<b>💬 WA hesap-sağlık</b>',
+    '• <b>/hesaplar</b> — WhatsApp hesapları + sağlık rozeti',
+    '• <b>/banlar</b> — son 7 günün ban/kısıt dalgası',
+    '',
+    '<b>📂 Kayıt okuma</b>',
+    '• <b>/okunmamistum</b> — tüm cihazlarda okunmamış (tek liste)',
+    '• <b>/kisiler</b> — isim verilmiş kayıtlı kişiler',
+    '• <b>/sonmesajlar</b> — filodaki son gelen mesajlar'
   ].join('\n');
 }
 
@@ -452,6 +538,290 @@ async function renderStats(workspaceId: string): Promise<string> {
   ].join('\n');
 }
 
+// ── Grup 1-4: cihaz-yönetim + acil-müdahale + hesap-sağlık komutları ─────────
+// (2026-07-24) Telegram'dan filoyu tam yönet: acil durumda cihaz uyandır/reboot,
+// ADB kopunca kurtar, cihaz kur/sil/etiketle/adver, WA hesap-sağlığı gör, DB oku.
+
+// Resolve a device by a loose operator reference: exact id, exact name (case-
+// insensitive), a unique name/substring match, or the account phone number. Used
+// by all "/komut <cihaz>" commands so the operator can type "watest52" or a number
+// instead of a 36-char UUID. Returns null if nothing (or ambiguously many) match.
+async function findDeviceByRef(
+  workspaceId: string,
+  ref: string
+): Promise<{ id: string; name: string; status: string } | null> {
+  const q = ref.trim();
+  if (!q) return null;
+  const devices = await deviceService.listDevices(workspaceId);
+  const norm = (s: string) => s.trim().toLowerCase();
+  const ql = norm(q);
+  // 1) exact id.
+  const byId = devices.find((d) => d.id === q);
+  if (byId) return { id: byId.id, name: byId.name, status: byId.status };
+  // 2) exact name (case-insensitive).
+  const exact = devices.filter((d) => norm(d.name) === ql);
+  if (exact.length === 1) return { id: exact[0]!.id, name: exact[0]!.name, status: exact[0]!.status };
+  // 3) unique substring on name.
+  const partial = devices.filter((d) => norm(d.name).includes(ql));
+  if (partial.length === 1) return { id: partial[0]!.id, name: partial[0]!.name, status: partial[0]!.status };
+  // 4) by active WhatsApp phone number (digits only).
+  const digits = q.replace(/[^\d]/g, '');
+  if (digits.length >= 6) {
+    const byPhone = devices.filter((d) => {
+      const p = (d as Record<string, unknown>).activeWhatsappPhone as string | null | undefined;
+      return p ? p.replace(/[^\d]/g, '').endsWith(digits) : false;
+    });
+    if (byPhone.length === 1) return { id: byPhone[0]!.id, name: byPhone[0]!.name, status: byPhone[0]!.status };
+  }
+  return null;
+}
+
+// Grup 1 — /saglik: fleet-health özeti (cihaz online/offline/error + WA hesap
+// sağlık dağılımı + host yük). Panelin canlı sağlık panelinin metin karşılığı.
+async function renderFleetHealth(workspaceId: string): Promise<string> {
+  const h = await fleetHealthService.health(workspaceId);
+  const d = h.devices;
+  const w = h.waAccounts;
+  const lines: string[] = [
+    '<b>🩺 Filo Sağlığı</b>',
+    '',
+    `📱 Cihazlar: <b>${d.total}</b> · 🟢 ${d.online} · ⚪️ ${d.offline}${d.error ? ` · 🔴 ${d.error} hata` : ''}`
+  ];
+  // WhatsApp account health breakdown.
+  const waParts: string[] = [];
+  if (w.active) waParts.push(`✅ ${w.active} aktif`);
+  if (w.restricted) waParts.push(`🟡 ${w.restricted} kısıtlı`);
+  if (w.loggedOut) waParts.push(`🟠 ${w.loggedOut} çıkış`);
+  if (w.banned) waParts.push(`🔴 ${w.banned} yasaklı`);
+  if (waParts.length) lines.push(`💬 WhatsApp: ${waParts.join(' · ')}`);
+  // Host machines (1-min load saturation + free disk).
+  if (h.hosts.length) {
+    lines.push('', '<b>🖥 Sunucular</b>');
+    for (const host of h.hosts.slice(0, 6)) {
+      const load = host.load1 !== null ? host.load1.toFixed(1) : '—';
+      const pct = host.saturationPct;
+      const disk = host.diskFreeGb !== null ? ` · ${Math.round(host.diskFreeGb)}GB boş` : '';
+      const dot = pct === null ? '⚪️' : pct > 90 ? '🔴' : pct > 70 ? '🟡' : '🟢';
+      const stale = host.monitorStale ? ' ⚠️izleme-durdu' : '';
+      lines.push(`${dot} <b>${esc(host.name)}</b> — yük ${load}${pct !== null ? ` (%${pct})` : ''}${disk}${stale}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// Map deviceId → device name for a set of accounts (GeneratedAccount has no device
+// relation, only a scalar deviceId; one bounded lookup avoids an N+1).
+async function deviceNameMap(workspaceId: string, deviceIds: Array<string | null>): Promise<Map<string, string>> {
+  const ids = [...new Set(deviceIds.filter((x): x is string => !!x))];
+  if (!ids.length) return new Map();
+  const devs = await prisma.device.findMany({
+    where: { id: { in: ids }, ...(workspaceId ? { workspaceId } : {}) },
+    select: { id: true, name: true }
+  });
+  return new Map(devs.map((d) => [d.id, d.name]));
+}
+
+// Grup 3 — /hesaplar: tüm WhatsApp hesapları + sağlık rozeti (cihaz + numara).
+// Health lives on GeneratedAccount.status (RESTRICTED/BANNED/LOGGED_OUT/ACTIVE…).
+async function renderWaAccounts(workspaceId: string): Promise<string> {
+  const accounts = await prisma.generatedAccount.findMany({
+    where: { platform: 'whatsapp', ...(workspaceId ? { workspaceId } : {}) },
+    select: { phoneNumber: true, status: true, deviceId: true },
+    orderBy: { createdAt: 'desc' },
+    take: 40
+  });
+  if (!accounts.length) return '💬 Bu çalışma alanında WhatsApp hesabı yok.';
+  const names = await deviceNameMap(workspaceId, accounts.map((a) => a.deviceId));
+  const badge = (status: string): string => {
+    switch (status) {
+      case 'BANNED': return '🔴';
+      case 'LOGGED_OUT': return '🟠';
+      case 'RESTRICTED': return '🟡';
+      case 'ACTIVE': return '✅';
+      case 'AWAITING_OTP': case 'AWAITING_MANUAL': case 'REGISTERING': return '⏳';
+      case 'FAILED': return '❌';
+      default: return '⚪️';
+    }
+  };
+  const lines = accounts.map((a) => {
+    const phone = a.phoneNumber ? esc(a.phoneNumber) : '(numara yok)';
+    const dn = a.deviceId ? names.get(a.deviceId) : undefined;
+    const dev = dn ? ` · ${esc(dn)}` : '';
+    return `${badge(a.status)} <code>${phone}</code>${dev}`;
+  });
+  const healthy = accounts.filter((a) => a.status === 'ACTIVE').length;
+  return [`<b>💬 WhatsApp Hesapları</b> (${healthy}/${accounts.length} sağlıklı)`, '', ...lines].join('\n');
+}
+
+// Grup 3 — /banlar: son ban/kısıt dalgası (son 7 gün, BANNED/RESTRICTED/LOGGED_OUT).
+async function renderBanWave(workspaceId: string): Promise<string> {
+  const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const bad = await prisma.generatedAccount.findMany({
+    where: {
+      platform: 'whatsapp',
+      ...(workspaceId ? { workspaceId } : {}),
+      status: { in: ['BANNED', 'RESTRICTED', 'LOGGED_OUT'] },
+      updatedAt: { gte: since }
+    },
+    select: { phoneNumber: true, status: true, deviceId: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 30
+  });
+  if (!bad.length) return '✅ Son 7 günde ban/kısıt olayı yok — filo temiz.';
+  const names = await deviceNameMap(workspaceId, bad.map((a) => a.deviceId));
+  const label = (s: string) => (s === 'BANNED' ? '🔴 Yasaklı' : s === 'LOGGED_OUT' ? '🟠 Çıkış' : '🟡 Kısıtlı');
+  const lines = bad.map((a) => {
+    const phone = a.phoneNumber ? esc(a.phoneNumber) : '(numara yok)';
+    const dn = a.deviceId ? names.get(a.deviceId) : undefined;
+    const dev = dn ? ` · ${esc(dn)}` : '';
+    return `${label(a.status)} — <code>${phone}</code>${dev}`;
+  });
+  return [`<b>⚠️ Son Ban/Kısıt Dalgası</b> (son 7 gün, ${bad.length})`, '', ...lines].join('\n');
+}
+
+// ── Grup 4: Root-DB okuma (panel açmadan Telegram'dan hızlı görüntüle) ────────
+
+// /okunmamis-tum: TÜM cihazlarda okunmamış konuşmalar (unreadCount>0), en yeni önce.
+async function renderAllUnread(workspaceId: string): Promise<string> {
+  const rows = await prisma.whatsappConversation.findMany({
+    where: { unreadCount: { gt: 0 }, ...(workspaceId ? { workspaceId } : {}) },
+    select: { peer: true, displayName: true, unreadCount: true, lastMessageBody: true, deviceId: true },
+    orderBy: { lastMessageAt: 'desc' },
+    take: 30
+  });
+  if (!rows.length) return '✅ Okunmamış sohbet yok — tüm mesajlar okunmuş.';
+  const names = await deviceNameMap(workspaceId, rows.map((r) => r.deviceId));
+  const total = rows.reduce((a, r) => a + r.unreadCount, 0);
+  const lines = rows.map((r) => {
+    const who = r.displayName ? esc(r.displayName) : `<code>${esc(r.peer)}</code>`;
+    const dn = names.get(r.deviceId);
+    const prev = r.lastMessageBody ? ` — <i>${esc(r.lastMessageBody.slice(0, 40))}</i>` : '';
+    return `🔵 <b>${r.unreadCount}</b> · ${who}${dn ? ` (${esc(dn)})` : ''}${prev}`;
+  });
+  return [`<b>🔵 Tüm Okunmamış</b> (${total} mesaj, ${rows.length} sohbet)`, '', ...lines].join('\n');
+}
+
+// /kisiler: kayıtlı kişiler (isim verilmiş konuşmalar) — hafif CRM görünümü.
+async function renderContacts(workspaceId: string): Promise<string> {
+  const rows = await prisma.whatsappConversation.findMany({
+    where: { displayName: { not: null }, ...(workspaceId ? { workspaceId } : {}) },
+    select: { peer: true, displayName: true, deviceId: true, favorite: true, blocked: true },
+    orderBy: { lastMessageAt: 'desc' },
+    take: 40
+  });
+  if (!rows.length) return '👥 Kayıtlı isimli kişi yok (sohbetlere isim ekleyince burada görünür).';
+  const names = await deviceNameMap(workspaceId, rows.map((r) => r.deviceId));
+  const lines = rows.map((r) => {
+    const dn = names.get(r.deviceId);
+    const flags = `${r.favorite ? ' ⭐' : ''}${r.blocked ? ' 🚫' : ''}`;
+    return `👤 <b>${esc(r.displayName ?? '')}</b> · <code>${esc(r.peer)}</code>${dn ? ` (${esc(dn)})` : ''}${flags}`;
+  });
+  return [`<b>👥 Kişiler</b> (${rows.length})`, '', ...lines].join('\n');
+}
+
+// /sonmesajlar: TÜM filoda son gelen mesajlar (inbound), en yeni önce.
+async function renderRecentInbound(workspaceId: string): Promise<string> {
+  const rows = await prisma.whatsappMessage.findMany({
+    where: { direction: 'IN', ...(workspaceId ? { workspaceId } : {}) },
+    select: { peer: true, body: true, createdAt: true, read: true, deviceId: true },
+    orderBy: { createdAt: 'desc' },
+    take: 25
+  });
+  if (!rows.length) return '📭 Kayıtlı gelen mesaj yok.';
+  const names = await deviceNameMap(workspaceId, rows.map((r) => r.deviceId));
+  const lines = rows.map((r) => {
+    const dn = names.get(r.deviceId);
+    const dot = r.read ? '⚪️' : '🔵';
+    const body = r.body ? esc(r.body.slice(0, 50)) : '(boş)';
+    return `${dot} <code>${esc(r.peer)}</code>${dn ? ` (${esc(dn)})` : ''}: <i>${body}</i>`;
+  });
+  return [`<b>📨 Son Gelen Mesajlar</b> (${rows.length})`, '', ...lines].join('\n');
+}
+
+// ── Toplu test-mesajı: bir numaraya TÜM WhatsApp'lı cihazlardan gönder ────────
+// Operatörün "bir numaraya bütün cihazlardan mesaj testi" isteği. Her ACTIVE
+// WhatsApp hesabı olan cihaz için ayrı WHATSAPP_SEND job'ı yazar (sendFromDevice
+// zaten BANNED/LOGGED_OUT'u önden reddeder → o cihazlar "atlandı" olarak raporlanır).
+// Cihazlar agent tarafında sırayla/paralel işlenir; burada sadece kuyruğa alırız.
+async function broadcastTestMessage(
+  workspaceId: string,
+  to: string,
+  message: string
+): Promise<string> {
+  const digits = to.replace(/[^\d]/g, '');
+  if (digits.length < 5) return '❌ Geçerli bir numara girin (ülke kodu ile, örn. 905551112233).';
+  const devices = await deviceService.listDevices(workspaceId);
+  const waDevices = devices.filter((d) => (d as Record<string, unknown>).hasActiveWhatsapp === true);
+  if (!waDevices.length) return '⚠️ WhatsApp hesabı olan cihaz yok — toplu test gönderilemez.';
+
+  const queued: string[] = [];
+  const skipped: string[] = [];
+  // Sıra: önce ONLINE cihazlar (daha hızlı işlenir). Kuyruğa almayı seri yaparız ki
+  // tek bir hatalı cihaz diğerlerini engellemesin (her biri bağımsız try/catch).
+  const ordered = [...waDevices].sort((a, b) => (a.status === 'ONLINE' ? -1 : 1) - (b.status === 'ONLINE' ? -1 : 1));
+  for (const d of ordered) {
+    try {
+      await batchService.sendFromDevice(workspaceId, { deviceId: d.id, to: digits, message });
+      queued.push(d.name);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'hata';
+      // BANNED/LOGGED_OUT/OFFLINE → atlandı olarak kısa raporla (job yakmadan).
+      const reason = /YASAKLI|ban/i.test(msg) ? 'yasaklı'
+        : /ÇIKIŞ|logged/i.test(msg) ? 'çıkış-yapmış'
+        : /offline|OFFLINE|erişil/i.test(msg) ? 'offline'
+        : msg.slice(0, 24);
+      skipped.push(`${d.name} (${reason})`);
+    }
+  }
+
+  const lines: string[] = [
+    `<b>📢 Toplu Test Mesajı</b>`,
+    `📞 Hedef: <code>${esc(digits)}</code>`,
+    `💬 "${esc(message.slice(0, 60))}"`,
+    ''
+  ];
+  lines.push(`✅ <b>${queued.length}</b> cihazdan gönderildi (sıraya alındı).`);
+  if (queued.length) lines.push(queued.map((n) => `• ${esc(n)}`).join('\n'));
+  if (skipped.length) {
+    lines.push('', `⏭ <b>${skipped.length}</b> cihaz atlandı:`);
+    lines.push(skipped.map((s) => `• ${esc(s)}`).join('\n'));
+  }
+  lines.push('', '<i>Sonuçları /istatistik veya /sonmesajlar ile izleyin.</i>');
+  return lines.join('\n');
+}
+
+// Handle a photo/document message. Only meaningful while in the /profilresim flow
+// (awaiting_profile_photo) — download the image and dispatch WHATSAPP_SET_AVATAR.
+async function handlePhotoMessage(
+  token: string,
+  workspaceId: string,
+  chatId: string,
+  bot: BotState,
+  msg: TgMessage
+): Promise<void> {
+  const state = getChatState(bot, chatId);
+  if (state.mode !== 'awaiting_profile_photo' || !state.profileDeviceId) {
+    // Beklenmeyen foto — kullanıcıya nasıl kullanacağını hatırlat.
+    await sendMessage(token, chatId, 'ℹ️ Profil resmi ayarlamak için önce <code>/profilresim &lt;cihaz&gt;</code> yazın, sonra fotoğrafı gönderin.', MAIN_MENU);
+    return;
+  }
+  const deviceId = state.profileDeviceId;
+  const deviceName = state.profileDeviceName ?? 'cihaz';
+  state.mode = 'idle'; state.profileDeviceId = undefined; state.profileDeviceName = undefined;
+  // En yüksek çözünürlüklü foto boyutunu (photo dizisinin sonu) ya da document'i seç.
+  const fileId = msg.photo?.length ? msg.photo[msg.photo.length - 1]!.file_id : msg.document?.file_id;
+  if (!fileId) { await sendMessage(token, chatId, '❌ Fotoğraf okunamadı.', MAIN_MENU); return; }
+  await sendMessage(token, chatId, `📥 Fotoğraf indiriliyor ve <b>${esc(deviceName)}</b> profiline uygulanıyor…`);
+  const b64 = await downloadTelegramFileB64(token, fileId);
+  if (!b64) { await sendMessage(token, chatId, '❌ Fotoğraf indirilemedi (çok büyük veya hata).', MAIN_MENU); return; }
+  try {
+    await batchService.setAvatar(workspaceId, { deviceId, imageB64: b64 });
+    await sendMessage(token, chatId, `🖼 <b>${esc(deviceName)}</b> profil resmi değiştiriliyor…\n<i>(Cihaz WhatsApp'ı açar, ~40 sn.)</i>`, MAIN_MENU);
+  } catch (e) {
+    await sendMessage(token, chatId, `❌ Uygulanamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+  }
+}
+
 // Handle one text command from a registered chat.
 async function handleCommand(
   token: string,
@@ -482,6 +852,27 @@ async function handleCommand(
       await sendMessage(token, chatId, `✅ Mesaj sıraya alındı, cihaz gönderiyor.\n📞 ${esc(to)}\n🆔 <code>${esc(job.id)}</code>`, MAIN_MENU);
     } catch (e) {
       await sendMessage(token, chatId, `❌ Gönderilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+    return;
+  }
+  // Toplu test-mesajı: önce numara, sonra mesaj → tüm WA cihazlardan gönder.
+  if (state.mode === 'awaiting_broadcast_number') {
+    const to = cmd.replace(/[^\d]/g, '');
+    if (to.length < 5) { await sendMessage(token, chatId, '❌ Geçerli bir numara girin (ülke kodu ile, örn. 905551112233).'); return; }
+    state.broadcastTo = to; state.mode = 'awaiting_broadcast_text';
+    await sendMessage(token, chatId, `📞 Hedef: <b>${esc(to)}</b>\nBu numaraya <b>TÜM WhatsApp'lı cihazlardan</b> gönderilecek mesajı yazın:`);
+    return;
+  }
+  if (state.mode === 'awaiting_broadcast_text') {
+    const message = cmd;
+    const to = state.broadcastTo!;
+    state.mode = 'idle'; state.broadcastTo = undefined;
+    await sendMessage(token, chatId, '📢 Toplu test başlatılıyor, cihazlar sıraya alınıyor…');
+    try {
+      const report = await broadcastTestMessage(workspaceId, to, message);
+      await sendMessage(token, chatId, report, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Toplu gönderim hatası: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
     return;
   }
@@ -563,6 +954,52 @@ async function handleCommand(
       const buttons = await devicePickerButtons(workspaceId, 'sendpick', undefined, true);
       await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi <b>WhatsApp\'lı</b> cihazdan göndermek istiyorsunuz?', buttons);
     }
+  } else if (lower === '/testmesaj' || lower.startsWith('/testmesaj ') || lower.startsWith('testmesaj ') || lower === '/toplutest') {
+    // Toplu test: bir numaraya TÜM WhatsApp'lı cihazlardan mesaj gönder.
+    // Shorthand: "/testmesaj 905551112233 [mesaj]" — mesaj yoksa varsayılan test metni.
+    if (!(await hasAnyWhatsappDevice(workspaceId))) {
+      await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.', MAIN_MENU);
+    } else {
+      const rest = cmd.replace(/^\/?(testmesaj|toplutest)\s*/i, '').trim();
+      const m = /^(\+?\d[\d\s]{4,})(?:\s+([\s\S]+))?$/.exec(rest);
+      if (m) {
+        // Numara verildi → hemen gönder (mesaj yoksa varsayılan test metni).
+        const to = m[1]!.replace(/[^\d]/g, '');
+        const message = (m[2] ?? '').trim() || 'Test mesajı ✅';
+        await sendMessage(token, chatId, `📢 <b>${esc(to)}</b> numarasına tüm WhatsApp'lı cihazlardan test gönderiliyor…`);
+        const report = await broadcastTestMessage(workspaceId, to, message);
+        await sendMessage(token, chatId, report, MAIN_MENU);
+      } else {
+        // Numara verilmedi → interaktif akış: önce numara sor.
+        state.mode = 'awaiting_broadcast_number';
+        await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
+      }
+    }
+  } else if (lower.startsWith('/profilisim ') || lower.startsWith('profilisim ') || lower.startsWith('/profilİsim ')) {
+    // "/profilisim <cihaz> <yeni-ad>" — WhatsApp profil ismini değiştir.
+    const rest = cmd.replace(/^\/?profil[iİ]sim\s+/i, '').trim();
+    const parts = rest.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/profilisim &lt;cihaz&gt; &lt;yeni-ad&gt;</code>\nörn: /profilisim watest48 Zara', MAIN_MENU); return; }
+    const ref = parts[0]!;
+    const newName = parts.slice(1).join(' ').slice(0, 25);
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      await batchService.setProfileName(workspaceId, { deviceId: dev.id, name: newName });
+      await sendMessage(token, chatId, `📝 <b>${esc(dev.name)}</b> profil ismi <b>${esc(newName)}</b> olarak değiştiriliyor…\n<i>(Cihaz WhatsApp ayarlarını açar, ~30 sn.)</i>`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Değiştirilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower.startsWith('/profilresim ') || lower.startsWith('profilresim ') || lower === '/profilresim') {
+    // "/profilresim <cihaz>" → sonraki fotoğrafı bu cihazın profiline uygula.
+    const ref = cmd.replace(/^\/?profilresim\s*/i, '').trim();
+    if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/profilresim &lt;cihaz&gt;</code>\nSonra bir fotoğraf gönderin.', MAIN_MENU); return; }
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    state.mode = 'awaiting_profile_photo';
+    state.profileDeviceId = dev.id;
+    state.profileDeviceName = dev.name;
+    await sendMessage(token, chatId, `🖼 <b>${esc(dev.name)}</b> için <b>şimdi bir fotoğraf gönderin</b>.\n<i>(Gönderdiğiniz resim WhatsApp profil resmi olarak ayarlanacak.)</i>`);
   } else if (lower === '/sohbetler' || lower === 'sohbetler' || lower === '/mesajlar' || lower === 'mesajlar' || lower === '/chats') {
     const buttons = await devicePickerButtons(workspaceId, 'chatpick');
     await sendMessage(token, chatId, '💬 <b>Sohbetler</b>\nHangi cihazın sohbetlerini görmek istiyorsunuz?', buttons);
@@ -624,6 +1061,139 @@ async function handleCommand(
       state.mode = 'awaiting_search';
       await sendMessage(token, chatId, '🔎 Aramak istediğiniz <b>numarayı veya ismi</b> yazın:');
     }
+  // ── Grup 1: Acil müdahale ──────────────────────────────────────────────────
+  } else if (lower === '/saglik' || lower === 'saglik' || lower === '/sağlık' || lower === '/health') {
+    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), MAIN_MENU);
+  } else if (lower === '/uyandir' || lower.startsWith('/uyandir ') || lower.startsWith('uyandir ')) {
+    const ref = cmd.replace(/^\/?uyandir\s*/i, '').trim();
+    if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/uyandir &lt;cihaz&gt;</code> (isim / numara).', MAIN_MENU); return; }
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      await deviceService.wake(dev.id, workspaceId);
+      await sendMessage(token, chatId, `🔆 <b>${esc(dev.name)}</b> uyandırılıyor… (ADB yeniden bağlanacak, ~1 dk).`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Uyandırılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower === '/reboot' || lower.startsWith('/reboot ') || lower.startsWith('reboot ')) {
+    const ref = cmd.replace(/^\/?reboot\s*/i, '').trim();
+    if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/reboot &lt;cihaz&gt;</code>.', MAIN_MENU); return; }
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      await deviceService.reboot(dev.id, workspaceId);
+      await sendMessage(token, chatId, `♻️ <b>${esc(dev.name)}</b> yeniden başlatılıyor (kapat→aç, ~2 dk).`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Reboot başarısız: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower === '/reconnect' || lower === 'reconnect' || lower === '/kurtar') {
+    // ADB kopması agent'ta OTONOM kurtarılıyor (adbRecoveryTick: instance-up ama
+    // ADB-erişilemez → adb server bounce + reconnect). Buradan MANUEL tetiklemek için
+    // OFFLINE cihazlara wake atıyoruz (wake ADB-connect'i de yapar). Zaten-ONLINE
+    // cihazlara dokunmayız (gereksiz reboot riski).
+    const devices = await deviceService.listDevices(workspaceId);
+    const offline = devices.filter((d) => d.status === 'OFFLINE' || d.status === 'ERROR');
+    if (!offline.length) {
+      await sendMessage(token, chatId, '✅ Tüm cihazlar ONLINE — kurtarılacak offline cihaz yok. (ADB otomatik kurtarma zaten host\'ta çalışıyor.)', MAIN_MENU);
+      return;
+    }
+    let woken = 0; const failed: string[] = [];
+    for (const d of offline.slice(0, 20)) {
+      try { await deviceService.wake(d.id, workspaceId); woken++; }
+      catch { failed.push(d.name); }
+    }
+    const tail = failed.length ? `\n⚠️ Uyandırılamayan: ${failed.map(esc).join(', ')}` : '';
+    await sendMessage(token, chatId, `🔧 <b>ADB kurtarma</b>\n${woken} offline cihaza uyandırma gönderildi (ADB yeniden bağlanacak).${tail}`, MAIN_MENU);
+  // ── Grup 2: Cihaz yönetimi ─────────────────────────────────────────────────
+  } else if (lower.startsWith('/etiket ') || lower.startsWith('etiket ')) {
+    // "/etiket <cihaz> #test" veya "/etiket <cihaz> test" — mevcut tag'lere ekler.
+    const rest = cmd.replace(/^\/?etiket\s+/i, '').trim();
+    const parts = rest.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/etiket &lt;cihaz&gt; #etiket</code> (örn. /etiket watest52 #test).', MAIN_MENU); return; }
+    const ref = parts[0]!;
+    const tags = parts.slice(1).map((t) => t.replace(/^#/, '').trim().toLowerCase()).filter(Boolean);
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      const cur = await prisma.device.findFirst({ where: { id: dev.id }, select: { tags: true } });
+      const merged = [...new Set([...(cur?.tags ?? []), ...tags])];
+      await deviceService.updateDevice(dev.id, { tags: merged }, workspaceId);
+      await sendMessage(token, chatId, `🏷 <b>${esc(dev.name)}</b> etiketleri: ${merged.map((t) => `<code>#${esc(t)}</code>`).join(' ')}`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Etiket eklenemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower.startsWith('/adver ') || lower.startsWith('adver ') || lower.startsWith('/yenidad ')) {
+    // "/adver <cihaz> <yeni-ad>" — cihazı yeniden adlandır.
+    const rest = cmd.replace(/^\/?(adver|yenidad)\s+/i, '').trim();
+    const parts = rest.split(/\s+/).filter(Boolean);
+    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/adver &lt;cihaz&gt; &lt;yeni-ad&gt;</code>.', MAIN_MENU); return; }
+    const ref = parts[0]!;
+    const newName = parts.slice(1).join(' ').slice(0, 60);
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      await deviceService.updateDevice(dev.id, { name: newName }, workspaceId);
+      await sendMessage(token, chatId, `✏️ <b>${esc(dev.name)}</b> → <b>${esc(newName)}</b> olarak yeniden adlandırıldı.`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Yeniden adlandırılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower === '/kur' || lower.startsWith('/kur ') || lower.startsWith('kur ')) {
+    // "/kur <adet> [TR]" — toplu tek-tık cihaz kur (opsiyonel proxy ülkesi).
+    const rest = cmd.replace(/^\/?kur\s*/i, '').trim();
+    const m = /^(\d{1,2})(?:\s+([a-zA-Z]{2}))?/.exec(rest);
+    const count = m ? Math.max(1, Math.min(20, parseInt(m[1]!, 10))) : 1;
+    const country = m && m[2] ? m[2].toUpperCase() : undefined;
+    try {
+      const res = await provisionService.createBatch(
+        { count, ...(country ? { proxyCountry: country } : {}) },
+        workspaceId
+      );
+      const ok = res.started.length;
+      const fail = res.failed.length;
+      const names = res.started.map((s) => `• <b>${esc(s.name)}</b>`).join('\n');
+      const tail = fail ? `\n⚠️ ${fail} başarısız: ${esc(res.failed[0]?.error ?? '')}` : '';
+      await sendMessage(token, chatId, `🚀 <b>Toplu Kurulum başladı</b> (${ok}/${res.total})${country ? ` · proxy ${esc(country)}` : ''}\n${names}${tail}\n\n<i>Durum için /cihazlar veya /saglik.</i>`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Kurulum başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (lower.startsWith('/sil ') || lower.startsWith('sil ')) {
+    // "/sil <cihaz>" — cihazı sil (host instance'ı da durdurulur). Korumalıysa reddedilir.
+    const ref = cmd.replace(/^\/?sil\s+/i, '').trim();
+    if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/sil &lt;cihaz&gt;</code>.', MAIN_MENU); return; }
+    const dev = await findDeviceByRef(workspaceId, ref);
+    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
+    try {
+      await deviceService.deleteDevice(dev.id, workspaceId);
+      await sendMessage(token, chatId, `🗑 <b>${esc(dev.name)}</b> silindi (host instance durduruluyor).`, MAIN_MENU);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'hata';
+      await sendMessage(token, chatId, `❌ Silinemedi: ${esc(msg)}${/protected|korumal/i.test(msg) ? '\n🔒 Cihaz korumalı — önce panelden korumayı kaldırın.' : ''}`, MAIN_MENU);
+    }
+  // ── Grup 3: WA hesap-sağlık ────────────────────────────────────────────────
+  } else if (lower === '/hesaplar' || lower === 'hesaplar' || lower === '/accounts') {
+    await sendMessage(token, chatId, await renderWaAccounts(workspaceId), MAIN_MENU);
+  } else if (lower === '/banlar' || lower === 'banlar' || lower === '/bans') {
+    await sendMessage(token, chatId, await renderBanWave(workspaceId), MAIN_MENU);
+  } else if (lower === '/kayit' || lower.startsWith('/kayit ') || lower === '/kayıt') {
+    // WA kaydı çok-adımlı (kimlik+numara-kirala+OTP+RPA) ve ban-riski hassastır;
+    // Telegram'dan tek komutla güvenli değil. Operatörü panelin tek-tık akışına
+    // yönlendir (numara/proxy/isim orada girilir), durum buradan /hesaplar ile izlenir.
+    await sendMessage(token, chatId, [
+      '📝 <b>WhatsApp Kaydı</b>',
+      '',
+      'WA kaydı numara-kiralama + OTP + cihaz-otomasyonu içerdiğinden panelden yapılır:',
+      '• Panel → <b>Profiller</b> → cihaz → <b>WhatsApp Kaydet</b> (numara + ülke proxy)',
+      '• Ya da toplu için Panel → <b>Hesaplar</b> → toplu kayıt',
+      '',
+      'Kayıt durumunu buradan izleyin: /hesaplar · /saglik'
+    ].join('\n'), MAIN_MENU);
+  // ── Grup 4: Root-DB okuma ──────────────────────────────────────────────────
+  } else if (lower === '/okunmamis-tum' || lower === '/okunmamistum' || lower === '/tumokunmamis') {
+    await sendMessage(token, chatId, await renderAllUnread(workspaceId), MAIN_MENU);
+  } else if (lower === '/kisiler' || lower === 'kisiler' || lower === '/contacts' || lower === '/kişiler') {
+    await sendMessage(token, chatId, await renderContacts(workspaceId), MAIN_MENU);
+  } else if (lower === '/sonmesajlar' || lower === 'sonmesajlar' || lower === '/gelen' || lower === '/medya') {
+    await sendMessage(token, chatId, await renderRecentInbound(workspaceId), MAIN_MENU);
   } else if (lower === '/help' || lower === 'yardim' || lower === '/yardim') {
     await sendMessage(token, chatId, menuText(), MAIN_MENU);
   } else {
@@ -673,6 +1243,16 @@ async function handleCallback(
       const buttons = await devicePickerButtons(workspaceId, 'sendpick', undefined, true);
       await sendMessage(token, chatId, '✉️ <b>Mesaj Gönder</b>\nHangi <b>WhatsApp\'lı</b> cihazdan göndermek istiyorsunuz?', buttons);
     }
+  } else if (data === 'broadcast') {
+    // Toplu test-mesajı: numara sor → TÜM WA cihazlardan gönder.
+    if (!(await hasAnyWhatsappDevice(workspaceId))) {
+      await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.', MAIN_MENU);
+    } else {
+      state.mode = 'awaiting_broadcast_number';
+      await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
+    }
+  } else if (data === 'health') {
+    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), MAIN_MENU);
   } else if (data === 'q:unread' || data === 'q:favorite') {
     // Quick-filter from the main menu → device picker carrying the filter.
     const f: ConversationFilter = data === 'q:unread' ? 'unread' : 'favorite';
@@ -1034,7 +1614,12 @@ async function pollBot(bot: { workspaceId: string; token: string; chatIds: strin
   for (const u of updates) {
     state.offset = Math.max(state.offset, u.update_id + 1);
     try {
-      if (u.message?.text && u.message.chat) {
+      // Fotoğraf/dosya mesajı — /profilresim akışında profil resmi olarak uygula.
+      if ((u.message?.photo?.length || u.message?.document) && u.message.chat) {
+        const chatId = String(u.message.chat.id);
+        if (!allowed.has(chatId)) { continue; }
+        await handlePhotoMessage(bot.token, bot.workspaceId, chatId, state, u.message);
+      } else if (u.message?.text && u.message.chat) {
         const chatId = String(u.message.chat.id);
         if (!allowed.has(chatId)) {
           // Unregistered chat — reject once so the sender knows.

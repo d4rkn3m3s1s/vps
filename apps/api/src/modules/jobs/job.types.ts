@@ -43,6 +43,9 @@ export const JobTypes = [
   'WHATSAPP_DELETED',
   'WHATSAPP_LINKS',
   'WHATSAPP_PROFILE',
+  // Change the account's OWN profile display name / picture.
+  'WHATSAPP_SET_NAME',
+  'WHATSAPP_SET_AVATAR',
   'WHATSAPP_BLOCK',
   'WHATSAPP_BLOCKLIST',
   // Read the account's OWN WhatsApp number off the device (Settings › profile).
@@ -96,6 +99,8 @@ export const EXCLUSIVE_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
   'WHATSAPP_SEND',
   'WHATSAPP_SEND_MEDIA',
   'WHATSAPP_PROFILE',
+  'WHATSAPP_SET_NAME',
+  'WHATSAPP_SET_AVATAR',
   'WHATSAPP_BLOCK',
   'WHATSAPP_BLOCKLIST',
   'WHATSAPP_DELETE_MSG',

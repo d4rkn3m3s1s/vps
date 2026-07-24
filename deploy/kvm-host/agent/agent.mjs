@@ -1070,6 +1070,8 @@ const JOB_TIMEOUTS_MS = {
   WHATSAPP_SEND_MEDIA: 150 * 1000,  // media attach is slower
   WHATSAPP_READ: 90 * 1000,
   WHATSAPP_PROFILE: 120 * 1000,
+  WHATSAPP_SET_NAME: 120 * 1000,     // menü→settings→profil→isim→save navigasyonu
+  WHATSAPP_SET_AVATAR: 150 * 1000,   // push+indeks+crop, media-scan gecikmesi payı
   WHATSAPP_BLOCK: 90 * 1000,
   WHATSAPP_BLOCKLIST: 90 * 1000,
   WHATSAPP_MYNUMBER: 90 * 1000,
@@ -1475,6 +1477,12 @@ async function runJob(job) {
 
     case 'WHATSAPP_PROFILE':
       return whatsappProfile(serial, payload);
+
+    case 'WHATSAPP_SET_NAME':
+      return whatsappSetName(serial, payload);
+
+    case 'WHATSAPP_SET_AVATAR':
+      return whatsappSetAvatar(serial, payload);
 
     case 'WHATSAPP_BLOCK':
       return whatsappBlock(serial, payload);
@@ -5660,6 +5668,114 @@ async function waOpenSettings(serial, h) {
 //
 // payload: { to? (E.164 digits), from? (contact name) }
 // returns: { status, profile: { profileName?, about?, phone?, lastSeen? }, avatarBase64? }
+// Şu an öndeki (resumed) activity'nin tam adını döndür (ör. "com.whatsapp/.profile.
+// ui.ProfileInfoActivity"). Profil akışında ekran-geçişlerini doğrulamak için kullanılır.
+async function currentActivity(serial) {
+  const out = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']).catch(() => '');
+  const m = /(?:topResumedActivity|mResumedActivity)=ActivityRecord\{[^ ]+ [^ ]+ ([^ \/]+\/[^ }]+)/.exec(String(out || ''));
+  return m ? m[1] : '';
+}
+
+// ── Kendi WhatsApp profilini DEĞİŞTİR: isim + avatar (2026-07-24) ────────────
+// SS-SS canlı tespit edilen koordinat reçetesi (watest48/mi2, 1080x2368, WA v2.26).
+// Koordinatlar EKRAN-ORANI olarak yazıldı (çözünürlükten bağımsız → farklı cihazlar
+// da çalışır). Akış tamamen SYNTHETIC `input tap` + koordinat (uiautomator WA'da
+// hang eder → SS-SS koordinat sür, denenmiş ve kanıtlanmış dersler).
+//
+// Profil ekranına navigasyon (isim + avatar için ORTAK):
+//   Main → ⋮ menü → Settings → avatar(profil kartı) → ProfileInfoActivity.
+async function waOpenProfileScreen(serial) {
+  const { sw, sh } = await wmSize(serial);
+  const tap = (fx, fy) => adb(serial, ['shell', 'input', 'tap', String(Math.round(sw * fx)), String(Math.round(sh * fy))]);
+  // WA'yı temiz aç (soğuk başlatınca chat listesinde durabilir; force-stop garanti).
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await sleep(800);
+  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.Main`]).catch(() => undefined);
+  await sleep(3500);
+  // ⋮ menü (sağ üst) → Settings.
+  await tap(0.943, 0.063); await sleep(1500);
+  await tap(0.633, 0.395); await sleep(2500);
+  // Settings üst profil kartındaki AVATAR'a tap → ProfileInfoActivity. (İsim metnine
+  // tap YANLIŞ: yanındaki ⊕ "hesap ekle" sheet'ini açar — avatar dairesine tap DOĞRU.)
+  await tap(0.5, 0.205); await sleep(2500);
+  const act = await currentActivity(serial).catch(() => '');
+  return /ProfileInfo/i.test(act);
+}
+
+// WHATSAPP_SET_NAME — profil ismini (pushname) değiştir. payload: { name }.
+async function whatsappSetName(serial, payload) {
+  const name = String(p(payload, 'name', '')).trim();
+  if (!name) throw new Error('name gerekli');
+  if (name.length > 25) throw new Error('isim en fazla 25 karakter (WhatsApp sınırı)');
+  await ensureAdbKeyboard(serial);
+  const { sw, sh } = await wmSize(serial);
+  const tap = (fx, fy) => adb(serial, ['shell', 'input', 'tap', String(Math.round(sw * fx)), String(Math.round(sh * fy))]);
+  if (!(await waOpenProfileScreen(serial))) {
+    return { status: 'NO_PROFILE', note: 'Profil ekranı açılamadı (WA kısıtlı/çıkış olabilir)' };
+  }
+  // Name satırına tap → isim düzenleme (ProfileInfoFragmentHost).
+  await tap(0.289, 0.438); await sleep(1800);
+  // Mevcut ismi tam sil (MOVE_END + 30× DEL) — ADBKeyboard clear yerine keyevent garanti.
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_MOVE_END']).catch(() => undefined);
+  for (let i = 0; i < 30; i++) await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_DEL']).catch(() => undefined);
+  await sleep(500);
+  // Yeni ismi ADBKeyboard broadcast ile yaz (boşluk dahil UTF-8 intact).
+  await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_INPUT_TEXT', '--es', 'msg', shArg(name)]);
+  await sleep(1500);
+  // Save (yeşil buton alt).
+  await tap(0.5, 0.894); await sleep(2500);
+  // Doğrula: ProfileInfoActivity'ye döndük mü (Save başarılıysa isim ekranından çıkar).
+  const act = await currentActivity(serial).catch(() => '');
+  const ok = /ProfileInfo/i.test(act) && !/FragmentHost/i.test(act);
+  return { status: ok ? 'OK' : 'UNCONFIRMED', name, activity: act };
+}
+
+// WHATSAPP_SET_AVATAR — profil resmini değiştir. payload: { imageB64 } (PNG/JPEG base64)
+// VEYA { imagePath } (host'ta hazır dosya yolu). Galeri-picker Waydroid'de BOŞ geldiği
+// için onu ATLIYORUZ: resmi /sdcard/DCIM/Camera'ya yaz → MediaStore'a indeksle → WA
+// foto iznini ver → `com.whatsapp/.SetAsProfilePhoto` intent'ini content:// URI ile
+// DOĞRUDAN aç (CropImage'e düşer) → Done. (galeri-picker'sız = çok daha stabil.)
+async function whatsappSetAvatar(serial, payload) {
+  const b64 = String(p(payload, 'imageB64', '') || '');
+  if (!b64) throw new Error('imageB64 gerekli (PNG/JPEG base64)');
+  const { sw, sh } = await wmSize(serial);
+  const tap = (fx, fy) => adb(serial, ['shell', 'input', 'tap', String(Math.round(sw * fx)), String(Math.round(sh * fy))]);
+  // 1) base64'ü host'ta geçici dosyaya yaz, cihaza push et (DCIM/Camera).
+  const tmp = `/tmp/wa-avatar-${Date.now()}.img`;
+  const remote = '/sdcard/DCIM/Camera/wa_avatar.png';
+  await writeFile(tmp, Buffer.from(b64.replace(/^data:[^,]+,/, ''), 'base64'));
+  try {
+    await adb(serial, ['push', tmp, remote]);
+    // 2) MediaStore'a indeksle + _id al (SetAsProfilePhoto content:// URI ister).
+    await adb(serial, ['shell', 'su', '-c', 'content call --uri content://media --method scan_volume --arg external_primary']).catch(() => undefined);
+    await sleep(1200);
+    const q = await adb(serial, ['shell', 'content', 'query', '--uri', 'content://media/external/images/media',
+      '--projection', '_id:_data', '--where', `"_data='/storage/emulated/0/DCIM/Camera/wa_avatar.png'"`]).catch(() => '');
+    const m = /_id=(\d+)/.exec(String(q || ''));
+    if (!m) return { status: 'NO_INDEX', note: 'Resim MediaStore\'a indekslenemedi' };
+    const mediaId = m[1];
+    // 3) WA'ya foto izni ver (yeni Android scoped-storage için şart).
+    for (const perm of ['android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_EXTERNAL_STORAGE']) {
+      await adb(serial, ['shell', 'pm', 'grant', WA_PKG, perm]).catch(() => undefined);
+    }
+    // 4) SetAsProfilePhoto'yu content:// URI ile DOĞRUDAN aç → CropImage.
+    await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.SetAsProfilePhoto`,
+      '-a', 'android.intent.action.ATTACH_DATA', '-d', `content://media/external/images/media/${mediaId}`, '-t', 'image/png']);
+    await sleep(3500);
+    const cropAct = await currentActivity(serial).catch(() => '');
+    if (!/CropImage|SetAsProfile/i.test(cropAct)) {
+      return { status: 'NO_CROP', note: 'Crop ekranı açılmadı', activity: cropAct };
+    }
+    // 5) Done (crop sağ alt).
+    await tap(0.833, 0.933); await sleep(4000);
+    const act = await currentActivity(serial).catch(() => '');
+    const ok = /ProfileInfo|SetAsProfile|Home/i.test(act);
+    return { status: ok ? 'OK' : 'UNCONFIRMED', mediaId, activity: act };
+  } finally {
+    await rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
 async function whatsappProfile(serial, payload) {
   const to = String(p(payload, 'to', '')).replace(/[^\d]/g, '');
   const from = String(p(payload, 'from', '')).trim();
@@ -8219,6 +8335,14 @@ async function wakeDevice(job) {
   const ip = (await resolveLeaseIp(instance, subnetId).catch(() => null)) || `192.168.${subnetId}.112`;
   const serial = `${ip}:5555`;
   await ensureConnected(serial);
+  // ★2026-07-24: erişilemiyorsa (container RUNNING ama ADB "No route") eth0-IP kaybı
+  // olabilir — 180s boşuna waitBoot beklemek yerine ÖNCE eth0-heal dene, sonra reconnect.
+  // (canlı-teşhiste mi19/idilcall bu yüzden DEVICE_WAKE 180s-timeout'a düşüyordu.)
+  const reachable = await isSerialReachable(serial).catch(() => false);
+  if (!reachable) {
+    const r = await healInstanceEth0(instance).catch(() => ({ healed: false }));
+    if (r.healed) { log(`wake: ${instance} eth0-heal uygulandı → ${r.ip}`); await ensureConnected(serial).catch(() => undefined); }
+  }
   const booted = await waitBoot(serial, 180000);
   if (!booted) throw new Error('wake: boot_completed not reached within 180s');
   await addInstanceRoutes(instance, subnetId, ip);
@@ -10080,6 +10204,80 @@ async function orphanReaperTick() {
 // self-watchdog only checks that the dispatch loop is PROGRESSING (it is — every connect
 // just returns "offline"). This tick detects the wedge: if instances are RUNNING on the
 // host but far fewer are ADB-reachable, bounce the adb server once (cooldown'd) and
+// Tek bir serial şu an ADB-erişilebilir mi (reachableSerials cache'ini paylaşır).
+async function isSerialReachable(serial) {
+  try { return (await reachableSerials()).includes(serial); } catch { return false; }
+}
+
+// ★2026-07-24: per-instance eth0 self-heal. Bir Waydroid instance boot ettiğinde
+// (container RUNNING, "Android ready") bazen container içindeki eth0'a IPv4 ADRESİ
+// ATANMIYOR — sadece IPv6 link-local kalıyor. Sonuç: host→192.168.<sub>.112 "No route
+// to host" (ARP INCOMPLETE), cihaz kalıcı OFFLINE, adb reconnect boşuna. adb server
+// bounce bunu ÇÖZMEZ (sorun adb'de değil, container ağında). ÇÖZÜM: eth0'a statik IP
+// (.112/24) elle ata + link up + adb connect. Bu, canlı-teşhiste (mi19/idilcall) elle
+// bulunan fix'in otomatiği. Instance'ın nokta-path lxc dizinini kullanır (waydroid.<inst>).
+async function healInstanceEth0(inst) {
+  try {
+    const { stdout: subOut } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
+    const sub = String(subOut || '').trim();
+    if (!sub) return { healed: false, reason: 'no-subnet' };
+    const ip = `192.168.${sub}.112`;
+    const lxcp = `/var/lib/waydroid.${inst}/lxc`;
+    // Container gerçekten RUNNING mi? Değilse bu tick'in işi değil (wd-run başlatır).
+    const { stdout: stOut } = await execFileAsync('bash', ['-c', `lxc-info -n waydroid -P ${lxcp} -sH 2>/dev/null`]).catch(() => ({ stdout: '' }));
+    if (String(stOut || '').trim() !== 'RUNNING') return { healed: false, reason: 'not-running' };
+    // Container eth0'da IPv4 var mı?
+    const { stdout: ipOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip -4 addr show eth0 2>/dev/null | grep -c 'inet '`]).catch(() => ({ stdout: '0' }));
+    const hasIp = Number(String(ipOut || '0').trim()) > 0;
+    if (hasIp) return { healed: false, reason: 'already-has-ip' };
+    // IP YOK → ata + link up (bugün elle yapılan fix). route best-effort (gerekmez).
+    log(`eth0-heal: ${inst} eth0 IPv4 yok → ${ip}/24 atanıyor`);
+    await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip addr add ${ip}/24 dev eth0 2>/dev/null; lxc-attach -n waydroid -P ${lxcp} -- ip link set eth0 up 2>/dev/null; lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+    await sleep(1500);
+    await execFileAsync(ADB, ['connect', `${ip}:5555`]).catch(() => undefined);
+    // ★2026-07-24: eth0-heal sonrası PROXY zincirini de doğrula (operatör isteği:
+    // "cihaz geri açılınca proxy'yi de gömsün"). iptables REDIRECT kuralları subnet-bazlı
+    // olduğu için eth0-IP değişiminden ETKİLENMEZ — ama redsocks daemon ölmüş ya da
+    // REDIRECT kuralı hiç kurulmamış olabilir (proxy'siz = datacenter-IP sızıntısı = ban).
+    // Eksikse per-instance saklı config'ten (redsocks-inst-<inst>.conf) yeniden kur.
+    await ensureInstanceProxy(inst, sub).catch(() => undefined);
+    return { healed: true, ip };
+  } catch (e) { return { healed: false, reason: (e && e.message) || 'error' }; }
+}
+
+// Bir instance'ın proxy zinciri (redsocks daemon + iptables REDIRECT) canlı mı doğrula;
+// değilse saklı per-instance config'ten yeniden kur. eth0-heal + wake sonrası çağrılır
+// ki cihaz asla proxy'siz (datacenter-IP'den) çıkıp WhatsApp banına maruz kalmasın.
+async function ensureInstanceProxy(inst, sub) {
+  const conf = `/etc/redsocks-inst-${inst}.conf`;
+  // Saklı config yoksa bu instance'a proxy hiç atanmamış demektir — dokunma.
+  const hasConf = await execFileAsync('bash', ['-c', `test -f ${conf} && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
+  if (!hasConf) return { ok: false, reason: 'no-conf' };
+  // redsocks daemon bu config için çalışıyor mu?
+  const redsAlive = await execFileAsync('bash', ['-c', `pgrep -f 'redsocks-inst-${inst}.conf' >/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
+  // iptables REDIRECT kuralı bu subnet için var mı?
+  const redirOk = await execFileAsync('bash', ['-c', `iptables -t nat -C PREROUTING -s 192.168.${sub}.0/24 -p tcp -j REDIRECT --to-ports $(grep -oE 'local_port = [0-9]+' ${conf} | grep -oE '[0-9]+') 2>/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
+  if (redsAlive && redirOk) return { ok: true, reason: 'already-healthy' };
+  // Eksik → wd-proxy.sh saklı config'in kredensiyelleriyle yeniden kur. Config'ten
+  // country/login/pass/host/port çıkarıp wd-proxy.sh <inst> <cc> <user> <pass> <host> <port>.
+  log(`eth0-heal: ${inst} proxy eksik (redsocks=${redsAlive} redirect=${redirOk}) → yeniden kuruluyor`);
+  // ★Config'te İKİ ip/port var: 'local_ip/local_port' (redsocks dinleme) ve upstream
+  // 'ip/port' (thordata). Satır-başı (whitespace sonrası) TAM 'ip ='/'port =' yakala —
+  // 'local_' önekini dışla, yoksa 0.0.0.0/local_port alınır (upstream yerine).
+  const restore = `
+    CONF=${conf}
+    CC=$(grep -oE 'country-[A-Z]+' $CONF | head -1 | cut -d- -f2)
+    USER=$(grep -oE 'login = "[^"]+"' $CONF | head -1 | sed 's/login = "//;s/"//')
+    PASS=$(grep -oE 'password = "[^"]+"' $CONF | head -1 | sed 's/password = "//;s/"//')
+    PHOST=$(grep -E '^[[:space:]]*ip = ' $CONF | head -1 | grep -oE '[0-9.]+')
+    PPORT=$(grep -E '^[[:space:]]*port = ' $CONF | head -1 | grep -oE '[0-9]+')
+    [ -n "$CC" ] && [ -n "$USER" ] && [ -n "$PHOST" ] && bash /opt/fleet-agent/waydroid/wd-proxy.sh ${inst} "$CC" "$USER" "$PASS" "$PHOST" "$PPORT" 2>&1 | tail -1
+  `;
+  const out = await execFileAsync('bash', ['-c', restore], { timeout: 30000 }).then((r) => String(r.stdout || '').trim()).catch((e) => `err:${e && e.message}`);
+  log(`eth0-heal: ${inst} proxy restore → ${out || 'ok'}`);
+  return { ok: true, reason: 'restored', out };
+}
+
 // reconnect all. Only fires on the "majority running-but-unreachable" signal, so it can't
 // disrupt a healthy fleet — it recovers an already-broken one.
 const ADB_RECOVERY_MS = Number(process.env.FLEET_ADB_RECOVERY_MS || 90000); // check every 90s
@@ -10095,6 +10293,30 @@ async function adbRecoveryTick() {
   // How many are ADB-reachable right now?
   let reachable = [];
   try { reachable = await reachableSerials(); } catch { return; }
+
+  // ★2026-07-24: ÖNCE per-instance eth0-heal. Çalışıyor ama ADB-erişilemez HER instance
+  // için eth0'da IPv4 var mı bak; yoksa ata (adb-server-bounce'tan bağımsız — tek cihazın
+  // eth0-IP kaybını çoğunluk-wedge beklemeden düzeltir). reachableSerials "192.168.<sub>.112:5555"
+  // döndürür; instance'ın subnet'iyle eşleştiririz.
+  const reachSubnets = new Set(reachable.map((s) => {
+    const m = /192\.168\.(\d+)\.112/.exec(String(s));
+    return m ? m[1] : null;
+  }).filter(Boolean));
+  let healedAny = false;
+  for (const inst of running) {
+    try {
+      const { stdout } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
+      const sub = String(stdout || '').trim();
+      if (!sub || reachSubnets.has(sub)) continue; // erişilebilir → dokunma
+      const r = await healInstanceEth0(inst);
+      if (r.healed) { healedAny = true; log(`eth0-heal: ${inst} → ${r.ip} onarıldı`); }
+    } catch { /* per-instance best-effort */ }
+  }
+  if (healedAny) {
+    // Onarım yaptıysak reachable sayısını tazele — belki artık yeter, bounce gerekmez.
+    try { reachable = await reachableSerials(); } catch { /* keep old */ }
+  }
+
   // Signal: many instances up, but fewer than half are ADB-reachable → adb server wedge.
   if (reachable.length >= Math.ceil(running.length / 2)) return; // healthy enough — do nothing
   if (Date.now() - lastAdbBounceAt < ADB_BOUNCE_COOLDOWN_MS) return; // just bounced; give it time

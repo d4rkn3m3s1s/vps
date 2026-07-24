@@ -463,6 +463,33 @@ export class BatchService {
     return { job };
   }
 
+  // Change the device's OWN WhatsApp profile DISPLAY NAME (pushname). The agent drives
+  // Settings › Profile › Name and types via ADBKeyboard. Workspace-scoped + assertDeviceReady
+  // gives an immediate DEVICE_OFFLINE/AGENT_UNREACHABLE instead of a silent PENDING hang.
+  async setProfileName(workspaceId: string | undefined, input: { deviceId: string; name: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const name = String(input.name ?? '').trim();
+    if (!name) throw new AppError('İsim gerekli', 400, 'INVALID_NAME');
+    if (name.length > 25) throw new AppError('İsim en fazla 25 karakter (WhatsApp sınırı)', 400, 'NAME_TOO_LONG');
+    const payload = { deviceId: input.deviceId, name } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_SET_NAME', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
+  // Change the device's OWN WhatsApp profile PICTURE. `imageB64` is a base64 PNG/JPEG
+  // (data-URI prefix tolerated). The agent pushes it to the gallery, indexes it into
+  // MediaStore, and opens WhatsApp's SetAsProfilePhoto → crop → Done. Workspace-scoped.
+  async setAvatar(workspaceId: string | undefined, input: { deviceId: string; imageB64: string }) {
+    await assertDeviceReady(input.deviceId, workspaceId);
+    const imageB64 = String(input.imageB64 ?? '').trim();
+    if (!imageB64) throw new AppError('Resim gerekli (base64 PNG/JPEG)', 400, 'INVALID_IMAGE');
+    // Guard against absurd payloads (base64 ~1.37× raw; 8MB raw ≈ 11MB b64 cap).
+    if (imageB64.length > 11_000_000) throw new AppError('Resim çok büyük (maks ~8MB)', 400, 'IMAGE_TOO_LARGE');
+    const payload = { deviceId: input.deviceId, imageB64 } as unknown as JobPayload;
+    const job = await createJobRecord('WHATSAPP_SET_AVATAR', payload, input.deviceId, workspaceId);
+    return { job };
+  }
+
   // Send a Telegram message directly from a DEVICE (no account row needed) — mirrors
   // sendFromDevice for WhatsApp. Verifies the device belongs to the workspace, then
   // dispatches TELEGRAM_SEND. The agent runtime-detects the installed Telegram package

@@ -36,6 +36,7 @@ import { SnapshotPanel } from './SnapshotPanel';
 import { DeviceAccessPanel } from './DeviceAccessPanel';
 import { DeviceMetricsPanel } from './DeviceMetricsPanel';
 import { FileClipboardPanel } from './FileClipboardPanel';
+import { WhatsappProfilePanel } from './WhatsappProfilePanel';
 
 export type DetailFingerprint = {
   imei: string;
@@ -471,6 +472,10 @@ export function ProfileDetailView({
 
       <Reveal delay={0.14} className="holo-stack-1">
         <FileClipboardPanel deviceId={device.id} />
+      </Reveal>
+
+      <Reveal delay={0.15} className="holo-stack-1">
+        <WhatsappProfilePanel deviceId={device.id} />
       </Reveal>
 
       <Reveal delay={0.16} className="holo-stack-1">

@@ -28,6 +28,8 @@ import {
   sendWhatsAppHandler,
   sendWhatsAppFromDeviceHandler,
   sendTelegramFromDeviceHandler,
+  setProfileNameHandler,
+  setAvatarHandler,
   readWhatsAppHandler,
   listWhatsAppMessagesHandler,
   fetchWhatsAppProfileHandler,
@@ -120,6 +122,11 @@ accountsRouter.post('/whatsapp/send', requireApiKey, authenticateJwt, heavyOpera
 // Send a Telegram message directly from a device (Telegram page). Same guards/rate
 // limit as WhatsApp send; dispatches TELEGRAM_SEND (agent runtime-detects the pkg).
 accountsRouter.post('/telegram/send', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(sendTelegramFromDeviceHandler));
+
+// Change the device's OWN WhatsApp profile — display name + picture. Device-scoped
+// (no account id); dispatches WHATSAPP_SET_NAME / WHATSAPP_SET_AVATAR.
+accountsRouter.post('/whatsapp/profile/name', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(setProfileNameHandler));
+accountsRouter.post('/whatsapp/profile/avatar', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(setAvatarHandler));
 
 // Fetch a contact's WhatsApp profile (avatar + name/about), device-scoped.
 accountsRouter.post('/whatsapp/profile', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(fetchWhatsAppProfileHandler));

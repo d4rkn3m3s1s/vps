@@ -82,10 +82,20 @@ esac
 # → 1 IP). WhatsApp reads that drift as one account hopping IPs → ban risk. Add sesstime to
 # hold the SAME IP for the whole window (WA session length). Configurable via env; 30 min
 # default. Only append when absent.
+#
+# ★★COUNTRY IN THE SESSID (2026-07-28): the sessid MUST include the country code.
+# thordata pins the sticky IP to the sessid ALONE — the `-country-XX` tag is ignored for
+# an already-live session. So re-applying the same instance with a DIFFERENT country kept
+# returning the OLD country's IP (VERIFIED LIVE: mi35 re-applied as DE → still exited TR;
+# same login with a fresh sessid → DE immediately). That silently breaks country switching
+# and, worse, hands WhatsApp a number/IP country MISMATCH → "Login not available"/ban.
+# Keying the sessid on <instance>-<cc> keeps stickiness per (device,country) while letting
+# a country change start a genuinely new session.
 STICKY_MIN="${FLEET_PROXY_STICKY_MIN:-30}"
+SESSID="$(echo "$INSTANCE$CC" | tr -cd 'A-Za-z0-9')"   # thordata: alnum-only session id
 case "$LOGIN" in
   *-sessid-*) : ;;                                  # already has a session id — leave it
-  *)          LOGIN="$LOGIN-sessid-$INSTANCE" ;;
+  *)          LOGIN="$LOGIN-sessid-$SESSID" ;;
 esac
 case "$LOGIN" in
   *-sesstime-*) : ;;                                # session lifetime already set

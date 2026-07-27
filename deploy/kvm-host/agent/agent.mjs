@@ -7609,12 +7609,16 @@ async function cloneApk(srcSerial, dstSerial, instance, pkg) {
 // accountId and can attach a downscaled base64 screenshot for the live panel.
 async function reportProgress(jobId, step, percent, note, status, extra) {
   try {
-    await api(`/agent/jobs/${jobId}/progress`, {
+    // ★ API yaniti { data: { ok, cancelled } } — operator 'Iptal Et'e basmissa cancelled:true.
+    // Doner deger cagirana iptal'i bildirir (provision step() bunu gorup abort eder).
+    const body = await api(`/agent/jobs/${jobId}/progress`, {
       method: 'POST',
       body: JSON.stringify({ step, percent, ...(note ? { note } : {}), ...(status ? { status } : {}), ...(extra || {}) })
     });
+    return { cancelled: !!(body && body.data && body.data.cancelled) };
   } catch (e) {
     log('progress report failed:', e.message);
+    return { cancelled: false };
   }
 }
 
@@ -7757,9 +7761,20 @@ async function provisionDevice(job) {
     curStep = key;
     curPct = percent;
     plog(`step '${key}' ${percent}% — ${note}`);   // per-step text trace to /var/log
-    await reportProgress(jobId, key, percent, note);
+    // ★ Iptal-check: operator 'Iptal Et'e basmissa reportProgress cancelled:true doner → abort.
+    const pr = await reportProgress(jobId, key, percent, note);
+    if (pr && pr.cancelled) {
+      plog(`step '${key}' IPTAL — operator kurulumu iptal etti, provision durduruluyor`);
+      throw new Error('PROV_CANCEL: kurulum iptal edildi (operator)');
+    }
+    // ★ Adim-timeout: bir adim asiri uzun surerse (takilma) FAILED bildir — modal sonsuza
+    // "calisiyor" kalmasin. infra agir (userdata klon ~4GB) → 6dk; digerleri → 150s.
+    const stepTimeoutMs = (key === 'infra') ? 6 * 60 * 1000 : 150 * 1000;
     try {
-      return await fn();
+      return await Promise.race([
+        fn(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`PROV_TIMEOUT: '${key}' adimi ${Math.round(stepTimeoutMs/1000)}s icinde bitmedi (takildi)`)), stepTimeoutMs))
+      ]);
     } catch (e) {
       // ★log the technical error to /var/log WITH the step name + elapsed, so raw stack
       // traces aren't the only (ungrouped) signal.
@@ -7875,29 +7890,19 @@ async function provisionDevice(job) {
       `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
     let eth0Ip = '';
-    let kicks = 0;
-    let staticApplied = false;
-    for (let i = 0; i < 30; i++) {
+    // ★ HEMEN-STATIK (DHCP bekleme YOK — sorunsuz hizli tas-gibi). Waydroid'de DHCP HEP
+    // gecikiyor (~16s bosa beklenirdi) + IP deterministik (192.168.<sub>.112) + bridge/gateway
+    // hazir. En bastan statik ata, sadece IP'nin bind olmasini kisa poll et. DHCP-kick YOK
+    // (kick'in ifconfig down/up'i statik IP'yi flush ederdi). ~16s tasarruf, ilk denemede cikis.
+    await staticEth0();
+    plog(`eth0 HEMEN-STATIK → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+    for (let i = 0; i < 10; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
-      // ★i===8 (~16s): DHCP hâlâ vermediyse STATİK ata + BEKLE (400s beklemektense hemen
-      // çöz). Statik atandıktan SONRA dhcpKick ÇALIŞTIRMA — kick'in `ifconfig eth0 down/up`'ı
-      // statik IP'yi FLUSH eder (canlı-bug: statik@22s atandı ama kick#3-6 sildi, boot 69s
-      // sürdü). Statik-sonrası: sadece IP'nin bind olmasını poll et, kick'e dokunma.
-      if (i === 8 && !staticApplied) {
-        staticApplied = true;
-        await staticEth0();
-        plog(`eth0 statik-IP fallback → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
-        await logLine('⚙ eth0 statik IP atanıyor (DHCP gecikti)…');
-      } else if (!staticApplied && (i === 3 || (i > 3 && (i - 3) % 5 === 0))) {
-        // İlk kick i===3 (~8s), sonra ~10s'de bir — SADECE statik atanmadan ÖNCE.
-        await dhcpKick();
-        kicks++;
-        plog(`eth0 IPv4 gecikti — DHCP re-kick #${kicks} @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
-        if (kicks === 1) await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
-      }
-      await new Promise((r) => setTimeout(r, 2000));
+      // Bind olmadiysa statik'i tekrar dene (netd eth0'i resetlemis olabilir).
+      if (i === 3) await staticEth0();
+      await new Promise((r) => setTimeout(r, 1500));
     }
     if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) plog(`eth0 IPv4 bound in ${((Date.now() - dhcpT0) / 1000).toFixed(1)}s → ${eth0Ip}`);
     plog(`boot@${bootMs()}s: DHCP phase done`);
@@ -8355,26 +8360,23 @@ async function provisionDevice(job) {
     // (%97, boot_completed sonrasi) gelene kadar netd onu silmis olabilir -> cihaz READY
     // ama route YOK -> internete cikamaz -> heal 90s sonra toplar (yavas). COZUM: burada
     // (netd stabilize) route yeniden ekle + DOGRULA. READY isaretlenince route GARANTI.
-    // ★ persist-SOLID: netd-penceresini yen — GERCEK cikis dogrulanana kadar route ekle+bekle.
-    // netd boot sonrasi ~1-2dk table eth0'i temizler; 2 deneme yetmez. Cihaz-ici ham-TCP
-    // (http://1.1.1.1) 301/200 verene kadar (max ~12 tur × ~4s = ~48s) route'u tekrar ekle +
-    // gerekirse redsocks restart. Boylece provision READY dediginde cihaz GERCEKTEN cikiyor
-    // (heal beklemeden = tas-gibi). Basaramazsa heal yedek-plan olarak toplar.
-    let routeOk = false, exitOk = false;
-    const rsConf = `/etc/redsocks-inst-${instance}.conf`;
-    for (let att = 0; att < 12; att++) {
-      await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-      routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show', 'table', 'eth0'], 8000).catch(() => ''));
-      // gercek cikis testi (DNS-siz ham-TCP)
-      const tcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
-      if (/^(2\d\d|30\d)$/.test(tcp)) { exitOk = true; routeOk = true; break; }
-      // redsocks olu/tikali ise restart et (proxy varsa)
-      if (proxy) {
-        await execFileAsync('bash', ['-c', `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`]).catch(() => undefined);
-      }
-      await new Promise((r) => setTimeout(r, 3500));
+    // ★ persist TAS-GIBI receten: route(table eth0) + redsocks GARANTI + 1 kisa dogrula.
+    // Android fwmark uygulama-trafigi table eth0 kullanir; netd boot sonrasi table eth0'i
+    // temizleyebilir. Burada (netd stabilize) route ekle + redsocks daemon'i garantile
+    // (REDIRECT hedef-portu dinleyen redsocks yoksa cihaz TCP 000 verir — mi31 canli kanit).
+    // Tutmazsa heal (provisioningInstances'ten cikinca ilk tick) toplar. Dongu YOK -> hizli.
+    await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+    // redsocks GARANTI: conf varsa ve daemon o config icin calismiyor ise baslat (idempotent).
+    if (proxy) {
+      const rsConf = `/etc/redsocks-inst-${instance}.conf`;
+      await execFileAsync('bash', ['-c',
+        `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null 2>&1 || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
+      ]).catch(() => undefined);
     }
-    await logLine(`${exitOk ? '✓' : (routeOk ? '✓' : '⚠')} Ag yonlendirme kalici: ${exitOk ? 'cihaz internete CIKIYOR (dogrulandi)' : (routeOk ? 'route aktif (cikis dogrulanamadi)' : 'EKLENEMEDI - heal toplayacak')}`);
+    // Kisa dogrula: cihaz-ici ham-TCP (DNS-siz). 301/200 = cikiyor. Tek deneme (max ~7s).
+    const provTcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
+    const provExitOk = /^(2\d\d|30\d)$/.test(provTcp);
+    await logLine(`${provExitOk ? '✓ Ag yonlendirme: cihaz internete CIKIYOR (dogrulandi)' : '⚠ Ag yonlendirme: cikis heal-tick ile tamamlanacak (route+proxy kuruldu)'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
   });

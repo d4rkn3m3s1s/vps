@@ -871,12 +871,15 @@ export class AgentService {
     host: Host,
     jobId: string,
     input: { step: string; percent?: number | undefined; note?: string | undefined; status?: string | undefined; accountId?: string | undefined; shot?: string | undefined }
-  ): Promise<{ ok: true }> {
+  ): Promise<{ ok: true; cancelled: boolean }> {
     const job = await prisma.job.findUnique({ where: { id: jobId } });
     if (!job) throw new AppError('Job not found', 404, 'JOB_NOT_FOUND');
     if (job.claimedByHostId !== host.id) {
       throw new AppError('Job was not claimed by this host', 403, 'JOB_NOT_CLAIMED');
     }
+    // ★ Operator 'Iptal Et' -> provisionService.cancel job'u FAILED yapar. Agent bu yaniti
+    // okuyup provision'i ANINDA durdurur (adimlar-arasi abort). Iptal ANINDA etkili olur.
+    const jobCancelled = ['FAILED', 'CANCELLED', 'CANCELED'].includes(String(job.status));
     const payload = (job.payload ?? {}) as { deviceId?: string; accountId?: string };
     const deviceId = payload.deviceId ?? '';
     // Route by job type: WhatsApp registration progress → its own service (keyed by
@@ -896,7 +899,7 @@ export class AgentService {
         },
         job.workspaceId ?? undefined
       );
-      return { ok: true };
+      return { ok: true, cancelled: jobCancelled };
     }
     if (job.type === 'REGISTER_INSTAGRAM') {
       const accountId = input.accountId ?? payload.accountId ?? '';
@@ -913,7 +916,7 @@ export class AgentService {
         },
         job.workspaceId ?? undefined
       );
-      return { ok: true };
+      return { ok: true, cancelled: jobCancelled };
     }
     await provisionService.reportProgress(
       {
@@ -926,7 +929,7 @@ export class AgentService {
       },
       job.workspaceId ?? undefined
     );
-    return { ok: true };
+    return { ok: true, cancelled: jobCancelled };
   }
 
   // The Waydroid instance names of every device bound to this host (from

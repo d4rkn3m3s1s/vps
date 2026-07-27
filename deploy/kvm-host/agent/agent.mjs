@@ -8356,11 +8356,11 @@ async function provisionDevice(job) {
     // ama route YOK -> internete cikamaz -> heal 90s sonra toplar (yavas). COZUM: burada
     // (netd stabilize) route yeniden ekle + DOGRULA. READY isaretlenince route GARANTI.
     await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-    let routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show'], 8000).catch(() => ''));
+    let routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show', 'table', 'eth0'], 8000).catch(() => ''));
     if (!routeOk) {
       await new Promise((r) => setTimeout(r, 1500));
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-      routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show'], 8000).catch(() => ''));
+      routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show', 'table', 'eth0'], 8000).catch(() => ''));
     }
     await logLine(`${routeOk ? '✓' : '⚠'} Ag yonlendirme kalici: default route ${routeOk ? 'aktif (netd sonrasi dogrulandi)' : 'EKLENEMEDI - heal toplayacak'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
@@ -10337,7 +10337,7 @@ async function healInstanceEth0(inst) {
     // WhatsApp "Couldn't connect"). IP varsa DEFAULT-ROUTE'u da kontrol et; yoksa route'ları
     // ekle (heal). CANLI: mi20 statik-IP aldı ama route yok → çıkamadı. IP+route ikisi de tamsa geç.
     if (hasIp) {
-      const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
+      const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show table eth0 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
       if (Number(String(rtOut || '0').trim()) > 0) return { healed: false, reason: 'already-has-ip-and-route' };
       // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
       log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);

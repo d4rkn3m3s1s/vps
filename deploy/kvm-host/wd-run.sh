@@ -78,19 +78,32 @@ netfix_try() {
   done
 }
 NETOK=0
-for k in $(seq 1 8); do
+for k in $(seq 1 14); do
   netfix_try
   HASIP=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
-  HASRT=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route show 2>/dev/null | grep -c "^default")
+  HASRT=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route show table eth0 2>/dev/null | grep -c "^default")
   if [ "${HASIP:-0}" != "0" ] && [ "${HASRT:-0}" != "0" ]; then
     # 3s bekle + BIR KEZ DAHA dogrula (netd hemen sonra silmiyor mu)
     sleep 3
     HASIP2=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
-    [ "${HASIP2:-0}" != "0" ] && { NETOK=1; break; }
+    HASRT2=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route show table eth0 2>/dev/null | grep -c "^default")
+    [ "${HASIP2:-0}" != "0" ] && [ "${HASRT2:-0}" != "0" ] && { NETOK=1; break; }
   fi
   sleep 5
 done
 echo "NET_READY $INST ip=$IP gw=$GW ok=$NETOK tries=$k"
+# ── wd-run: REDSOCKS GUVENCESI (proxy'yi de boot'ta garanti; heal'e birakma) ──
+# redsocks-inst-<inst>.conf saklı ise (bu instance'a proxy atanmis): daemon calismiyorsa
+# baslat. Boylece cihaz boot biter bitmez proxy-cikisli (datacenter-IP degil = ban-guvenli).
+# mi29 canli: redsocks olu idi -> REDIRECT vardi ama daemon yoktu -> TCP 000. Bu blok cozer.
+RSCONF="/etc/redsocks-inst-$INST.conf"
+if [ -f "$RSCONF" ]; then
+  if ! pgrep -f "redsocks -c $RSCONF" >/dev/null 2>&1; then
+    redsocks -c "$RSCONF" >/dev/null 2>&1 && echo "REDSOCKS_STARTED $INST" || echo "REDSOCKS_FAIL $INST"
+  else
+    echo "REDSOCKS_OK $INST (zaten calisiyor)"
+  fi
+fi
 timeout 8 lxc-attach -n waydroid -P $LXCP -- start adbd 2>/dev/null
 echo "BOOT_DONE $INST subnet=$SUBNET boot=$(timeout 5 lxc-attach -n waydroid -P $LXCP -- getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
 # session i canlı tut (agent detached bekliyor)

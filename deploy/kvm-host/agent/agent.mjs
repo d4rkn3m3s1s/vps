@@ -10331,7 +10331,7 @@ async function isSerialReachable(serial) {
 // bounce bunu ÇÖZMEZ (sorun adb'de değil, container ağında). ÇÖZÜM: eth0'a statik IP
 // (.112/24) elle ata + link up + adb connect. Bu, canlı-teşhiste (mi19/idilcall) elle
 // bulunan fix'in otomatiği. Instance'ın nokta-path lxc dizinini kullanır (waydroid.<inst>).
-async function healInstanceEth0(inst) {
+async function healInstanceEth0(inst, knownReachable) {
   try {
     // ★2026-07-25: provision devam ederken DOKUNMA — provisionDevice kendi eth0'ını
     // yönetiyor (DHCP + statik fallback); paralel heal boot-session'ı bozar (canlı: FAILED).
@@ -10344,9 +10344,30 @@ async function healInstanceEth0(inst) {
     // Container gerçekten RUNNING mi? Değilse bu tick'in işi değil (wd-run başlatır).
     const { stdout: stOut } = await execFileAsync('bash', ['-c', `lxc-info -n waydroid -P ${lxcp} -sH 2>/dev/null`]).catch(() => ({ stdout: '' }));
     if (String(stOut || '').trim() !== 'RUNNING') return { healed: false, reason: 'not-running' };
-    // Container eth0'da IPv4 var mı?
-    const { stdout: ipOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip -4 addr show eth0 2>/dev/null | grep -c 'inet '`]).catch(() => ({ stdout: '0' }));
-    const hasIp = Number(String(ipOut || '0').trim()) > 0;
+    // Container eth0'da IPv4 var mı? ★YANLIS-POZITIF onle: lxc-attach agent'in yogun
+    // dongusunde ara sira timeout/bos donuyor → heal "IPv4 yok" saniyor → gereksiz IP atiyor
+    // → heal-firtinasi (log siser, IP zaten vardi). COZUM: "IP yok" gorursek KARAR VERMEDEN
+    // ONCE bir kez daha dogrula (200ms sonra). Gercekten yoksa ikisi de 0; gecici-hataysa
+    // ikinci deneme IP'yi gorur → gereksiz onarim yapilmaz. exit-code'u da kontrol et.
+    // ★YANLIS-POZITIF onle (KANITLANDI: mi26 IP hep vardi ama heal "yok" gorup gereksiz
+    // onardi). lxc-attach agent'in yogun dongusunde exit:0 verip BOS-stdout donuyor (ip
+    // komutu container-mesgulken bos ciktı) → grep -c=0 → heal "IP yok" saniyor → firtina.
+    // COZUM: 3 deneme, HERHANGI biri IP gorurse "var" say. IP gercekten yoksa 3'u de 0
+    // gorur (dogru heal); gecici-bos-cikti ise en az bir deneme IP'yi yakalar (yanlis-heal
+    // engellenir). Retry arasi 250ms. IP-varligi icin grep + exit-code birlikte.
+    // ★KÖK-FIX (yanlis-pozitif): ADB-reachable cihaz = IP+route KESIN var (reachable olmak
+    // icin gerekli). Bu cihazlarda IP-check YAPMA — lxc-attach yogun-donguda ara sira bos
+    // donuyor → heal "IP yok" saniyor → gereksiz IP-ata → ensureInstanceProxy → redsocks
+    // restart → "Proxy oldu" bildirim SPAM'i + provision'i bloke. knownReachable ise IP-check
+    // atla, hasIp=true (sadece route-check yapilir, IP'ye DOKUNULMAZ).
+    let hasIp = knownReachable === true;
+    if (!hasIp) {
+      for (let att = 0; att < 3; att++) {
+        const r = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | head -1`]).catch(() => ({ stdout: '' }));
+        if (/inet 192\.168\.\d+\.\d+/.test(String(r.stdout || ''))) { hasIp = true; break; }
+        if (att < 2) await sleep(250);
+      }
+    }
     // ★2026-07-27: IP VAR ama default-route EKSİK olabilir (cihaz internete çıkamaz, TCP 000,
     // WhatsApp "Couldn't connect"). IP varsa DEFAULT-ROUTE'u da kontrol et; yoksa route'ları
     // ekle (heal). CANLI: mi20 statik-IP aldı ama route yok → çıkamadı. IP+route ikisi de tamsa geç.
@@ -10395,22 +10416,7 @@ async function ensureInstanceProxy(inst, sub) {
   const redsAlive = await execFileAsync('bash', ['-c', `pgrep -f 'redsocks-inst-${inst}.conf' >/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
   // iptables REDIRECT kuralı bu subnet için var mı?
   const redirOk = await execFileAsync('bash', ['-c', `iptables -t nat -C PREROUTING -s 192.168.${sub}.0/24 -p tcp -j REDIRECT --to-ports $(grep -oE 'local_port = [0-9]+' ${conf} | grep -oE '[0-9]+') 2>/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
-  if (redsAlive && redirOk) {
-    // ★ proxy-health: redsocks canli ama upstream session TIKALI olabilir (cihaz TCP 502/000).
-    // Gercek cikis testi yap; basarisizsa redsocks'i restart et (session tazele) — 502'ler de
-    // otomatik iyilessin, elle-mudahale gerekmesin. Cihaz-ici DNS-siz ham-TCP (1.1.1.1) testi.
-    const serial = `192.168.${sub}.112:5555`;
-    const exitCode = await execFileAsync('bash', ['-c',
-      `timeout 10 ${ADB} -s ${serial} shell "su -c 'curl -s -o /dev/null -w %{http_code} --max-time 7 http://1.1.1.1'" 2>/dev/null | tr -d '
- '`
-    ]).then((r) => String(r.stdout || '').trim()).catch(() => '');
-    // 301/200/204 = cikabiliyor (saglikli). 000/502/403-uzeri = upstream tikali -> restart.
-    const healthy = /^(2\d\d|30\d)$/.test(exitCode);
-    if (healthy) return { ok: true, reason: 'already-healthy' };
-    log(`eth0-heal: ${inst} redsocks canli ama cikis basarisiz (TCP=${exitCode||'?'}) → redsocks restart`);
-    await execFileAsync('bash', ['-c', `pkill -f 'redsocks -c ${conf}' 2>/dev/null; sleep 0.5; redsocks -c ${conf} >/dev/null 2>&1; true`]).catch(() => undefined);
-    return { ok: true, reason: 'redsocks-restarted', tcp: exitCode };
-  }
+  if (redsAlive && redirOk) return { ok: true, reason: 'already-healthy' };
   // Eksik → wd-proxy.sh saklı config'in kredensiyelleriyle yeniden kur. Config'ten
   // country/login/pass/host/port çıkarıp wd-proxy.sh <inst> <cc> <user> <pass> <host> <port>.
   log(`eth0-heal: ${inst} proxy eksik (redsocks=${redsAlive} redirect=${redirOk}) → yeniden kuruluyor`);
@@ -10465,7 +10471,7 @@ async function adbRecoveryTick() {
       // durumunu düzeltir (cihaz ADB-reachable ama internete çıkamaz → WhatsApp "Couldn't
       // connect"). healInstanceEth0 IP+route ikisi de tamsa ucuz-geçer ('already-has-ip-and-
       // route'). Erişilemez cihaz da eth0-IP-yok durumunu düzeltir (önceki davranış korunur).
-      const r = await healInstanceEth0(inst);
+      const r = await healInstanceEth0(inst, reachSubnets.has(sub));
       if (r.healed) { healedAny = true; log(`eth0-heal: ${inst} → ${r.reason || r.ip} onarıldı`); }
     } catch { /* per-instance best-effort */ }
   }

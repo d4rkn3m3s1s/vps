@@ -10381,7 +10381,22 @@ async function ensureInstanceProxy(inst, sub) {
   const redsAlive = await execFileAsync('bash', ['-c', `pgrep -f 'redsocks-inst-${inst}.conf' >/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
   // iptables REDIRECT kuralı bu subnet için var mı?
   const redirOk = await execFileAsync('bash', ['-c', `iptables -t nat -C PREROUTING -s 192.168.${sub}.0/24 -p tcp -j REDIRECT --to-ports $(grep -oE 'local_port = [0-9]+' ${conf} | grep -oE '[0-9]+') 2>/dev/null && echo yes || echo no`]).then((r) => String(r.stdout || '').trim() === 'yes').catch(() => false);
-  if (redsAlive && redirOk) return { ok: true, reason: 'already-healthy' };
+  if (redsAlive && redirOk) {
+    // ★ proxy-health: redsocks canli ama upstream session TIKALI olabilir (cihaz TCP 502/000).
+    // Gercek cikis testi yap; basarisizsa redsocks'i restart et (session tazele) — 502'ler de
+    // otomatik iyilessin, elle-mudahale gerekmesin. Cihaz-ici DNS-siz ham-TCP (1.1.1.1) testi.
+    const serial = `192.168.${sub}.112:5555`;
+    const exitCode = await execFileAsync('bash', ['-c',
+      `timeout 10 ${ADB} -s ${serial} shell "su -c 'curl -s -o /dev/null -w %{http_code} --max-time 7 http://1.1.1.1'" 2>/dev/null | tr -d '
+ '`
+    ]).then((r) => String(r.stdout || '').trim()).catch(() => '');
+    // 301/200/204 = cikabiliyor (saglikli). 000/502/403-uzeri = upstream tikali -> restart.
+    const healthy = /^(2\d\d|30\d)$/.test(exitCode);
+    if (healthy) return { ok: true, reason: 'already-healthy' };
+    log(`eth0-heal: ${inst} redsocks canli ama cikis basarisiz (TCP=${exitCode||'?'}) → redsocks restart`);
+    await execFileAsync('bash', ['-c', `pkill -f 'redsocks -c ${conf}' 2>/dev/null; sleep 0.5; redsocks -c ${conf} >/dev/null 2>&1; true`]).catch(() => undefined);
+    return { ok: true, reason: 'redsocks-restarted', tcp: exitCode };
+  }
   // Eksik → wd-proxy.sh saklı config'in kredensiyelleriyle yeniden kur. Config'ten
   // country/login/pass/host/port çıkarıp wd-proxy.sh <inst> <cc> <user> <pass> <host> <port>.
   log(`eth0-heal: ${inst} proxy eksik (redsocks=${redsAlive} redirect=${redirOk}) → yeniden kuruluyor`);

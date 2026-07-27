@@ -8134,6 +8134,19 @@ async function provisionDevice(job) {
   // 6) route — Android netstack leaves fwmark tables empty every boot.
   await step('route', 68, 'Ağ yönlendirme', async () => {
     await addInstanceRoutes(instance, subnetId, ip);
+    // ★2026-07-27 OTONOM KOK-FIX (internet-cikis): netd her boot table eth0'i temizler
+    // (uygulama-trafigi orayi kullanir; default YOKSA TCP 000). Host template'ini gateway'le
+    // doldurup cihaz Magisk service.d'sine kur → her boot route'u geri ekler → internet-cikis
+    // otomatik garantili (HER tek-tik cihaz), heal'e gerek YOK. Host-template + adb push
+    // (inline-string degil = encoding-safe).
+    try {
+      const tpl = '/opt/fleet-agent/waydroid/wd-route-persist.sh';
+      const tmp = `/tmp/wd-route-persist-${instance}.sh`;
+      await execFileAsync('bash', ['-c', `sed 's/__GATEWAY__/192.168.${subnetId}.1/g' ${tpl} > ${tmp}`], 8000).catch(() => undefined);
+      await adbT(serial, ['push', tmp, '/data/local/tmp/wd-route-persist.sh'], 12000).catch(() => undefined);
+      await adbSu(serial, 'mkdir -p /data/adb/service.d; cp /data/local/tmp/wd-route-persist.sh /data/adb/service.d/wd-route-persist.sh; chmod 0755 /data/adb/service.d/wd-route-persist.sh; sh /data/adb/service.d/wd-route-persist.sh').catch(() => undefined);
+      await logLine('✓ Boot-persist route (service.d) kuruldu — internet-cikis netd-silmesine dayanikli');
+    } catch { /* best-effort */ }
     await logLine(`✓ Ağ yönlendirme eklendi (gw 192.168.${subnetId}.1)`);
   });
 

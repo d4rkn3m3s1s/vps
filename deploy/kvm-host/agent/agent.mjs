@@ -8134,19 +8134,6 @@ async function provisionDevice(job) {
   // 6) route — Android netstack leaves fwmark tables empty every boot.
   await step('route', 68, 'Ağ yönlendirme', async () => {
     await addInstanceRoutes(instance, subnetId, ip);
-    // ★2026-07-27 OTONOM KOK-FIX (internet-cikis): netd her boot table eth0'i temizler
-    // (uygulama-trafigi orayi kullanir; default YOKSA TCP 000). Host template'ini gateway'le
-    // doldurup cihaz Magisk service.d'sine kur → her boot route'u geri ekler → internet-cikis
-    // otomatik garantili (HER tek-tik cihaz), heal'e gerek YOK. Host-template + adb push
-    // (inline-string degil = encoding-safe).
-    try {
-      const tpl = '/opt/fleet-agent/waydroid/wd-route-persist.sh';
-      const tmp = `/tmp/wd-route-persist-${instance}.sh`;
-      await execFileAsync('bash', ['-c', `sed 's/__GATEWAY__/192.168.${subnetId}.1/g' ${tpl} > ${tmp}`], 8000).catch(() => undefined);
-      await adbT(serial, ['push', tmp, '/data/local/tmp/wd-route-persist.sh'], 12000).catch(() => undefined);
-      await adbSu(serial, 'mkdir -p /data/adb/service.d; cp /data/local/tmp/wd-route-persist.sh /data/adb/service.d/wd-route-persist.sh; chmod 0755 /data/adb/service.d/wd-route-persist.sh; sh /data/adb/service.d/wd-route-persist.sh').catch(() => undefined);
-      await logLine('✓ Boot-persist route (service.d) kuruldu — internet-cikis netd-silmesine dayanikli');
-    } catch { /* best-effort */ }
     await logLine(`✓ Ağ yönlendirme eklendi (gw 192.168.${subnetId}.1)`);
   });
 
@@ -8388,17 +8375,24 @@ async function provisionDevice(job) {
     // temizleyebilir. Burada (netd stabilize) route ekle + redsocks daemon'i garantile
     // (REDIRECT hedef-portu dinleyen redsocks yoksa cihaz TCP 000 verir — mi31 canli kanit).
     // Tutmazsa heal (provisioningInstances'ten cikinca ilk tick) toplar. Dongu YOK -> hizli.
-    await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-    // redsocks GARANTI: conf varsa ve daemon o config icin calismiyor ise baslat (idempotent).
-    if (proxy) {
-      const rsConf = `/etc/redsocks-inst-${instance}.conf`;
-      await execFileAsync('bash', ['-c',
-        `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null 2>&1 || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
-      ]).catch(() => undefined);
+    // ★2026-07-27 INTERNET-CIKIS FIX (script-sureci YOK, retry): Android netd boot sonrasi
+    // table eth0'i (uygulama-trafigi orayi kullanir) TEMIZLER → internet YOK (TCP 000).
+    // Cihaz GERCEKTEN cikana kadar route ekle + redsocks garantile + dogrula (max ~10 tur/
+    // ~50s, netd sakinlesince tutar). Kalicilik: agent heal (adbRecoveryTick) sonrasi da
+    // table eth0'i korur → reboot/netd-silme sonrasi otomatik geri gelir.
+    let provExitOk = false, provTcp = '';
+    const rsConf = `/etc/redsocks-inst-${instance}.conf`;
+    for (let att = 0; att < 10; att++) {
+      await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+      if (proxy) {
+        await execFileAsync('bash', ['-c',
+          `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null 2>&1 || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
+        ]).catch(() => undefined);
+      }
+      provTcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
+      if (/^(2\d\d|30\d)$/.test(provTcp)) { provExitOk = true; break; }
+      await new Promise((r) => setTimeout(r, 4000));
     }
-    // Kisa dogrula: cihaz-ici ham-TCP (DNS-siz). 301/200 = cikiyor. Tek deneme (max ~7s).
-    const provTcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
-    const provExitOk = /^(2\d\d|30\d)$/.test(provTcp);
     await logLine(`${provExitOk ? '✓ Ag yonlendirme: cihaz internete CIKIYOR (dogrulandi)' : '⚠ Ag yonlendirme: cikis heal-tick ile tamamlanacak (route+proxy kuruldu)'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };

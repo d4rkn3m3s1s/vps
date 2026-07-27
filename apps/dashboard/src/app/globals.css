@@ -8852,3 +8852,43 @@ input, select, textarea, .field-input, .field-input--sm {
   .grant-issue-row .grant-hours { flex: 1 1 90px; }
   .grant-issue-row .field-input { flex: 1 1 100%; min-width: 0; }
 }
+
+/* ★2026-07-27: Cihaz kartındaki kayıtlı WhatsApp numarası — kalın + WhatsApp-yeşili +
+   görünür pill. Operatör isteği: "numara kısmını farklı kalın ve görünür farklı renk". */
+.wa-phone-badge {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  font-size: 0.86rem;
+  letter-spacing: 0.02em;
+  color: #25d366;                        /* WhatsApp yeşili */
+  background: rgba(37, 211, 102, 0.10);
+  border: 1px solid rgba(37, 211, 102, 0.30);
+  border-radius: 6px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
+@media (prefers-color-scheme: light) {
+  .wa-phone-badge { color: #128c4a; background: rgba(37, 211, 102, 0.12); border-color: rgba(18, 140, 74, 0.35); }
+}
+:root[data-theme="light"] .wa-phone-badge { color: #128c4a; background: rgba(37, 211, 102, 0.12); border-color: rgba(18, 140, 74, 0.35); }
+:root[data-theme="dark"] .wa-phone-badge { color: #25d366; background: rgba(37, 211, 102, 0.10); border-color: rgba(37, 211, 102, 0.30); }
+
+/* ★2026-07-27: Üst-bar oturum-süresi göstergesi (SessionTimer). Operatör isteği:
+   "auth süresi kaç dk kaldığını küçük bir yerde görelim yukarı". */
+.session-timer {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 0.74rem; font-weight: 600; letter-spacing: 0.01em;
+  color: var(--text-dim, #94a3b8);
+  background: rgba(148, 163, 184, 0.10);
+  border: 1px solid rgba(148, 163, 184, 0.20);
+  border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.session-timer svg { opacity: 0.8; }
+.session-timer--warn { color: #f59e0b; background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.30); }
+.session-timer--urgent { color: #ef4444; background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.35); animation: sessionPulse 1.6s ease-in-out infinite; }
+.session-timer--expired { color: #ef4444; background: rgba(239, 68, 68, 0.16); border-color: rgba(239, 68, 68, 0.4); }
+@keyframes sessionPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+@media (prefers-reduced-motion: reduce) { .session-timer--urgent { animation: none; } }
+/* Dar ekranda (telefon) sadece ikon+sayı kalsın, taşmasın. */
+@media (max-width: 560px) { .session-timer { padding: 3px 7px; font-size: 0.7rem; } }

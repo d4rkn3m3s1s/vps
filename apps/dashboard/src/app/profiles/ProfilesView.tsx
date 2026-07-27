@@ -1296,8 +1296,8 @@ export function ProfilesView({
                         registered, so idle cards stay clean. */}
                     {(device.metadata?.waRegisteredPhone as string) ? (
                       <li>
-                        <span className="meta-icon"><MessageCircle size={13} /></span>
-                        <span className="mono" title="Bu cihaza kayıtlı WhatsApp numarası">
+                        <span className="meta-icon" style={{ color: '#25d366' }}><MessageCircle size={13} /></span>
+                        <span className="wa-phone-badge" title="Bu cihaza kayıtlı WhatsApp numarası">
                           +{String(device.metadata?.waRegisteredPhone).replace(/^\+/, '')}
                         </span>
                       </li>

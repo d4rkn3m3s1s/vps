@@ -10404,6 +10404,11 @@ async function healInstanceEth0(inst, knownReachable) {
         `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 table $T 2>/dev/null; done; ` +
         `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
       await sleep(800);
+      // ★DOGRULA: table eth0 (uygulama-trafigi orayi kullanir) GERCEKTEN tuttu mu? netd
+      // boot-sonrasi ~2-3dk agresif siler -> "route-added" yanlis-pozitif olurdu. Tutmadiysa
+      // healed:false don (sonraki 30s tick tekrar dener; netd sakinleyince kesin tutar).
+      const rtOk = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show table eth0 2>/dev/null | grep -c '^default'`]).then((r) => Number(String(r.stdout || '0').trim()) > 0).catch(() => false);
+      if (!rtOk) return { healed: false, reason: 'route-netd-sildi (tekrar denenecek)' };
       await ensureInstanceProxy(inst, sub).catch(() => undefined);
       return { healed: true, ip, reason: 'route-added' };
     }
@@ -10463,7 +10468,7 @@ async function ensureInstanceProxy(inst, sub) {
 
 // reconnect all. Only fires on the "majority running-but-unreachable" signal, so it can't
 // disrupt a healthy fleet — it recovers an already-broken one.
-const ADB_RECOVERY_MS = Number(process.env.FLEET_ADB_RECOVERY_MS || 90000); // check every 90s
+const ADB_RECOVERY_MS = Number(process.env.FLEET_ADB_RECOVERY_MS || 30000); // check every 30s (internet-cikis netd-silmesini daha hizli toparla)
 const ADB_BOUNCE_COOLDOWN_MS = Number(process.env.FLEET_ADB_BOUNCE_COOLDOWN_MS || 5 * 60 * 1000);
 async function adbRecoveryTick() {
   // Instances actually running on the host (wd-run shells).

@@ -8383,7 +8383,7 @@ async function provisionDevice(job) {
     let provExitOk = false, provTcp = '';
     const rsConf = `/etc/redsocks-inst-${instance}.conf`;
     const rsPort = 12500 + subnetId;
-    for (let att = 0; att < 8; att++) {
+    for (let att = 0; att < 4; att++) { // proto-static route ILK turda tutar; cikinca break, kalan turlar sadece redsocks-tazele icin
       // 1) table eth0 (+ main/local_network) route garantile — uygulama-trafigi table eth0 kullanir.
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
       // 2) redsocks: 502/000 (upstream tikali) -> ZORLA tazele (daemon var-yok fark etmez).
@@ -8398,7 +8398,7 @@ async function provisionDevice(job) {
       // 3) gercek cikis dogrula (DNS-siz ham-TCP). 2xx/30x = cikiyor.
       provTcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
       if (/^(2\d\d|30\d)$/.test(provTcp)) { provExitOk = true; break; }
-      await new Promise((r) => setTimeout(r, 3000));
+      await new Promise((r) => setTimeout(r, 2000));
     }
     await logLine(`${provExitOk ? '✓ Ag yonlendirme: cihaz internete CIKIYOR (dogrulandi)' : '⚠ Ag yonlendirme: cikis heal-tick ile tamamlanacak (route+proxy kuruldu)'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);

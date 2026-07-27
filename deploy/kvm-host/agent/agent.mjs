@@ -8355,14 +8355,26 @@ async function provisionDevice(job) {
     // (%97, boot_completed sonrasi) gelene kadar netd onu silmis olabilir -> cihaz READY
     // ama route YOK -> internete cikamaz -> heal 90s sonra toplar (yavas). COZUM: burada
     // (netd stabilize) route yeniden ekle + DOGRULA. READY isaretlenince route GARANTI.
-    await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
-    let routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show', 'table', 'eth0'], 8000).catch(() => ''));
-    if (!routeOk) {
-      await new Promise((r) => setTimeout(r, 1500));
+    // ★ persist-SOLID: netd-penceresini yen — GERCEK cikis dogrulanana kadar route ekle+bekle.
+    // netd boot sonrasi ~1-2dk table eth0'i temizler; 2 deneme yetmez. Cihaz-ici ham-TCP
+    // (http://1.1.1.1) 301/200 verene kadar (max ~12 tur × ~4s = ~48s) route'u tekrar ekle +
+    // gerekirse redsocks restart. Boylece provision READY dediginde cihaz GERCEKTEN cikiyor
+    // (heal beklemeden = tas-gibi). Basaramazsa heal yedek-plan olarak toplar.
+    let routeOk = false, exitOk = false;
+    const rsConf = `/etc/redsocks-inst-${instance}.conf`;
+    for (let att = 0; att < 12; att++) {
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
       routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show', 'table', 'eth0'], 8000).catch(() => ''));
+      // gercek cikis testi (DNS-siz ham-TCP)
+      const tcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
+      if (/^(2\d\d|30\d)$/.test(tcp)) { exitOk = true; routeOk = true; break; }
+      // redsocks olu/tikali ise restart et (proxy varsa)
+      if (proxy) {
+        await execFileAsync('bash', ['-c', `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`]).catch(() => undefined);
+      }
+      await new Promise((r) => setTimeout(r, 3500));
     }
-    await logLine(`${routeOk ? '✓' : '⚠'} Ag yonlendirme kalici: default route ${routeOk ? 'aktif (netd sonrasi dogrulandi)' : 'EKLENEMEDI - heal toplayacak'}`);
+    await logLine(`${exitOk ? '✓' : (routeOk ? '✓' : '⚠')} Ag yonlendirme kalici: ${exitOk ? 'cihaz internete CIKIYOR (dogrulandi)' : (routeOk ? 'route aktif (cikis dogrulanamadi)' : 'EKLENEMEDI - heal toplayacak')}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
   });

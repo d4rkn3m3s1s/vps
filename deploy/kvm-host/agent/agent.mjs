@@ -7890,19 +7890,24 @@ async function provisionDevice(job) {
       `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
     let eth0Ip = '';
-    // ★ HEMEN-STATIK (DHCP bekleme YOK — sorunsuz hizli tas-gibi). Waydroid'de DHCP HEP
-    // gecikiyor (~16s bosa beklenirdi) + IP deterministik (192.168.<sub>.112) + bridge/gateway
-    // hazir. En bastan statik ata, sadece IP'nin bind olmasini kisa poll et. DHCP-kick YOK
-    // (kick'in ifconfig down/up'i statik IP'yi flush ederdi). ~16s tasarruf, ilk denemede cikis.
-    await staticEth0();
-    plog(`eth0 HEMEN-STATIK → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
-    for (let i = 0; i < 10; i++) {
+    // ★2026-07-27 GERI-ALINDI: HEMEN-STATIK (staticEth0 @0s) binder-cokmesine yol aciyordu —
+    // container-init'in COK erken aninda lxc-attach ile ic-shell calistirmak Android'in
+    // binder-setup'iyla YARISIYORDU → "/dev/binder-<inst> has died" → boot cokme (mi29/mi30
+    // 69s->150s-timeout). ESKI DAVRANIS: once DHCP'ye zaman ver (container init ilerlesin),
+    // 16s'de gelmezse statik-fallback (o zamana kadar binder kurulmustur). staticEth0 ARTIK
+    // erken degil, DHCP-gecikince (i===8, ~16s) calisir → binder-yarisi YOK.
+    let staticApplied = false;
+    for (let i = 0; i < 30; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
-      // Bind olmadiysa statik'i tekrar dene (netd eth0'i resetlemis olabilir).
-      if (i === 3) await staticEth0();
-      await new Promise((r) => setTimeout(r, 1500));
+      if (i === 8 && !staticApplied) {
+        staticApplied = true;
+        await staticEth0();
+        plog(`eth0 statik-IP fallback -> 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        await logLine('eth0 statik IP ataniyor (DHCP gecikti)...');
+      }
+      await new Promise((r) => setTimeout(r, 2000));
     }
     if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) plog(`eth0 IPv4 bound in ${((Date.now() - dhcpT0) / 1000).toFixed(1)}s → ${eth0Ip}`);
     plog(`boot@${bootMs()}s: DHCP phase done`);

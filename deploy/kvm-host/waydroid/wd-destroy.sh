@@ -59,6 +59,17 @@ for pat in "wd-run.sh $INSTANCE" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE" "
 done
 # Remove this instance's redsocks config (else /etc fills with dead per-instance confs).
 rm -f "/etc/redsocks-inst-$INSTANCE.conf" 2>/dev/null || true
+
+# ★2026-07-27 KOK-FIX (binderfs LEAK): /dev/binderfs-<inst> mount'u SILINMIYORDU →
+# eski/bozuk binderfs kalintisi kaliyordu → sonraki AYNI-slot kurulumu bu bozuk mount'a
+# baglaniyor → Android boot olur ama binder "has died" → boot COKME (mi29 canli kanit:
+# 69s->150s-timeout). Cozum: binderfs'i lazy-umount (kullanimda olsa bile) + node symlink
+# + mount-dizini temizle. Boylece slot GERCEKTEN bosalir, sonraki kurulum temiz binderfs kurar.
+umount -l "/dev/binderfs-$INSTANCE" 2>/dev/null || true
+umount -f "/dev/binderfs-$INSTANCE" 2>/dev/null || true
+rm -rf "/dev/binderfs-$INSTANCE" 2>/dev/null || true
+rm -f "/dev/anbox-binder-$INSTANCE" "/dev/anbox-hwbinder-$INSTANCE" "/dev/anbox-vndbinder-$INSTANCE" "/dev/hwbinder-$INSTANCE" "/dev/vndbinder-$INSTANCE" "/dev/binder-$INSTANCE" 2>/dev/null || true
+log "binderfs unmount + binder nodes cleared (leak-fix)"
 log "supervisor + redsocks + dbus sidecars killed"
 
 # 2) Disable + remove the per-instance systemd unit.

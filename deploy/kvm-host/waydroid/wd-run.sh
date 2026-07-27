@@ -17,6 +17,19 @@ rm -rf /run/wd-$INST /run/xdg-$INST 2>/dev/null; sleep 1
 rm -f /run/waydroid-$INST-lxc/network_up 2>/dev/null  # netfix
 pkill -9 -f "dnsmasq.*waydroid-$INST" 2>/dev/null  # netfix orphan-dnsmasq (subnet cakismasi onler)
 touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-subnets.map 2>/dev/null  # netfix
+# ★2026-07-28 LEASE-TOHUMLAMA (.112 GARANTI): sistemin HER yeri cihaz IP'sini
+# 192.168.<sub>.112 varsayar (serial, heal, teshis komutlari). Ama dnsmasq adresi
+# havuzdan secer ve .113 verebilir (CANLI: mi13/mi12/mi14/mi19 .113 aldi -> ADB .112'yi
+# aradigi icin cihaz "offline" gorundu). dnsmasq ACILISTA mevcut lease'i onurlandirir:
+# lease dosyasi BOS/YOK ise .112'yi onceden yaz -> cihaz GERCEK DHCP ile .112 alir
+# (DHCP sarttir; DNS'i yalnizca DHCP getirir — bkz. wd-firewall-dhcp.sh).
+# Dolu lease'e DOKUNMA (calisan cihazin IP'sini degistirme).
+_SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null)
+_LEASE=/var/lib/misc/dnsmasq.waydroid-$INST.leases
+if [ -n "$_SUB" ] && [ ! -s "$_LEASE" ]; then
+  mkdir -p /var/lib/misc 2>/dev/null
+  echo "4102444800 00:16:3e:f9:d3:03 192.168.$_SUB.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > "$_LEASE"
+fi
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native
 # 3 binder

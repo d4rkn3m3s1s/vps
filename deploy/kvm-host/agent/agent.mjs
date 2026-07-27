@@ -1076,12 +1076,50 @@ async function longPressReal(serial, ax, ay, holdMs = 750) {
 
 async function ensureConnected(serial) {
   // redroid phones are reachable as host:port; connect is idempotent.
-  if (serial.includes(':')) {
-    try {
-      await execFileAsync(ADB, ['connect', serial], { maxBuffer: 1024 * 1024 });
-    } catch {
-      /* already connected or will surface on the real command */
-    }
+  if (!serial.includes(':')) return;
+  try {
+    await execFileAsync(ADB, ['connect', serial], { maxBuffer: 1024 * 1024 });
+  } catch {
+    /* already connected or will surface on the real command */
+  }
+  // ★★KOK-FIX 2026-07-28 (BAYAT-OFFLINE UC): adb, TCP uclarini kendiliginden SILMEZ.
+  // Bir cihaz silinince ucu host'un adb sunucusunda 'offline' olarak KALIR (ve adb onu
+  // otomatik yeniden baglamaya calisir). Ayni subnet YENI bir instance'a verilince
+  // (subnet geri-donusumu) `adb connect` sadece "already connected" der -> uc 'offline'
+  // KALIR -> provision'in ADB-yetkilendirme dongusu 30 tur bosa doner -> 'boot' adimi
+  // 150s TIMEOUT -> kurulum BASARISIZ (panelde "Kurulum basarisiz").
+  // CANLI KANIT: operator 9 cihaz silince 9 uc offline kaldi; mi36/mi37/mi20 UST USTE
+  // bu yuzden dustu. Ayni kodun oncesinde (bayat uc yokken) mi29 sorunsuz kuruldu ->
+  // yani sebep kod DEGIL, bayat uctu. Cozum: offline gorursek ucu ONCE dusur, sonra
+  // yeniden bagla (adb'nin bu durumdan tek cikis yolu).
+  const st = await execFileAsync(ADB, ['-s', serial, 'get-state'], { timeout: 5000 })
+    .then((r) => String(r.stdout || '').trim()).catch((e) => String(e.stdout || e.message || ''));
+  if (/offline/i.test(st)) {
+    await execFileAsync(ADB, ['disconnect', serial], { timeout: 5000 }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    await execFileAsync(ADB, ['connect', serial], { timeout: 8000 }).catch(() => undefined);
+  }
+}
+
+// BAYAT adb-ucu TEMIZLEYICISI (2026-07-28): host'ta karsiligi OLMAYAN (waydroid.<inst>
+// dizini yok) her offline/unauthorized ucu dusurur -> silinen cihazlarin kalintisi
+// BIRIKMEZ ve operator elle tespit etmek zorunda kalmaz. adbRecoveryTick'ten cagrilir;
+// ucuz (tek `adb devices` + dizin kontrolu). liveSubnets = calisan instance'larin
+// net-head.sh subnetleri; oradaki bir uca ASLA dokunulmaz (gecici offline olabilir).
+async function reapStaleAdbEndpoints(liveSubnets) {
+  const TAB = String.fromCharCode(9), NL = String.fromCharCode(10);
+  const out = await execFileAsync(ADB, ['devices'], { timeout: 8000 })
+    .then((r) => String(r.stdout || '')).catch(() => '');
+  for (const raw of out.split(NL)) {
+    const parts = raw.split(TAB).join(' ').trim().split(' ').filter(Boolean);
+    if (parts.length < 2) continue;
+    const serial = parts[0], state = parts[1];
+    if (!serial.startsWith('192.168.')) continue;
+    if (!/offline|unauthorized/i.test(state)) continue;
+    const sub = serial.split('.')[2];
+    if (liveSubnets.has(String(sub))) continue;   // gercek instance -> DOKUNMA
+    await execFileAsync(ADB, ['disconnect', serial], { timeout: 5000 }).catch(() => undefined);
+    log(`adb-reap: bayat uc dusuruldu ${serial} (state=${state}, host'ta instance yok)`);
   }
 }
 
@@ -7501,7 +7539,13 @@ async function authorizeAdb(instance) {
       const written = await readFile(keysFile, 'utf8').catch(() => '');
       if (!written.trim()) { log(`authorizeAdb: adb_keys empty after write (${instance})`); return false; }
     } catch (e) { log('authorizeAdb write:', e.message); return false; }
-    await lxcAttach(instance, ['/system/bin/setprop', 'ctl.restart', 'adbd'], 10000).catch(() => undefined);
+    // ★2026-07-28: adbd'yi RESTART ETME. Bu cagri aylarca ciplak 'setprop' ile SESSIZCE
+    // dusuyordu (servis PATH'inde /bin yok -> "Failed to exec") ve sistem sorunsuz
+    // calisiyordu: adbd adb_keys'i her auth denemesinde yeniden okur, restart GEREKMEZ.
+    // Mutlak yola cevirince cagri GERCEKTEN calisti ve adbd'yi BOOT ORTASINDA yeniden
+    // baslatti -> ADB koptu -> boot_completed okunamadi -> provision 'boot' adimi 150s
+    // TIMEOUT. CANLI KANIT: mi36 ADB@89s FAILED, mi37 ADB@132s FAILED; ayni kodun
+    // oncesinde mi29 ADB@70s + DONE 150s. Kaldirildi (anahtar yazimi yeterli).
     return true;
   }
   return false;
@@ -10492,6 +10536,18 @@ async function adbRecoveryTick() {
     const { stdout } = await execFileAsync('bash', ['-c', "pgrep -af 'wd-run.sh' 2>/dev/null | grep -oE 'wd-run.sh mi[0-9]+' | grep -oE 'mi[0-9]+' | sort -u"]);
     running = String(stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);
   } catch { return; }
+  // ★2026-07-28: BAYAT adb-uclarini HER tick'te temizle — silinen cihazlarin kalintisi
+  // birikip yeni kurulumlari (subnet geri-donusumunde) bogmasin. Operator elle tespit
+  // etmek zorunda kalmaz. running listesindeki instance'larin GERCEK subnetleri korunur.
+  try {
+    const live = new Set();
+    for (const inst of running) {
+      const sub = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`])
+        .then((r) => String(r.stdout || '').trim()).catch(() => '');
+      if (sub) live.add(sub);
+    }
+    if (live.size) await reapStaleAdbEndpoints(live);
+  } catch { /* best-effort */ }
   if (running.length < 3) return; // too small a fleet to judge; skip
   // How many are ADB-reachable right now?
   let reachable = [];

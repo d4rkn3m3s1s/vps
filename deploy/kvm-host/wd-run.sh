@@ -19,6 +19,17 @@ pkill -9 -f "dnsmasq.*waydroid-$INST" 2>/dev/null  # netfix orphan-dnsmasq (subn
 touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-subnets.map 2>/dev/null  # netfix
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native
+# ── wd-run: BRIDGE GARANTISI (DBus-session'a guvenme; mi29'da DBus takildi -> bridge YOKTU
+#    -> gateway/DHCP yok -> IP/route/proxy hicbiri calismadi). waydroid-net.sh idempotent:
+#    bridge waydroid-<inst> + gateway 192.168.<sub>.1 + dnsmasq(DHCP) + iptables MASQUERADE.
+#    Container-start ONCESI cagir ki eth0 peer'i hazir bridge'e baglansin. TAS-GIBI: her
+#    boot-yolunda (kurulum/WA/reboot/coklu) bridge garanti, DBus arizasindan bagimsiz.
+if ! ip link show waydroid-$INST >/dev/null 2>&1; then
+  env WAYDROID_INSTANCE=$INST bash /opt/waydroid-mi2/data/scripts/waydroid-net.sh start $INST >/var/log/wd-$INST-bridge.log 2>&1
+  echo "BRIDGE_SETUP $INST via waydroid-net.sh"
+else
+  echo "BRIDGE_OK $INST (zaten var)"
+fi
 # 3 binder
 bash /opt/fleet-agent/waydroid/wd-binder.sh $INST
 # 4 weston
@@ -46,6 +57,40 @@ timeout 8 lxc-attach -n waydroid -P $LXCP -- wm size 1080x2400 2>/dev/null
 timeout 8 lxc-attach -n waydroid -P $LXCP -- wm density 421 2>/dev/null
 timeout 8 lxc-attach -n waydroid -P $LXCP -- setprop service.adb.tcp.port 5555 2>/dev/null
 bash /opt/fleet-agent/waydroid/wd-adb.sh $INST
+# ── wd-run netfix RETRY: boot-sonrasi ETH0 IP+ROUTE (netd'nin silmesine dayanikli) ──
+# Android netd boot-completed sonrasi eth0'i BIR SURE daha yonetir + eklenen IPv4'u
+# siler (canli: wd-run IP ekledi 14:44, netd sildi, heal 14:49 tekrar ekledi). COZUM:
+# IP+route ekle, DOGRULA; IPv4 tutmadiysa 5s bekle tekrar dene (netd sakinlesene kadar,
+# max 8 tur ~40s). Boylece heal'e dusmeden, boot biter bitmez internet hazir olur.
+GW="192.168.$SUBNET.1"; IP="192.168.$SUBNET.112"
+netfix_try() {
+  HASIP=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
+  if [ "${HASIP:-0}" = "0" ]; then
+    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip addr add $IP/24 dev eth0 2>/dev/null
+    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip link set eth0 up 2>/dev/null
+  fi
+  for T in main local_network eth0; do
+    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add default via $GW dev eth0 table $T 2>/dev/null
+  done
+  timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add default via $GW dev eth0 2>/dev/null
+  for T in eth0 local_network; do
+    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add 192.168.$SUBNET.0/24 dev eth0 proto static scope link src $IP table $T 2>/dev/null
+  done
+}
+NETOK=0
+for k in $(seq 1 8); do
+  netfix_try
+  HASIP=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
+  HASRT=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route show 2>/dev/null | grep -c "^default")
+  if [ "${HASIP:-0}" != "0" ] && [ "${HASRT:-0}" != "0" ]; then
+    # 3s bekle + BIR KEZ DAHA dogrula (netd hemen sonra silmiyor mu)
+    sleep 3
+    HASIP2=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
+    [ "${HASIP2:-0}" != "0" ] && { NETOK=1; break; }
+  fi
+  sleep 5
+done
+echo "NET_READY $INST ip=$IP gw=$GW ok=$NETOK tries=$k"
 timeout 8 lxc-attach -n waydroid -P $LXCP -- start adbd 2>/dev/null
 echo "BOOT_DONE $INST subnet=$SUBNET boot=$(timeout 5 lxc-attach -n waydroid -P $LXCP -- getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
 # session i canlı tut (agent detached bekliyor)

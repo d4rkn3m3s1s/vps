@@ -8350,6 +8350,19 @@ async function provisionDevice(job) {
     vtouchCache.delete(serial);
     let vt = /vtouch node ready|InputReader sees vtouch/.test(vtOut);
     if (!vt) vt = /event/.test(await lxcAttach(instance, ['/system/bin/sh', '-c', 'ls /dev/input/ 2>&1'], 10000).catch(() => ''));
+    // ★ KOK-FIX (route persist): Android netd boot sirasinda fwmark route tablolarini
+    // TEMIZLER (bkz. addInstanceRoutes yorumu). Route adim-6da (%68) eklendi ama buraya
+    // (%97, boot_completed sonrasi) gelene kadar netd onu silmis olabilir -> cihaz READY
+    // ama route YOK -> internete cikamaz -> heal 90s sonra toplar (yavas). COZUM: burada
+    // (netd stabilize) route yeniden ekle + DOGRULA. READY isaretlenince route GARANTI.
+    await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+    let routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show'], 8000).catch(() => ''));
+    if (!routeOk) {
+      await new Promise((r) => setTimeout(r, 1500));
+      await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+      routeOk = /^default/m.test(await lxcAttach(instance, ['ip', 'route', 'show'], 8000).catch(() => ''));
+    }
+    await logLine(`${routeOk ? '✓' : '⚠'} Ag yonlendirme kalici: default route ${routeOk ? 'aktif (netd sonrasi dogrulandi)' : 'EKLENEMEDI - heal toplayacak'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);
     return { boot, root: rootOk, vtouch: vt, proxy: !!proxy };
   });

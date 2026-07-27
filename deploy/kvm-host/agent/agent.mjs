@@ -8382,16 +8382,23 @@ async function provisionDevice(job) {
     // table eth0'i korur → reboot/netd-silme sonrasi otomatik geri gelir.
     let provExitOk = false, provTcp = '';
     const rsConf = `/etc/redsocks-inst-${instance}.conf`;
-    for (let att = 0; att < 10; att++) {
+    const rsPort = 12500 + subnetId;
+    for (let att = 0; att < 8; att++) {
+      // 1) table eth0 (+ main/local_network) route garantile — uygulama-trafigi table eth0 kullanir.
       await addInstanceRoutes(instance, subnetId, ip).catch(() => undefined);
+      // 2) redsocks: 502/000 (upstream tikali) -> ZORLA tazele (daemon var-yok fark etmez).
+      //    Ilk tur daemon-var ise dokunma; sonraki turlarda (cikamiyorsa) fuser+restart.
       if (proxy) {
-        await execFileAsync('bash', ['-c',
-          `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null 2>&1 || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
+        const forceRs = att > 0; // ilk tur nazik, sonra zorla-tazele
+        await execFileAsync('bash', ['-c', forceRs
+          ? `test -f ${rsConf} && { fuser -k ${rsPort}/tcp >/dev/null 2>&1; sleep 0.4; redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
+          : `test -f ${rsConf} && { pgrep -f 'redsocks -c ${rsConf}' >/dev/null 2>&1 || redsocks -c ${rsConf} >/dev/null 2>&1; }; true`
         ]).catch(() => undefined);
       }
+      // 3) gercek cikis dogrula (DNS-siz ham-TCP). 2xx/30x = cikiyor.
       provTcp = await adbT(serial, ['shell', 'su', '-c', 'curl -s -o /dev/null -w %{http_code} --max-time 6 http://1.1.1.1'], 9000).then((o) => String(o || '').trim()).catch(() => '');
       if (/^(2\d\d|30\d)$/.test(provTcp)) { provExitOk = true; break; }
-      await new Promise((r) => setTimeout(r, 4000));
+      await new Promise((r) => setTimeout(r, 3000));
     }
     await logLine(`${provExitOk ? '✓ Ag yonlendirme: cihaz internete CIKIYOR (dogrulandi)' : '⚠ Ag yonlendirme: cikis heal-tick ile tamamlanacak (route+proxy kuruldu)'}`);
     await logLine(`Kontrol: boot=${boot ? '✓' : '✗'} root=${rootOk ? '✓' : '✗'} vtouch=${vt ? '✓' : '✗'} proxy=${proxy ? '✓' : '—'}`);

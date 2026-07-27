@@ -18,7 +18,9 @@ LOG="/var/log/wd-proxy-restore.log"
 # fleet-api ile AYNI env adları — tek gerçek kaynak. Env yoksa (elle çalıştırma)
 # aşağıdaki değerler geriye-uyum için varsayılan kalır ama commit'te secret tutmamak
 # için üretimde /etc/fleet-proxy.env üzerinden gelmeli.
-H="${FLEET_PROXY_HOST:-ncx9yhrx.eu.thordata.net}"
+# ★ `.pr` RESMİ endpoint (`.eu` DEĞİL). `.eu` kısmen çalışır ama ~%15 istekte
+# `Resource_203 / "resource IP is incorrect"` → 502 döner (ölçüm: eu 34/40, pr 40/40).
+H="${FLEET_PROXY_HOST:-ncx9yhrx.pr.thordata.net}"
 U_RES="${FLEET_PROXY_USER:-}"; P_RES="${FLEET_PROXY_PASS:-}"; PORT_RES="${FLEET_PROXY_PORT:-5555}"
 U_MOB="${FLEET_PROXY_MOBILE_USER:-$U_RES}"; P_MOB="${FLEET_PROXY_MOBILE_PASS:-$P_RES}"
 PORT_MOB="${FLEET_PROXY_MOBILE_PORT:-9999}"

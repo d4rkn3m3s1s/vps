@@ -22,7 +22,9 @@ API_KEY="${FLEET_API_KEY:-}"
 HOST_KEY="${FLEET_HOST_KEY:-}"
 
 # Proxy hesapları (env; wd-proxy-restore ile aynı, /etc/fleet-proxy.env).
-H="${FLEET_PROXY_HOST:-ncx9yhrx.eu.thordata.net}"
+# ★ `.pr` RESMİ endpoint (`.eu` DEĞİL). `.eu` kısmen çalışır ama ~%15 istekte
+# `Resource_203 / "resource IP is incorrect"` → 502 döner (ölçüm: eu 34/40, pr 40/40).
+H="${FLEET_PROXY_HOST:-ncx9yhrx.pr.thordata.net}"
 U_RES="${FLEET_PROXY_USER:-}"; P_RES="${FLEET_PROXY_PASS:-}"; PORT_RES="${FLEET_PROXY_PORT:-5555}"
 U_MOB="${FLEET_PROXY_MOBILE_USER:-$U_RES}"; P_MOB="${FLEET_PROXY_MOBILE_PASS:-$P_RES}"
 PORT_MOB="${FLEET_PROXY_MOBILE_PORT:-9999}"

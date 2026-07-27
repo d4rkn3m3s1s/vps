@@ -7285,7 +7285,7 @@ async function installBundledApkTo(instance, apkFile) {
     else {
       const pkgLine = pkgFor(apkFile);
       installed = pkgLine
-        ? (await lxcAttach(instance, ['pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
+        ? (await lxcAttach(instance, ['/system/bin/pm', 'path', pkgLine], 15000).catch(() => '')).includes('package:')
         : false;
     }
   } catch (e) {
@@ -7501,7 +7501,7 @@ async function authorizeAdb(instance) {
       const written = await readFile(keysFile, 'utf8').catch(() => '');
       if (!written.trim()) { log(`authorizeAdb: adb_keys empty after write (${instance})`); return false; }
     } catch (e) { log('authorizeAdb write:', e.message); return false; }
-    await lxcAttach(instance, ['setprop', 'ctl.restart', 'adbd'], 10000).catch(() => undefined);
+    await lxcAttach(instance, ['/system/bin/setprop', 'ctl.restart', 'adbd'], 10000).catch(() => undefined);
     return true;
   }
   return false;
@@ -7533,7 +7533,7 @@ async function resolveLeaseIp(instance, subnetId) {
     if (ip && ip.startsWith(`192.168.${subnetId}.`)) return ip;
   } catch { /* lease file may not exist yet */ }
   try {
-    const out = await lxcAttach(instance, ['ip', '-4', 'addr', 'show', 'eth0'], 15000);
+    const out = await lxcAttach(instance, ['/system/bin/ip', '-4', 'addr', 'show', 'eth0'], 15000);
     const m = new RegExp(`inet (192\\.168\\.${subnetId}\\.\\d+)`).exec(out);
     if (m) return m[1];
   } catch { /* container may not be up yet */ }
@@ -8223,7 +8223,7 @@ async function provisionDevice(job) {
     for (const [pkg, file, name] of apks) {
       // Use lxc-attach for the "already installed?" probe — ADB shell hangs on
       // fresh ARM Waydroid (the same reason installs use host-mount + lxc-attach).
-      const has = (await lxcAttach(instance, ['pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
+      const has = (await lxcAttach(instance, ['/system/bin/pm', 'path', pkg], 15000).catch(() => '')).includes('package:');
       if (has) { installed[pkg] = true; await logLine(`• ${name} zaten kurulu`); continue; }
       await logLine(`${name} kuruluyor…`);
       let done = false;
@@ -8244,7 +8244,7 @@ async function provisionDevice(job) {
       const tgPkgs = ['org.telegram.messenger.web', 'org.telegram.messenger'];
       let tgHas = false;
       for (const tp of tgPkgs) {
-        if ((await lxcAttach(instance, ['pm', 'path', tp], 15000).catch(() => '')).includes('package:')) { tgHas = true; break; }
+        if ((await lxcAttach(instance, ['/system/bin/pm', 'path', tp], 15000).catch(() => '')).includes('package:')) { tgHas = true; break; }
       }
       let tgReady = false;   // installed (already or now) → run first-launch priming
       if (tgHas) {
@@ -8292,7 +8292,7 @@ async function provisionDevice(job) {
     // success). Re-probe and THROW if WhatsApp is missing so the provision FAILS honestly.
     // (fleet-a11y stays best-effort — a device without it is degraded, not broken.)
     const waPresent = installed['com.whatsapp'] ||
-      (await lxcAttach(instance, ['pm', 'path', 'com.whatsapp'], 15000).catch(() => '')).includes('package:');
+      (await lxcAttach(instance, ['/system/bin/pm', 'path', 'com.whatsapp'], 15000).catch(() => '')).includes('package:');
     if (!waPresent) throw new Error('WhatsApp kurulamadı (APK yüklenemedi) — cihaz WhatsApp-hazır değil');
   });
 
@@ -8426,14 +8426,29 @@ async function provisionDevice(job) {
 
 // Re-add the fwmark routes an Android netstack drops on every boot (else "no
 // internet"). Shared by provision + wake.
+//
+// ★★2026-07-28 KOK-FIX — container-ici binary'ler MUTLAK yolla cagrilmali.
+// lxc-attach host'un PATH'ini container'a gecirir. systemd'nin varsayilan servis PATH'i
+// (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin) /bin ve /sbin ICERMEZ; Android'de
+// ip/pm/setprop /system/bin altinda ve oraya sadece /bin -> /system/bin symlink'i ile
+// ulasilir. Sonuc: agent'in HER `lxc-attach -- ip ...` cagrisi
+//   lxc-attach: Failed to exec "ip" - No such file or directory
+// ile SESSIZCE dusuyordu (tum cagrilar .catch()/2>/dev/null ile yutuluyor). Etkisi:
+//   1) provision route adimi hicbir sey eklemiyordu -> YENI cihaz internete CIKAMIYOR
+//      (panel "kurulum tamamlandi" der, cihaz TCP 000 -> WhatsApp "Couldn't connect"),
+//   2) heal'in route-KONTROLU de ayni sekilde dusup 0 donuyordu -> her tick "route YOK"
+//      (35 cihaz x 2 tick/dk = ~66 satir/dk sonsuz spam) ve heal HICBIR cihazi onaramiyordu.
+// Elle test edilince calisiyor gorunuyordu cunku interaktif/sudo PATH'inde /bin VAR.
+// KANIT: agent PATH'i ile `Failed to exec "ip"`, /system/bin/ip ile route listesi geldi.
+// Fix iki katmanli: (a) burada mutlak yol, (b) servise PATH drop-in (pm/setprop vb. icin).
 async function addInstanceRoutes(instance, subnetId, ip) {
   const gw = `192.168.${subnetId}.1`;
   const cidr = `192.168.${subnetId}.0/24`;
   for (const table of ['main', 'local_network', 'eth0']) {
-    await lxcAttach(instance, ['ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'proto', 'static', 'table', table], 15000).catch(() => undefined);
+    await lxcAttach(instance, ['/system/bin/ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'proto', 'static', 'table', table], 15000).catch(() => undefined);
   }
   for (const table of ['eth0', 'local_network']) {
-    await lxcAttach(instance, ['ip', 'route', 'add', cidr, 'dev', 'eth0', 'proto', 'static', 'scope', 'link', 'src', ip, 'table', table], 15000).catch(() => undefined);
+    await lxcAttach(instance, ['/system/bin/ip', 'route', 'add', cidr, 'dev', 'eth0', 'proto', 'static', 'scope', 'link', 'src', ip, 'table', table], 15000).catch(() => undefined);
   }
 }
 
@@ -10387,7 +10402,7 @@ async function healInstanceEth0(inst, knownReachable) {
     let hasIp = knownReachable === true;
     if (!hasIp) {
       for (let att = 0; att < 3; att++) {
-        const r = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | head -1`]).catch(() => ({ stdout: '' }));
+        const r = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | head -1`]).catch(() => ({ stdout: '' }));
         if (/inet 192\.168\.\d+\.\d+/.test(String(r.stdout || ''))) { hasIp = true; break; }
         if (att < 2) await sleep(250);
       }
@@ -10396,18 +10411,18 @@ async function healInstanceEth0(inst, knownReachable) {
     // WhatsApp "Couldn't connect"). IP varsa DEFAULT-ROUTE'u da kontrol et; yoksa route'ları
     // ekle (heal). CANLI: mi20 statik-IP aldı ama route yok → çıkamadı. IP+route ikisi de tamsa geç.
     if (hasIp) {
-      const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show table eth0 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
+      const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route show table eth0 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
       if (Number(String(rtOut || '0').trim()) > 0) return { healed: false, reason: 'already-has-ip-and-route' };
       // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
       log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);
       await execFileAsync('bash', ['-c',
-        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
-        `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
+        `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
       await sleep(800);
       // ★DOGRULA: table eth0 (uygulama-trafigi orayi kullanir) GERCEKTEN tuttu mu? netd
       // boot-sonrasi ~2-3dk agresif siler -> "route-added" yanlis-pozitif olurdu. Tutmadiysa
       // healed:false don (sonraki 30s tick tekrar dener; netd sakinleyince kesin tutar).
-      const rtOk = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show table eth0 2>/dev/null | grep -c '^default'`]).then((r) => Number(String(r.stdout || '0').trim()) > 0).catch(() => false);
+      const rtOk = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route show table eth0 2>/dev/null | grep -c '^default'`]).then((r) => Number(String(r.stdout || '0').trim()) > 0).catch(() => false);
       if (!rtOk) return { healed: false, reason: 'route-netd-sildi (tekrar denenecek)' };
       await ensureInstanceProxy(inst, sub).catch(() => undefined);
       return { healed: true, ip, reason: 'route-added' };
@@ -10417,10 +10432,10 @@ async function healInstanceEth0(inst, knownReachable) {
     // ÇIKAMIYORDU (TCP 000, WhatsApp "Couldn't connect"). fwmark tablolarına da ŞART.
     log(`eth0-heal: ${inst} eth0 IPv4 yok → ${ip}/24 atanıyor`);
     await execFileAsync('bash', ['-c',
-      `lxc-attach -n waydroid -P ${lxcp} -- ip addr add ${ip}/24 dev eth0 2>/dev/null; ` +
-      `lxc-attach -n waydroid -P ${lxcp} -- ip link set eth0 up 2>/dev/null; ` +
-      `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
-      `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+      `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip addr add ${ip}/24 dev eth0 2>/dev/null; ` +
+      `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip link set eth0 up 2>/dev/null; ` +
+      `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
+      `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
     await sleep(1500);
     await execFileAsync(ADB, ['connect', `${ip}:5555`]).catch(() => undefined);
     // ★2026-07-24: eth0-heal sonrası PROXY zincirini de doğrula (operatör isteği:

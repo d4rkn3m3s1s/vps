@@ -12,6 +12,12 @@ Restart=always
 RestartSec=5
 # adb needs a writable HOME for its server socket/key.
 Environment=HOME=/root
+# ★2026-07-28: systemd'nin varsayilan servis PATH'i /bin ve /sbin ICERMEZ. lxc-attach host
+# PATH'ini container'a gecirir; Android'de ip/pm/setprop /system/bin altindadir ve oraya
+# /bin -> /system/bin symlink'i ile ulasilir. /bin olmadan container-ici HER ciplak-binary
+# cagrisi `Failed to exec "ip"` ile sessizce duser -> provision route ekleyemez (yeni cihaz
+# internete cikamaz) + eth0-heal ne kontrol ne onarim yapabilir (sonsuz "route YOK" spam).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 StandardOutput=journal
 StandardError=journal
 

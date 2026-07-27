@@ -7813,7 +7813,8 @@ async function provisionDevice(job) {
     }
     // ★ Adim-timeout: bir adim asiri uzun surerse (takilma) FAILED bildir — modal sonsuza
     // "calisiyor" kalmasin. infra agir (userdata klon ~4GB) → 6dk; digerleri → 150s.
-    const stepTimeoutMs = (key === 'infra') ? 6 * 60 * 1000 : 150 * 1000;
+    // boot: DHCP'ye gercek sans vermek icin (DNS ancak DHCP ile gelir) 150s -> 240s.
+    const stepTimeoutMs = (key === 'infra') ? 6 * 60 * 1000 : (key === 'boot' ? 240 * 1000 : 150 * 1000);
     try {
       return await Promise.race([
         fn(),
@@ -7936,7 +7937,18 @@ async function provisionDevice(job) {
     let eth0Ip = '';
     let kicks = 0;
     let staticApplied = false;
-    for (let i = 0; i < 30; i++) {
+    // ★★KOK-FIX 2026-07-28 (DNS / tek-tik WhatsApp): statik-IP fallback ESKIDEN i===8'de
+    // (~16s) vuruyordu. Android'in ag yigini (EthernetService/IpClient) ise ~50-70s'de
+    // DHCP'yi tamamlar ve DNS'i SADECE DHCP getirir. eth0'da ZATEN adres varken Android
+    // DHCP'yi tamamlamiyor -> DnsAddresses BOS -> cihaz isim cozemiyor -> IP ile HTTP/HTTPS
+    // calisir ("internet var" gorunur) ama web.whatsapp.com cozulemez -> tek-tik WhatsApp
+    // kaydi KIRILIR. CANLI OLCUM: 31 cihazin 9'unda DNS yoktu; hepsi bu fallback'e dusenler.
+    // Fallback artik GERCEK son-care (~90s): DHCP'ye once sans verilir.
+    // ⚠️ Bunun ASIL kosulu firewall'dur: ufw, 0.0.0.0'dan gelen DHCP broadcast'ini
+    // dusuruyordu -> lease HIC gelmiyordu. Bkz. waydroid/wd-firewall-dhcp.sh (ONCE o).
+    const DHCP_TICKS = Number(process.env.FLEET_PROV_DHCP_TICKS || 55);      // 55 x 2s = 110s
+    const STATIC_AFTER = Number(process.env.FLEET_PROV_STATIC_AFTER || 45);  // ~90s
+    for (let i = 0; i < DHCP_TICKS; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
@@ -7944,7 +7956,7 @@ async function provisionDevice(job) {
       // çöz). Statik atandıktan SONRA dhcpKick ÇALIŞTIRMA — kick'in `ifconfig eth0 down/up`'ı
       // statik IP'yi FLUSH eder (canlı-bug: statik@22s atandı ama kick#3-6 sildi, boot 69s
       // sürdü). Statik-sonrası: sadece IP'nin bind olmasını poll et, kick'e dokunma.
-      if (i === 8 && !staticApplied) {
+      if (i === STATIC_AFTER && !staticApplied) {
         staticApplied = true;
         await staticEth0();
         plog(`eth0 statik-IP fallback → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);

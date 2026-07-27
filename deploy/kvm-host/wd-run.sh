@@ -19,17 +19,6 @@ pkill -9 -f "dnsmasq.*waydroid-$INST" 2>/dev/null  # netfix orphan-dnsmasq (subn
 touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-subnets.map 2>/dev/null  # netfix
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native
-# ── wd-run: BRIDGE GARANTISI (DBus-session'a guvenme; mi29'da DBus takildi -> bridge YOKTU
-#    -> gateway/DHCP yok -> IP/route/proxy hicbiri calismadi). waydroid-net.sh idempotent:
-#    bridge waydroid-<inst> + gateway 192.168.<sub>.1 + dnsmasq(DHCP) + iptables MASQUERADE.
-#    Container-start ONCESI cagir ki eth0 peer'i hazir bridge'e baglansin. TAS-GIBI: her
-#    boot-yolunda (kurulum/WA/reboot/coklu) bridge garanti, DBus arizasindan bagimsiz.
-if ! ip link show waydroid-$INST >/dev/null 2>&1; then
-  env WAYDROID_INSTANCE=$INST bash /opt/waydroid-mi2/data/scripts/waydroid-net.sh start $INST >/var/log/wd-$INST-bridge.log 2>&1
-  echo "BRIDGE_SETUP $INST via waydroid-net.sh"
-else
-  echo "BRIDGE_OK $INST (zaten var)"
-fi
 # 3 binder
 bash /opt/fleet-agent/waydroid/wd-binder.sh $INST
 # 4 weston

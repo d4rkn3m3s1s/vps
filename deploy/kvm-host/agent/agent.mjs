@@ -7890,22 +7890,27 @@ async function provisionDevice(job) {
       `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
     let eth0Ip = '';
-    // ★2026-07-27 GERI-ALINDI: HEMEN-STATIK (staticEth0 @0s) binder-cokmesine yol aciyordu —
-    // container-init'in COK erken aninda lxc-attach ile ic-shell calistirmak Android'in
-    // binder-setup'iyla YARISIYORDU → "/dev/binder-<inst> has died" → boot cokme (mi29/mi30
-    // 69s->150s-timeout). ESKI DAVRANIS: once DHCP'ye zaman ver (container init ilerlesin),
-    // 16s'de gelmezse statik-fallback (o zamana kadar binder kurulmustur). staticEth0 ARTIK
-    // erken degil, DHCP-gecikince (i===8, ~16s) calisir → binder-yarisi YOK.
+    let kicks = 0;
     let staticApplied = false;
     for (let i = 0; i < 30; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
+      // ★i===8 (~16s): DHCP hâlâ vermediyse STATİK ata + BEKLE (400s beklemektense hemen
+      // çöz). Statik atandıktan SONRA dhcpKick ÇALIŞTIRMA — kick'in `ifconfig eth0 down/up`'ı
+      // statik IP'yi FLUSH eder (canlı-bug: statik@22s atandı ama kick#3-6 sildi, boot 69s
+      // sürdü). Statik-sonrası: sadece IP'nin bind olmasını poll et, kick'e dokunma.
       if (i === 8 && !staticApplied) {
         staticApplied = true;
         await staticEth0();
-        plog(`eth0 statik-IP fallback -> 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
-        await logLine('eth0 statik IP ataniyor (DHCP gecikti)...');
+        plog(`eth0 statik-IP fallback → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        await logLine('⚙ eth0 statik IP atanıyor (DHCP gecikti)…');
+      } else if (!staticApplied && (i === 3 || (i > 3 && (i - 3) % 5 === 0))) {
+        // İlk kick i===3 (~8s), sonra ~10s'de bir — SADECE statik atanmadan ÖNCE.
+        await dhcpKick();
+        kicks++;
+        plog(`eth0 IPv4 gecikti — DHCP re-kick #${kicks} @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        if (kicks === 1) await logLine('⚠ eth0 IPv4 gecikti — DHCP yeniden tetikleniyor…');
       }
       await new Promise((r) => setTimeout(r, 2000));
     }

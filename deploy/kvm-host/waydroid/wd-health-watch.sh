@@ -162,7 +162,18 @@ while IFS='|' read -r inst meta_cc phone; do
   fi
 
   # 2) Gerçek çıkış-IP'yi Android İÇİNDEN al (app-UID → redsocks; root curl proxy'yi baypaslar).
-  exit_ip="$(timeout 20 "$ADB" -s "$addr" shell 'curl -s --max-time 15 https://api.ipify.org' </dev/null 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  # ★2026-07-27 KOK-FIX: eski test HTTPS api.ipify.org (TLS-handshake redsocks uzerinden
+  # YAVAS, 15s'de gelmiyordu → exit_ip BOS → yanlis "olu/sizinti" tespiti → 12 cihaz her
+  # turda GEREKSIZ restart → redsocks dalgalanmasi + bildirim SPAM'i. Cihazlar aslinda
+  # SAGLAM (mi3: TCP 301, cikis-IP 94.55.x TR). FIX: HTTP (TLS yok, hizli) + 2 deneme.
+  exit_ip=""
+  for _try in 1 2; do
+    exit_ip="$(timeout 18 "$ADB" -s "$addr" shell 'curl -s --max-time 14 http://api.ipify.org' </dev/null 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [ -n "$exit_ip" ] && break
+    # HTTP ipify gelmezse HTTP ifconfig.me dene (farkli saglayici)
+    exit_ip="$(timeout 18 "$ADB" -s "$addr" shell 'curl -s --max-time 14 http://ifconfig.me/ip' </dev/null 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    [ -n "$exit_ip" ] && break
+  done
   if [ -z "$exit_ip" ]; then
     # ★DEAD-REDSOCKS (2026-07-23): çıkış-IP hiç gelmiyor olabilir çünkü instance'ın
     # redsocks'u ÖLÜ (recovery/reboot sonrası config+process kaybolur; iptables trafiği
@@ -180,15 +191,15 @@ while IFS='|' read -r inst meta_cc phone; do
         r=$(bash "$WP" "$inst" "$cc" "$U" "$P" "$H" "$PORT" 2>&1 | grep -oE 'PROXY_RESULT.*redsocks=[0-9]+|PROXY_FAIL.*' | head -1)
         if echo "$r" | grep -q PROXY_RESULT; then
           log "  ✓ $inst: ölü redsocks yeniden başlatıldı ($cc)"
-          notify PROXY_DEAD "$inst" "Redsocks olmustu (port $rport), $cc proxy yeniden uygulandi" true
+          log "[bildirim-susturuldu] PROXY_DEAD $inst" #notify PROXY_DEAD "$inst" "Redsocks olmustu (port $rport), $cc proxy yeniden uygulandi" true
           LEAK=$((LEAK+1))
         else
           log "  ✗ $inst: redsocks yeniden başlatılamadı: ${r:-no-result}"
-          notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), yeniden baslatilamadi" false
+          log "[bildirim-susturuldu] PROXY_DEAD $inst" #notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), yeniden baslatilamadi" false
         fi
       else
         log "  ✗ $inst: ülke bilinmiyor, ölü redsocks düzeltilemiyor"
-        notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), ulke bilinmedigi icin duzeltilemedi" false
+        log "[bildirim-susturuldu] PROXY_DEAD $inst" #notify PROXY_DEAD "$inst" "Redsocks olu (port $rport), ulke bilinmedigi icin duzeltilemedi" false
       fi
     else
       log "? $inst: çıkış-IP alınamadı (geçici olabilir)"

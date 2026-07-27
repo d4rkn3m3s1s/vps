@@ -6,7 +6,6 @@ import { CommandPalette } from './CommandPalette';
 import { NotificationCenter } from './NotificationCenter';
 import { MobileMenuButton } from './MobileMenuButton';
 import { LiveIndicator } from './LiveIndicator';
-import { SessionTimer } from './SessionTimer';
 
 /**
  * AppChrome — decides whether a route gets the dashboard shell (fixed sidebar +
@@ -42,7 +41,6 @@ export function AppChrome({
           <div className="topbar">
             <MobileMenuButton />
             <span className="topbar-spacer" />
-            <SessionTimer />
             <LiveIndicator />
             <NotificationCenter />
           </div>

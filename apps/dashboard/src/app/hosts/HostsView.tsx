@@ -215,8 +215,8 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
             {agentKey ? (
               <>
                 <p className="helper">Bu aracı anahtarını şimdi kopyalayın — yalnızca bir kez gösterilir. Sunucuda <span className="mono">FLEET_HOST_KEY</span> olarak ayarlayın.</p>
-                <div className="copy-row">
-                  <input className="copy-input mono" readOnly value={agentKey} aria-label="Aracı anahtarı" />
+                <div className="copy-row" style={{ flexWrap: 'wrap' }}>
+                  <input className="copy-input mono" readOnly value={agentKey} aria-label="Aracı anahtarı" style={{ minWidth: 0 }} />
                   <button type="button" className="btn-primary" onClick={() => navigator.clipboard?.writeText(agentKey)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <Copy size={14} /> Kopyala
                   </button>

@@ -132,6 +132,14 @@ async function main(): Promise<void> {
     }).finally(() => { proxyRevalRunning = false; });
   }, 600_000).unref();
 
+  // ★2026-07-26: thordata KREDİ/GB kontrolü. Kalan trafik biterse cihazlar datacenter-IP'ye
+  // düşer (ban riski). Env token(lar)ından kalan GB'yi 12 saatte bir sorgula; eşik altındaysa
+  // PROXY_CREDIT_LOW alarmı (top-up hatırlatması). İlk kontrol 30s sonra (boot'u yormaz).
+  const runCreditCheck = () => proxyService.checkThordataCredit().catch((e) =>
+    logger.warn('thordata credit check failed', { error: e instanceof Error ? e.message : String(e) }));
+  setTimeout(runCreditCheck, 30_000).unref();
+  setInterval(runCreditCheck, 12 * 60 * 60 * 1000).unref();
+
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
   // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without
   // this, those two alert triggers would never fire (nothing else marks offline).

@@ -321,6 +321,9 @@ enum AlertTrigger {
   HOST_SATURATED
   PROXY_UNHEALTHY
   FLEET_MASS_OFFLINE
+  // ★2026-07-26: thordata proxy hesabının kalan trafiği (GB) eşiğin altına düştü —
+  // bitince cihazlar datacenter-IP'ye düşer (ban riski). Günlük kontrol + top-up uyarısı.
+  PROXY_CREDIT_LOW
 }
 
 // A user-defined alerting rule, scoped to a workspace. When its trigger

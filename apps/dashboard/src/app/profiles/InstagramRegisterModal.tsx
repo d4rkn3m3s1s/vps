@@ -134,7 +134,7 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><Camera size={16} /> Instagram kaydı · {email}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
@@ -183,11 +183,12 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <div
             ref={termRef}
             style={{
-              flex: 1,
+              flex: '1 1 220px',
+              minWidth: 0,
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               fontSize: 12,
               lineHeight: 1.55,
@@ -222,7 +223,7 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
 
           {/* Optional live screenshot (SS göster) */}
           {showShot && (
-            <div style={{ width: 140, flex: '0 0 auto', marginBottom: 14 }}>
+            <div style={{ flex: '1 1 120px', maxWidth: 180, marginBottom: 14 }}>
               {shot ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -248,8 +249,9 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
           </div>
         )}
 
-        {/* Step list (compact) — the terminal `wall` step is hidden from the plan */}
-        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+        {/* Step list (compact) — the terminal `wall` step is hidden from the plan.
+            auto-fit drops it to a single column on narrow phones. */}
+        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '6px 16px' }}>
           {steps
             .filter((s) => s.key !== 'queued' && s.key !== 'wall')
             .map((s) => {

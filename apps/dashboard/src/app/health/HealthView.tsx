@@ -382,7 +382,7 @@ function WaStat({ label, value, tone }: { label: string; value: number; tone: st
 function AnalyticsTable({ title, rows }: { title: string; rows: Bucket[] }) {
   const rateTone = (r: number) => (r >= 60 ? '#22c55e' : r >= 30 ? '#eab308' : '#ef4444');
   return (
-    <div className="analytics-table">
+    <div className="analytics-table" style={{ minWidth: 0, overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
       <div className="analytics-table-title">{title}</div>
       {rows.length === 0 ? (
         <div style={{ opacity: 0.5, fontSize: 12, padding: '6px 0' }}>Veri yok</div>

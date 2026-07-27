@@ -312,7 +312,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><MessageCircle size={16} /> WhatsApp kaydı · {phoneNumber}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
@@ -438,11 +438,12 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <div
             ref={termRef}
             style={{
-              flex: 1,
+              flex: '1 1 220px',
+              minWidth: 0,
               fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
               fontSize: 12,
               lineHeight: 1.55,
@@ -477,7 +478,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
           {/* Optional live screenshot (SS göster) */}
           {showShot && (
-            <div style={{ width: 140, flex: '0 0 auto', marginBottom: 14 }}>
+            <div style={{ flex: '1 1 120px', maxWidth: 180, marginBottom: 14 }}>
               {shot ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -503,8 +504,8 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           </div>
         )}
 
-        {/* Step list (compact) */}
-        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+        {/* Step list (compact) — auto-fit so it drops to a single column on narrow phones. */}
+        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '6px 16px' }}>
           {steps
             .filter((s) => s.key !== 'queued')
             .map((s) => {

@@ -1,4 +1,5 @@
 import type { Proxy, ProxyType } from '@prisma/client';
+import http from 'node:http';
 import { prisma } from '../../db/prisma';
 import { decryptString, encryptString } from '../../lib/crypto';
 import { AppError } from '../../lib/errors';
@@ -6,6 +7,41 @@ import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import type { ProxyCreateInput, ProxyUpdateInput } from './proxy.types';
 import { alertsService } from '../alerts/alerts.service';
+
+// ★2026-07-26: HTTP FORWARD-proxy testi (undici'siz). Node'un yerleşik fetch'i ayrı
+// undici ProxyAgent'ı dispatcher olarak kabul ETMEZ ("invalid onRequestStart method").
+// ★CONNECT-tünel de İŞE YARAMADI: thordata port 5555'te CONNECT'i host'un kendi çıkışına
+// yönlendiriyor (exit-IP=host datacenter-IP, YANLIŞ). curl'ün asıl yaptığı FORWARD-proxy:
+// proxy'ye TAM-URL ile HTTP GET at (`GET http://api.ipify.org/... HTTP/1.1`), proxy hedefe
+// KENDİ exit-IP'sinden gider → dönen IP GERÇEK proxy çıkışı. HTTP hedef (https değil) şart
+// ki proxy CONNECT'e düşmesin. Zero-dep, Node built-in http. (Canlı: forward→141.98.142.4 AL✓)
+function probeThroughHttpProxy(opts: {
+  proxyHost: string; proxyPort: number; auth: string; timeoutMs: number;
+}): Promise<string | null> {
+  const { proxyHost, proxyPort, auth, timeoutMs } = opts;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (ip: string | null) => { if (!done) { done = true; resolve(ip); } };
+    const headers: Record<string, string> = { Host: 'api.ipify.org' };
+    if (auth) headers['Proxy-Authorization'] = `Basic ${Buffer.from(auth).toString('base64')}`;
+    const req = http.request({
+      host: proxyHost, port: proxyPort, method: 'GET',
+      // Tam-URL path = forward-proxy modu (proxy hedefe KENDİ IP'sinden gider).
+      path: 'http://api.ipify.org/?format=json', headers, timeout: timeoutMs
+    }, (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        try { finish((JSON.parse(body) as { ip?: string }).ip ?? null); } catch { finish(null); }
+      });
+    });
+    const killTimer = setTimeout(() => { req.destroy(); finish(null); }, timeoutMs);
+    req.on('close', () => clearTimeout(killTimer));
+    req.on('error', () => { clearTimeout(killTimer); finish(null); });
+    req.on('timeout', () => { clearTimeout(killTimer); req.destroy(); finish(null); });
+    req.end();
+  });
+}
 
 // Public-safe proxy shape: the encrypted password is never returned; clients
 // only learn whether one is set.
@@ -308,37 +344,22 @@ export class ProxyService {
       status = 'UNKNOWN';
     } else {
       try {
-        // undici ships inside Node (it backs global fetch). We import it via a
-        // computed specifier so the bundler/TS doesn't hard-require its type
-        // package, and treat ProxyAgent/dispatcher loosely. The `dispatcher`
-        // fetch option is honored by Node's fetch even though it's absent from
-        // the standard fetch typings.
-        const undiciMod = 'undici';
-        const undici = (await import(undiciMod)) as {
-          ProxyAgent: new (opts: { uri: string }) => { close(): Promise<void> };
-        };
-        const auth =
-          proxy.username
-            ? `${encodeURIComponent(proxy.username)}:${encodeURIComponent(proxy.password ? decryptString(proxy.password) : '')}@`
-            : '';
-        const dispatcher = new undici.ProxyAgent({ uri: `http://${auth}${proxy.host}:${proxy.port}` });
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 8000);
-        try {
-          // The IP this returns is the one the upstream sees → the proxy's exit IP.
-          const res = await fetch('https://api.ipify.org?format=json', {
-            signal: controller.signal,
-            dispatcher
-          } as unknown as RequestInit);
-          if (res.ok) {
-            const json = (await res.json()) as { ip?: string };
-            exportIp = json.ip ?? null;
-            status = exportIp ? 'OK' : 'FAILED';
-          }
-        } finally {
-          clearTimeout(timer);
-          await dispatcher.close().catch(() => undefined);
+        // ★2026-07-26: thordata proxy'leri username'e -country-<cc>-sessid-<x>-sesstime-<dk>
+        // suffix'i GEREKTİRİR; suffix'siz test thordata tarafından reddedilir → havuz "hepsi
+        // FAILED" yanlış-alarmı (gerçek trafik cihazdan redsocks ile suffix'li çıkıyor ve
+        // ÇALIŞIR). Canlı-kanıt: suffix'siz→boş, `-country-TR-sessid-x-sesstime-5`→TR-IP.
+        // ★sessid ŞART (mobile hesabı sesstime tek başına REDDEDER). Host DOĞRU form:
+        // `<sub>.pr.thordata.net` (pr=proxy) — `.eu` tutarsız, resmi `.pr`'ye çevir.
+        let testUser = proxy.username || '';
+        const testHost = /thordata/i.test(proxy.host) ? proxy.host.replace(/\.eu\.thordata\.net/i, '.pr.thordata.net') : proxy.host;
+        if (testUser && /thordata/i.test(proxy.host) && proxy.countryCode && !/-country-/i.test(testUser)) {
+          testUser = `${testUser}-country-${proxy.countryCode.toUpperCase()}-sessid-hcheck-sesstime-5`;
         }
+        const pass = proxy.password ? decryptString(proxy.password) : '';
+        const auth = testUser ? `${testUser}:${pass}` : '';
+        // HTTP-CONNECT tüneli ile gerçek exit-IP'yi al (undici'siz, curl-eşdeğeri).
+        exportIp = await probeThroughHttpProxy({ proxyHost: testHost, proxyPort: proxy.port, auth, timeoutMs: 10000 });
+        status = exportIp ? 'OK' : 'FAILED';
       } catch {
         status = 'FAILED';
       }
@@ -419,6 +440,55 @@ export class ProxyService {
       if (byWs.size === 0 && failedProxies.length > 0) {
         const anyWs = await prisma.workspace.findFirst({ select: { id: true } });
         if (anyWs) void alertsService.evaluate(anyWs.id, 'PROXY_UNHEALTHY', { title: '⚠️ Proxy havuzu sağlıksız', detail }).catch(() => undefined);
+      }
+    } catch {
+      /* never break the ticker */
+    }
+  }
+
+  // ★2026-07-26: thordata hesabının KALAN TRAFİĞİNİ (GB) sorgula. token = Dashboard →
+  // My Account API token'ı (proxy user/pass DEĞİL). Döner: { balanceMb, expiration } veya
+  // null (token yok/hata). openapi.thordata.com public API.
+  async fetchThordataBalance(token: string): Promise<{ balanceMb: number; expiration: string } | null> {
+    if (!token) return null;
+    try {
+      const res = await fetch(`https://openapi.thordata.com/api/account/traffic-balance?token=${encodeURIComponent(token)}`, {
+        signal: AbortSignal.timeout(12000)
+      });
+      const json = (await res.json()) as { code?: number; data?: { traffic_balance?: number; expiration_time?: string } };
+      if (json.code !== 200 || !json.data) return null;
+      return { balanceMb: Number(json.data.traffic_balance ?? 0), expiration: String(json.data.expiration_time ?? '') };
+    } catch {
+      return null;
+    }
+  }
+
+  // Günlük ticker: env'deki thordata token(lar)ı için kalan GB'yi kontrol et; eşiğin
+  // (varsayılan 2 GB) altındaysa PROXY_CREDIT_LOW alarmı at (top-up hatırlatması).
+  // Birden çok hesap: FLEET_THORDATA_TOKEN (residential) + FLEET_THORDATA_TOKEN_MOBILE.
+  // Best-effort — token yoksa sessizce atlar, asla ticker'ı kırmaz.
+  async checkThordataCredit(): Promise<void> {
+    try {
+      const thresholdGb = Number(process.env.FLEET_PROXY_CREDIT_ALERT_GB || 2);
+      const accounts: Array<{ label: string; token: string }> = [
+        { label: 'residential (AL/BG)', token: process.env.FLEET_THORDATA_TOKEN || '' },
+        { label: 'mobile (TR)', token: process.env.FLEET_THORDATA_TOKEN_MOBILE || '' }
+      ].filter((a) => a.token);
+      if (!accounts.length) return; // token yapılandırılmamış — atla
+
+      const anyWs = await prisma.workspace.findFirst({ select: { id: true } });
+      if (!anyWs) return;
+
+      for (const acc of accounts) {
+        const bal = await this.fetchThordataBalance(acc.token);
+        if (!bal) continue;
+        const gb = bal.balanceMb / 1024;
+        if (gb < thresholdGb) {
+          const detail = `thordata ${acc.label} hesabında kalan trafik: ${gb.toFixed(2)} GB (${bal.balanceMb.toFixed(0)} MB), bitiş: ${bal.expiration}. Eşiğin (${thresholdGb} GB) altına düştü — bitince cihazlar datacenter-IP'ye düşer (WhatsApp ban riski). Panelden/thordata'dan trafik yükleyin (top-up).`;
+          void alertsService
+            .evaluate(anyWs.id, 'PROXY_CREDIT_LOW', { title: `⚠️ Proxy trafiği azaldı — ${acc.label}: ${gb.toFixed(1)} GB kaldı`, detail, value: gb })
+            .catch(() => undefined);
+        }
       }
     } catch {
       /* never break the ticker */

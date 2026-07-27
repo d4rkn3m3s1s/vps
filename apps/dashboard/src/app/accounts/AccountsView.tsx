@@ -330,7 +330,7 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
             {/* Number + OTP */}
             <div className="row">
               <span><Phone size={13} /> Numara</span>
-              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, overflowWrap: 'anywhere', justifyContent: 'flex-end', textAlign: 'right' }}>
                 {rented ? <>+{rented.number} <CopyBtn value={rented.number} /></> : '—'}
               </span>
             </div>
@@ -354,16 +354,16 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
             {/* Email */}
             <div className="row">
               <span><Mail size={13} /> E-posta</span>
-              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className="mono" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, overflowWrap: 'anywhere', justifyContent: 'flex-end', textAlign: 'right' }}>
                 {inbox ? <>{inbox} <CopyBtn value={inbox} /></> : '—'}
               </span>
             </div>
             {/* Identity */}
             {identity ? (
               <>
-                <div className="row"><span><UserRound size={13} /> Ad</span><span className="helper">{identity.fullName} · {identity.gender}</span></div>
+                <div className="row"><span><UserRound size={13} /> Ad</span><span className="helper" style={{ minWidth: 0, overflowWrap: 'anywhere', textAlign: 'right' }}>{identity.fullName} · {identity.gender}</span></div>
                 <div className="row"><span>Doğum / Yaş</span><span className="helper mono">{identity.birthDate} · {identity.age}</span></div>
-                <div className="row"><span>Adres</span><span className="helper">{identity.street}, {identity.city}, {identity.state} {identity.postcode}</span></div>
+                <div className="row"><span>Adres</span><span className="helper" style={{ minWidth: 0, overflowWrap: 'anywhere', textAlign: 'right' }}>{identity.street}, {identity.city}, {identity.state} {identity.postcode}</span></div>
                 <div className="row"><span>Kullanıcı adı</span><span className="mono helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>{identity.username} <CopyBtn value={identity.username} /></span></div>
               </>
             ) : (
@@ -380,8 +380,8 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
           icon={<Inbox size={16} />}
           scan
           actions={
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <span className="mono helper" style={{ fontSize: '0.72rem' }}>{inbox}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', minWidth: 0, maxWidth: '100%' }}>
+              <span className="mono helper" style={{ fontSize: '0.72rem', overflowWrap: 'anywhere', minWidth: 0 }}>{inbox}</span>
               <button type="button" className="btn-secondary btn-xs" disabled={inboxBusy} onClick={() => void loadInbox()}>
                 {inboxBusy ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />} Yenile
               </button>
@@ -396,8 +396,8 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
               <button type="button" className="btn-ghost btn-xs" style={{ alignSelf: 'flex-start' }} onClick={() => setOpenMsg(null)}>
                 <ArrowLeft size={12} /> Listeye dön
               </button>
-              <div className="row"><span>Kimden</span><span className="helper mono">{openMsg.from || '—'}</span></div>
-              <div className="row"><span>Konu</span><span className="helper">{openMsg.subject || '(konu yok)'}</span></div>
+              <div className="row"><span>Kimden</span><span className="helper mono" style={{ minWidth: 0, overflowWrap: 'anywhere', textAlign: 'right' }}>{openMsg.from || '—'}</span></div>
+              <div className="row"><span>Konu</span><span className="helper" style={{ minWidth: 0, overflowWrap: 'anywhere', textAlign: 'right' }}>{openMsg.subject || '(konu yok)'}</span></div>
               <div className="row"><span>Tarih</span><span className="helper mono">{openMsg.date || '—'}</span></div>
               {openMsg.code ? (
                 <div className="row">
@@ -410,7 +410,7 @@ export function AccountsView({ initialStatus }: { initialStatus: ProviderStatus 
               {openMsg.link ? (
                 <div className="row">
                   <span><ExternalLink size={13} /> Doğrulama linki</span>
-                  <a className="mono helper" href={openMsg.link} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all', maxWidth: '60%' }}>{openMsg.link}</a>
+                  <a className="mono helper" href={openMsg.link} target="_blank" rel="noreferrer" style={{ wordBreak: 'break-all', minWidth: 0, maxWidth: '60%', textAlign: 'right' }}>{openMsg.link}</a>
                 </div>
               ) : null}
               <pre className="mono" style={{ fontSize: '0.72rem', whiteSpace: 'pre-wrap', maxHeight: 320, overflow: 'auto', opacity: 0.85, margin: '0.3rem 0 0', padding: '0.6rem', background: 'rgba(0,0,0,0.25)', borderRadius: 8 }}>

@@ -1049,7 +1049,7 @@ export function ProfilesView({
         title="Profiller"
         subtitle="Bulut telefon filonuzu yönetin — başlatın, taşıyın, parmak izi ve proxy atayın."
         actions={
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button type="button" className="btn-primary" onClick={() => { setError(null); setProvisionFormOpen(true); }} disabled={provisionBusy}>
               <Zap size={15} /> {provisionBusy ? 'Başlatılıyor…' : 'Tek Tıkla Cihaz Oluştur'}
             </button>
@@ -1842,7 +1842,7 @@ export function ProfilesView({
               Sıfırdan izole bir Waydroid cihazı kurulur (root + parmak izi + proxy + APK&apos;lar — WhatsApp&apos;a hazır).
               WhatsApp hesabı açmak ayrı bir adımdır: cihaz hazır olduktan sonra profil menüsünden &quot;WhatsApp Aç&quot;.
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(90px, 120px)', gap: 12 }}>
               <label className="field">
                 <span>Cihaz adı {(parseInt(form.count, 10) || 1) > 1 ? '(önek — sıralı benzersiz)' : '(boş = rastgele)'}</span>
                 <input

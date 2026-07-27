@@ -219,7 +219,7 @@ export function ImagesView({ snapshots, market, devices, groups }: { snapshots: 
                         <button type="button" className="btn-ghost btn-xs" disabled={busy || s.status !== 'READY'} onClick={() => setRestoreFor(s)} title="Mevcut bir cihaza geri yükle">
                           <RotateCcw size={13} /> Geri yükle
                         </button>
-                        <select className="inline-select" value={s.visibility} disabled={busy} onChange={(e) => setVisibility(s, e.target.value as Snapshot['visibility'])} title="Görünürlük">
+                        <select className="inline-select" style={{ flex: '1 1 120px', minWidth: 0, maxWidth: '100%' }} value={s.visibility} disabled={busy} onChange={(e) => setVisibility(s, e.target.value as Snapshot['visibility'])} title="Görünürlük">
                           <option value="PRIVATE">Özel</option>
                           <option value="WORKSPACE">Çalışma alanı</option>
                           <option value="PUBLIC">Herkese açık</option>

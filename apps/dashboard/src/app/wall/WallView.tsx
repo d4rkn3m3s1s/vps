@@ -176,7 +176,7 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
           icon={<MonitorPlay size={16} />}
           actions={<span className="status-chip"><span className="dot dot-live" /> {liveCount} canlı · {shown.length} cihaz</span>}
         >
-          <div className="wall-grid" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+          <div className="wall-grid" style={{ ['--wall-cols' as string]: cols }}>
             {shown.map((d) => (
               <WallCell
                 key={d.id}

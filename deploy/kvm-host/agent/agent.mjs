@@ -869,13 +869,46 @@ function ccToIso(phone) {
 // return the host's datacenter IP, masking a proxy that isn't actually routing. Best
 // effort + short timeout so it never blocks provisioning; returns null on any failure.
 async function verifyExitCountry(serial) {
-  const raw = await adbT(serial, ['shell', 'curl', '-s', '--max-time', '12', 'https://ipinfo.io/json'], 15000).catch(() => '');
+  // 1) Cihaz-içi curl (hızlı). AMA Waydroid'de `adb shell curl https://…` TUTARSIZ
+  // (DNS/TLS güvenilmez → boş döner) → "Çıkış IP doğrulanamadı" YANLIŞ-UYARISI, proxy
+  // aslında çalışırken. Boş dönerse host-tarafı forward-proxy fallback (aşağı).
+  const raw = await adbT(serial, ['shell', 'curl', '-s', '--max-time', '10', 'http://ipinfo.io/json'], 13000).catch(() => '');
   const text = String(raw || '');
   const country = (text.match(/"country"\s*:\s*"([A-Z]{2})"/) || [])[1] || null;
-  if (!country) return null;
-  const ip = (text.match(/"ip"\s*:\s*"([^"]+)"/) || [])[1] || null;
-  const city = (text.match(/"city"\s*:\s*"([^"]+)"/) || [])[1] || null;
-  return { country, ip, city };
+  if (country) {
+    const ip = (text.match(/"ip"\s*:\s*"([^"]+)"/) || [])[1] || null;
+    const city = (text.match(/"city"\s*:\s*"([^"]+)"/) || [])[1] || null;
+    return { country, ip, city };
+  }
+  // 2) ★2026-07-27 FALLBACK: cihaz-içi curl boş → host'tan cihazın redsocks config'indeki
+  // upstream proxy üzerinden forward-proxy ile çıkış-ülkeyi doğrula (GÜVENİLİR, proxy-alarm
+  // fix'iyle aynı yöntem). serial "192.168.<sub>.112:5555" → subnet → net-head → instance.
+  try {
+    const m = /192\.168\.(\d+)\.112/.exec(String(serial));
+    if (!m) return null;
+    const sub = m[1];
+    // subnet → instance adı (net-head.sh subnet-map'ini ters çevirir; redsocks-inst-*.conf tara).
+    const { stdout: confPath } = await execFileAsync('bash', ['-c',
+      `grep -l "local_port" /etc/redsocks-inst-*.conf 2>/dev/null | while read f; do inst=$(echo "$f"|grep -oE 'mi[0-9]+'); s=$(sh /opt/fleet-agent/waydroid/net-head.sh "$inst" 2>/dev/null); [ "$s" = "${sub}" ] && echo "$f" && break; done`]).catch(() => ({ stdout: '' }));
+    const conf = String(confPath || '').trim().split('\n')[0];
+    if (!conf) return null;
+    const { stdout: creds } = await execFileAsync('bash', ['-c',
+      `U=$(grep -oE 'login = "[^"]+"' ${conf}|sed 's/login = "//;s/"//'); ` +
+      `P=$(grep -oE 'password = "[^"]+"' ${conf}|sed 's/password = "//;s/"//'); ` +
+      `H=$(grep -E '^[[:space:]]*ip = ' ${conf}|head -1|grep -oE '[0-9.]+'); ` +
+      `PT=$(grep -E '^[[:space:]]*port = ' ${conf}|head -1|grep -oE '[0-9]+'); ` +
+      // .eu → .pr (resmi çalışan host) + forward-proxy GET (http hedef, CONNECT değil).
+      `HP=$(echo ncx9yhrx.pr.thordata.net); ` +
+      `curl -s --max-time 10 -x "http://$U:$P@$HP:$PT" http://ipinfo.io/json 2>/dev/null`]).catch(() => ({ stdout: '' }));
+    const t2 = String(creds || '');
+    const c2 = (t2.match(/"country"\s*:\s*"([A-Z]{2})"/) || [])[1] || null;
+    if (!c2) return null;
+    return {
+      country: c2,
+      ip: (t2.match(/"ip"\s*:\s*"([^"]+)"/) || [])[1] || null,
+      city: (t2.match(/"city"\s*:\s*"([^"]+)"/) || [])[1] || null
+    };
+  } catch { return null; }
 }
 
 // Wrap an arbitrary string so it survives the DEVICE-side /system/bin/sh re-parse.
@@ -1233,6 +1266,11 @@ async function runJob(job) {
       if (!ok) {
         throw new Error(`proxy apply failed: ${stdout.trim().split('\n').pop() || 'wd-proxy.sh did not confirm REDIRECT'}`);
       }
+      // ★2026-07-27: proxy DEĞİŞTİ → WhatsApp'ı force-stop et. WhatsApp açıksa ESKİ proxy
+      // çıkışına kurulmuş bağlantıyı cache'ler; yeni ülke-proxy'sinden sonra "Couldn't
+      // connect" verir (CANLI: mi12 AL→TR). force-stop → sonraki açılış temiz bağlanır.
+      // Best-effort (WhatsApp kurulu olmayabilir); kayıt akışı zaten yeniden açar.
+      await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
       // Confirm the REAL exit country the way WhatsApp sees it (app-uid through redsocks).
       // A mismatch here is the single best early signal that a TR number is about to
       // register on a non-TR IP → surface it in the result note (non-fatal: the routing
@@ -2269,6 +2307,15 @@ async function registerWhatsApp(job, legacyPayload) {
   // 1) Launch fresh.
   curStep = 'launch'; curPct = stepPct.launch;
   if (!isContinuation) await waProgress('launch', curPct, 'WhatsApp açılıyor…'); // ★MODAL-FIX
+  // ★2026-07-27: YENİ kayıtta WhatsApp'ı ÖNCE force-stop et. KÖK-NEDEN: cihaz farklı-ülke
+  // numarası için yeniden kullanılınca proxy ülkesi değişir (AL→TR), ama WhatsApp ESKİ proxy
+  // bağlantısını cache'ler → numara ekranında "Couldn't connect. Please try again later"
+  // (CANLI: mi12 AL→TR, force-stop+restart ÇÖZDÜ). force-stop soğuk-başlatır → yeni proxy ile
+  // temiz bağlanır. SADECE yeni kayıtta (continuation'da OTP-ekranını kapatmak akışı bozar).
+  if (!isContinuation) {
+    await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+    await h.sleep(1200);
+  }
   await launchApp(serial, WA_PKG, null);
   // Smart wait: instead of a blind 8s sleep, poll until WhatsApp's first-run UI has
   // actually rendered (EULA / companion / phone screen), then continue immediately.
@@ -7692,6 +7739,9 @@ async function provisionDevice(job) {
   // tail tells the whole story. Reuses data already in hand; no host/ADB calls.
   const provTag = `[prov ${instance}]`;
   const plog = (m) => { try { log(`${provTag} ${m}`); } catch { /* logging must never break the flow */ } };
+  // ★2026-07-25: mark this instance as provisioning so adbRecoveryTick/healInstanceEth0
+  // don't race provisionDevice's own eth0 management (concurrent IP-assign corrupts boot).
+  provisioningInstances.add(instance);
   const provT0 = Date.now();
   const timings = {};            // { stepKey: ms }
   let _stepAt = provT0;
@@ -7803,15 +7853,45 @@ async function provisionDevice(job) {
     // slow-IPv4 path this code exists for. Raised to 30 probes to keep the ~60s safety cap.
     const dhcpKick = () => lxcAttach(instance, ['/system/bin/sh', '-c',
       'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
+    // ★2026-07-25: STATİK-IP FALLBACK. DHCP netd'nin yavaş self-timer'ına bağlıydı ve
+    // bazen 400s+ sürüyordu (canlı: mi12 boot=403s, mi13=411s — kullanıcı "tek tık takıldı").
+    // Kök: Waydroid boot'ta netd eth0'a IPv4 bind etmiyor (sadece IPv6 link-local), DHCP
+    // kick'leri de netd'yi hızlandırmıyor. ÇÖZÜM: subnet zaten biliniyor (net-head → .112),
+    // birkaç DHCP denemesi (16s) sonra IPv4 hâlâ yoksa STATİK ata (healInstanceEth0 ile aynı
+    // fix, anında çalışır). Bu provision-boot'u 400s→~20s'ye indirir. Temiz boot yine 1-2
+    // probe'ta bind eder → statik-fallback'e hiç ulaşmaz (mutlu yolda sıfır maliyet).
+    // ★2026-07-27: statik-IP fallback SADECE `ip addr add` + main-tablo default-route
+    // yapıyordu — ama Android netstack fwmark-tabanlı ROUTE TABLOLARINI (main/eth0/
+    // legacy_system) kullanır; bunlara default-route eklenmezse cihaz internete ÇIKAMAZ
+    // (TCP 000). CANLI-KANIT: mi14 statik-IP aldı ama default-route TABLOLARDA yoktu →
+    // WhatsApp "Couldn't connect" (OTP-doğrulama çıkamadı). FIX: addInstanceRoutes gibi
+    // TÜM tablolara default-route ekle. (DHCP başarılı olsaydı bunu otomatik yapardı.)
+    const staticEth0 = () => lxcAttach(instance, ['/system/bin/sh', '-c',
+      `export PATH=/system/bin:$PATH; ` +
+      `ip addr add 192.168.${subnetId}.112/24 dev eth0 2>/dev/null; ip link set eth0 up 2>/dev/null; ` +
+      // ★addInstanceRoutes ile AYNI tablolar: main/local_network/eth0 (legacy_system DEĞİL).
+      `for T in main local_network eth0; do ip route add default via 192.168.${subnetId}.1 dev eth0 table $T 2>/dev/null; done; ` +
+      `for T in eth0 local_network; do ip route add 192.168.${subnetId}.0/24 dev eth0 scope link src 192.168.${subnetId}.112 table $T 2>/dev/null; done; ` +
+      `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
     let eth0Ip = '';
     let kicks = 0;
+    let staticApplied = false;
     for (let i = 0; i < 30; i++) {
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;
-      // First kick at i===3 (~8s), then repeat every 5 probes (~every 10s) while stuck.
-      if (i === 3 || (i > 3 && (i - 3) % 5 === 0)) {
+      // ★i===8 (~16s): DHCP hâlâ vermediyse STATİK ata + BEKLE (400s beklemektense hemen
+      // çöz). Statik atandıktan SONRA dhcpKick ÇALIŞTIRMA — kick'in `ifconfig eth0 down/up`'ı
+      // statik IP'yi FLUSH eder (canlı-bug: statik@22s atandı ama kick#3-6 sildi, boot 69s
+      // sürdü). Statik-sonrası: sadece IP'nin bind olmasını poll et, kick'e dokunma.
+      if (i === 8 && !staticApplied) {
+        staticApplied = true;
+        await staticEth0();
+        plog(`eth0 statik-IP fallback → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        await logLine('⚙ eth0 statik IP atanıyor (DHCP gecikti)…');
+      } else if (!staticApplied && (i === 3 || (i > 3 && (i - 3) % 5 === 0))) {
+        // İlk kick i===3 (~8s), sonra ~10s'de bir — SADECE statik atanmadan ÖNCE.
         await dhcpKick();
         kicks++;
         plog(`eth0 IPv4 gecikti — DHCP re-kick #${kicks} @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
@@ -8280,11 +8360,13 @@ async function provisionDevice(job) {
   const elapsedMs = Date.now() - provT0;
   plog(`DONE ${instance} ${(elapsedMs / 1000).toFixed(0)}s | ${timingSummary()}`);
   await reportProgress(jobId, 'done', 100, `✓ Kurulum tamamlandı — ${instance} WhatsApp-hazır (${serial})`);
+  provisioningInstances.delete(instance); // artık heal serbest (cihaz canlı)
   return { instance, serial, ip, adbPort, subnetId, ready: true, checks, timings, elapsedMs };
   } catch (e) {
     // ★P1: a post-infra step threw — tear down the half-built instance so its ~4.4GB clone
     // (+ systemd unit / dbus policy / subnet-map line) doesn't leak on disk. Best-effort:
     // the ORIGINAL error always propagates; a teardown failure is logged, never masks it.
+    provisioningInstances.delete(instance); // teardown başlıyor — heal-koruması kalksın
     plog(`provision FAILED — tearing down ${instance}: ${e.message}`);
     await hostSh('wd-destroy.sh', [instance], 120000).catch((te) => plog(`teardown error (leaked): ${te.message}`));
     throw e;
@@ -10030,6 +10112,12 @@ let stopping = false;
 // on one phone corrupts each other). A global cap bounds total parallelism so a burst
 // can't exhaust host resources.
 const busyDevices = new Set();          // serials with a job currently executing
+// ★2026-07-25: instances currently being PROVISIONED (by wd-run.sh → boot → root → …).
+// adbRecoveryTick/healInstanceEth0 MUST NOT touch these — provisionDevice manages its own
+// eth0 (DHCP + statik fallback) and a concurrent heal race corrupts the boot session
+// (canlı: eth0-heal + provision-fallback aynı anda IP atadı → session çöktü → FAILED).
+// provisionDevice add's its instance on entry, delete's in finally.
+const provisioningInstances = new Set();
 // Default 24: the host is an 80-core / 250GB box; measured load sat at ~17-20 (~22%)
 // with headroom to spare, so 24 concurrent jobs stays well within limits while giving
 // messaging bursts more parallelism. Override with FLEET_MAX_CONCURRENT_JOBS per host.
@@ -10218,6 +10306,9 @@ async function isSerialReachable(serial) {
 // bulunan fix'in otomatiği. Instance'ın nokta-path lxc dizinini kullanır (waydroid.<inst>).
 async function healInstanceEth0(inst) {
   try {
+    // ★2026-07-25: provision devam ederken DOKUNMA — provisionDevice kendi eth0'ını
+    // yönetiyor (DHCP + statik fallback); paralel heal boot-session'ı bozar (canlı: FAILED).
+    if (provisioningInstances.has(inst)) return { healed: false, reason: 'provisioning' };
     const { stdout: subOut } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
     const sub = String(subOut || '').trim();
     if (!sub) return { healed: false, reason: 'no-subnet' };
@@ -10229,10 +10320,30 @@ async function healInstanceEth0(inst) {
     // Container eth0'da IPv4 var mı?
     const { stdout: ipOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip -4 addr show eth0 2>/dev/null | grep -c 'inet '`]).catch(() => ({ stdout: '0' }));
     const hasIp = Number(String(ipOut || '0').trim()) > 0;
-    if (hasIp) return { healed: false, reason: 'already-has-ip' };
-    // IP YOK → ata + link up (bugün elle yapılan fix). route best-effort (gerekmez).
+    // ★2026-07-27: IP VAR ama default-route EKSİK olabilir (cihaz internete çıkamaz, TCP 000,
+    // WhatsApp "Couldn't connect"). IP varsa DEFAULT-ROUTE'u da kontrol et; yoksa route'ları
+    // ekle (heal). CANLI: mi20 statik-IP aldı ama route yok → çıkamadı. IP+route ikisi de tamsa geç.
+    if (hasIp) {
+      const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip route show 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
+      if (Number(String(rtOut || '0').trim()) > 0) return { healed: false, reason: 'already-has-ip-and-route' };
+      // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
+      log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);
+      await execFileAsync('bash', ['-c',
+        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 table $T 2>/dev/null; done; ` +
+        `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+      await sleep(800);
+      await ensureInstanceProxy(inst, sub).catch(() => undefined);
+      return { healed: true, ip, reason: 'route-added' };
+    }
+    // IP YOK → ata + link up + default-route TÜM tablolara (Android fwmark: main/eth0/
+    // legacy_system). ★2026-07-27: route SADECE main-tabloya ekleniyordu → cihaz internete
+    // ÇIKAMIYORDU (TCP 000, WhatsApp "Couldn't connect"). fwmark tablolarına da ŞART.
     log(`eth0-heal: ${inst} eth0 IPv4 yok → ${ip}/24 atanıyor`);
-    await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- ip addr add ${ip}/24 dev eth0 2>/dev/null; lxc-attach -n waydroid -P ${lxcp} -- ip link set eth0 up 2>/dev/null; lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+    await execFileAsync('bash', ['-c',
+      `lxc-attach -n waydroid -P ${lxcp} -- ip addr add ${ip}/24 dev eth0 2>/dev/null; ` +
+      `lxc-attach -n waydroid -P ${lxcp} -- ip link set eth0 up 2>/dev/null; ` +
+      `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 table $T 2>/dev/null; done; ` +
+      `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
     await sleep(1500);
     await execFileAsync(ADB, ['connect', `${ip}:5555`]).catch(() => undefined);
     // ★2026-07-24: eth0-heal sonrası PROXY zincirini de doğrula (operatör isteği:
@@ -10307,9 +10418,13 @@ async function adbRecoveryTick() {
     try {
       const { stdout } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
       const sub = String(stdout || '').trim();
-      if (!sub || reachSubnets.has(sub)) continue; // erişilebilir → dokunma
+      if (!sub) continue;
+      // ★2026-07-27: ERİŞİLEBİLİR cihazları da healInstanceEth0'a ver — IP-var-ama-route-YOK
+      // durumunu düzeltir (cihaz ADB-reachable ama internete çıkamaz → WhatsApp "Couldn't
+      // connect"). healInstanceEth0 IP+route ikisi de tamsa ucuz-geçer ('already-has-ip-and-
+      // route'). Erişilemez cihaz da eth0-IP-yok durumunu düzeltir (önceki davranış korunur).
       const r = await healInstanceEth0(inst);
-      if (r.healed) { healedAny = true; log(`eth0-heal: ${inst} → ${r.ip} onarıldı`); }
+      if (r.healed) { healedAny = true; log(`eth0-heal: ${inst} → ${r.reason || r.ip} onarıldı`); }
     } catch { /* per-instance best-effort */ }
   }
   if (healedAny) {

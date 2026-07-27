@@ -170,7 +170,7 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><Smartphone size={16} /> Cihaz kuruluyor · {name || instance}{name ? <span style={{ opacity: 0.5, fontWeight: 400 }}> ({instance})</span> : null}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
@@ -234,8 +234,8 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
           )}
         </div>
 
-        {/* Step list (compact) */}
-        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px' }}>
+        {/* Step list (compact) — auto-fit so it drops to a single column on narrow phones. */}
+        <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '6px 16px' }}>
           {steps
             .filter((s) => s.key !== 'queued')
             .map((s) => {

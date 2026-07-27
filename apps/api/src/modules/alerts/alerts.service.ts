@@ -147,7 +147,7 @@ export class AlertsService {
       // Non-critical triggers (QUOTA_HIGH etc.) still require an explicit rule (opt-in).
       const CRITICAL_FAILOPEN = new Set<AlertTrigger>([
         'HOST_OFFLINE', 'FLEET_MASS_OFFLINE', 'HOST_SATURATED',
-        'ACCOUNT_BANNED', 'PROXY_UNHEALTHY', 'DEVICE_OFFLINE', 'JOB_FAILED'
+        'ACCOUNT_BANNED', 'PROXY_UNHEALTHY', 'PROXY_CREDIT_LOW', 'DEVICE_OFFLINE', 'JOB_FAILED'
       ]);
       if (rules.length === 0 && CRITICAL_FAILOPEN.has(trigger)) {
         void notificationsDispatch(workspaceId, { title: context.title, detail: context.detail });

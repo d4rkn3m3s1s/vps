@@ -171,7 +171,7 @@ export default function DeviceProxyModal({ deviceId, deviceName, currentProxyId,
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal modal-wide" style={{ maxWidth: 660 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-wide" style={{ maxWidth: 'min(96vw, 660px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><Network size={16} /> Proxy göm — {deviceName}</h2>
           <button type="button" className="modal-close" onClick={onClose}><X size={16} /></button>

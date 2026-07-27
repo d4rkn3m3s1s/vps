@@ -7885,7 +7885,7 @@ async function provisionDevice(job) {
       `export PATH=/system/bin:$PATH; ` +
       `ip addr add 192.168.${subnetId}.112/24 dev eth0 2>/dev/null; ip link set eth0 up 2>/dev/null; ` +
       // ★addInstanceRoutes ile AYNI tablolar: main/local_network/eth0 (legacy_system DEĞİL).
-      `for T in main local_network eth0; do ip route add default via 192.168.${subnetId}.1 dev eth0 table $T 2>/dev/null; done; ` +
+      `for T in main local_network eth0; do ip route add default via 192.168.${subnetId}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
       `for T in eth0 local_network; do ip route add 192.168.${subnetId}.0/24 dev eth0 scope link src 192.168.${subnetId}.112 table $T 2>/dev/null; done; ` +
       `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
@@ -8430,7 +8430,7 @@ async function addInstanceRoutes(instance, subnetId, ip) {
   const gw = `192.168.${subnetId}.1`;
   const cidr = `192.168.${subnetId}.0/24`;
   for (const table of ['main', 'local_network', 'eth0']) {
-    await lxcAttach(instance, ['ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'table', table], 15000).catch(() => undefined);
+    await lxcAttach(instance, ['ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'proto', 'static', 'table', table], 15000).catch(() => undefined);
   }
   for (const table of ['eth0', 'local_network']) {
     await lxcAttach(instance, ['ip', 'route', 'add', cidr, 'dev', 'eth0', 'proto', 'static', 'scope', 'link', 'src', ip, 'table', table], 15000).catch(() => undefined);
@@ -10401,7 +10401,7 @@ async function healInstanceEth0(inst, knownReachable) {
       // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
       log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);
       await execFileAsync('bash', ['-c',
-        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 table $T 2>/dev/null; done; ` +
+        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
         `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
       await sleep(800);
       // ★DOGRULA: table eth0 (uygulama-trafigi orayi kullanir) GERCEKTEN tuttu mu? netd
@@ -10419,7 +10419,7 @@ async function healInstanceEth0(inst, knownReachable) {
     await execFileAsync('bash', ['-c',
       `lxc-attach -n waydroid -P ${lxcp} -- ip addr add ${ip}/24 dev eth0 2>/dev/null; ` +
       `lxc-attach -n waydroid -P ${lxcp} -- ip link set eth0 up 2>/dev/null; ` +
-      `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 table $T 2>/dev/null; done; ` +
+      `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
       `lxc-attach -n waydroid -P ${lxcp} -- ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
     await sleep(1500);
     await execFileAsync(ADB, ['connect', `${ip}:5555`]).catch(() => undefined);

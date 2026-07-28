@@ -445,12 +445,27 @@ export class BatchService {
     // a job that burns a device slot and returns an opaque CHAT_NOT_OPENED minutes later.
     // We deliberately DON'T block RESTRICTED: a restricted account can still reply in
     // EXISTING threads (only new-chat starts fail), so we let it try and report per-send.
+    // ★★2026-07-28 BUG-FIX: eskiden sorgu `status: { in: ['BANNED','LOGGED_OUT'] }` ile
+    // cihazda GECMISTE HERHANGI BIR ZAMAN banlanmis satiri ariyordu -> bir kez banlanan
+    // cihaz, YENI ve CALISAN bir numarayla yeniden kaydedilse bile bir daha mesaj
+    // ATAMIYORDU (kalici 409). Ustelik KART bunu gostermiyordu: rozet EN YENI hesaba
+    // bakiyor (dogru), koruma ise "hic banlanmis mi" diye bakiyordu -> panel "saglikli"
+    // derken API reddediyordu (celiskili durum).
+    // CANLI KANIT (watest): ACTIVE +905015716660 (27 Tem, calisan) + BANNED 905391147788
+    // (16 Tem, degistirilmis) -> her gonderim "hesap YASAKLI" ile 409 aliyordu. Fix sonrasi
+    // ayni gonderim status=SENT ile GECTI.
+    // FIX: kart ile AYNI kurali kullan — EN YENI hesap satiri (FAILED gibi ara durumlar
+    // haric) neyse ona bak. Boylece panel ile API asla celismez.
     const acct = await prisma.generatedAccount.findFirst({
-      where: { deviceId: input.deviceId, platform: 'whatsapp', status: { in: ['BANNED', 'LOGGED_OUT'] } },
+      where: {
+        deviceId: input.deviceId,
+        platform: 'whatsapp',
+        status: { in: ['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED', 'BANNED', 'LOGGED_OUT'] }
+      },
       select: { status: true, phoneNumber: true },
-      orderBy: { updatedAt: 'desc' }
+      orderBy: { createdAt: 'desc' }
     }).catch(() => null);
-    if (acct) {
+    if (acct && (acct.status === 'BANNED' || acct.status === 'LOGGED_OUT')) {
       const dead = acct.status === 'BANNED'
         ? 'Bu cihazın WhatsApp hesabı YASAKLI (ban) — mesaj gönderilemez.'
         : 'Bu cihazın WhatsApp hesabı ÇIKIŞ YAPMIŞ / kayıt silinmiş — mesaj gönderilemez, yeniden kayıt gerekir.';

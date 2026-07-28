@@ -268,6 +268,55 @@ export async function setAccountHealth(input: {
   return { changed: true };
 }
 
+// ★★2026-07-28 IYILESME (recovery). setAccountHealth MONOTONIK'tir — bilerek: bir ban
+// sinyali asla yumusatilamaz. Ama kodun kendi yorumu "Recovery back to ACTIVE happens
+// elsewhere (a successful send/register)" diyordu ve o "elsewhere" HIC YAZILMAMISTI.
+// Sonuc: bir kez RESTRICTED/LOGGED_OUT damgalanan cihaz, sonradan duzelse bile karti
+// SONSUZA KADAR "WA Kisitli / Cikis Yapildi" gosteriyordu (operator calisan cihazi
+// kullanilamaz saniyor). CANLI: watest53 7 gun, idilcall/destek2 1 gun oncesinden takili.
+//
+// KANIT SARTI: yalnizca GERCEKLESEN bir gonderim (WHATSAPP_SEND ok) iyilestirir —
+// tahmin/heuristik yok. Basarili gonderim, hesabin hem OTURUM ACIK hem MESAJ ATABILIR
+// oldugunu kanitlar, yani RESTRICTED ve LOGGED_OUT damgalarini gecersiz kilar.
+//
+// ⚠️ BANNED BILEREK KAPSAM DISI: WhatsApp banlari kalici olur ve "basarili gonderim"
+// sinyalimiz yanlis-pozitif olursa gercek bir bani gizlemis oluruz — ban riskinde
+// GUVENLI taraf pesimist kalmaktir. Ban'dan cikis yolu yeni numara kaydidir (o zaten
+// YENI bir GeneratedAccount satiri acar ve rozet dogal olarak temizlenir).
+export async function recoverAccountHealth(input: {
+  deviceId: string;
+  workspaceId: string | null;
+  note?: string | undefined;
+}): Promise<{ changed: boolean }> {
+  const account = await prisma.generatedAccount.findFirst({
+    where: { deviceId: input.deviceId, platform: 'whatsapp' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, status: true, phoneNumber: true }
+  });
+  if (!account) return { changed: false };
+  if (account.status !== 'RESTRICTED' && account.status !== 'LOGGED_OUT') return { changed: false };
+
+  await prisma.generatedAccount
+    .update({ where: { id: account.id }, data: { status: 'ACTIVE', error: null } })
+    .catch(() => undefined);
+
+  const num = account.phoneNumber ?? input.deviceId;
+  logger.info('wa account recovered', { deviceId: input.deviceId, from: account.status, phone: num });
+  void webhooksService.dispatch(
+    'WHATSAPP_ACCOUNT_HEALTH',
+    { deviceId: input.deviceId, phoneNumber: account.phoneNumber ?? null, health: 'ACTIVE', recoveredFrom: account.status, ...(input.note ? { note: input.note } : {}) },
+    input.workspaceId ?? undefined
+  );
+  // Operatore bildir: "kisitli sandigin cihaz artik calisiyor" — panelde rozet kalkar.
+  void notificationsService
+    .dispatch(input.workspaceId ?? '', {
+      title: `✅ WhatsApp hesabi TOPARLANDI — ${num}`,
+      detail: [`Onceki durum: ${account.status}`, `📱 ${num}`, `📝 Basarili gonderim ile dogrulandi.`].join(String.fromCharCode(10)).slice(0, 900)
+    })
+    .catch(() => undefined);
+  return { changed: true };
+}
+
 // ── conversation list ───────────────────────────────────────────────────────
 
 export type ConversationRow = {
@@ -939,6 +988,7 @@ export const whatsappService = {
   recordMessage,
   advanceOutboundReceipt,
   setAccountHealth,
+  recoverAccountHealth,
   listConversations,
   unreadTotal,
   getThreadMessages,

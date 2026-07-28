@@ -393,6 +393,20 @@ export class AgentService {
           ACCOUNT_LOGGED_OUT: 'LOGGED_OUT'
         };
         const mappedHealth = HEALTH_MAP[String(res.status)];
+        // ★2026-07-28 IYILESME: BASARILI gonderim, hesabin oturumu acik VE mesaj atabilir
+        // oldugunu KANITLAR -> eski RESTRICTED/LOGGED_OUT damgasini gecersiz kilar.
+        // Bunsuz damga tek-yonluydu: bir kez kisitlanan cihaz duzelse bile kartta
+        // sonsuza kadar "WA Kisitli" yaziyordu. (BANNED bilerek kapsam disi — bkz.
+        // whatsapp.service.recoverAccountHealth yorumu.)
+        if (ok) {
+          void whatsappService
+            .recoverAccountHealth({
+              deviceId: pl.deviceId,
+              workspaceId: updated.workspaceId ?? null,
+              note: 'Basarili gonderim'
+            })
+            .catch(() => undefined);
+        }
         if (!ok && mappedHealth) {
           void whatsappService
             .setAccountHealth({

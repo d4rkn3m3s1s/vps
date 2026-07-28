@@ -10568,6 +10568,50 @@ async function ensureInstanceProxy(inst, sub) {
 // disrupt a healthy fleet — it recovers an already-broken one.
 const ADB_RECOVERY_MS = Number(process.env.FLEET_ADB_RECOVERY_MS || 30000); // check every 30s (internet-cikis netd-silmesini daha hizli toparla)
 const ADB_BOUNCE_COOLDOWN_MS = Number(process.env.FLEET_ADB_BOUNCE_COOLDOWN_MS || 5 * 60 * 1000);
+// ★★2026-07-28 DNS SELF-HEAL: bir cihaz IP + route + proxy TAM olsa bile DNS'siz kalabilir
+// (GERCEK DHCP lease'i alamadiysa). O halde TCP 301 doner, panelde ONLINE gorunur AMA isim
+// cozemez -> web.whatsapp.com cozulemez -> WhatsApp kaydi SESSIZCE kirilir. CANLI: 31
+// cihazin 9'u bu durumdaydi ve mevcut kontrollerin HICBIRI yakalamiyordu (hepsi IP/route/
+// proxy bakiyordu, DNS'e kimse bakmiyordu).
+// UCUZ TESPIT: DNS'i yalnizca DHCP getirir -> host-tarafi lease dosyasinda GERCEK bir lease
+// (wd-run.sh'in tohumu expiry=4102444800 HARIC) yoksa cihazin DNS'i de yoktur. Dosya okuma;
+// ADB/dumpsys maliyeti yok, container yukunden etkilenmez.
+// ONARIM (kanitlanmis tek yol — mi12/mi13/mi14/mi19 uzerinde dogrulandi): lease'i .112 ile
+// tohumla + container'i yeniden baslat -> Android acilista GERCEK DHCP yapar, DNS gelir.
+// GUVENLIK: is yapan cihaza DOKUNMA (busyDevices), provision surerken DOKUNMA
+// (provisioningInstances), tick basina EN FAZLA 1 cihaz, ayni cihaz icin en erken 1 saat sonra.
+const dnsHealAt = new Map();   // instance -> son onarim zamani
+async function dnsSelfHealTick(running) {
+  const NOW = Date.now();
+  for (const inst of running) {
+    if (provisioningInstances.has(inst)) continue;
+    const sub = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`])
+      .then((r) => String(r.stdout || '').trim()).catch(() => '');
+    if (!sub) continue;
+    if (busyDevices.has(`192.168.${sub}.112:5555`)) continue;   // is yapiyor -> dokunma
+    const last = dnsHealAt.get(inst) || 0;
+    if (NOW - last < 3600000) continue;                          // saatte en fazla 1 kez
+    const leaseFile = `/var/lib/misc/dnsmasq.waydroid-${inst}.leases`;
+    let hasReal = false;
+    try {
+      const raw = await readFile(leaseFile, 'utf8');
+      for (const line of String(raw).trim().split(String.fromCharCode(10))) {
+        const f = line.split(String.fromCharCode(9)).join(' ').trim().split(' ').filter(Boolean);
+        if (f[0] !== '4102444800' && f[2] && f[2].startsWith(`192.168.${sub}.`)) { hasReal = true; break; }
+      }
+    } catch { /* dosya yok -> lease yok */ }
+    if (hasReal) continue;                                       // DNS var -> gec
+    dnsHealAt.set(inst, NOW);
+    log(`dns-heal: ${inst} GERCEK DHCP lease YOK (DNS'siz, WhatsApp kirilir) -> lease tohumla + yeniden baslat`);
+    await execFileAsync('bash', ['-c',
+      `/opt/fleet-agent/waydroid/wd-stop.sh ${inst} >/dev/null 2>&1; sleep 2; ` +
+      `pkill -f "dnsmasq.*waydroid-${inst}" 2>/dev/null; ` +
+      `echo "4102444800 00:16:3e:f9:d3:03 192.168.${sub}.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > ${leaseFile}; ` +
+      `nohup /opt/fleet-agent/waydroid/wd-run.sh ${inst} >/dev/null 2>&1 & true`]).catch(() => undefined);
+    return;                                                      // tick basina TEK cihaz
+  }
+}
+
 async function adbRecoveryTick() {
   // Instances actually running on the host (wd-run shells).
   let running = [];
@@ -10586,6 +10630,7 @@ async function adbRecoveryTick() {
       if (sub) live.add(sub);
     }
     if (live.size) await reapStaleAdbEndpoints(live);
+    await dnsSelfHealTick(running).catch(() => undefined);
   } catch { /* best-effort */ }
   if (running.length < 3) return; // too small a fleet to judge; skip
   // How many are ADB-reachable right now?

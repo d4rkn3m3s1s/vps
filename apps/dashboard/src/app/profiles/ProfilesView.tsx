@@ -148,6 +148,19 @@ export type Country = { countryCode: string; country: string; timezone: string }
 export type ProxyOption = { id: string; label: string; host: string; port: number; type: string };
 export type AppOption = { id: string; name: string; packageName: string; version: string; apkUrl: string | null };
 
+// ★2026-07-28: metadata.waRegisterStatus / igRegisterStatus SADECE su degerlerde
+// "devam ediyor" demektir. API kayit TERMINAL olunca bu anahtara 'FAILED' YAZAR
+// (basarida siler) — yani anahtarin DOLU olmasi "suruyor" anlamina GELMEZ.
+// Eskiden hem rozet hem butonlar `Boolean(status)` ile karar veriyordu; bu yuzden
+// tek bir basarisiz kayit cihazi KALICI olarak "WA kaydi suruyor" gosteriyor VE
+// WhatsApp/Instagram butonunu SONSUZA KADAR devre disi birakiyordu (operator o
+// cihazda bir daha kayit BASLATAMIYORDU). CANLI: mi7 (+355682948292), 21 Tem'den
+// kalma FAILED, hicbir isi calismiyor.
+const REGISTER_IN_PROGRESS = new Set(['REGISTERING', 'AWAITING_OTP']);
+function isRegisterInProgress(status: unknown): boolean {
+  return typeof status === 'string' && REGISTER_IN_PROGRESS.has(status);
+}
+
 // Compact fingerprint of the fields a profile card actually renders, so the 5s
 // poll can short-circuit when nothing visible changed and avoid re-rendering the
 // whole grid. Covers status/name/network/group/tags + the WA/IG register badges
@@ -1382,7 +1395,17 @@ export function ProfilesView({
                       </span>
                       {(() => {
                         const waStatus = device.metadata?.waRegisterStatus as string | undefined;
-                        if (!waStatus) return null;
+                        // ★2026-07-28 BUG-FIX: rozet SADECE gercekten devam eden kayitta cikmali.
+                        // Eskiden `if (!waStatus) return null` idi ve AWAITING_OTP disindaki HER
+                        // deger "WA kaydi suruyor" sayiliyordu — TERMINAL 'FAILED' dahil. API,
+                        // kayit basarisiz olunca metadata'ya bilerek 'FAILED' yaziyor (koddaki
+                        // yorumu: "kart 'kayit suruyor' gostermeye devam etmesin diye"), ama
+                        // dashboard bunu tanimadigi icin rozet SONSUZA KADAR takili kaliyordu.
+                        // CANLI: mi7 (+355682948292) — 21 Tem'den kalma FAILED, hicbir isi
+                        // calismiyorken kart "WA kaydi suruyor" diyordu (ayni anda "WA Yasakli").
+                        // Devam eden durumlar: REGISTERING (batch.service) + AWAITING_OTP (agent).
+                        // Basarida anahtar zaten siliniyor; terminal degerlerde rozet gizlenir.
+                        if (!isRegisterInProgress(waStatus)) return null;
                         const accId = device.metadata?.waRegisterAccountId as string | undefined;
                         const label = waStatus === 'AWAITING_OTP' ? 'Kod bekleniyor' : 'WA kaydı sürüyor';
                         return (
@@ -1407,7 +1430,9 @@ export function ProfilesView({
                       })()}
                       {(() => {
                         const igStatus = device.metadata?.igRegisterStatus as string | undefined;
-                        if (!igStatus) return null;
+                        // WA rozetiyle AYNI hata: terminal ('FAILED') deger de "suruyor"
+                        // sayiliyordu -> rozet kalici takiliyordu. Bkz. isRegisterInProgress.
+                        if (!isRegisterInProgress(igStatus)) return null;
                         const accId = device.metadata?.igRegisterAccountId as string | undefined;
                         return (
                           <button
@@ -1454,7 +1479,7 @@ export function ProfilesView({
                       <button
                         type="button"
                         className="card-action-btn card-action-wa"
-                        disabled={Boolean(device.metadata?.waRegisterStatus)}
+                        disabled={isRegisterInProgress(device.metadata?.waRegisterStatus)}
                         title="Bu cihazda WhatsApp hesabı aç (numara gir → otonom kayıt → OTP)"
                         onClick={() => { setWaOpen(device); setWaPhone(''); setWaMsg(null); }}
                       >
@@ -1463,7 +1488,7 @@ export function ProfilesView({
                       <button
                         type="button"
                         className="card-action-btn card-action-ig"
-                        disabled={Boolean(device.metadata?.igRegisterStatus)}
+                        disabled={isRegisterInProgress(device.metadata?.igRegisterStatus)}
                         title="Bu cihazda Instagram hesabı aç (otonom: kimlik+e-posta üret → kayıt → e-posta kodu)"
                         onClick={() => { setIgOpen(device); setIgMsg(null); }}
                       >

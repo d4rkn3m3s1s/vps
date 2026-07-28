@@ -19,6 +19,7 @@ import { whatsappService, type ConversationFilter } from '../whatsapp/whatsapp.s
 import { DeviceService } from '../devices/device.service';
 import { fleetHealthService } from '../fleet-health/fleet-health.service';
 import { provisionService } from '../provision/provision.service';
+import { ProxyService } from '../proxies/proxy.service';
 
 const deviceService = new DeviceService();
 
@@ -169,6 +170,9 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'okunmamistum', description: '🔵 TÜM cihazlarda okunmamış (tek liste)' },
   { command: 'kisiler', description: '👥 İsim verilmiş kayıtlı kişiler' },
   { command: 'sonmesajlar', description: '📨 Filodaki son gelen mesajlar' },
+  // 2026-07-28: proxy KOTASI bitince cihazlar datacenter-IP'ye duser -> BAN. Bakiyeyi
+  // operator bota sorabilsin (otomatik PROXY_CREDIT_LOW alarmi zaten var, bu ANLIK bakis).
+  { command: 'bakiye', description: '💳 Proxy (thordata) kalan trafik + son kullanma' },
   { command: 'yardim', description: 'ℹ️ Komut listesi ve örnekler' }
 ];
 
@@ -1062,6 +1066,27 @@ async function handleCommand(
       await sendMessage(token, chatId, '🔎 Aramak istediğiniz <b>numarayı veya ismi</b> yazın:');
     }
   // ── Grup 1: Acil müdahale ──────────────────────────────────────────────────
+  } else if (lower === '/bakiye' || lower === 'bakiye' || lower === '/kota') {
+    // Proxy kotasi bitince cihaz datacenter-IP'ye duser (ban riski) — anlik bakiye.
+    const svc = new ProxyService();
+    const accounts: Array<{ label: string; token: string }> = [
+      { label: 'residential', token: process.env.FLEET_THORDATA_TOKEN || '' },
+      { label: 'mobile', token: process.env.FLEET_THORDATA_TOKEN_MOBILE || '' }
+    ].filter((a) => a.token);
+    if (!accounts.length) {
+      await sendMessage(token, chatId, '⚠️ Proxy bakiyesi sorgulanamıyor: <code>FLEET_THORDATA_TOKEN</code> tanımlı değil.', MAIN_MENU);
+      return;
+    }
+    const lines: string[] = ['💳 <b>Proxy bakiyesi (thordata)</b>', ''];
+    for (const acc of accounts) {
+      const bal = await svc.fetchThordataBalance(acc.token).catch(() => null);
+      if (!bal) { lines.push(`• ${esc(acc.label)}: <i>sorgulanamadı</i>`); continue; }
+      const gb = bal.balanceMb / 1024;
+      const mark = gb < 2 ? '🔴' : gb < 5 ? '🟡' : '🟢';
+      lines.push(`${mark} <b>${esc(acc.label)}</b>: ${gb.toFixed(2)} GB — son kullanma ${esc(bal.expiration)}`);
+    }
+    lines.push('', '<i>2 GB altına düşünce otomatik uyarı gelir.</i>');
+    await sendMessage(token, chatId, lines.join(String.fromCharCode(10)), MAIN_MENU);
   } else if (lower === '/saglik' || lower === 'saglik' || lower === '/sağlık' || lower === '/health') {
     await sendMessage(token, chatId, await renderFleetHealth(workspaceId), MAIN_MENU);
   } else if (lower === '/uyandir' || lower.startsWith('/uyandir ') || lower.startsWith('uyandir ')) {

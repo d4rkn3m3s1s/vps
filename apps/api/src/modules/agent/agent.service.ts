@@ -1394,7 +1394,9 @@ export class AgentService {
             ? `🔄 Cihaz yeniden bağlandı: ${label}`
             : input.kind === 'UNREACHABLE'
               ? `⛔ Cihaz erişilemiyor: ${label}`
-              : `Sağlık uyarısı: ${label}`;
+              : input.kind === 'CANARY_FAILED'
+                ? `🚨 CANARY BAŞARISIZ — yeni kurulan cihaz kullanılamıyor`
+                : `Sağlık uyarısı: ${label}`;
 
     logger.warn('health-watch alert', { kind: input.kind, device: label, detail: input.detail, fixed: input.fixed });
 
@@ -1418,7 +1420,12 @@ export class AgentService {
       ? 'PROXY_UNHEALTHY'
       : input.kind === 'UNREACHABLE'
         ? 'DEVICE_OFFLINE'
-        : null;
+        // CANARY_FAILED -> JOB_FAILED: kurulum HATTI bozuk demek (yeni cihaz kullanilamaz).
+        // JOB_FAILED, alerts.service'teki CRITICAL_FAILOPEN kumesinde -> kural TANIMLI
+        // OLMASA BILE Telegram'a duser. Yeni AlertTrigger enum degeri (DB migration) gerekmez.
+        : input.kind === 'CANARY_FAILED'
+          ? 'JOB_FAILED'
+          : null;
     if (trigger) {
       void alertsService
         .evaluate(wsId, trigger, { title, detail: input.detail })

@@ -7912,7 +7912,12 @@ async function provisionDevice(job) {
     // it never reaches even the first kick — zero cost on the happy path, big win on the
     // slow-IPv4 path this code exists for. Raised to 30 probes to keep the ~60s safety cap.
     const dhcpKick = () => lxcAttach(instance, ['/system/bin/sh', '-c',
-      'export PATH=/system/bin:$PATH; ifconfig eth0 down 2>/dev/null; ifconfig eth0 up 2>/dev/null; ndc network interface add 100 eth0 2>/dev/null; dhcptool eth0 2>/dev/null; true'], 12000).catch(() => undefined);
+      // ★HIZ-FIX 2026-07-28: eskiden `ifconfig eth0 DOWN; up; ndc network interface add;
+      // dhcptool eth0` idi. OLCULDU: bu imajda /system/bin/dhcptool YOK ve `ndc` komutlari
+      // "Command not recognized" -> kick'in DHCP-ISTEME kismi HIC calismiyordu. Geriye
+      // sadece link'i DOWN/UP etmek kaliyordu ve bu, Android'in DEVAM EDEN DHCP'sini her
+      // 10s'de yeniden baslatiyordu. Artik SADECE 'up' (link kapaliysa acar, DHCP'yi bozmaz).
+      'export PATH=/system/bin:$PATH; ifconfig eth0 up 2>/dev/null; true'], 12000).catch(() => undefined);
     // ★2026-07-25: STATİK-IP FALLBACK. DHCP netd'nin yavaş self-timer'ına bağlıydı ve
     // bazen 400s+ sürüyordu (canlı: mi12 boot=403s, mi13=411s — kullanıcı "tek tık takıldı").
     // Kök: Waydroid boot'ta netd eth0'a IPv4 bind etmiyor (sadece IPv6 link-local), DHCP
@@ -7948,7 +7953,29 @@ async function provisionDevice(job) {
     // dusuruyordu -> lease HIC gelmiyordu. Bkz. waydroid/wd-firewall-dhcp.sh (ONCE o).
     const DHCP_TICKS = Number(process.env.FLEET_PROV_DHCP_TICKS || 55);      // 55 x 2s = 110s
     const STATIC_AFTER = Number(process.env.FLEET_PROV_STATIC_AFTER || 45);  // ~90s
+    // ★★HIZ-FIX 2026-07-28 (boot 114s -> 31s): IP'yi ONCE host-tarafi dnsmasq LEASE
+    // dosyasindan oku. OLCULDU (dnsmasq logu): DHCPACK boot'un ~22. saniyesinde geliyor,
+    // yani DHCP ZATEN HIZLI. Sorun tespitteydi: container-ici `lxc-attach ... ip addr`
+    // yogun boot sirasinda 3s timeout'a takilip BOS donuyordu -> provision mevcut IP'yi
+    // GOREMIYOR -> 92s'de gereksiz statik fallback -> boot 114s. Lease dosyasi host
+    // tarafinda: okumasi ANINDA ve container yukune bagimsiz.
+    // ⚠️ wd-run.sh'in TOHUMLADIGI kayit (expiry 4102444800) SAYILMAZ — o sadece dnsmasq'a
+    // ".112'yi ver" demek icin; IP'nin GERCEKTEN alindigini yalnizca gercek lease kanitlar.
+    const NLC = String.fromCharCode(10), TABC = String.fromCharCode(9);
+    const realLeaseIp = async () => {
+      try {
+        const raw = await readFile(`/var/lib/misc/dnsmasq.waydroid-${instance}.leases`, 'utf8');
+        for (const line of String(raw).trim().split(NLC)) {
+          const f = line.split(TABC).join(' ').trim().split(' ').filter(Boolean);
+          if (f[0] === '4102444800') continue;               // tohum -> gercek DHCP degil
+          if (f[2] && f[2].startsWith(`192.168.${subnetId}.`)) return f[2];
+        }
+      } catch { /* lease dosyasi henuz yok */ }
+      return '';
+    };
     for (let i = 0; i < DHCP_TICKS; i++) {
+      const li = await realLeaseIp();
+      if (li) { eth0Ip = li; plog(`eth0 IPv4 DHCP-lease ile ${((Date.now() - dhcpT0) / 1000).toFixed(1)}s -> ${li}`); break; }
       eth0Ip = String(await lxcAttach(instance, ['/system/bin/sh', '-c',
         "ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}'"], 3000).catch(() => '')).trim();
       if (/^192\.168\.\d+\.\d+$/.test(eth0Ip)) break;

@@ -510,6 +510,58 @@ async function readWaPref(serial, key, files = ['com.whatsapp_preferences_light.
 // shared_prefs (registration_jid + cc). We read there first, fall back to props, and
 // add the push (display) name from msgstore props. Returns { number, name, waVersion,
 // registered } (any field may be null) — an object when root works, null when it doesn't.
+// ★★ 2026-07-28 SESSIZ SAGLIK YOKLAMASI (mesaj GONDERMEDEN durum tespiti).
+// NEDEN: hesap durumu (KISITLI/YASAKLI/CIKIS) bugune kadar SADECE bir gonderim
+// denenirken ogreniliyordu. Yani "durumu ogrenmek icin mesaj at" gerekiyordu; bu hem
+// disari trafik uretir (ban sinyali) hem de mantik hatasi tasir: KISITLI hesap MEVCUT
+// sohbete cevap verebildigi icin "gonderim basarili = kisitli degil" cikarimi YANLIS.
+// COZUM: WhatsApp'in KENDI ekran metnini oku — banner kesin kanittir ve okumak icin
+// mesaj gondermek GEREKMEZ. Var olan bir sohbeti ACIP okuruz; hicbir sey yazilmaz.
+// Desenler, gonderim akisinda CANLI dogrulanmis olanlarla AYNIDIR (tek kaynak).
+async function waHealthProbe(serial) {
+  const h = waHelpers(serial);
+  const texts = async () => {
+    const nodes = meaningfulNodes(parseUiNodes(await uiDumpXml(serial).catch(() => '')));
+    return nodes.map((n) => n.text || n.desc || '').join(' | ').slice(0, 1200);
+  };
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  // CANLI OLCUM: `monkey -c LAUNCHER` bu imajda WhatsApp'i ACMIYOR (ekranda launcher
+  // kaliyor) -> yoklama ana ekrani okuyup yanlislikla "sohbet yok" diyordu. Dogru yol:
+  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.HomeActivity`]).catch(() => undefined);
+  await sleep(4500);
+  const foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  // ★ON PLAN DOGRULAMASI: WhatsApp gercekten acilmadiysa HICBIR hukum verme. Bunsuz
+  // launcher/ANR ekrani "sorun yok" gibi okunur ve gercek bir kisit gozden kacar.
+  if (!/com\.whatsapp\//i.test(foc)) return { state: 'UNKNOWN', evidence: 'WhatsApp on plana gelmedi', unverified: true };
+  let scr = await texts();
+  // 1) YASAKLI — ban ekrani / ban metni
+  if (/BanAppeal|userban/i.test(foc) || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz|banned|suspended|yasakl|askıya/i.test(scr)) {
+    return { state: 'BANNED', evidence: scr.slice(0, 300) };
+  }
+  // 2) CIKIS YAPILMIS — kayit/EULA ekrani
+  if (/whatsapp\/.*(registration|\.EULA|RegisterName|verifynumber)/i.test(foc)
+      || /welcome to whatsapp|agree and continue|kabul et ve devam/i.test(scr)) {
+    return { state: 'LOGGED_OUT', evidence: scr.slice(0, 300) };
+  }
+  // 3) KISITLI — var olan bir sohbeti AC (mesaj YOK) ve banner/read-only ara.
+  // CANLI: bu surumde sohbet satiri 'contact_row_container' (conversations_row_contact_name YOK).
+  const row = await h.find('com.whatsapp:id/contact_row_container', 'id').catch(() => null)
+    || await h.find('com.whatsapp:id/conversations_row_contact_name', 'id').catch(() => null);
+  if (!row) return { state: 'ACTIVE', evidence: 'sohbet listesi acik, sohbet yok (kisit dogrulanamadi)', unverified: true };
+  await h.tapNode(row).catch(() => undefined);
+  await sleep(2500);
+  scr = await texts();
+  const readOnly = await h.find('com.whatsapp:id/read_only_chat_info', 'id').catch(() => null)
+    || await h.find('com.whatsapp:id/read_only_chat_info_content', 'id').catch(() => null);
+  const entry = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+  let state = 'ACTIVE';
+  if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(scr) || readOnly) state = 'RESTRICTED';
+  else if (!entry) state = 'UNKNOWN';   // yazma kutusu yok ama banner da yok -> karar VERME
+  await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  return { state, evidence: scr.slice(0, 300) };
+}
+
 async function readWaAccountHealth(serial) {
   // Primary source: shared_prefs registration_jid (bare number) — VERIFIED LIVE.
   let number = null;
@@ -1486,7 +1538,12 @@ async function runJob(job) {
       // Registered number + WhatsApp version + registered flag, no UI.
       const h = await readWaAccountHealth(serial);
       if (h === null) return { status: 'NO_ROOT', note: 'Hesap durumu okunamadı (root/db yok)' };
-      return { status: 'OK', ...h };
+      // ★2026-07-28: kimlik (numara/isim/surum) YETMEZ — asil soru "hesap KULLANILABILIR mi".
+      // Sessiz yoklama WhatsApp'in KENDI ekran metnini okur (mesaj GONDERMEDEN) ve
+      // BANNED/LOGGED_OUT/RESTRICTED/ACTIVE dondurur. API bunu hem kotulesme hem IYILESME
+      // yonunde uygular (tek yonlu damga sorunu boylece kapanir).
+      const probe = await waHealthProbe(serial).catch(() => null);
+      return { status: 'OK', ...h, ...(probe ? { state: probe.state, evidence: probe.evidence, ...(probe.unverified ? { unverified: true } : {}) } : {}) };
     }
     case 'WHATSAPP_FETCH_MEDIA': {
       // Pull DOWNLOADED media off the device as base64 (root cat). Not-yet-downloaded

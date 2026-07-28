@@ -292,6 +292,37 @@ export class AgentService {
       void notifyWhatsappJob(updated.workspaceId, updated.type, updated.payload, outcome).catch(quiet('notifyWhatsappJob', updated.id));
     }
 
+    // ★★2026-07-28 SESSIZ SAGLIK YOKLAMASI sonucunu UYGULA.
+    // Ajan WhatsApp'i acip KENDI ekran metnini okur (mesaj GONDERMEDEN) ve
+    // BANNED / LOGGED_OUT / RESTRICTED / ACTIVE / UNKNOWN dondurur. Bu KESIN kanittir
+    // (banner WhatsApp'in kendi cumlesi), bu yuzden hem KOTULESME hem IYILESME yonunde
+    // uygulanabilir — "durumu ogrenmek icin mesaj at" ihtiyacini bitirir ve tek-yonlu
+    // damga sorununu kapatir. UNKNOWN/unverified -> HICBIR SEY yapma (yanlis hukum yok).
+    if (updated.type === 'WHATSAPP_ACCOUNT_HEALTH' && updated.deviceId) {
+      const r = (outcome.result as { state?: string; evidence?: string; unverified?: boolean } | undefined) ?? null;
+      const st = r?.state;
+      if (r && !r.unverified && st) {
+        if (st === 'BANNED' || st === 'RESTRICTED' || st === 'LOGGED_OUT') {
+          void whatsappService
+            .setAccountHealth({
+              deviceId: updated.deviceId,
+              workspaceId: updated.workspaceId ?? null,
+              health: st,
+              note: `Sessiz yoklama: ${String(r.evidence ?? '').slice(0, 200)}`
+            })
+            .catch(quiet('probe.setHealth', updated.id));
+        } else if (st === 'ACTIVE') {
+          void whatsappService
+            .recoverAccountHealth({
+              deviceId: updated.deviceId,
+              workspaceId: updated.workspaceId ?? null,
+              note: 'Sessiz yoklama: kisit/ban isareti yok, yazma kutusu acik'
+            })
+            .catch(quiet('probe.recover', updated.id));
+        }
+      }
+    }
+
     // Snapshot capture jobs carry a snapshotId; reflect the outcome onto the
     // snapshot row (READY + artifactRef/size, or FAILED).
     if (updated.type === 'EMULATOR_SNAPSHOT_CREATE') {

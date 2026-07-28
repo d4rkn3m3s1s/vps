@@ -17,6 +17,7 @@ import { encryptString, safeDecrypt } from '../../lib/crypto';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
 import { notificationsService } from '../notifications/notifications.service';
 import { logger } from '../../lib/logger';
@@ -265,6 +266,8 @@ export async function setAccountHealth(input: {
       detail: `${label}\n📱 Numara: ${num}${input.note ? `\n📝 ${input.note.slice(0, 200)}` : ''}`.slice(0, 900)
     })
     .catch(() => undefined);
+  // ★2026-07-28: karttaki rozet CANLI guncellensin (ProfilesView device.updated'a abone).
+  deviceHub.broadcast({ type: 'device.updated', deviceId: input.deviceId, payload: { waAccountHealth: input.health }, timestamp: new Date().toISOString(), ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}) });
   return { changed: true };
 }
 
@@ -314,6 +317,7 @@ export async function recoverAccountHealth(input: {
       detail: [`Onceki durum: ${account.status}`, `📱 ${num}`, `📝 Basarili gonderim ile dogrulandi.`].join(String.fromCharCode(10)).slice(0, 900)
     })
     .catch(() => undefined);
+  deviceHub.broadcast({ type: 'device.updated', deviceId: input.deviceId, payload: { waAccountHealth: null }, timestamp: new Date().toISOString(), ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}) });
   return { changed: true };
 }
 

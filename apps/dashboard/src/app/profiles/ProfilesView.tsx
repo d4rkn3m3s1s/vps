@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
+import { useFleetEvents } from '../../lib/live';
 import Link from 'next/link';
 import {
   Smartphone,
@@ -259,6 +260,33 @@ export function ProfilesView({
   // safety-net reconcile at 20s (was 5s — 4× less server load + traffic on big fleets).
   const [devices, setDevices] = useState<DeviceProfile[]>(initialDevices);
   useEffect(() => { setDevices(initialDevices); }, [initialDevices]);
+
+  // ★2026-07-28 CANLI LISTE: cihaz listesi SADECE 20s'lik yoklamayla guncelleniyordu —
+  // yeni kurulan cihaz listeye ANINDA dusmuyordu (operator: "sayfayi yenileyince
+  // goruyorum"). WS altyapisi ve olaylar (device.created/updated/deleted,
+  // provision.progress) ZATEN vardi; bu bilesen yalnizca ABONE DEGILDI (useFleetEvents
+  // dosyada sadece YORUMDA geciyordu). Simdi olaya aninda tepki verir; 20s yoklama
+  // guvenlik agi olarak kalir. Olay firtinasina karsi 400ms debounce.
+  const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fetchDevices = useCallback(async () => {
+    try {
+      const res = await fetch('/api/devices', { cache: 'no-store' });
+      if (!res.ok) return;
+      const json = await res.json();
+      const next = (json?.data ?? null) as DeviceProfile[] | null;
+      if (!Array.isArray(next)) return;
+      setDevices((prev) => (sameDeviceList(prev, next) ? prev : next));
+    } catch { /* keep last good list */ }
+  }, []);
+  useFleetEvents(
+    ['device.created', 'device.updated', 'device.deleted', 'provision.progress'],
+    () => {
+      if (refreshRef.current) clearTimeout(refreshRef.current);
+      refreshRef.current = setTimeout(() => { void fetchDevices(); }, 400);
+    }
+  );
+  useEffect(() => () => { if (refreshRef.current) clearTimeout(refreshRef.current); }, []);
+
   useEffect(() => {
     let alive = true;
     const tick = async () => {

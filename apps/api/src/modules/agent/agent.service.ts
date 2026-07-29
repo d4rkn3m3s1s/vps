@@ -26,6 +26,17 @@ import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
 import { igRegisterService } from '../accounts/ig-register.service';
 
+// ★2026-07-29: kritik sağlık alarmlarının altına eklenen aksiyon butonları.
+// Operatör alarmı telefonundan görüp TEK DOKUNUŞLA teşhis/onarım başlatabilsin —
+// "sorunu gördüm ama sunucuya erişemiyorum" durumu ortadan kalksın.
+// callback_data değerleri telegram.service'teki ops:* işleyicileriyle eşleşir.
+const OPS_ALERT_BUTTONS: Array<Array<{ text: string; callback_data: string }>> = [
+  [
+    { text: '🔧 Kurtarmayı başlat', callback_data: 'ops:fix' },
+    { text: '🔍 Teşhis', callback_data: 'ops:diag' }
+  ]
+];
+
 // Classify a WhatsApp inbound notice as an account-health signal (or null if it's
 // a normal peer message). WhatsApp surfaces account trouble as system notifications
 // that the inbox poll captures verbatim — we key off the stable English strings
@@ -1243,6 +1254,18 @@ export class AgentService {
       if (prevPlain === plainBody) return { stored: false };
     }
 
+    // ★2026-07-29 LOG GÜRÜLTÜSÜ: aynı mesajın tekrar gelmesi NORMAL bir durum (agent
+    // aynı sohbeti birden çok kez okuyabiliyor). Eskiden bunu yalnızca create()'in
+    // P2002 istisnası yakalıyordu — sonuç doğruydu ama Prisma istisnadan ÖNCE her
+    // seferinde `prisma:error` basıyordu ve API logu bu satırlarla doluyordu
+    // (canlı: dakikalar içinde onlarca). Önce ucuz bir varlık kontrolü yapıyoruz;
+    // böylece beklenen tekrar durumunda hiç istisna üretilmez. Aşağıdaki catch
+    // yarış koşulu için savunma katmanı olarak KALIR (iki eşzamanlı okuma).
+    const already = await prisma.whatsappMessage
+      .findUnique({ where: { dedupeKey }, select: { id: true } })
+      .catch(() => null);
+    if (already) return { stored: false };
+
     let msg;
     try {
       msg = await prisma.whatsappMessage.create({
@@ -1440,7 +1463,11 @@ export class AgentService {
     // of bans) hid inside device-offline noise — and if no DEVICE_OFFLINE rule existed, it
     // fired NOTHING. Also: `fixed === false` means the leak/dead-proxy is STILL live (the
     // device is exiting from the datacenter IP right now) → mark it urgent so it stands out.
-    const isProxyKind = input.kind === 'PROXY_LEAK' || input.kind === 'PROXY_DEAD';
+    // ★2026-07-29: PROXY_POOL_DOWN = birden çok cihaz aynı anda çıkış yapamıyor
+    // (ülke havuzu ölü). Bu, tek cihazlık sızıntıdan daha ciddidir: filo çapında
+    // kesinti demek ve kayıt/mesaj akışı tamamen durur.
+    const isProxyKind =
+      input.kind === 'PROXY_LEAK' || input.kind === 'PROXY_DEAD' || input.kind === 'PROXY_POOL_DOWN';
     const unresolved = input.fixed === false; // still leaking / still down → needs a human NOW
     const urgent = unresolved ? '🔴 DÜZELTİLEMEDİ — ' : '';
     const title =
@@ -1448,13 +1475,19 @@ export class AgentService {
         ? `${urgent}⚠️ Proxy sızıntısı: ${label}${input.fixed ? ' (otomatik düzeltildi)' : ''}`
         : input.kind === 'PROXY_DEAD'
           ? `${urgent}⚠️ Proxy öldü (redsocks): ${label}${input.fixed ? ' (yeniden başlatıldı)' : ''}`
-          : input.kind === 'AUTO_RECONNECT'
-            ? `🔄 Cihaz yeniden bağlandı: ${label}`
-            : input.kind === 'UNREACHABLE'
-              ? `⛔ Cihaz erişilemiyor: ${label}`
-              : input.kind === 'CANARY_FAILED'
-                ? `🚨 CANARY BAŞARISIZ — yeni kurulan cihaz kullanılamıyor`
-                : `Sağlık uyarısı: ${label}`;
+          : input.kind === 'PROXY_POOL_DOWN'
+            ? `🚨 FİLO ÇIKIŞ ARIZASI — birden çok cihaz internete çıkamıyor`
+            : input.kind === 'PROXY_ACCOUNT_SWITCH'
+              ? `🔀 Proxy hesabı değiştirildi: ${label} (otomatik kurtarma)`
+              : input.kind === 'AUTO_RECONNECT'
+                ? `🔄 Cihaz yeniden bağlandı: ${label}`
+                : input.kind === 'UNREACHABLE'
+                  ? `⛔ Cihaz erişilemiyor: ${label}`
+                  : input.kind === 'CANARY_FAILED'
+                    ? `🚨 CANARY BAŞARISIZ — yeni kurulan cihaz kullanılamıyor`
+                    : // Bilinmeyen tür: artık 400 ile reddedilmiyor (bkz. controller notu),
+                      // türü başlıkta göstererek operatöre ham hâliyle iletiyoruz.
+                      `⚠️ Sağlık uyarısı [${input.kind}]${label ? `: ${label}` : ''}`;
 
     logger.warn('health-watch alert', { kind: input.kind, device: label, detail: input.detail, fixed: input.fixed });
 
@@ -1492,9 +1525,39 @@ export class AgentService {
       // (a leaked device shouldn't wait for the operator to have pre-made a rule).
       if (unresolved && isProxyKind) {
         void notificationsService
-          .dispatch(wsId ?? '', { title, detail: input.detail.slice(0, 900) })
+          .dispatch(wsId ?? '', {
+            title,
+            detail: input.detail.slice(0, 900),
+            // ★2026-07-29: bildirimi EYLEME dönüştür. Operatör dışarıdayken alarmı
+            // görüp hiçbir şey yapamamak en kötü senaryo; tek dokunuşla teşhis/onarım.
+            telegramButtons: OPS_ALERT_BUTTONS
+          })
           .catch(() => undefined);
       }
+    } else if (input.kind !== 'AUTO_RECONNECT' && input.kind !== 'HEALTH_WATCH_HEARTBEAT') {
+      // ★2026-07-29: eşlenecek bir AlertTrigger'ı OLMAYAN tür (ör. host script'ine yeni
+      // eklenmiş bir alarm) eskiden sessizce düşerdi — enum'u açmak tek başına yetmiyor,
+      // burada da yakalanması gerekiyordu. Bilinmeyen/eşleşmeyen türü doğrudan bildirim
+      // kanalına veriyoruz ki operatör HER durumda haberdar olsun.
+      // (AUTO_RECONNECT ve HEARTBEAT bilerek sessiz: ikisi de "sorun yok" sinyali.)
+      void notificationsService
+        .dispatch(wsId ?? '', {
+          title,
+          detail: input.detail.slice(0, 900),
+          telegramButtons: OPS_ALERT_BUTTONS
+        })
+        .catch(() => undefined);
+    }
+
+    // ★Kalıcı bildirim beslemesine de yaz (panelin zil ikonu). WS/Telegram anlıktır;
+    // operatör olayı sonradan da görebilmeli. AUTO_RECONNECT/HEARTBEAT gürültü sayılır.
+    if (input.kind !== 'AUTO_RECONNECT' && input.kind !== 'HEALTH_WATCH_HEARTBEAT') {
+      void createNotification(wsId, {
+        kind: unresolved ? 'err' : 'info',
+        title,
+        detail: input.detail.slice(0, 400),
+        ...(device?.id ? { refType: 'device' as const, refId: device.id } : {})
+      });
     }
 
     return { ok: true };

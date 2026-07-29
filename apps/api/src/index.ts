@@ -19,6 +19,18 @@ import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
 import { webhooksService } from './modules/webhooks/webhooks.service';
 import { startTelegramBot } from './modules/telegram/telegram.service';
+import * as notificationsService from './modules/notifications/notifications.service';
+import { renderDailyDigest } from './modules/telegram/ops.service';
+
+// ★2026-07-29: "sağlık izleyici durdu" bildirimini host başına en fazla 30 dakikada
+// bir gönder. Bu tick 60-90 sn'de bir çalıştığı için koşulsuz gönderim mesaj yağmuru
+// olurdu; sorun sürdükçe hatırlatmak isteriz ama operatörü boğmadan.
+const monitorDownNotified = new Map<string, number>();
+
+// Günlük özetin bugün gönderilip gönderilmediği (YYYY-MM-DD). Süreç yeniden
+// başlarsa aynı gün ikinci kez gitmesin diye DB'ye değil belleğe yazmak yeterli:
+// en kötü ihtimalle restart sonrası bir kez daha gider, veri kaybı riski yok.
+let digestSentOn = '';
 
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
@@ -236,12 +248,54 @@ async function main(): Promise<void> {
               .catch(() => [])
           : [];
         for (const h of monitorDown) {
-          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', {
-            title: `🛑 Sağlık izleyici durdu: ${h.name}`,
-            detail: `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 20+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Sunucuyu kontrol edin.`
-          });
+          const title = `🛑 Sağlık izleyici durdu: ${h.name}`;
+          const detail = `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 20+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Sunucuyu kontrol edin.`;
+          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', { title, detail });
+          // ★2026-07-29: bu alarm KURAL TANIMLI OLMASA BİLE gitmeli. İzleme katmanının
+          // ölmesi, "her şey yolunda" sanılmasına yol açan en tehlikeli sessizliktir —
+          // operatörün önceden bir HOST_SATURATED kuralı oluşturmuş olmasına bel bağlayamayız.
+          // ⚠️ Bu tick 60-90 sn'de bir çalışıyor → koşulsuz göndermek MESAJ YAĞMURU olurdu.
+          // Host başına 30 dakikada bir kez gönderiyoruz (sorun sürdükçe hatırlatır ama boğmaz).
+          const lastPing = monitorDownNotified.get(h.id) ?? 0;
+          if (Date.now() - lastPing > 30 * 60 * 1000) {
+            monitorDownNotified.set(h.id, Date.now());
+            void notificationsService
+              .dispatch(h.workspaceId ?? '', {
+                title,
+                detail,
+                telegramButtons: [[{ text: '🔍 Teşhis', callback_data: 'ops:diag' }]]
+              })
+              .catch(() => undefined);
+          }
         }
         return stale.length;
+      })(),
+      // ★2026-07-29 GÜNLÜK ÖZET: her sabah tek mesaj — "gece ne oldu, şu an durum ne".
+      // Amaç sessizlik belirsizliğini bitirmek: sistem sağlıklıysa da rapor gelir, böylece
+      // "bildirim gelmiyor çünkü her şey yolunda" ile "bildirim gelmiyor çünkü izleme
+      // ölmüş" birbirinden ayrılır (ikincisini raporun kendisi söyler).
+      (async () => {
+        const hour = Number(process.env.FLEET_DIGEST_HOUR ?? 9); // sunucu saati (UTC)
+        const now = new Date();
+        const today = now.toISOString().slice(0, 10);
+        if (now.getUTCHours() !== hour || digestSentOn === today) return 0;
+        digestSentOn = today;
+        const workspaces = await prisma.workspace.findMany({ select: { id: true } }).catch(() => []);
+        for (const ws of workspaces) {
+          const text = await renderDailyDigest(ws.id).catch(() => null);
+          if (!text) continue;
+          void notificationsService
+            .dispatch(ws.id, {
+              title: '',
+              detail: text,
+              telegramButtons: [[
+                { text: '🔍 Teşhis', callback_data: 'ops:diag' },
+                { text: '🔧 Kurtar', callback_data: 'ops:fix' }
+              ]]
+            })
+            .catch(() => undefined);
+        }
+        return workspaces.length;
       })(),
       // Fail jobs that hang PENDING/RUNNING with no agent progress, so the
       // dashboard shows an error instead of an eternal "yükleniyor" spinner.

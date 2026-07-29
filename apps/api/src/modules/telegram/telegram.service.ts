@@ -12,7 +12,7 @@
 // reply with inline-keyboard menus for a clean, tap-driven UX.
 
 import { prisma } from '../../db/prisma';
-import { decryptString } from '../../lib/crypto';
+import { decryptString, safeDecrypt } from '../../lib/crypto';
 import { logger } from '../../lib/logger';
 import { batchService } from '../accounts/batch.service';
 import { whatsappService, type ConversationFilter } from '../whatsapp/whatsapp.service';
@@ -20,6 +20,13 @@ import { DeviceService } from '../devices/device.service';
 import { fleetHealthService } from '../fleet-health/fleet-health.service';
 import { provisionService } from '../provision/provision.service';
 import { ProxyService } from '../proxies/proxy.service';
+import {
+  renderDiagnostics,
+  renderProxyStatus,
+  runRecovery,
+  renderEmergencyHelp,
+  renderDailyDigest
+} from './ops.service';
 
 const deviceService = new DeviceService();
 
@@ -65,14 +72,46 @@ async function sendMessage(
   text: string,
   buttons?: InlineButton[][]
 ): Promise<void> {
-  const params: Record<string, unknown> = {
-    chat_id: chatId,
-    text,
-    parse_mode: 'HTML',
-    disable_web_page_preview: true
-  };
-  if (buttons?.length) params.reply_markup = { inline_keyboard: buttons };
-  await tgCall(token, 'sendMessage', params).catch((e) => logger.warn('tg sendMessage failed', { error: String(e) }));
+  // ★2026-07-29 4096 SINIRI: Telegram tek mesajda en fazla 4096 karakter kabul eder.
+  // Uzun listeler (/hesaplar 40 satır, /kisiler 40, /okunmamistum 30, /sonmesajlar 25)
+  // bu sınırı aşınca API isteği REDDEDİYOR ve aşağıdaki .catch() hatayı yutuyordu →
+  // operatör komuta basıyor, HİÇBİR ŞEY gelmiyordu. Artık uzun metni parçalara bölüp
+  // sırayla gönderiyoruz; butonlar yalnızca SON parçaya eklenir (aksi halde her
+  // parçada menü tekrarlanır).
+  const LIMIT = 3900; // HTML etiketleri + emoji payı için 4096'nın altında güvenli sınır
+  const chunks: string[] = [];
+  if (text.length <= LIMIT) {
+    chunks.push(text);
+  } else {
+    // Satır sınırında böl ki HTML etiketi ortadan ikiye ayrılmasın.
+    let buf = '';
+    for (const line of text.split('\n')) {
+      // Tek satır bile sınırı aşıyorsa (nadiren) sert kes.
+      if (line.length > LIMIT) {
+        if (buf) { chunks.push(buf); buf = ''; }
+        for (let i = 0; i < line.length; i += LIMIT) chunks.push(line.slice(i, i + LIMIT));
+        continue;
+      }
+      if (buf.length + line.length + 1 > LIMIT) { chunks.push(buf); buf = line; }
+      else buf = buf ? `${buf}\n${line}` : line;
+    }
+    if (buf) chunks.push(buf);
+  }
+
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const params: Record<string, unknown> = {
+      chat_id: chatId,
+      text: chunks[i],
+      parse_mode: 'HTML',
+      disable_web_page_preview: true
+    };
+    if (isLast && buttons?.length) params.reply_markup = { inline_keyboard: buttons };
+    // eslint-disable-next-line no-await-in-loop
+    await tgCall(token, 'sendMessage', params).catch((e) =>
+      logger.warn('tg sendMessage failed', { error: String(e), chunk: `${i + 1}/${chunks.length}` })
+    );
+  }
 }
 
 async function answerCallback(token: string, callbackId: string, text?: string): Promise<void> {
@@ -153,7 +192,12 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'durum', description: '📊 Özet: cihaz + okunmamış sayısı' },
   { command: 'istatistik', description: '📈 Son 24 saat mesaj istatistikleri' },
   { command: 'cihazlar', description: '📱 Tüm cihazları listele (online/offline)' },
-  // 🚨 Acil müdahale
+  // 🚨 Acil müdahale + operasyon (★2026-07-29: operatör dışarıdayken SSH'sız teşhis/onarım)
+  { command: 'tani', description: '🔍 Derin teşhis — neyin bozuk olduğunu göster' },
+  { command: 'kurtar', description: '🔧 Otomatik onarım — kapalı cihaz + takılı iş' },
+  { command: 'proxy', description: '🌐 Proxy/ülke dağılımı ve sağlığı' },
+  { command: 'ozet', description: '☀️ Günlük özet (son 24 saat)' },
+  { command: 'acil', description: '🚨 Acil müdahale rehberi (ne otomatik, ne elle)' },
   { command: 'saglik', description: '🩺 Filo sağlığı: cihaz + WA hesap + sunucu yükü' },
   { command: 'uyandir', description: '🔆 Offline cihazı uyandır — /uyandir <cihaz>' },
   { command: 'reboot', description: '♻️ Cihazı yeniden başlat — /reboot <cihaz>' },
@@ -238,6 +282,58 @@ function esc(s: string): string {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// Bir metnin ÇÖZÜLEMEMİŞ şifre gövdesi olup olmadığını tahmin eder.
+//
+// ★2026-07-29 — NEDEN: mesaj gövdeleri AES-256-GCM ile şifreli saklanıyor. Telegram
+// listelerinde bu alanlar ÇÖZÜLMEDEN basılıyordu; operatör önizleme yerine
+// "VIki/047Wc+XEa2cElErBN83XtA0IZ3LudeSfiNs" gibi anlamsız diziler görüyordu.
+// safeDecrypt çözemediğinde (bozuk/eski kayıt, anahtar değişimi) girdiyi AYNEN geri
+// verir — yani tek başına yeterli değil. Bu kontrol o durumu yakalayıp önizlemeyi
+// tamamen gizler: yanlış bilgi göstermektense hiç göstermemek daha iyi.
+// Sezgi: base64-benzeri, uzun, boşluksuz ve sözcük içermeyen diziler.
+function looksEncrypted(s: string): boolean {
+  const t = String(s || '').trim();
+  if (t.length < 24) return false;
+  if (/\s/.test(t)) return false; // gerçek mesajlar neredeyse her zaman boşluk içerir
+  return /^[A-Za-z0-9+/=_-]+$/.test(t);
+}
+
+// Bir komutun ARGÜMANLI ve ARGÜMANSIZ hâlini birlikte eşler.
+//
+// ★2026-07-29 — NEDEN: Telegram'ın "/" komut menüsünden bir komuta dokunulduğunda
+// bota argümansız hâli gönderilir ("/profilisim"). Dispatcher'daki koşullar ise
+// yalnızca boşluklu biçimi (`lower.startsWith('/profilisim ')`) kabul ediyordu;
+// sonuç olarak menüden komuta basmak "Anlamadım." cevabı veriyordu ve kullanım
+// örneği hiç gösterilemiyordu. Operatörün bildirdiği "komuta basıyorum bir şey
+// olmuyor" sorunu buydu.
+//
+// ⚠️ TÜRKÇE BÜYÜK-İ TUZAĞI: 'İ'.toLowerCase() JavaScript'te 'i' + U+0307 (birleşen
+// nokta) üretir, bu yüzden `lower.startsWith('/profilİsim ')` gibi koşullar ASLA
+// eşleşmez. Bu yüzden karşılaştırmadan önce birleşen noktayı ve Türkçe'ye özgü
+// harfleri normalize ediyoruz — operatör Türkçe klavyeyle yazdığında da çalışsın.
+function normCmd(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/̇/g, '') // 'İ'.toLowerCase() kalıntısı: birleşen nokta
+    .replace(/ı/g, 'i')
+    .replace(/ş/g, 's')
+    .replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u')
+    .replace(/ö/g, 'o')
+    .replace(/ç/g, 'c');
+}
+
+function isCmd(lower: string, ...names: string[]): boolean {
+  const t = normCmd(lower).trim();
+  for (const n of names) {
+    const k = normCmd(n);
+    // "/ad", "ad", "/ad <arg>", "ad <arg>" — dördü de kabul.
+    if (t === `/${k}` || t === k) return true;
+    if (t.startsWith(`/${k} `) || t.startsWith(`${k} `)) return true;
+  }
+  return false;
+}
+
 // ── Command / callback handling ─────────────────────────────────────────────
 
 const MAIN_MENU: InlineButton[][] = [
@@ -246,7 +342,18 @@ const MAIN_MENU: InlineButton[][] = [
   [{ text: '✉️ Mesaj Gönder', callback_data: 'send' }, { text: '📢 Toplu Test', callback_data: 'broadcast' }],
   [{ text: '🩺 Sağlık', callback_data: 'health' }, { text: '📈 İstatistik', callback_data: 'stats' }],
   [{ text: '🏷 Etiketler', callback_data: 'labels' }, { text: '📊 Durum', callback_data: 'status' }],
-  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: 'ℹ️ Yardım', callback_data: 'help' }]
+  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: 'ℹ️ Yardım', callback_data: 'help' }],
+  // ★2026-07-29: operatör dışarıdayken teşhis + onarım tek dokunuşla erişilebilir olmalı.
+  [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🔧 Kurtar', callback_data: 'ops:fix' }]
+];
+
+// Operasyon (teşhis/onarım) ekranlarının altındaki menü — buradan hızlıca diğer
+// operasyon komutlarına geçilebilsin, her seferinde /menu'ye dönmek gerekmesin.
+const OPS_MENU: InlineButton[][] = [
+  [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🌐 Proxy', callback_data: 'ops:proxy' }],
+  [{ text: '🔧 Kurtar', callback_data: 'ops:fix' }, { text: '☀️ Özet', callback_data: 'ops:digest' }],
+  [{ text: '🩺 Sağlık', callback_data: 'health' }, { text: '🚨 Acil', callback_data: 'ops:emergency' }],
+  [{ text: '🏠 Ana menü', callback_data: 'menu' }]
 ];
 
 function menuText(): string {
@@ -273,7 +380,11 @@ function menuText(): string {
     '• <b>/durum</b> — özet (cihaz + okunmamış) · <b>/istatistik</b> — 24s mesaj',
     '• <b>/cihazlar</b> — tüm cihazlar (online/offline)',
     '',
-    '<b>🚨 Acil müdahale</b>',
+    '<b>🚨 Acil müdahale & operasyon</b>',
+    '• <b>/tani</b> — <b>derin teşhis</b>: neyin bozuk olduğunu tek bakışta gör',
+    '• <b>/kurtar</b> — otomatik onarım (kapalı cihaz + takılı iş)',
+    '• <b>/proxy</b> — proxy/ülke dağılımı · <b>/ozet</b> — günlük özet',
+    '• <b>/acil</b> — neyin otomatik çözüldüğü, neyin elle yapılacağı',
     '• <b>/saglik</b> — filo sağlığı (cihaz + WA hesap + sunucu yükü)',
     '• <b>/uyandir</b> &lt;cihaz&gt; — offline cihazı uyandır',
     '• <b>/reboot</b> &lt;cihaz&gt; — cihazı yeniden başlat',
@@ -311,7 +422,18 @@ async function renderChatList(
   workspaceId: string,
   state: ChatState
 ): Promise<{ text: string; buttons: InlineButton[][] }> {
-  const deviceId = state.browseDeviceId!;
+  // ★2026-07-29 OTURUM KAYBI: state BELLEKTE tutuluyor (botStates). API yeniden
+  // başlayınca sıfırlanır — ama operatörün sohbet geçmişindeki ESKİ butonlar hâlâ
+  // orada durur. Eskiden bu durumda `state.browseDeviceId!` undefined'a düşüyor,
+  // listConversations patlıyor ve hata en dıştaki catch'te YUTULUYORDU: operatör
+  // butona basıyor, hiçbir şey olmuyordu. Artık net bir yönlendirme veriyoruz.
+  if (!state.browseDeviceId) {
+    return {
+      text: '⏳ <b>Oturum sıfırlandı</b> (bot yeniden başlatılmış olabilir).\nBu eski buton artık geçersiz — lütfen cihazı yeniden seçin.',
+      buttons: await devicePickerButtons(workspaceId, 'chatpick', state.browseFilter ?? 'all')
+    };
+  }
+  const deviceId = state.browseDeviceId;
   const filter = state.browseFilter ?? 'all';
   const cursor = state.nextCursor ?? undefined;
   const { conversations, nextCursor } = await whatsappService.listConversations(workspaceId, {
@@ -340,7 +462,14 @@ async function renderChatList(
         const badge = c.unreadCount > 0 ? ` <b>(${c.unreadCount})</b>` : '';
         const star = c.favorite ? '⭐ ' : '';
         const arrow = c.lastDirection === 'OUT' ? '➡️ ' : '';
-        const preview = c.lastMessageBody ? esc(c.lastMessageBody.slice(0, 40)) : '—';
+        // Servis katmanı zaten safeDecrypt uyguluyor; ama çözme BAŞARISIZ olursa
+        // (anahtar rotasyonu / bozuk satır) girdiyi aynen döndürür ve ham şifre metni
+        // ekrana basılır. Bu iki ekran en çok kullanılanlar olduğu için burada da
+        // koruyoruz — yanlış bilgi göstermektense önizlemeyi hiç göstermemek yeğdir.
+        const preview =
+          c.lastMessageBody && !looksEncrypted(c.lastMessageBody)
+            ? esc(c.lastMessageBody.slice(0, 40))
+            : '—';
         return `${i + 1}. ${star}<b>${esc(c.peer)}</b>${badge}\n   ${arrow}${preview}`;
       })
     : ['Bu filtreye uyan sohbet yok.'];
@@ -407,7 +536,9 @@ async function renderThread(
         const arrow = m.direction === 'OUT' ? '➡️' : '⬅️';
         const glyph = m.direction === 'OUT' ? statusGlyph(m.status) : '';
         const failNote = m.direction === 'OUT' && m.status === 'FAILED' && m.failReason ? ` <i>(${esc(String(m.failReason))})</i>` : '';
-        return `${arrow} ${esc(String(m.body).slice(0, 180))}${glyph}${failNote}`;
+        // Çözülememiş gövdeyi ham şifre olarak basma (bkz. renderChatList'teki not).
+        const body = looksEncrypted(String(m.body)) ? '<i>(okunamadı)</i>' : esc(String(m.body).slice(0, 180));
+        return `${arrow} ${body}${glyph}${failNote}`;
       })
     : ['(Bu sohbette henüz mesaj yok.)'];
 
@@ -699,7 +830,12 @@ async function renderAllUnread(workspaceId: string): Promise<string> {
   const lines = rows.map((r) => {
     const who = r.displayName ? esc(r.displayName) : `<code>${esc(r.peer)}</code>`;
     const dn = names.get(r.deviceId);
-    const prev = r.lastMessageBody ? ` — <i>${esc(r.lastMessageBody.slice(0, 40))}</i>` : '';
+    // ★2026-07-29 BUG: mesaj gövdeleri AES-256-GCM ŞİFRELİ saklanıyor; burada ham
+    // haliyle basılıyordu ve operatör önizleme yerine anlamsız şifre metni görüyordu
+    // ("VIki/047Wc+XEa2cElErBN83Xt…"). safeDecrypt çözer, çözemezse (bozuk/eski kayıt)
+    // olduğu gibi döner — bu yüzden ayrıca "şifreli görünüyorsa hiç gösterme" kontrolü.
+    const plain = r.lastMessageBody ? safeDecrypt(r.lastMessageBody) : '';
+    const prev = plain && !looksEncrypted(plain) ? ` — <i>${esc(plain.slice(0, 40))}</i>` : '';
     return `🔵 <b>${r.unreadCount}</b> · ${who}${dn ? ` (${esc(dn)})` : ''}${prev}`;
   });
   return [`<b>🔵 Tüm Okunmamış</b> (${total} mesaj, ${rows.length} sohbet)`, '', ...lines].join('\n');
@@ -736,7 +872,9 @@ async function renderRecentInbound(workspaceId: string): Promise<string> {
   const lines = rows.map((r) => {
     const dn = names.get(r.deviceId);
     const dot = r.read ? '⚪️' : '🔵';
-    const body = r.body ? esc(r.body.slice(0, 50)) : '(boş)';
+    // Gövde şifreli saklanır (bkz. renderAllUnread'deki not) — çöz, çözülemiyorsa gizle.
+    const plain = r.body ? safeDecrypt(r.body) : '';
+    const body = plain && !looksEncrypted(plain) ? esc(plain.slice(0, 50)) : '(okunamadı)';
     return `${dot} <code>${esc(r.peer)}</code>${dn ? ` (${esc(dn)})` : ''}: <i>${body}</i>`;
   });
   return [`<b>📨 Son Gelen Mesajlar</b> (${rows.length})`, '', ...lines].join('\n');
@@ -979,9 +1117,16 @@ async function handleCommand(
         await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
       }
     }
-  } else if (lower.startsWith('/profilisim ') || lower.startsWith('profilisim ') || lower.startsWith('/profilİsim ')) {
+    // ★2026-07-29: ÇIPLAK komut da kabul edilmeli. Telegram'ın "/" menüsünden bir
+    // komuta dokunulduğunda bota ARGÜMANSIZ hâli gider ("/profilisim"). Eskiden koşul
+    // yalnızca boşluklu biçimi (`'/profilisim '`) kabul ettiği için çıplak hâl hiçbir
+    // dala düşmüyor ve operatöre "Anlamadım." deniyordu — yani komuta basmak BOZUKTU
+    // ve altındaki kullanım örneği hiç görünmüyordu. Artık argümansız çağrı da bu dala
+    // girer ve aşağıdaki `parts.length < 2` kontrolü kullanım metnini gösterir.
+    // (Aynı hata /sil, /etiket, /adver'de de vardı; hepsi düzeltildi.)
+  } else if (isCmd(lower, 'profilisim')) {
     // "/profilisim <cihaz> <yeni-ad>" — WhatsApp profil ismini değiştir.
-    const rest = cmd.replace(/^\/?profil[iİ]sim\s+/i, '').trim();
+    const rest = cmd.replace(/^\/?profil[iİ]sim\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
     if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/profilisim &lt;cihaz&gt; &lt;yeni-ad&gt;</code>\nörn: /profilisim watest48 Zara', MAIN_MENU); return; }
     const ref = parts[0]!;
@@ -1016,6 +1161,19 @@ async function handleCommand(
   } else if (lower === '/etiketler' || lower === 'etiketler') {
     const { text: t, buttons } = await renderLabels(workspaceId);
     await sendMessage(token, chatId, t, buttons);
+  } else if (lower === '/tani' || lower === 'tani' || lower === '/teshis' || lower === '/diag') {
+    // ★2026-07-29: operatör dışarıdayken "neyin bozuk olduğunu" SSH'sız görebilsin.
+    await sendMessage(token, chatId, await renderDiagnostics(workspaceId), OPS_MENU);
+  } else if (lower === '/proxy' || lower === 'proxy') {
+    await sendMessage(token, chatId, await renderProxyStatus(workspaceId), OPS_MENU);
+  } else if (lower === '/kurtar' || lower === 'kurtar' || lower === '/onar') {
+    // Uzun sürebilir → önce "başladı" de, sonra sonucu gönder (Telegram 60sn timeout).
+    await sendMessage(token, chatId, '🔧 Kurtarma başlatıldı, kontrol ediliyor…');
+    await sendMessage(token, chatId, await runRecovery(workspaceId), OPS_MENU);
+  } else if (lower === '/acil' || lower === 'acil' || lower === '/emergency') {
+    await sendMessage(token, chatId, renderEmergencyHelp(), OPS_MENU);
+  } else if (lower === '/ozet' || lower === 'ozet' || lower === '/rapor') {
+    await sendMessage(token, chatId, await renderDailyDigest(workspaceId), OPS_MENU);
   } else if (lower === '/istatistik' || lower === 'istatistik' || lower === '/stats') {
     await sendMessage(token, chatId, await renderStats(workspaceId), MAIN_MENU);
   } else if (lower === '/durum' || lower === 'durum' || lower === '/status') {
@@ -1130,9 +1288,10 @@ async function handleCommand(
     const tail = failed.length ? `\n⚠️ Uyandırılamayan: ${failed.map(esc).join(', ')}` : '';
     await sendMessage(token, chatId, `🔧 <b>ADB kurtarma</b>\n${woken} offline cihaza uyandırma gönderildi (ADB yeniden bağlanacak).${tail}`, MAIN_MENU);
   // ── Grup 2: Cihaz yönetimi ─────────────────────────────────────────────────
-  } else if (lower.startsWith('/etiket ') || lower.startsWith('etiket ')) {
+  } else if (isCmd(lower, 'etiket')) {
     // "/etiket <cihaz> #test" veya "/etiket <cihaz> test" — mevcut tag'lere ekler.
-    const rest = cmd.replace(/^\/?etiket\s+/i, '').trim();
+    // (Çıplak "/etiket" de buraya düşer → aşağıdaki kontrol kullanımı gösterir.)
+    const rest = cmd.replace(/^\/?etiket\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
     if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/etiket &lt;cihaz&gt; #etiket</code> (örn. /etiket watest52 #test).', MAIN_MENU); return; }
     const ref = parts[0]!;
@@ -1147,9 +1306,9 @@ async function handleCommand(
     } catch (e) {
       await sendMessage(token, chatId, `❌ Etiket eklenemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
-  } else if (lower.startsWith('/adver ') || lower.startsWith('adver ') || lower.startsWith('/yenidad ')) {
+  } else if (isCmd(lower, 'adver', 'yenidad')) {
     // "/adver <cihaz> <yeni-ad>" — cihazı yeniden adlandır.
-    const rest = cmd.replace(/^\/?(adver|yenidad)\s+/i, '').trim();
+    const rest = cmd.replace(/^\/?(adver|yenidad)\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
     if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/adver &lt;cihaz&gt; &lt;yeni-ad&gt;</code>.', MAIN_MENU); return; }
     const ref = parts[0]!;
@@ -1162,12 +1321,30 @@ async function handleCommand(
     } catch (e) {
       await sendMessage(token, chatId, `❌ Yeniden adlandırılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
-  } else if (lower === '/kur' || lower.startsWith('/kur ') || lower.startsWith('kur ')) {
+  } else if (isCmd(lower, 'kur')) {
     // "/kur <adet> [TR]" — toplu tek-tık cihaz kur (opsiyonel proxy ülkesi).
     const rest = cmd.replace(/^\/?kur\s*/i, '').trim();
-    const m = /^(\d{1,2})(?:\s+([a-zA-Z]{2}))?/.exec(rest);
-    const count = m ? Math.max(1, Math.min(20, parseInt(m[1]!, 10))) : 1;
-    const country = m && m[2] ? m[2].toUpperCase() : undefined;
+    // ★2026-07-29: girdi SESSİZCE yorumlanmamalı. Eski hâlde:
+    //   • argümansız "/kur" → sessizce 1 cihaz kurardı (operatör kurulum istememişti,
+    //     sadece komuta basmıştı!) — gerçek para/gerçek filo sonucu.
+    //   • "/kur 100" → regex yalnızca "10"u yakalar, 20'ye kırpar ve HİÇBİR uyarı
+    //     vermeden 20 cihaz kurardı.
+    // Artık: argümansızsa kullanım metni, geçersiz/aşan sayıda açık uyarı.
+    if (!rest) {
+      await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/kur &lt;adet&gt; [ülke]</code>\nörn: <code>/kur 3 TR</code> (1–20 arası)', MAIN_MENU);
+      return;
+    }
+    const m = /^(\d{1,3})(?:\s+([a-zA-Z]{2}))?\s*$/.exec(rest);
+    if (!m) {
+      await sendMessage(token, chatId, `❌ Anlaşılmadı: <code>${esc(rest)}</code>\nℹ️ Kullanım: <code>/kur &lt;adet&gt; [ülke]</code> — örn: <code>/kur 3 TR</code>`, MAIN_MENU);
+      return;
+    }
+    const asked = parseInt(m[1]!, 10);
+    const count = Math.max(1, Math.min(20, asked));
+    if (asked !== count) {
+      await sendMessage(token, chatId, `⚠️ Tek seferde en fazla <b>20</b> cihaz kurulabilir — <b>${asked}</b> yerine <b>${count}</b> kuruluyor.`);
+    }
+    const country = m[2] ? m[2].toUpperCase() : undefined;
     try {
       const res = await provisionService.createBatch(
         { count, ...(country ? { proxyCountry: country } : {}) },
@@ -1181,9 +1358,9 @@ async function handleCommand(
     } catch (e) {
       await sendMessage(token, chatId, `❌ Kurulum başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
-  } else if (lower.startsWith('/sil ') || lower.startsWith('sil ')) {
+  } else if (isCmd(lower, 'sil')) {
     // "/sil <cihaz>" — cihazı sil (host instance'ı da durdurulur). Korumalıysa reddedilir.
-    const ref = cmd.replace(/^\/?sil\s+/i, '').trim();
+    const ref = cmd.replace(/^\/?sil\s*/i, '').trim();
     if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/sil &lt;cihaz&gt;</code>.', MAIN_MENU); return; }
     const dev = await findDeviceByRef(workspaceId, ref);
     if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
@@ -1277,7 +1454,21 @@ async function handleCallback(
       await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
     }
   } else if (data === 'health') {
-    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), MAIN_MENU);
+    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), OPS_MENU);
+  } else if (data === 'ops:diag') {
+    await sendMessage(token, chatId, await renderDiagnostics(workspaceId), OPS_MENU);
+  } else if (data === 'ops:proxy') {
+    await sendMessage(token, chatId, await renderProxyStatus(workspaceId), OPS_MENU);
+  } else if (data === 'ops:fix') {
+    // Kritik alarm mesajlarındaki "🔧 Kurtarmayı başlat" butonu da buraya düşer.
+    await sendMessage(token, chatId, '🔧 Kurtarma başlatıldı, kontrol ediliyor…');
+    await sendMessage(token, chatId, await runRecovery(workspaceId), OPS_MENU);
+  } else if (data === 'ops:digest') {
+    await sendMessage(token, chatId, await renderDailyDigest(workspaceId), OPS_MENU);
+  } else if (data === 'ops:emergency') {
+    await sendMessage(token, chatId, renderEmergencyHelp(), OPS_MENU);
+  } else if (data === 'menu') {
+    await sendMessage(token, chatId, menuText(), MAIN_MENU);
   } else if (data === 'q:unread' || data === 'q:favorite') {
     // Quick-filter from the main menu → device picker carrying the filter.
     const f: ConversationFilter = data === 'q:unread' ? 'unread' : 'favorite';
@@ -1574,8 +1765,14 @@ async function handleCallback(
     state.browseDeviceId = m.deviceId;
     state.to = m.peer;
     if (kind === 'wk') {
-      await whatsappService.markRead(workspaceId, { deviceId: m.deviceId, peer: m.peer }).catch(() => undefined);
-      await answerCallback(token, cb.id, 'Okundu işaretlendi');
+      // ★2026-07-29: eskiden hata yutulup KOŞULSUZ "Okundu işaretlendi" deniyordu —
+      // yazma başarısızken operatöre başarı bildiren YALAN bir onaydı. Artık sonuca
+      // göre cevap veriliyor.
+      const ok = await whatsappService
+        .markRead(workspaceId, { deviceId: m.deviceId, peer: m.peer })
+        .then(() => true)
+        .catch(() => false);
+      await answerCallback(token, cb.id, ok ? 'Okundu işaretlendi' : '⚠️ İşaretlenemedi, tekrar deneyin');
     } else if (kind === 'wr') {
       state.mode = 'awaiting_reply';
       await sendMessage(token, chatId, `💬 <b>${esc(m.peer)}</b> kişisine yanıtınızı yazın:`);
@@ -1658,7 +1855,22 @@ async function pollBot(bot: { workspaceId: string; token: string; chatIds: strin
         await handleCallback(bot.token, bot.workspaceId, chatId, state, u.callback_query);
       }
     } catch (e) {
+      // ★2026-07-29 SESSİZ ÇÖKÜŞ SONA ERDİ. Eskiden burada sadece log yazılıyordu:
+      // bir komut/buton işlenirken hata olursa operatöre HİÇBİR ŞEY dönmüyordu —
+      // dokunuyor, hiçbir şey olmuyordu. ("komuta basıyorum bir şey olmuyor")
+      // Artık hata operatöre de bildiriliyor; en azından "bir şey ters gitti,
+      // tekrar dene" görsün ve komutun çalışmadığını anlasın.
       logger.warn('tg update handling failed', { error: String(e) });
+      const errChatId = u.message?.chat?.id ?? u.callback_query?.message?.chat?.id ?? u.callback_query?.from?.id;
+      if (errChatId != null) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await sendMessage(
+          bot.token,
+          String(errChatId),
+          `⚠️ İşlem tamamlanamadı.\n<code>${esc(msg.slice(0, 200))}</code>\n\n<i>Tekrar deneyin; sürerse</i> <b>/tani</b> <i>ile sistemi kontrol edin.</i>`,
+          MAIN_MENU
+        ).catch(() => undefined);
+      }
     }
   }
 }

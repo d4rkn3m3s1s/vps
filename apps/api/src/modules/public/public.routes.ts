@@ -3,7 +3,7 @@ import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter, heavyOperationRateLimiter } from '../../middleware/rateLimit';
 import { requireWhatsappAccount } from './public.middleware';
-import { listDevicesHandler, getDeviceHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, setNameHandler, setAvatarHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionBatchHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
+import { listDevicesHandler, getDeviceHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, setNameHandler, setAvatarHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionBatchHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, registerWhatsappRetryHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
 // bound flk_ key minted in /admin/api-keys) — NO JWT. The workspace is resolved
@@ -69,6 +69,15 @@ mount('post', '/v1/whatsapp/register/:id/otp', asyncHandler(registerWhatsappOtpH
 // Operator picks SMS/voice/missed-call when registration parks on the method sheet.
 mount('post', '/v1/whatsapp/register/:id/verify-method', asyncHandler(registerWhatsappVerifyMethodHandler), { use: [apiRateLimiter] });
 mount('get', '/v1/whatsapp/register/:id/status', asyncHandler(registerWhatsappStatusHandler));
+// ★2026-07-30 Tekrar dene: AYNI hesap satırıyla, çıkış IP'si yenilenerek. Cihazı
+// sürdüğü için ağır-limit; bekleme cezası dolmadan çağrılırsa 409 WAIT_IN_PROGRESS,
+// kesin ban'da 409 NUMBER_BANNED döner.
+// ⚠️ `register` guard'ı BİLEREK YOK: o guard `category==='registering'` cihazda 409
+// verir, oysa bu uç tam olarak takılı/başarısız bir kaydı kurtarmak için var (hesap
+// AWAITING_OTP → kategori 'registering'). Guard eklenirse uç kendi amacını bloke eder.
+// Yetki/kapsam kontrolü handler'da: hesap workspace'e ait mi + cihaz hazır mı
+// (assertDeviceReady) + kesin ban mı — üçü de retryWhatsappRegister içinde.
+mount('post', '/v1/whatsapp/register/:id/retry', asyncHandler(registerWhatsappRetryHandler), { use: [heavyOperationRateLimiter] });
 
 // Tek cihaz + yetenek listesi. provision yollarından SONRA gelir (bkz. yukarıdaki not).
 mount('get', '/v1/devices/:id', asyncHandler(getDeviceHandler));

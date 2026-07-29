@@ -248,6 +248,19 @@ export class WaRegisterService {
     awaitingOtp: boolean;
     awaitingMethod: boolean;
     note: string | null;
+    // ★2026-07-30 Operatör-yönlendirme alanları:
+    //  - waitUntil: WhatsApp'ın bekletme cezası bitiş anı (ISO). Panel GERİ SAYAR.
+    //  - action: "ne yapmalıyım" — tek cümle (ör. "1 saat bekleyin, sonra Sıfırla ve Tekrar Dene").
+    //  - wallKind: BAN | APK | COK_DENEME | RED — numara yandı mı, yoksa beklenir mi.
+    //  - otpRejected: girilen kod reddedildi (akış hâlâ açık, tekrar girilebilir).
+    //  - resumable: aynı numarayla devam edilebilir (BAN'da false).
+    //  - timings: adım→saniye; hangi adımda takıldığı görünsün.
+    waitUntil: string | null;
+    action: string | null;
+    wallKind: string | null;
+    otpRejected: boolean;
+    resumable: boolean;
+    timings: Record<string, number> | null;
     startedAt: string | null;
   }> {
     const acc = await prisma.generatedAccount.findFirst({
@@ -271,17 +284,44 @@ export class WaRegisterService {
     // integrator can't tell "waiting for SMS" from "must pick a verify method".
     let otpChannel: string | null = null;
     let note: string | null = (last?.note as string | undefined) ?? null;
-    if (acc.status === 'AWAITING_OTP' && acc.deviceId) {
+    // ★2026-07-30 Job result'ı ARTIK HER DURUMDA okunuyor (eskiden yalnızca AWAITING_OTP).
+    // Sebep: bekleme süresi (`waitSeconds`), aksiyon cümlesi (`action`), ban türü
+    // (`wallKind`) ve adım süreleri (`timings`) BAŞARISIZ durumlarda da gösterilmeli —
+    // eski koşul yüzünden "1 saat bekle" cezasında modal sadece kuru bir hata metni
+    // gösteriyordu, kalan süreyi ve ne yapılacağını hiç göstermiyordu.
+    let waitUntil: string | null = null;
+    let action: string | null = null;
+    let wallKind: string | null = null;
+    let otpRejected = false;
+    let resumable = false;
+    let timings: Record<string, number> | null = null;
+    if (acc.deviceId) {
       const job = await prisma.job
         .findFirst({
           where: { type: 'REGISTER_WHATSAPP', deviceId: acc.deviceId, ...(workspaceId ? { workspaceId } : {}) },
           orderBy: { createdAt: 'desc' },
-          select: { result: true }
+          select: { result: true, finishedAt: true, updatedAt: true }
         })
         .catch(() => null);
       const r = (job?.result ?? {}) as Record<string, unknown>;
       if (typeof r.otpChannel === 'string') otpChannel = r.otpChannel;
       if (!note && typeof r.note === 'string') note = r.note;
+      if (typeof r.action === 'string') action = r.action;
+      if (typeof r.wallKind === 'string') wallKind = r.wallKind;
+      if (r.otpRejected === true) otpRejected = true;
+      if (r.resumable === true) resumable = true;
+      if (r.timings && typeof r.timings === 'object' && !Array.isArray(r.timings)) {
+        timings = r.timings as Record<string, number>;
+      }
+      // Bekleme bitiş anı = cezanın OKUNDUĞU an + süre. Baz olarak job'ın bitiş zamanını
+      // alıyoruz; `finishedAt` yoksa `updatedAt`. Panel bunu bir tarihe çevirip geri sayar.
+      // ⚠️ Süreyi "şimdi + waitSeconds" diye hesaplamak YANLIŞ olurdu: her poll sayacı
+      // baştan başlatır, geri sayım asla ilerlemez.
+      const secs = typeof r.waitSeconds === 'number' ? r.waitSeconds : 0;
+      if (secs > 0) {
+        const base = job?.finishedAt ?? job?.updatedAt ?? null;
+        if (base) waitUntil = new Date(base.getTime() + secs * 1000).toISOString();
+      }
     }
     const awaitingMethod = otpChannel === 'method_select';
     const awaitingOtp = acc.status === 'AWAITING_OTP' && !awaitingMethod && otpChannel !== 'rate_limited';
@@ -298,6 +338,12 @@ export class WaRegisterService {
       awaitingOtp,
       awaitingMethod,
       note,
+      waitUntil,
+      action,
+      wallKind,
+      otpRejected,
+      resumable,
+      timings,
       startedAt: (first?.ts as string) ?? null
     };
   }

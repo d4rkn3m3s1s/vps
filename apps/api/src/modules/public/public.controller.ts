@@ -947,11 +947,51 @@ export async function registerWhatsappVerifyMethodHandler(req: Request, res: Res
 
 // GET /public/v1/whatsapp/register/:id/status — live registration progress
 // (current step, percent, full step log). Poll this to track a signup.
+//
+// ★2026-07-30: yanıt artık operatör/entegratör yönlendirme alanlarını da taşıyor —
+//   waitUntil (ISO)     WhatsApp bekletme cezasının bitiş anı
+//   retryAfterSeconds   aynı bilginin makine-okunur hâli (poll döngüsü buna uyusun)
+//   action              tek cümlelik "ne yapmalı"
+//   wallKind            BAN | APK | COK_DENEME | RED (BAN → numara yandı)
+//   resumable           aynı numarayla /retry çağrılabilir mi
+// Eskiden entegratör "1 saat bekle" cezasını yalnızca serbest metinden çıkarabiliyordu;
+// makine-okunur alan olmadığı için poll döngüleri cezayı görmezden gelip erken deneyip
+// cezayı UZATIYORDU.
 export async function registerWhatsappStatusHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
   const accountId = typeof req.params.id === 'string' ? req.params.id : '';
   if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
   const data = await waRegisterService.getStatus(accountId, workspaceId);
+  const until = data.waitUntil ? Date.parse(data.waitUntil) : NaN;
+  const retryAfterSeconds = Number.isNaN(until) ? 0 : Math.max(0, Math.ceil((until - Date.now()) / 1000));
+  res.json({ data: { ...data, retryAfterSeconds } });
+}
+
+// POST /public/v1/whatsapp/register/:id/retry — AYNI hesap satırıyla tekrar dene.
+// Çıkış IP'si (proxy oturumu) yenilenir ve kayıt işi yeniden gönderilir; ajan kayıt
+// başında WhatsApp verisini zaten temizliyor. Yeni hesap satırı AÇMAZ — bu kasıtlı:
+// aynı numarayı "yeni kayıt" olarak tekrar göndermek WhatsApp'ın çok-deneme sayacını
+// artırıyor (canlı veride asıl ban sürücüsü buydu).
+// KESİN ban'da 409 NUMBER_BANNED döner; bekleme süresi dolmadan çağrılırsa 409 ile
+// kalan süre bildirilir.
+export async function registerWhatsappRetryHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const accountId = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
+  // Bekleme cezası sürüyorsa reddet: erken deneme cezayı uzatıyor. Panel bunu butonu
+  // kilitleyerek yapıyor; API'de kural sunucuda olmalı (entegratör kilitlenemez).
+  const st = await waRegisterService.getStatus(accountId, workspaceId);
+  if (st.waitUntil) {
+    const left = Math.ceil((Date.parse(st.waitUntil) - Date.now()) / 1000);
+    if (left > 0) {
+      throw new AppError(
+        `WhatsApp bekletme cezası sürüyor — ${Math.ceil(left / 60)} dakika sonra tekrar deneyin (erken deneme cezayı uzatır).`,
+        409,
+        'WAIT_IN_PROGRESS'
+      );
+    }
+  }
+  const data = await batchService.retryWhatsappRegister(workspaceId, accountId);
   res.json({ data });
 }
 

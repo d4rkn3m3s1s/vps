@@ -19,7 +19,7 @@ import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import { WA_REGISTER_STEPS, waRegisterService } from './wa-register.service';
 import { IG_REGISTER_STEPS } from './ig-register.service';
-import { autoAttachCountryProxy, autoAttachCountryProxyByCountry } from './auto-proxy';
+import { autoAttachCountryProxy, autoAttachCountryProxyByCountry, rotateExitIp } from './auto-proxy';
 import { accountsService } from './accounts.service';
 import * as fivesim from './providers/fivesim.provider';
 import { getWhatsappState, checkWhatsappAccess, EMPTY_WHATSAPP_STATE } from '../devices/whatsappCategory';
@@ -58,6 +58,41 @@ const WHATSAPP_CHEAP_COUNTRIES: Array<{ id: number; code: string; cc: string }> 
 // country-matched proxy auto-assign here routes through autoAttachCountryProxy.)
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ★2026-07-29 — WhatsApp kaydı BAŞARILI olunca cihazı işaretle.
+//
+// İki şey yapar:
+//   1) `protected = true` — `Device.protected` "değerli cihaz" işaretidir ve
+//      delete/reset/snapshot-restore/data-wipe akışlarını reddeder. Yeni kaydedilmiş
+//      bir hesap tam olarak budur: yanlışlıkla silinirse numara yanar, geri gelmez.
+//      (Aynı işaret public API'deki `manual` kategorisini de besliyor.)
+//   2) Cihaz adını numara yapar — 38 cihaz arasında "hangi numara nerede" sorusu
+//      isimden yanıtlanabilsin (elle yaptığımız toplu adlandırmanın otomatiği).
+//
+// ⚠️ Ad yalnızca OTOMATİK ÜRETİLMİŞ isimlerde değiştirilir (`wa-xxxx`, `mi7`,
+// `hiz-test2`, `Cihaz mi37`, zaten-numara). Operatörün elle verdiği anlamlı bir ad
+// ("Destek Hattı 1") EZİLMEZ — isimlendirme operatörün kararıdır.
+//
+// Best-effort: buradaki hiçbir hata kaydın başarısını geçersiz kılmaz.
+export async function markDeviceRegistered(deviceId: string, phone: string): Promise<void> {
+  if (!deviceId) return;
+  try {
+    const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { name: true } });
+    const digits = String(phone || '').replace(/[^\d]/g, '');
+    const desired = digits ? `+${digits}` : '';
+    const cur = String(dev?.name ?? '').trim();
+    const autoName = /^(wa-[a-z0-9]{3,6}|mi\d+|hiz-test\d*|cihaz[\s-].*|\+?\d{7,15})$/i.test(cur);
+    const data: Record<string, unknown> = { protected: true };
+    if (desired && autoName && cur !== desired) data.name = desired;
+    await prisma.device.update({ where: { id: deviceId }, data });
+    logger.info('WA kaydi basarili — cihaz korumali isaretlendi', {
+      deviceId,
+      ...(data.name ? { yeniAd: data.name } : { ad: cur })
+    });
+  } catch (e) {
+    logger.warn('markDeviceRegistered basarisiz', { deviceId, error: (e as Error).message });
+  }
+}
 
 // Guard: the target device must belong to the caller's workspace before we
 // dispatch a job to it. A foreign (or missing) device resolves to "not found"
@@ -1036,6 +1071,8 @@ export class BatchService {
 
     // Success — mark ACTIVE.
     const done = await prisma.generatedAccount.update({ where: { id: acc.id }, data: { status: 'ACTIVE', error: null } });
+    // ★2026-07-29: cihazı numarasıyla adlandır + KORUMALI işaretle (bkz. markDeviceRegistered).
+    await markDeviceRegistered(deviceId, phoneE164);
     return { ok: true, status: 'ACTIVE', phoneNumber: phoneE164, otp, account: toPublic(done), result: res2 };
   }
 
@@ -1191,6 +1228,114 @@ export class BatchService {
       deviceId,
       steps: WA_REGISTER_STEPS,
       ...(proxyAssigned ? { proxyAssigned } : {})
+    };
+  }
+
+  // ── "Sıfırla ve Tekrar Dene" (operatör butonu) ──────────────────────────────
+  //
+  // ★2026-07-30. WhatsApp bir kaydı geçici olarak engellediğinde (1 saat bekletme,
+  // "SMS gönderilemedi", "resmî uygulama" duvarı) numara genelde SAĞLAMDIR — bozuk
+  // olan cihazın izi ve çıkış IP'sidir. Eskiden operatörün tek seçeneği kaydı iptal
+  // edip SIFIRDAN yeni kayıt açmaktı; bu, aynı numaranın İKİNCİ denemesi olarak
+  // gidiyor ve WhatsApp'ın çok-deneme sayacını artırıyordu (canlı veride 28 numara
+  // çok-denemeli, biri 7 kez → asıl ban sürücüsü).
+  //
+  // Bu akış AYNI hesap satırını yeniden kullanır (yeni satır AÇMAZ) ve sırayla:
+  //   1) Çıkış IP'sini DÖNDÜRÜR — proxy kullanıcı adına yeni bir `-sessid-` gömülür.
+  //      wd-proxy.sh, login'de hazır sessid varsa kendi üretmez (bkz. betiğin case
+  //      bloğu), böylece aynı hesap/ülkede YENİ bir residential/mobile çıkış alınır.
+  //   2) REGISTER_WHATSAPP'ı yeniden gönderir. Ajanın kayıt yolu ilk denemede zaten
+  //      `pm clear com.whatsapp` yapıyor (otpCode/verifyMethod yoksa) — yani WhatsApp
+  //      verisi ve cihaz izi bu adımda temizlenir; ayrı bir silme işine gerek yok.
+  //
+  // ⚠️ KESİN BAN'da çağrılmamalı: numara yanmıştır, tekrar denemek yalnızca zarar
+  // verir. Kontrol hem burada (hata metnindeki [YASAKLI] işareti) hem panelde yapılır.
+  async retryWhatsappRegister(workspaceId: string | undefined, accountId: string) {
+    const acc = await prisma.generatedAccount.findFirst({
+      where: { id: accountId, ...(workspaceId ? { workspaceId } : {}) },
+      select: { id: true, deviceId: true, phoneNumber: true, status: true, error: true, firstName: true, lastName: true, platform: true }
+    });
+    if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
+    if (acc.platform !== 'whatsapp') throw new AppError('Bu akış yalnızca WhatsApp kayıtları için', 400, 'NOT_WHATSAPP');
+    if (!acc.deviceId) throw new AppError('Kayıtta cihaz bilgisi yok', 400, 'NO_DEVICE');
+    if (!acc.phoneNumber) throw new AppError('Kayıtta numara bilgisi yok', 400, 'NO_NUMBER');
+    if (acc.status === 'ACTIVE') throw new AppError('Bu hesap zaten aktif — tekrar denemek hesabı SİLER', 409, 'ALREADY_ACTIVE');
+    // KESİN ban → tekrar deneme reddedilir (numara yanmış).
+    if (/\[YASAKLI\]/.test(acc.error ?? '')) {
+      throw new AppError(
+        'Bu numara WhatsApp tarafından KALICI olarak reddedildi — tekrar denemek işe yaramaz, yeni numara kullanın.',
+        409,
+        'NUMBER_BANNED'
+      );
+    }
+    await assertDeviceReady(acc.deviceId, workspaceId);
+
+    const phoneE164 = acc.phoneNumber;
+    const fullName = [acc.firstName, acc.lastName].filter(Boolean).join(' ') || 'Fleet User';
+
+    // 1) Çıkış IP'sini döndür (yeni sessid). Best-effort: proxy yoksa/başarısızsa
+    //    kayıt yine denenir — mevcut çıkış zaten ülke-eşleşmiş olabilir.
+    const device = await prisma.device.findUnique({ where: { id: acc.deviceId }, select: { metadata: true } });
+    const meta = (device?.metadata ?? {}) as Record<string, unknown>;
+    const instance = typeof meta.instance === 'string' ? meta.instance : '';
+    let rotated: { country: string } | null = null;
+    if (instance) {
+      rotated = await rotateExitIp(acc.deviceId, instance, phoneE164, workspaceId).catch(() => null);
+    }
+
+    // 2) Hesabı yeniden akışa al ve kayıt işini gönder.
+    await prisma.generatedAccount
+      .update({ where: { id: acc.id }, data: { status: 'REGISTERING', error: null } })
+      .catch(() => undefined);
+
+    let regJob;
+    try {
+      regJob = await createJobRecord(
+        'REGISTER_WHATSAPP',
+        { deviceId: acc.deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
+        undefined,
+        workspaceId,
+        // Az önce SET_PROXY kuyruğa girdiyse busy-check'i atla: o iş BU akışın kendi
+        // ön adımı (aynı cihazda sırayla koşar). Aksi halde DEVICE_BUSY ile reddedilir
+        // — startOperatorRegister'da aynı gerekçeyle aynı bayrak kullanılıyor.
+        rotated ? { skipBusyCheck: true } : undefined
+      );
+    } catch (e) {
+      await prisma.generatedAccount
+        .update({ where: { id: acc.id }, data: { status: 'FAILED', error: e instanceof Error ? e.message : 'Tekrar deneme başlatılamadı' } })
+        .catch(() => undefined);
+      throw e;
+    }
+
+    // Kart rozetini yeniden "kayıt sürüyor" yap (aksi halde kart FAILED görünür ve
+    // WhatsApp butonu kilitli kalırdı — tekrar deneme görünmez olurdu).
+    await prisma.device
+      .update({
+        where: { id: acc.deviceId },
+        data: {
+          metadata: {
+            ...meta,
+            waRegisterStatus: 'REGISTERING',
+            waRegisterAccountId: acc.id,
+            waRegisterPhone: phoneE164,
+            waRegisterJobId: regJob.id
+          } as Prisma.InputJsonValue
+        }
+      })
+      .catch(() => undefined);
+
+    logger.info('WA kaydi TEKRAR DENENIYOR (ayni hesap satiri)', {
+      accountId: acc.id,
+      deviceId: acc.deviceId,
+      ...(rotated ? { cikisDonduruldu: rotated.country } : { cikisDonduruldu: false })
+    });
+
+    return {
+      accountId: acc.id,
+      deviceId: acc.deviceId,
+      steps: WA_REGISTER_STEPS,
+      ipRotated: Boolean(rotated),
+      ...(rotated ? { country: rotated.country } : {})
     };
   }
 

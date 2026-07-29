@@ -32,6 +32,53 @@ const monitorDownNotified = new Map<string, number>();
 // en kötü ihtimalle restart sonrası bir kez daha gider, veri kaybı riski yok.
 let digestSentOn = '';
 
+// ★2026-07-29: cihaz kartındaki "WA kaydı sürüyor / Kod bekleniyor" rozetiyle
+// hesabın GERÇEK durumu arasındaki ayrışmayı onar.
+//
+// Rozet `Device.metadata.waRegisterStatus`'tan okunuyor; hesabın kendisi ise
+// `GeneratedAccount.status`. Kayıt akışının hata yolları ikisini birlikte
+// güncelliyor ama OTOMATİK TEMİZLEYİCİ yalnızca hesabı FAILED yapıyordu → kart
+// SONSUZA KADAR "Kod bekleniyor" diyor ve WhatsApp butonu KİLİTLİ kalıyordu.
+// CANLI KANIT: wa-wsle — hesap 21:16'da FAILED, kart hâlâ AWAITING_OTP.
+// Burada her turda kontrol edilir; geçmişten kalan ayrışmalar da toparlanır.
+async function syncStaleWaRegisterBadges(): Promise<number> {
+  const IN_PROGRESS = new Set(['AWAITING_OTP', 'REGISTERING']);
+  const devices = await prisma.device
+    .findMany({ select: { id: true, metadata: true } })
+    .catch(() => [] as Array<{ id: string; metadata: unknown }>);
+  let fixed = 0;
+  for (const d of devices) {
+    const md = (d.metadata ?? {}) as Record<string, unknown>;
+    const badge = String(md.waRegisterStatus ?? '');
+    const accId = String(md.waRegisterAccountId ?? '');
+    if (!IN_PROGRESS.has(badge) || !accId) continue;
+    const acc = await prisma.generatedAccount
+      .findUnique({ where: { id: accId }, select: { status: true } })
+      .catch(() => null);
+    // Hesap YOK (silinmiş) ya da artık ilerlemiyor → rozet yalan söylüyor.
+    if (acc && IN_PROGRESS.has(String(acc.status))) continue;
+    await prisma.device
+      .update({
+        where: { id: d.id },
+        data: { metadata: { ...md, waRegisterStatus: acc ? String(acc.status) : 'FAILED' } }
+      })
+      .catch(() => undefined);
+    deviceHub.broadcast({
+      type: 'device.updated',
+      deviceId: d.id,
+      payload: { waRegisterStatus: acc ? String(acc.status) : 'FAILED' },
+      timestamp: new Date().toISOString()
+    });
+    logger.info('wa-register rozeti duzeltildi (kart ile hesap ayrismisti)', {
+      deviceId: d.id,
+      badge,
+      gercek: acc?.status ?? 'hesap-yok'
+    });
+    fixed++;
+  }
+  return fixed;
+}
+
 async function main(): Promise<void> {
   await ensureBootstrapIdentity();
   await ensureDefaultWorkspace();
@@ -324,13 +371,69 @@ async function main(): Promise<void> {
       // Move accounts stuck in a transient state past the grace window to FAILED so the panel
       // stops showing "kayıt sürüyor", the OTP pool + batch counters aren't polluted, and the
       // device frees. Grace (45min) > any real OTP wait, so a genuine in-flight signup is safe.
-      prisma.generatedAccount.updateMany({
-        where: {
-          status: { in: ['AWAITING_OTP', 'REGISTERING', 'CONTACT_READY', 'IDENTITY_READY', 'PENDING'] },
-          updatedAt: { lt: new Date(Date.now() - Number(process.env.FLEET_GA_STALE_MIN || 45) * 60 * 1000) }
-        },
-        data: { status: 'FAILED', error: 'Zaman aşımı — kayıt/OTP akışı tamamlanmadı (otomatik temizlik)' }
-      }).then((r) => r.count).catch(() => 0)
+      (async () => {
+        const cut = new Date(Date.now() - Number(process.env.FLEET_GA_STALE_MIN || 45) * 60 * 1000);
+        const transient = ['AWAITING_OTP', 'REGISTERING', 'CONTACT_READY', 'IDENTITY_READY', 'PENDING'] as const;
+        // Hangi hesapları düşüreceğimizi ÖNCE oku — cihaz kartını da temizlemek için
+        // id'lerine ihtiyacımız var (updateMany etkilenen satırları döndürmüyor).
+        const stuckAll = await prisma.generatedAccount
+          .findMany({
+            where: { status: { in: [...transient] }, updatedAt: { lt: cut } },
+            select: { id: true, status: true, error: true }
+          })
+          .catch(() => [] as Array<{ id: string; status: string; error: string | null }>);
+        // ★2026-07-30 BEKLETME CEZASINI ÖLDÜRME. WhatsApp "1 saat bekle" dediğinde
+        // hesap AWAITING_OTP'de bekler; 45 dakikalık grace bunu AŞTIĞI için reaper
+        // cezanın ortasında kaydı FAILED yapıyordu → operatör süre bitince aynı
+        // numarayla devam edemiyor, SIFIRDAN kayıt açmak zorunda kalıyordu (= aynı
+        // numaranın ikinci denemesi = ban riski; canlı veride 28 numara çok-denemeli).
+        // Bekletme notu taşıyan AWAITING_OTP satırlarını, ceza penceresi + pay
+        // (grace) dolmadıkça atla.
+        const WAIT_MARK = /WhatsApp bekletme|bekletiyor|\[BEKLE\]/i;
+        const waitGraceMs = Number(process.env.FLEET_WA_WAIT_GRACE_MIN || 90) * 60 * 1000;
+        const waitCut = new Date(Date.now() - waitGraceMs);
+        const isWaiting = (s: { status: string; error: string | null }) =>
+          s.status === 'AWAITING_OTP' && !!s.error && WAIT_MARK.test(s.error);
+        const stuck = stuckAll.filter((s) => !isWaiting(s)); // normal grace (45 dk)
+        const waiting = stuckAll.filter(isWaiting); // bekletme cezalı → geniş pencere
+        // Bekletme cezalı olanlar için AYRI ve GENİŞ pencere (varsayılan 90 dk > 60 dk ceza).
+        const waitingExpired = waiting.length
+          ? await prisma.generatedAccount
+              .findMany({
+                where: { id: { in: waiting.map((w) => w.id) }, updatedAt: { lt: waitCut } },
+                select: { id: true }
+              })
+              .catch(() => [] as Array<{ id: string }>)
+          : [];
+        const toFail = [...stuck.map((s) => s.id), ...waitingExpired.map((w) => w.id)];
+        if (waiting.length > waitingExpired.length) {
+          logger.info('WA bekletme cezasi korundu (reaper atladi)', {
+            korunan: waiting.length - waitingExpired.length,
+            pencereDk: waitGraceMs / 60000
+          });
+        }
+        if (!toFail.length) return 0;
+        const res = await prisma.generatedAccount
+          .updateMany({
+            where: { id: { in: toFail } },
+            data: { status: 'FAILED', error: 'Zaman aşımı — kayıt/OTP akışı tamamlanmadı (otomatik temizlik)' }
+          })
+          .then((r) => r.count)
+          .catch(() => 0);
+
+        // ★2026-07-29 BUG-FIX: yukarıdaki yorum "panel 'kayıt sürüyor' göstermeyi
+        // bıraksın" diyor ama bu reaper YALNIZCA GeneratedAccount'u güncelliyordu.
+        // Cihaz kartındaki rozet ise `Device.metadata.waRegisterStatus`'tan okunuyor →
+        // hesap FAILED olsa bile kart SONSUZA KADAR "Kod bekleniyor" diyor ve
+        // WhatsApp butonu KİLİTLİ kalıyordu (CANLI: wa-wsle, hesap 21:16'da FAILED,
+        // kart hâlâ AWAITING_OTP). Kayıt akışının kendi hata yolları metadata'yı
+        // temizliyor; reaper'ın atladığı tek nokta buydu. Şimdi o da terminal işaretlenir.
+        await syncStaleWaRegisterBadges();
+        return res;
+      })(),
+      // Kart rozetiyle hesap durumu arasındaki AYRIŞMAYI her turda onar (yukarıdaki
+      // reaper'a bağlı değil — geçmişten kalan tutarsızlıkları da toparlar).
+      syncStaleWaRegisterBadges()
     ])
       .then(([devices, hosts, reapedJobs, , staleAccounts]) => {
         if (devices > 0 || hosts > 0 || reapedJobs > 0 || staleAccounts > 0) logger.info('Offline detection', { devices, hosts, reapedJobs, staleAccounts });

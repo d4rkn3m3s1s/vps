@@ -24,6 +24,7 @@ import { createNotification, jobNotification } from '../notifications/feed.servi
 import { whatsappService, normalizePeer, type WaAccountHealth } from '../whatsapp/whatsapp.service';
 import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
+import { markDeviceRegistered } from '../accounts/batch.service';
 import { igRegisterService } from '../accounts/ig-register.service';
 
 // ★2026-07-29: kritik sağlık alarmlarının altına eklenen aksiyon butonları.
@@ -555,7 +556,18 @@ export class AgentService {
         let nextStatus: GeneratedAccountStatus;
         let error: string | null = null;
         if (outcome.status === 'COMPLETED') {
-          const res = (outcome.result as { status?: string; note?: string } | undefined) ?? {};
+          const res =
+            (outcome.result as
+              | {
+                  status?: string;
+                  note?: string;
+                  wallKind?: string;
+                  otpRejected?: boolean;
+                  action?: string;
+                  waitSeconds?: number;
+                  resumable?: boolean;
+                }
+              | undefined) ?? {};
           switch (res.status) {
             case 'OTP_WAIT':
             case 'RATE_LIMITED':
@@ -567,6 +579,9 @@ export class AgentService {
               // the panel's OTP box shows the RIGHT instruction, not a generic "SMS".
               nextStatus = 'AWAITING_OTP';
               if (res.note) error = String(res.note);
+              // Bekletme/red-kod durumlarında aksiyon cümlesi de görünsün (bkz. aşağıdaki
+              // default dalındaki aynı gerekçe). Not boşsa aksiyon tek başına yeter.
+              if (res.action) error = error ? `${error}\n➡️ ${res.action}` : `➡️ ${res.action}`;
               break;
             case 'AWAITING_MANUAL':
               // e.g. the number is already on another phone's WhatsApp and the code
@@ -583,7 +598,19 @@ export class AgentService {
             default:
               // DEVICE_WALL / OTP_REJECTED / NOT_INSTALLED / unknown → failure.
               nextStatus = 'FAILED';
+              // ★2026-07-29: ban türünü hata METNİNE göm. Modal ve API `error` alanını
+              // okuyor; wallKind ayrı bir sütun olmadığı için buraya işaretliyoruz ki
+              // operatör "numara yandı mı, bekleyip tekrar mı denesem" ayrımını GÖRSÜN.
+              // (Agent artık KESİN ban ile geçici engeli ayırıyor — bkz. onWall.)
               error = String(res.note ?? res.status ?? 'kayıt başarısız');
+              if (res.wallKind === 'BAN') error = `[YASAKLI] ${error}`;
+              else if (res.wallKind === 'COK_DENEME') error = `[BEKLE] ${error}`;
+              else if (res.wallKind === 'APK') error = `[CIHAZ-IZI] ${error}`;
+              // ★2026-07-30 "Ne yapmalıyım" cümlesini de hata metnine ekle. Modal/API
+              // `error` alanını okuyor; aksiyon ayrı bir sütun olmadığı için buraya
+              // gömüyoruz — operatör sebebi görüp ne yapacağını bilmemek durumunda
+              // kalmasın (canlı gözlem: "uyarılar bazen yarım kalıyor").
+              if (res.action) error = `${error}\n➡️ ${res.action}`;
           }
         } else {
           nextStatus = 'FAILED';
@@ -665,7 +692,7 @@ export class AgentService {
         const devId = (updated.payload as { deviceId?: string } | null)?.deviceId;
         if (devId) {
           void prisma.device
-            .findUnique({ where: { id: devId }, select: { metadata: true } })
+            .findUnique({ where: { id: devId }, select: { metadata: true, name: true } })
             .then((dev) => {
               const meta = (dev?.metadata ?? {}) as Record<string, unknown>;
               if (meta.waRegisterAccountId !== accountId) return;
@@ -689,6 +716,24 @@ export class AgentService {
                 delete nextMeta.waRegisterJobId;
               } else {
                 nextMeta.waRegisterStatus = nextStatus; // AWAITING_OTP
+              }
+
+              // ★2026-07-29: KAYIT BAŞARILI olunca cihazı otomatik olarak (1) numarasıyla
+              // adlandır, (2) KORUMALI işaretle.
+              //   • Ad: operatör 38 cihaz arasında "hangi numara nerede" sorusunu isimden
+              //     yanıtlayabilsin (elle yaptığımız toplu adlandırmanın otomatiği).
+              //   • protected: `Device.protected` "değerli cihaz / elle kaydedilmiş hesap"
+              //     işareti; delete/reset/data-wipe akışlarını reddeder. Yeni kaydedilmiş
+              //     bir hesap tam olarak budur — yanlışlıkla silinip numaranın yanmasını
+              //     engeller. (Aynı işaret `manual` kategorisini de besliyor.)
+              // ⚠️ Adı yalnızca operatör ELLE bir isim vermemişse değiştiriyoruz: `wa-xxxx`
+              //    / `hiz-test` gibi otomatik üretilmiş adlar güvenle numaraya döner, ama
+              //    "Destek Hattı 1" gibi anlamlı bir ad EZİLMEZ.
+              // ★2026-07-29: kayıt BAŞARILI olunca cihazı numarasıyla adlandır +
+              // KORUMALI işaretle. Kural tek yerde: batch.service/markDeviceRegistered
+              // (tam-otomatik akış da aynı yardımcıyı çağırıyor).
+              if (nextStatus === 'ACTIVE') {
+                void markDeviceRegistered(devId, String((meta.waRegisterPhone as string) || ''));
               }
               return prisma.device.update({ where: { id: devId }, data: { metadata: nextMeta as object } });
             })

@@ -57,6 +57,103 @@ export async function autoAttachCountryProxy(
   return autoAttachCountryProxyByCountry(deviceId, instance, cc, workspaceId);
 }
 
+// ── Çıkış IP'sini DÖNDÜR (aynı hesap, aynı ülke, YENİ oturum) ────────────────
+//
+// ★2026-07-30. "Sıfırla ve Tekrar Dene" akışı için: WhatsApp geçici olarak
+// engellediğinde bozuk olan genelde çıkış IP'sidir, numara değil. thordata sticky
+// oturumları kullanıcı adındaki `-sessid-<x>` ile belirlenir; yeni bir sessid = yeni
+// çıkış IP'si. wd-proxy.sh, login'de HAZIR bir `-sessid-` varsa kendi üretmez, bu
+// yüzden sessid'i biz kullanıcı adına gömüp gönderiyoruz (aynı yöntemi
+// wd-health-watch.sh'ın `apply_with_sessid` kurtarması da kullanıyor).
+//
+// ⚠️ `-sesstime-` DE ŞART: sessid tek başına oturumu sabitlemeye yetmiyor (bkz.
+// 2026-07-22 bulgusu — sesstime olmadan IP oturum ortasında değişebiliyor).
+//
+// Ülke DEĞİŞTİRİLMEZ: numara ülkesiyle çıkış ülkesi eşleşmezse WhatsApp banlar.
+export async function rotateExitIp(
+  deviceId: string,
+  instance: string,
+  phoneNumber: string,
+  workspaceId?: string
+): Promise<{ country: string } | null> {
+  const cc = countryFromPhone(phoneNumber);
+  if (!cc) return null;
+
+  // ── Kimlik kaynağı: önce env hesabı, yoksa DB'deki ülke-eşleşmiş proxy satırı ──
+  //
+  // ⚠️ CANLI TESPİT (2026-07-30): `FLEET_PROXY_*` env değişkenleri host tarafındaki
+  // /etc/fleet-proxy.env'de tanımlı ama API sürecine AKTARILMIYOR → `proxyCredsFor`
+  // her zaman null dönüyor ve TR→mobile seçimi API tarafında devre dışı. Kayıtlar
+  // fiilen DB'deki proxy satırlarından gidiyor (o satırlar doğru: TR→9999, AL→5555 —
+  // bu yüzden filo sağlıklı ve sorun görünmez kalmış). Env'e bel bağlayıp "kimlik yok"
+  // deyip çıkmak, IP döndürmeyi SESSİZCE devre dışı bırakırdı — retry'ın tek işi bu.
+  // Bu yüzden DB satırından da sessid kurabiliyoruz: kullanıcı adı formatı aynı
+  // (thordata), şifre zaten şifreli saklanıyor.
+  const creds = proxyCredsFor(cc);
+  let baseUser: string;
+  let host: string;
+  let port: number;
+  let passwordEnc: string | undefined;
+  if (creds) {
+    baseUser = creds.user;
+    host = creds.host;
+    port = creds.port;
+    passwordEnc = creds.pass ? encryptString(creds.pass) : undefined;
+  } else {
+    const healthy = { status: { not: 'FAILED' as const } };
+    const row =
+      (await prisma.proxy.findFirst({
+        where: { group: { in: ['provider', 'residential', 'thordata'] }, countryCode: cc, ...healthy, ...(workspaceId ? { workspaceId } : {}) },
+        orderBy: { createdAt: 'desc' }
+      }).catch(() => null)) ?? null;
+    // Ülke-eşleşmiş sağlıklı satır yoksa IP döndürmeyi ZORLAMA: yanlış ülkeye
+    // yönlendirmek WhatsApp'ta anında "Login not available" demek. Normal
+    // ülke-eşleşmiş atamaya düş (o da bulamazsa cihazı işaretleyip uyarır).
+    if (!row || !row.username) return autoAttachCountryProxyByCountry(deviceId, instance, cc, workspaceId);
+    // Kullanıcı adında zaten sessid/country ekleri varsa TEMİZLE — üstüne ikinci bir
+    // sessid eklemek thordata login'ini bozar.
+    baseUser = row.username.replace(/-country-[a-z]{2}.*$/i, '').replace(/-sessid-.*$/i, '');
+    host = row.host;
+    port = row.port;
+    passwordEnc = row.password ?? undefined; // DB'de zaten şifreli
+  }
+
+  // Yeni oturum kimliği: instance + ülke + zaman damgası (aynı cihaz için ARDIŞIK
+  // çağrılarda bile farklı olsun ki gerçekten yeni bir çıkış alınsın).
+  const sid = `${instance}${cc}r${Date.now().toString(36).slice(-6)}`.toLowerCase();
+  const username = `${baseUser}-country-${cc}-sessid-${sid}-sesstime-30`;
+  try {
+    await createJobRecord(
+      'EMULATOR_SET_PROXY',
+      {
+        deviceId,
+        instance,
+        country: cc,
+        host,
+        port,
+        username,
+        ...(passwordEnc ? { passwordEnc } : {})
+      } as unknown as JobPayload,
+      deviceId,
+      workspaceId
+    );
+    const cur = (await prisma.device
+      .findUnique({ where: { id: deviceId }, select: { metadata: true } })
+      .catch(() => null))?.metadata as Record<string, unknown> | null | undefined;
+    await prisma.device
+      .update({
+        where: { id: deviceId },
+        // `instance` ve diğer yük-taşıyan alanlar korunsun diye ÖNCE yayılıyor
+        // (bare bir yazım tüm JSON kolonunu ezip metadata.instance'ı silerdi).
+        data: { metadata: { ...(cur ?? {}), proxyCountry: cc, proxySessid: sid } as never }
+      })
+      .catch(() => undefined);
+    return { country: cc };
+  } catch {
+    return null;
+  }
+}
+
 // Same as above but with an explicit ISO-2 country (for flows without a phone
 // number, e.g. Instagram email signups where the country is on the account).
 export async function autoAttachCountryProxyByCountry(

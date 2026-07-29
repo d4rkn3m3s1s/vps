@@ -66,6 +66,7 @@ import {
   provideOtpHandler,
   provideVerifyMethodHandler,
   waRegisterStatusHandler,
+  retryWhatsappRegisterHandler,
   startInstagramRegisterHandler,
   igRegisterStatusHandler
 } from './batch.controller';
@@ -103,6 +104,10 @@ accountsRouter.post('/whatsapp/register/:id/otp', requireApiKey, authenticateJwt
 accountsRouter.post('/whatsapp/register/:id/verify-method', requireApiKey, authenticateJwt, asyncHandler(provideVerifyMethodHandler));
 // Live registration progress (log + last step) for the dashboard modal to restore.
 accountsRouter.get('/whatsapp/register/:id/status', requireApiKey, authenticateJwt, asyncHandler(waRegisterStatusHandler));
+// ★2026-07-30 "Sıfırla ve Tekrar Dene" — AYNI hesap satırıyla yeniden dene (çıkış IP'si
+// döndürülür + WA verisi ajan tarafında temizlenir). Cihaz sürdüğü için ağır-işlem
+// limitine tabi; kesin ban'da 409 NUMBER_BANNED döner.
+accountsRouter.post('/whatsapp/register/:id/retry', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(retryWhatsappRegisterHandler));
 
 // One-click Instagram registration (email-based, fully autonomous — agent reads
 // the confirmation code from email; no operator-OTP step). Throttled like WA.

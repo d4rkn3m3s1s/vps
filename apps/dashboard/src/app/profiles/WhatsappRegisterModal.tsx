@@ -36,6 +36,15 @@ function mmss(totalSec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+// Geri sayım için: 1 saatten uzun süreleri sa:dk:sn göster (mmss 60+ dakikada
+// "78:12" gibi okunması zor bir şey üretiyor; WhatsApp cezası 1 saat olabiliyor).
+function hhmmss(totalSec: number): string {
+  const s = Math.max(0, totalSec);
+  const h = Math.floor(s / 3600);
+  if (h <= 0) return mmss(s);
+  return `${h}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
 function lineColor(l: LogLine): string {
   if (l.status === 'FAILED' || (l.note ?? '').startsWith('❌')) return '#f87171';
   if ((l.note ?? '').startsWith('✓')) return '#4ade80';
@@ -84,32 +93,72 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   const [otpBusy, setOtpBusy] = useState(false);
   const [otpMsg, setOtpMsg] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
+  // ★2026-07-30 Operatör-yönlendirme durumu (API /status'tan gelir):
+  //  waitUntil → WhatsApp bekletme cezasının bitiş anı; modal GERİ SAYAR.
+  //  action    → "ne yapmalıyım" tek cümle.  wallKind → BAN mı geçici mi.
+  //  resumable → aynı numarayla devam edilebilir mi (kurtarma butonu buna bakar).
+  //  timings   → adım→saniye (hangi adımda takıldı).
+  const [waitUntil, setWaitUntil] = useState<number | null>(null);
+  const [action, setAction] = useState<string | null>(null);
+  const [wallKind, setWallKind] = useState<string | null>(null);
+  const [resumable, setResumable] = useState(false);
+  const [timings, setTimings] = useState<Record<string, number> | null>(null);
+  const [remain, setRemain] = useState(0); // geri sayan saniye
+  const [retryBusy, setRetryBusy] = useState(false);
+  const [accStatus, setAccStatus] = useState<string | null>(null);
   const termRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted history on open (covers "arka plana al" → reopen).
+  //
+  // ★2026-07-30 Bu artık TEK SEFERLİK DEĞİL: 15 saniyede bir tekrar okunuyor. Sebep:
+  // bekleme cezası (`waitUntil`), aksiyon cümlesi (`action`), ban türü ve adım süreleri
+  // job'ın `result`'ında yaşıyor — WS progress olayında YOK. Tek seferlik okumada modal
+  // "1 saat bekle" cezasını hiç göremiyor, çünkü ceza modal AÇIKKEN oluşuyor.
+  // Yoklama ucuz (tek satır + tek job okuması) ve yalnızca modal açıkken çalışır.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    let firstLoad = true;
+    const load = async () => {
       try {
         const res = await fetch(`/api/accounts/whatsapp/register/${accountId}/status`);
         const body = await res.json().catch(() => ({}));
         const d = body?.data;
         if (cancelled || !d) return;
-        if (Array.isArray(d.log) && d.log.length) setLogs(d.log as LogLine[]);
-        if (d.lastProgress) setCurrent(d.lastProgress as WaProgress);
-        // Anchor the elapsed clock to the real start (API's startedAt, else the first
-        // log line's ts). Falls back to modal-open only if there's no history at all.
-        const firstTs = d.startedAt ?? (Array.isArray(d.log) && d.log[0]?.ts) ?? null;
-        if (firstTs) {
-          const ms = Date.parse(firstTs);
-          if (!Number.isNaN(ms)) setStartedAt(ms);
+        // Günlük ve son durum yalnızca İLK yüklemede yazılır: sonraki turlar canlı WS
+        // olaylarının biriktirdiği listeyi EZMEMELİ (yoklama, canlı akışı geri saramaz).
+        if (firstLoad) {
+          if (Array.isArray(d.log) && d.log.length) setLogs(d.log as LogLine[]);
+          if (d.lastProgress) setCurrent(d.lastProgress as WaProgress);
+          const firstTs = d.startedAt ?? (Array.isArray(d.log) && d.log[0]?.ts) ?? null;
+          if (firstTs) {
+            const ms = Date.parse(firstTs);
+            if (!Number.isNaN(ms)) setStartedAt(ms);
+          }
+        }
+        // Yönlendirme alanları HER turda tazelenir.
+        setAccStatus(typeof d.status === 'string' ? d.status : null);
+        setAction(typeof d.action === 'string' && d.action ? d.action : null);
+        setWallKind(typeof d.wallKind === 'string' && d.wallKind ? d.wallKind : null);
+        setResumable(d.resumable === true);
+        setTimings(d.timings && typeof d.timings === 'object' ? (d.timings as Record<string, number>) : null);
+        if (typeof d.waitUntil === 'string') {
+          const ms = Date.parse(d.waitUntil);
+          // Geçmiş bir bitiş anı = ceza dolmuş → sayaç göstermeye gerek yok.
+          setWaitUntil(!Number.isNaN(ms) && ms > Date.now() ? ms : null);
+        } else {
+          setWaitUntil(null);
         }
       } catch {
-        /* no history yet — live events will fill it */
+        /* geçici ağ/oturum hatası — sonraki tur yeniden dener */
+      } finally {
+        firstLoad = false;
       }
-    })();
+    };
+    void load();
+    const t = setInterval(() => void load(), 15_000);
     return () => {
       cancelled = true;
+      clearInterval(t);
     };
   }, [accountId]);
 
@@ -139,6 +188,14 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     }
     setCurrent(p);
     if (p.shot) setShot(p.shot);
+    // ★2026-07-29: Kod REDDEDİLDİ bildirimi. Ajan artık yanlış kodda akışı ÖLDÜRMÜYOR
+    // (eskiden FAILED olup operatör yeni kayıt açmak zorunda kalıyordu → aynı numara
+    // ikinci kez denenip yanma riski). Akış OTP beklemede kalıyor; burada kutuyu
+    // temizleyip uyarıyı gösteriyoruz ki operatör doğru kodu hemen girebilsin.
+    if (/kabul edilmedi|kodu YANLIŞ/i.test(p.note ?? '')) {
+      setOtp('');
+      setOtpMsg('❌ Kod kabul edilmedi — doğru 6 haneli kodu tekrar girin.');
+    }
     // First live event we ever see also anchors the clock (covers a brand-new run
     // with no persisted history yet). Only set it once — never let a later event push
     // the start forward.
@@ -215,6 +272,22 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     return () => clearInterval(t);
   }, [done, failed, startedAt]);
 
+  // ★2026-07-30 GERİ SAYAN bekleme sayacı. `elapsed` tick'inden AYRI tutuluyor çünkü o
+  // done/failed olunca duruyor — oysa bekleme cezası genelde BAŞARISIZ/parked bir kayıtta
+  // görülür ve tam o zaman geri sayması gerekir. Süre dolduğunda sayacı gizle (waitUntil
+  // null) ki "Tekrar Dene" butonu kilitten çıksın.
+  useEffect(() => {
+    if (!waitUntil) { setRemain(0); return; }
+    const tick = () => {
+      const left = Math.ceil((waitUntil - Date.now()) / 1000);
+      if (left <= 0) { setRemain(0); setWaitUntil(null); return; }
+      setRemain(left);
+    };
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [waitUntil]);
+
   useEffect(() => {
     if (done) router.refresh();
   }, [done, router]);
@@ -229,6 +302,16 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   );
 
   const barColor = failed ? '#ef4444' : done ? '#22c55e' : isMethodSelect ? '#8b5cf6' : awaitingOtp ? '#38bdf8' : 'var(--accent, #6366f1)';
+
+  // ★2026-07-30 Tekrar deneme YALNIZCA numara sağlamsa sunulur.
+  //  - KESİN BAN (wallKind BAN veya notta [YASAKLI]) → asla: tekrar denemek yalnızca zarar.
+  //  - Hesap zaten ACTIVE → asla: yeni kayıt o hesabı SİLER.
+  //  - Diğer başarısızlıklar (geçici engel, SMS gönderilemedi, cihaz-izi, zaman aşımı) →
+  //    sunulur. `resumable` sunucudan geldiğinde ona güvenilir; gelmediyse (eski job
+  //    kayıtları, henüz güncellenmemiş sonuç) ban olmayan her başarısızlık denenebilir
+  //    sayılır — operatörü seçeneksiz bırakmamak, fazladan bir buton göstermekten iyidir.
+  const isBanned = wallKind === 'BAN' || /\[YASAKLI\]/.test(current.note ?? '') || /\[YASAKLI\]/.test(action ?? '');
+  const canRetry = !isBanned && accStatus !== 'ACTIVE' && (resumable || failed);
 
   // Cancel a stuck/blocked registration: flips the account to FAILED and clears the
   // device's WA-registration badge (API cancel handler), so the card stops showing
@@ -252,6 +335,40 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
       setOtpMsg('İptal edilemedi (ağ hatası)');
     } finally {
       setCancelBusy(false);
+    }
+  }
+
+  // ★2026-07-30 "Sıfırla ve Tekrar Dene". AYNI hesap satırıyla yeniden dener: API çıkış
+  // IP'sini döndürür (yeni sessid) ve kayıt işini tekrar gönderir; ajan kayıt başında
+  // WhatsApp verisini zaten `pm clear` ile temizliyor. Yeni kayıt AÇMAZ — böylece aynı
+  // numara WhatsApp'ın çok-deneme sayacına ikinci kez "yeni kayıt" olarak yazılmaz.
+  async function retryRegistration() {
+    if (retryBusy) return;
+    if (remain > 0) {
+      setOtpMsg(`Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı. Erken denemek cezayı UZATIR.`);
+      return;
+    }
+    if (!window.confirm(`${phoneNumber} için kayıt sıfırlanıp tekrar denenecek.\n\n• Cihazın WhatsApp verisi silinir\n• Çıkış IP'si (proxy oturumu) yenilenir\n• AYNI numarayla kaldığı yerden yeni bir deneme başlar\n\nDevam edilsin mi?`)) return;
+    setRetryBusy(true);
+    setOtpMsg(null);
+    try {
+      const res = await fetch(`/api/accounts/whatsapp/register/${accountId}/retry`, { method: 'POST' });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setOtpMsg(body?.data?.message || body?.error || 'Tekrar deneme başlatılamadı');
+        return;
+      }
+      const ipNote = body?.data?.ipRotated ? ` (çıkış IP'si yenilendi${body?.data?.country ? `: ${body.data.country}` : ''})` : '';
+      setOtpMsg(`🔄 Tekrar deneme başladı${ipNote} — ajan cihazı sıfırlıyor.`);
+      // Panel durumunu hemen "çalışıyor"a çevir; ilerleme WS'ten akmaya devam eder.
+      setCurrent((c) => ({ ...c, step: 'reset', label: 'Sıfırlanıyor ve tekrar deneniyor', percent: 5, status: 'RUNNING' }));
+      setWaitUntil(null);
+      setAction(null);
+      router.refresh();
+    } catch {
+      setOtpMsg('Tekrar deneme başlatılamadı (ağ hatası)');
+    } finally {
+      setRetryBusy(false);
     }
   }
 
@@ -358,6 +475,72 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
         <span className="health-bar" style={{ display: 'block', marginBottom: 14 }}>
           <span className="health-bar-fill" style={{ width: `${current.percent}%`, background: barColor }} />
         </span>
+
+        {/* ★2026-07-30 GERİ SAYAN bekleme sayacı. WhatsApp "1 saat bekle" / "31 dakika
+            bekle" dediğinde operatör kalan süreyi TAM olarak görür ve süre dolmadan
+            tekrar denemeye çalışmaz (erken deneme cezayı uzatıyor). Sayaç, cezanın
+            okunduğu andan itibaren sunucuda hesaplanan bitiş anına göre akar — modal
+            kapanıp açılsa, sayfa yenilense bile doğru kalır. */}
+        {remain > 0 && (
+          <div
+            style={{
+              border: '1px solid rgba(251,191,36,0.45)',
+              borderLeft: '3px solid #fbbf24',
+              background: 'rgba(251,191,36,0.08)',
+              borderRadius: 10,
+              padding: '12px 14px',
+              marginBottom: 14,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 14,
+              flexWrap: 'wrap'
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 92 }}>
+              <span
+                style={{
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                  fontSize: 26,
+                  fontWeight: 700,
+                  color: '#fbbf24',
+                  lineHeight: 1.1,
+                  fontVariantNumeric: 'tabular-nums'
+                }}
+              >
+                {hhmmss(remain)}
+              </span>
+              <span style={{ fontSize: 10, opacity: 0.7, letterSpacing: 0.5 }}>KALAN SÜRE</span>
+            </div>
+            <div style={{ flex: '1 1 200px', minWidth: 0, fontSize: 12.5, lineHeight: 1.5 }}>
+              <strong>⏳ WhatsApp bekletiyor — kayıt İPTAL EDİLMEDİ.</strong>
+              <div style={{ opacity: 0.85, marginTop: 3 }}>
+                Numara yanmadı. Süre dolunca aşağıdaki <b>Sıfırla ve Tekrar Dene</b> ile aynı numarayla devam
+                edin. Erken denemek cezayı uzatır.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Ne yapmalıyım — her durum için tek cümle. Ajanın/API'nin ürettiği `action`
+            alanı; ban ise kırmızı, geçici engel ise sarı. (Operatör geri bildirimi:
+            "uyarılar bazen yarım kalıyor" — sebep ile aksiyon artık ayrı gösteriliyor.) */}
+        {action && remain <= 0 && (
+          <div
+            style={{
+              border: `1px solid ${wallKind === 'BAN' ? 'rgba(239,68,68,0.45)' : 'rgba(56,189,248,0.4)'}`,
+              borderLeft: `3px solid ${wallKind === 'BAN' ? '#ef4444' : '#38bdf8'}`,
+              background: wallKind === 'BAN' ? 'rgba(239,68,68,0.08)' : 'rgba(56,189,248,0.08)',
+              borderRadius: 10,
+              padding: '10px 14px',
+              marginBottom: 14,
+              fontSize: 12.5,
+              lineHeight: 1.5
+            }}
+          >
+            <strong>{wallKind === 'BAN' ? '⛔ Ne yapmalı' : '➡️ Ne yapmalı'}</strong>
+            <div style={{ opacity: 0.9, marginTop: 3 }}>{action}</div>
+          </div>
+        )}
 
         {/* OTP box — appears when the flow parks at the code step. The instruction
             adapts to the scenario (plain SMS / code-on-other-phone / rate-limit). */}
@@ -512,6 +695,12 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
               const idx = steps.findIndex((x) => x.key === s.key);
               const isDone = done || idx < activeIdx || current.percent >= s.percent;
               const isActive = !done && !failed && idx === activeIdx;
+              // ★2026-07-30 Adım süresi. Ajan her adımın süresini `timings` içinde
+              // gönderiyor (ms); hangi adımın yavaş olduğu/nerede takıldığı isimden
+              // değil SAYIDAN anlaşılsın. 10 sn'nin altındakileri göstermiyoruz —
+              // hızlı adımlar listeyi gürültüye çevirirdi.
+              const ms = timings?.[s.key];
+              const secs = typeof ms === 'number' ? Math.round(ms / 1000) : 0;
               return (
                 <li key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: isDone || isActive ? 1 : 0.4 }}>
                   <span style={{ width: 16, display: 'inline-flex', justifyContent: 'center' }}>
@@ -524,10 +713,49 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
                     )}
                   </span>
                   <span style={{ fontSize: 12 }}>{s.label}</span>
+                  {secs >= 10 ? (
+                    <span
+                      style={{ fontSize: 10.5, opacity: 0.55, fontVariantNumeric: 'tabular-nums' }}
+                      title={`${s.label} adımı ${secs} saniye sürdü`}
+                    >
+                      {secs >= 60 ? `${Math.floor(secs / 60)}dk${secs % 60 ? ` ${secs % 60}sn` : ''}` : `${secs}sn`}
+                    </span>
+                  ) : null}
                 </li>
               );
             })}
         </ol>
+
+        {/* ★2026-07-30 Adım listesinde KARŞILIĞI OLMAYAN ama süre harcayan fazlar
+            (ör. `downgrade` — Business hesabı devre dışı bırakma, canlı ölçümde 38 sn).
+            Adım listesi bunları göstermediği için toplam süreyle adım süreleri
+            toplamı arasında açıklanamayan bir fark oluşuyordu. */}
+        {(() => {
+          if (!timings) return null;
+          const known = new Set(steps.map((s) => s.key));
+          const extras = Object.entries(timings)
+            .filter(([k, v]) => !known.has(k) && typeof v === 'number' && v >= 10_000)
+            .sort((a, b) => b[1] - a[1]);
+          if (!extras.length) return null;
+          const LABELS: Record<string, string> = {
+            downgrade: 'Business hesabı devre dışı',
+            install: 'APK kurulumu',
+            wipe: 'WhatsApp verisi silme',
+            boot: 'Cihaz açılışı'
+          };
+          return (
+            <div style={{ marginTop: 10, fontSize: 11, opacity: 0.6, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {extras.map(([k, v]) => {
+                const secs = Math.round(v / 1000);
+                return (
+                  <span key={k} style={{ fontVariantNumeric: 'tabular-nums' }}>
+                    + {LABELS[k] ?? k}: {secs >= 60 ? `${Math.floor(secs / 60)}dk ${secs % 60}sn` : `${secs}sn`}
+                  </span>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         <footer className="modal-foot">
           {done ? (
@@ -538,24 +766,55 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
               <button type="button" className="btn-primary" onClick={onClose}>Kapat</button>
             </>
           ) : failed ? (
-            <>
-              <span style={{ color: '#ef4444', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <AlertTriangle size={18} /> {current.note?.slice(0, 60) || 'Kayıt başarısız'}
+            // ★2026-07-30 BAŞARISIZ ≠ ÇÖP. Kesin ban dışındaki başarısızlıklarda (geçici
+            // engel, SMS gönderilemedi, cihaz-izi duvarı) numara sağlamdır → aynı hesap
+            // satırıyla tekrar deneme sunuluyor. Eskiden tek seçenek "Kapat" idi ve
+            // operatör SIFIRDAN yeni kayıt açmak zorunda kalıyordu (= aynı numaranın
+            // ikinci denemesi = WhatsApp'ın çok-deneme sayacı → ban).
+            <div style={{ display: 'flex', gap: 8, width: '100%', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              <span style={{ color: '#ef4444', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6, flex: '1 1 180px', minWidth: 0 }}>
+                <AlertTriangle size={18} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.note?.slice(0, 60) || 'Kayıt başarısız'}</span>
               </span>
-              <button type="button" className="btn-ghost" onClick={onClose}>Kapat</button>
-            </>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {canRetry && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={retryBusy || remain > 0}
+                    onClick={retryRegistration}
+                    title={
+                      remain > 0
+                        ? `Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı`
+                        : "WhatsApp verisini sil, çıkış IP'sini yenile ve AYNI numarayla tekrar dene"
+                    }
+                  >
+                    {retryBusy ? 'Sıfırlanıyor…' : remain > 0 ? `🔄 Tekrar Dene (${hhmmss(remain)})` : '🔄 Sıfırla ve Tekrar Dene'}
+                  </button>
+                )}
+                <button type="button" className="btn-ghost" onClick={onClose}>Kapat</button>
+              </div>
+            </div>
           ) : (
-            <div style={{ display: 'flex', gap: 8, width: '100%', justifyContent: 'space-between' }}>
-              <button
-                type="button"
-                className="btn-ghost"
-                style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}
-                disabled={cancelBusy}
-                onClick={cancelRegistration}
-                title="Kaydı iptal et — hesabı başarısız işaretler ve kart kilidini açar"
-              >
-                {cancelBusy ? 'İptal ediliyor…' : 'Kaydı İptal Et'}
-              </button>
+            <div style={{ display: 'flex', gap: 8, width: '100%', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+              {/* Bekleme cezası sürerken İPTAL gizlenir: o an iptale basmak, sırf sayaç
+                  aktığı için sağlam bir kaydı çöpe atmak olur. Kullanıcı kararı:
+                  "modalda iptal olmasın o kayıt". Kapatmak (arka plana alma) serbest. */}
+              {remain > 0 ? (
+                <span style={{ fontSize: 12, opacity: 0.75, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  ⏳ Bekleme sürüyor — kayıt korunuyor, iptal edilmiyor.
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}
+                  disabled={cancelBusy}
+                  onClick={cancelRegistration}
+                  title="Kaydı iptal et — hesabı başarısız işaretler ve kart kilidini açar"
+                >
+                  {cancelBusy ? 'İptal ediliyor…' : 'Kaydı İptal Et'}
+                </button>
+              )}
               <button type="button" className="btn-ghost" onClick={onClose}>Arka planda devam et</button>
             </div>
           )}

@@ -406,6 +406,14 @@ export async function waRegisterStatusHandler(req: Request, res: Response): Prom
   res.json({ data });
 }
 
+// ★2026-07-30 "Sıfırla ve Tekrar Dene": AYNI hesap satırıyla yeniden dene — çıkış
+// IP'sini döndürüp REGISTER_WHATSAPP'ı tekrar gönder (ajan kayıt başında WA verisini
+// zaten temizliyor). Kesin ban'da 409 döner: yanmış numarayı tekrar denemek zararlı.
+export async function retryWhatsappRegisterHandler(req: Request, res: Response): Promise<void> {
+  const data = await batchService.retryWhatsappRegister(getWorkspaceId(req), id(req));
+  res.json({ data });
+}
+
 // One-click Instagram registration. Email-based and fully autonomous (the agent
 // reads the confirmation code from email). All identity fields are optional —
 // anything omitted is generated. Returns the account row immediately; the modal

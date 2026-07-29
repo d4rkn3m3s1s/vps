@@ -3037,7 +3037,22 @@ async function registerWhatsApp(job, legacyPayload) {
     }
     const t = txt ?? await h.screenTextRich();
     if (/Download the official WhatsApp|official WhatsApp to continue/i.test(t)) return t;
-    return /banned|can.?t use whatsapp|couldn.?t (verify|connect)|not allowed|too many (attempts|requests|devices)|try again later/i.test(t) ? t : null;
+    // ★2026-07-29 KESİN-BAN ile GEÇİCİ ENGELİ AYIR (operatör isteği: "ekrana göre kesin oku").
+    //
+    // Eski desen `try again later` ve `couldn't connect` gibi GEÇİCİ ifadeleri de wall
+    // sayıyordu → geçici bekletme "WhatsApp cihazı/numarayı REDDETTİ (ban)" diye
+    // raporlanıyor, operatör numarayı yanmış sanıp çöpe atıyordu. (Canlı veride 18
+    // "reddetti" kaydı var; bir kısmı büyük olasılıkla bu yanlış etiketten.)
+    //
+    // KESİN ban/kalıcı engel ifadeleri — bunlar gerçekten numara/cihaz reddi:
+    if (/\bbanned\b|can.?t use whatsapp|account.*(suspended|violat)|not allowed to (use|register)|too many (attempts|requests|devices)/i.test(t)) {
+      return t;
+    }
+    // GEÇİCİ olanlar (bekle-ve-tekrar-dene) BİLEREK wall SAYILMAZ: bunlar onRateLimit /
+    // SMS-send-failed yollarında zaten daha doğru raporlanıyor. Burada null dönmek,
+    // durum makinesinin doğru dala girmesini sağlar.
+    if (/try again later|couldn.?t connect|check your (connection|network)/i.test(t)) return null;
+    return null;
   };
   // ★RATE-LIMIT screen ("You recently connected" / "Please wait N minutes before trying
   // again, or verify another way"). NOT a wall/ban — a temporary cool-down because the
@@ -3046,12 +3061,25 @@ async function registerWhatsApp(job, legacyPayload) {
   // the operator "SMS bekleniyor" — while WhatsApp is actually saying "wait 31 minutes".
   // VERIFIED LIVE (mi27, +355683175346). Detect it BEFORE accepting OTP and report the
   // real reason + the wait time so the modal/log shows it instead of a false SMS-wait.
+  // ★2026-07-30 Süreyi SANİYE olarak da döndür (`waitSeconds`): panel bunu bir bitiş
+  // zamanına çevirip GERİ SAYAN sayaç gösterebilsin. Eskiden yalnızca serbest metin
+  // dönüyordu ve modal "bir süre bekle" deyip kalıyordu — operatör ne kadar kaldığını
+  // bilemiyordu. Metin de korunuyor (log/telegram aynı okunabilirlikte kalsın).
   const onRateLimit = async (foc, txt) => {
     const t = txt ?? await h.screenTextRich().catch(() => '');
     if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|before trying again/i.test(t)) return null;
     const m = t.match(/wait\s+(\d+)\s+(minute|hour|dakika|saat)/i);
-    const waitStr = m ? `${m[1]} ${/hour|saat/i.test(m[2]) ? 'saat' : 'dakika'}` : 'bir süre';
-    return `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`;
+    const n = m ? parseInt(m[1], 10) : 0;
+    const isHour = m ? /hour|saat/i.test(m[2]) : false;
+    const waitStr = m ? `${n} ${isHour ? 'saat' : 'dakika'}` : 'bir süre';
+    // Süre okunamadıysa 60 dk varsay: WhatsApp'ın standart soğuma süresi bu ve
+    // 0 dönmek panelde "süre doldu, hemen dene" yalanına yol açardı.
+    const waitSeconds = m ? n * (isHour ? 3600 : 60) : 3600;
+    return {
+      note: `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`,
+      waitSeconds,
+      waitLabel: waitStr
+    };
   };
   // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
   // account. Confirm "Switch now" so registration can proceed. VERIFIED LIVE (mi5, +355).
@@ -3207,7 +3235,7 @@ async function registerWhatsApp(job, legacyPayload) {
     return kind;
   };
 
-  let voiceTried = false, bothLockedNote = null, wallText = null, rateLimitText = null;
+  let voiceTried = false, bothLockedNote = null, wallText = null, rateLimitText = null, rateLimitInfo = null;
   // Up to ~14 observe→act rounds; the common path reaches OTP in 2-3.
   for (let round = 0; round < 14; round++) {
     // A rebooted device can pop a "System UI isn't responding" ANR over the verify
@@ -3253,8 +3281,12 @@ async function registerWhatsApp(job, legacyPayload) {
     // BEFORE onOtp (it renders on the same VerifyPhoneNumber screen and would otherwise be
     // parked as a false OTP_WAIT). Report it as the reason so the modal shows the real
     // "wait N minutes" state, not "SMS bekleniyor".
-    rateLimitText = await onRateLimit(foc, txt);
-    if (rateLimitText) { wlog(`verify: RATE-LIMIT (pre-OTP) — ${rateLimitText.slice(0, 80)}`); break; }
+    rateLimitInfo = await onRateLimit(foc, txt);
+    if (rateLimitInfo) {
+      rateLimitText = rateLimitInfo.note;
+      wlog(`verify: RATE-LIMIT (pre-OTP) — ${rateLimitText.slice(0, 80)} [${rateLimitInfo.waitSeconds}s]`);
+      break;
+    }
 
     if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) { wlog(`verify: reached OTP screen (round ${round})`); break; }
 
@@ -3414,9 +3446,21 @@ async function registerWhatsApp(job, legacyPayload) {
     if (await onSmsSendFailed(foc, txt)) {
       wlog('verify: SMS send FAILED — sesli aramaya geçiliyor');
       await snap('sms_send_failed');
+      // ★2026-07-29: "Try another way" düğmesinin GERÇEKTEN görünmesini bekle.
+      // Eskiden a11y-click + kör koordinat tap ardından sabit 2.5 sn bekleniyordu;
+      // diyalog yavaş açıldığında tıklama boşa gidiyor, sonraki kontrol diyaloğu
+      // hâlâ açık görüp akışı öldürüyordu (canlı: 9 kayıt "SMS gönderemedi" ile
+      // bitmiş, oysa sesli arama yolu hiç denenememişti).
+      await h.pollNode(['Try another way', 'Try other ways', 'Başka bir yol dene'], 6000, 'any').catch(() => null);
       await h.a11yClickText('Try another way');
-      if (!(await h.tapSynIf('Try another way'))) await h.tapScaled(742, 1353).catch(() => undefined);
-      await h.sleep(2500);
+      if (!(await h.tapSynIf(['Try another way', 'Try other ways', 'Başka bir yol dene'], 'any'))) {
+        await h.tapScaled(742, 1353).catch(() => undefined);
+      }
+      // Yöntem sayfasının açılmasını POLL'la bekle (sabit sleep yerine).
+      for (let w = 0; w < 12; w++) {
+        if (await onChooseVerify()) break;
+        await h.sleep(500);
+      }
       // If the method sheet came up, take voice from it; else loop re-observes.
       if (await onChooseVerify()) { if ((await pickVerifyMethod()) === 'voice') voiceTried = true; }
       // If the dialog is STILL up (no "Try another way" / voice refused), OK-dismiss
@@ -3504,7 +3548,43 @@ async function registerWhatsApp(job, legacyPayload) {
 
   // Terminal outcomes from the state machine (before the generic OTP check below).
   if (wallText) {
-    return done('device_wall', { status: 'DEVICE_WALL', note: 'WhatsApp cihazı/numarayı reddetti (ban / çok deneme) — bekleyin veya farklı numara/cihaz deneyin', screenTexts: wallText.slice(0, 400) });
+    // ★2026-07-29: raporu EKRANDA YAZANA göre ayrıştır — operatör "numara yandı mı,
+    // yoksa bekleyip tekrar mı deneyeyim" sorusunu tek bakışta yanıtlayabilsin.
+    const w = String(wallText);
+    const kind = /\bbanned\b|can.?t use whatsapp|suspended|violat/i.test(w)
+      ? 'BAN'
+      : /official WhatsApp|RegistrationBlock/i.test(w)
+        ? 'APK'
+        : /too many (attempts|requests|devices)/i.test(w)
+          ? 'COK_DENEME'
+          : 'RED';
+    const note =
+      kind === 'BAN'
+        ? '⛔ NUMARA/HESAP YASAKLI — WhatsApp bu numarayı kalıcı olarak reddetti. Bu numarayı bir daha DENEMEYİN, yakılmıştır; yeni numara kullanın.'
+        : kind === 'APK'
+          ? '⛔ "Resmî WhatsApp" duvarı — WhatsApp bu APK/cihaz izini reddetti. Numara sağlam olabilir; cihazı sıfırlayıp (WA verisi sil + yeni kimlik) tekrar deneyin.'
+          : kind === 'COK_DENEME'
+            ? '⚠️ ÇOK DENEME — bu numara/cihaz kısa sürede fazla denendi. En az 1 saat BEKLEYİN; numara muhtemelen sağlam, hemen tekrar denemek yakar.'
+            : '⚠️ WhatsApp kaydı reddetti. Ekran metnine bakın; geçici olabilir — 1 saat bekleyip tekrar deneyin.';
+    // ★Tek cümlelik AKSİYON + `resumable`: numara yandı mı yoksa aynı numarayla
+    // devam edilebilir mi — operatörün tek bakışta göreceği şey bu.
+    const action =
+      kind === 'BAN'
+        ? 'Bu numarayı ÇÖPE atın, yeni numara girin. Tekrar denemek işe yaramaz.'
+        : kind === 'APK'
+          ? '"Sıfırla ve Tekrar Dene" ile cihaz kimliğini yenileyip aynı numarayla deneyin.'
+          : kind === 'COK_DENEME'
+            ? 'En az 1 saat bekleyin, sonra "Sıfırla ve Tekrar Dene". Numara muhtemelen sağlam.'
+            : '1 saat bekleyip "Sıfırla ve Tekrar Dene". Tekrar reddederse numarayı değiştirin.';
+    return done('device_wall', {
+      status: 'DEVICE_WALL',
+      wallKind: kind, // BAN | APK | COK_DENEME | RED — panel/telegram buna göre renk verebilir
+      note,
+      action,
+      resumable: kind !== 'BAN', // BAN dışında aynı numarayla devam edilebilir
+      ...(kind === 'COK_DENEME' || kind === 'RED' ? { waitSeconds: 3600 } : {}),
+      screenTexts: w.slice(0, 400)
+    });
   }
   // ★RATE-LIMIT ("You recently connected — wait N minutes"). Not terminal, but the
   // operator must SEE it instead of a false "SMS bekleniyor": WhatsApp is throttling this
@@ -3513,7 +3593,20 @@ async function registerWhatsApp(job, legacyPayload) {
   if (rateLimitText) {
     await snap('rate_limited');
     curStep = 'verify'; curPct = stepPct.verify;
-    return done('rate_limited', { status: 'RATE_LIMITED', note: rateLimitText, phoneNumber, screenTexts: rateLimitText.slice(0, 400) });
+    // ★waitSeconds/retryAfter: panel bunu bir bitiş anına çevirip GERİ SAYAN sayaç
+    // gösterir; `recipe` operatöre ne yapması gerektiğini adım adım söyler (aynı metin
+    // Telegram'a da düşer). `resumable: true` → bu numara YANMADI, süre sonunda aynı
+    // kayıt devam edebilir.
+    return done('rate_limited', {
+      status: 'RATE_LIMITED',
+      note: rateLimitText,
+      waitSeconds: rateLimitInfo?.waitSeconds ?? 3600,
+      waitLabel: rateLimitInfo?.waitLabel ?? 'bir süre',
+      resumable: true,
+      action: `${rateLimitInfo?.waitLabel ?? 'Bir süre'} bekleyin, sonra "Sıfırla ve Tekrar Dene" ile aynı numarayla devam edin. Numara yanmadı — hemen tekrar denemek yakar.`,
+      phoneNumber,
+      screenTexts: rateLimitText.slice(0, 400)
+    });
   }
   if (bothLockedNote && !(await onOtp())) {
     // ★SMS-SEND-FAILED → FAIL (operatör isteği): WhatsApp "Couldn't send an SMS to your
@@ -3524,7 +3617,17 @@ async function registerWhatsApp(job, legacyPayload) {
     // Business geçildi ama WhatsApp SMS göndermedi; eskiden OTP_WAIT'te asılı kalıyordu.)
     await snap('sms_send_failed_terminal');
     curStep = 'verify'; curPct = stepPct.verify;
-    return done('sms_send_failed', { status: 'SMS_SEND_FAILED', note: bothLockedNote, phoneNumber });
+    return done('sms_send_failed', {
+      status: 'SMS_SEND_FAILED',
+      note: bothLockedNote,
+      // Numara yanmış DEĞİL: WhatsApp SMS'i gönderemedi (operatör/şebeke tarafı).
+      // 1 saat sonra aynı numarayla devam edilebilir → geri sayım + kurtarma butonu.
+      waitSeconds: 3600,
+      waitLabel: '1 saat',
+      resumable: true,
+      action: '1 saat bekleyin, sonra "Sıfırla ve Tekrar Dene". Tekrar SMS gelmezse bu numara WhatsApp-uyumsuz — değiştirin.',
+      phoneNumber
+    });
   }
 
   // 8) OTP. The state machine above already handled ban walls and rate-limits. Now
@@ -3593,7 +3696,42 @@ async function registerWhatsApp(job, legacyPayload) {
   // (VERIFIED LIVE, mi5 +90 539…: wrong code entered, dialog shown, agent didn't catch it).
   const afterOtp = await h.screenText();
   if (/(invalid|wrong|incorrect)[^.]{0,40}code|code[^.]{0,40}(is\s+)?(invalid|wrong|incorrect)|try again (later|in\s+\d+\s+(second|minute))/i.test(afterOtp)) {
-    return done('otp_rejected', { status: 'OTP_REJECTED', note: '❌ Girilen SMS kodu YANLIŞ — panelden doğru 6 haneli kodu tekrar girin', screenTexts: afterOtp.slice(0, 400) });
+    // ★2026-07-29 YANLIŞ KOD ARTIK AKIŞI ÖLDÜRMÜYOR.
+    //
+    // Eskiden burada OTP_REJECTED + terminal FAILED dönülüyordu: operatör doğru kodu
+    // elinde tutsa bile akış bitmiş oluyor, DOĞRU kodu girmek için kaydı SIFIRDAN
+    // açmak gerekiyordu — ki bu aynı numarayla ikinci deneme demek (ban riski, canlı
+    // veride 28 numara çok-denemeli). Oysa WhatsApp ekranı HÂLÂ kod bekliyor.
+    //
+    // Yeni davranış: hesabı OTP bekleme durumunda TUT (status OTP_WAIT) ve panele
+    // "kod yanlıştı, tekrar gir" de. Operatör yeni kodu girince aynı akış kaldığı
+    // yerden devam eder — yeni kayıt açılmaz, numara yeniden yakılmaz.
+    // ⚠️ "try again in N seconds" (hız-sınırı) durumunda da aynı: bekleyip tekrar
+    // girmek doğru hamledir, kaydı çöpe atmak değil.
+    const cooldown = /try again in\s+(\d+)\s+(second|minute)/i.exec(afterOtp);
+    const cdSeconds = cooldown
+      ? parseInt(cooldown[1], 10) * (/minute/i.test(cooldown[2]) ? 60 : 1)
+      : 0;
+    const waitNote = cooldown
+      ? ` WhatsApp ${cooldown[1]} ${/minute/i.test(cooldown[2]) ? 'dakika' : 'saniye'} bekletiyor — süre sonunda girin.`
+      : '';
+    const note = `❌ Girilen SMS kodu kabul edilmedi.${waitNote} Panelden DOĞRU 6 haneli kodu tekrar girin — kayıt açık tutuluyor, yeni kayıt açmayın.`;
+    await waProgress('otp_wait', stepPct.otp_wait, note);
+    return done('otp_wait', {
+      status: 'OTP_WAIT',
+      otpChannel: 'sms',
+      otpRejected: true, // panel bunu görüp "kod yanlıştı" vurgusu yapabilir
+      // ★Soğuma süresi varsa panel GERİ SAYAR ve süre dolana kadar "Kodu Gönder"i
+      // kilitler — erken gönderilen kod yine reddedilip sayacı sıfırdan başlatıyordu.
+      ...(cdSeconds > 0 ? { waitSeconds: cdSeconds } : {}),
+      resumable: true,
+      action: cdSeconds > 0
+        ? 'Sayaç bitince DOĞRU 6 haneli kodu girin. Kayıt açık — yeni kayıt açmayın.'
+        : 'DOĞRU 6 haneli kodu tekrar girin. Kayıt açık — yeni kayıt açmayın.',
+      note,
+      phoneNumber,
+      screenTexts: afterOtp.slice(0, 400)
+    });
   }
 
   // 8b) Post-OTP interstitials before the profile screen: restore-backup prompt,

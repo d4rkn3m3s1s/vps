@@ -211,7 +211,7 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   // 💬 WA hesap-sağlık
   // ★2026-07-29: /kayit dispatcher'da vardı ama palette/menüde YOKTU → operatör
   // komutun varlığını keşfedemiyordu. (Kendisi panele yönlendirir; bu bilinçli.)
-  { command: 'kayit', description: '📝 WhatsApp kaydı nasıl yapılır (panele yönlendirir)' },
+  { command: 'kayit', description: '📝 Yarım kalan kayıtlar + kalan bekletme süreleri' },
   { command: 'hesaplar', description: '💬 WhatsApp hesapları + sağlık rozeti' },
   { command: 'banlar', description: '⚠️ Son 7 günün ban/kısıt dalgası' },
   // 📂 Kayıt okuma
@@ -793,6 +793,85 @@ async function renderWaAccounts(workspaceId: string): Promise<string> {
   });
   const healthy = accounts.filter((a) => a.status === 'ACTIVE').length;
   return [`<b>💬 WhatsApp Hesapları</b> (${healthy}/${accounts.length} sağlıklı)`, '', ...lines].join('\n');
+}
+
+// ★2026-07-30 Grup 3 — /kayit: YARIM KALAN kayıtlar + kalan bekleme süreleri.
+//
+// Eskiden /kayit yalnızca "panelden yapılır" diyen sabit bir metindi. Oysa operatörün
+// dışarıdayken en çok ihtiyaç duyduğu bilgi bu: hangi kayıt takılı, hangi numara ne
+// kadar bekletiliyor, ne yapmalı. WhatsApp bekletme cezaları 1 saate kadar sürüyor ve
+// operatör süreyi bilmezse ya boşuna bekliyor ya da erken deneyip cezayı uzatıyor.
+async function renderPendingRegistrations(workspaceId: string): Promise<string> {
+  const pending = await prisma.generatedAccount.findMany({
+    where: {
+      platform: 'whatsapp',
+      ...(workspaceId ? { workspaceId } : {}),
+      status: { in: ['AWAITING_OTP', 'AWAITING_MANUAL', 'REGISTERING'] }
+    },
+    select: { id: true, phoneNumber: true, status: true, deviceId: true, error: true, updatedAt: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 20
+  });
+  const head = '<b>📝 Yarım Kalan WhatsApp Kayıtları</b>';
+  if (!pending.length) {
+    return [
+      head,
+      '',
+      '✅ Şu an yarım kalan kayıt YOK.',
+      '',
+      'Yeni kayıt: Panel → <b>Profiller</b> → cihaz → <b>WhatsApp Kaydet</b>',
+      'Durum izleme: /hesaplar · /saglik'
+    ].join('\n');
+  }
+  const names = await deviceNameMap(workspaceId, pending.map((p) => p.deviceId));
+  // Bekleme süresini hesabın son kayıt job'ından oku (ajanın `waitSeconds`'ı orada).
+  const jobByDevice = new Map<string, { result: unknown; base: Date | null }>();
+  for (const p of pending) {
+    if (!p.deviceId || jobByDevice.has(p.deviceId)) continue;
+    const job = await prisma.job
+      .findFirst({
+        where: { type: 'REGISTER_WHATSAPP', deviceId: p.deviceId, ...(workspaceId ? { workspaceId } : {}) },
+        orderBy: { createdAt: 'desc' },
+        select: { result: true, finishedAt: true, updatedAt: true }
+      })
+      .catch(() => null);
+    jobByDevice.set(p.deviceId, { result: job?.result ?? null, base: job?.finishedAt ?? job?.updatedAt ?? null });
+  }
+  const lines: string[] = [];
+  let bekleyen = 0;
+  for (const p of pending) {
+    const phone = p.phoneNumber ? esc(p.phoneNumber) : '(numara yok)';
+    const dn = p.deviceId ? names.get(p.deviceId) : undefined;
+    const dev = dn ? ` · ${esc(dn)}` : '';
+    const j = p.deviceId ? jobByDevice.get(p.deviceId) : undefined;
+    const r = (j?.result ?? {}) as Record<string, unknown>;
+    const secs = typeof r.waitSeconds === 'number' ? r.waitSeconds : 0;
+    let kalan = 0;
+    if (secs > 0 && j?.base) {
+      kalan = Math.max(0, Math.round((j.base.getTime() + secs * 1000 - Date.now()) / 1000));
+    }
+    const durum =
+      kalan > 0
+        ? `⏳ <b>${kalan >= 3600 ? `${Math.floor(kalan / 3600)}s ${Math.floor((kalan % 3600) / 60)}dk` : `${Math.ceil(kalan / 60)} dk`}</b> bekletme kaldı`
+        : p.status === 'AWAITING_OTP'
+          ? '📲 SMS kodu bekleniyor'
+          : p.status === 'AWAITING_MANUAL'
+            ? '✋ Manuel adım gerekiyor'
+            : '⚙️ Kayıt sürüyor';
+    if (kalan > 0) bekleyen++;
+    lines.push(`<code>${phone}</code>${dev}\n   ${durum}`);
+    // Aksiyon cümlesi varsa göster (ajan/API üretiyor) — tek satır, kısaltılmış.
+    const act = typeof r.action === 'string' ? r.action : '';
+    if (act) lines.push(`   ➡️ ${esc(act.slice(0, 140))}`);
+  }
+  return [
+    `${head} (${pending.length})`,
+    ...(bekleyen ? [`⏳ ${bekleyen} tanesi WhatsApp bekletmesinde — süre dolmadan denemeyin.`] : []),
+    '',
+    ...lines,
+    '',
+    'Kod girme / tekrar deneme: Panel → Profiller → ilgili cihaz'
+  ].join('\n');
 }
 
 // Grup 3 — /banlar: son ban/kısıt dalgası (son 7 gün, BANNED/RESTRICTED/LOGGED_OUT).
@@ -1390,18 +1469,11 @@ async function handleCommand(
   } else if (lower === '/banlar' || lower === 'banlar' || lower === '/bans') {
     await sendMessage(token, chatId, await renderBanWave(workspaceId), MAIN_MENU);
   } else if (lower === '/kayit' || lower.startsWith('/kayit ') || lower === '/kayıt') {
-    // WA kaydı çok-adımlı (kimlik+numara-kirala+OTP+RPA) ve ban-riski hassastır;
-    // Telegram'dan tek komutla güvenli değil. Operatörü panelin tek-tık akışına
-    // yönlendir (numara/proxy/isim orada girilir), durum buradan /hesaplar ile izlenir.
-    await sendMessage(token, chatId, [
-      '📝 <b>WhatsApp Kaydı</b>',
-      '',
-      'WA kaydı numara-kiralama + OTP + cihaz-otomasyonu içerdiğinden panelden yapılır:',
-      '• Panel → <b>Profiller</b> → cihaz → <b>WhatsApp Kaydet</b> (numara + ülke proxy)',
-      '• Ya da toplu için Panel → <b>Hesaplar</b> → toplu kayıt',
-      '',
-      'Kayıt durumunu buradan izleyin: /hesaplar · /saglik'
-    ].join('\n'), MAIN_MENU);
+    // ★2026-07-30: sabit yönlendirme metni yerine GERÇEK durum — yarım kalan kayıtlar
+    // ve kalan bekletme süreleri. Kaydın kendisi hâlâ panelden başlatılır (ban-riski
+    // hassas, çok adımlı), ama "ne durumda, ne kadar bekleyeceğim" sorusu buradan
+    // yanıtlanıyor; operatör dışarıdayken en çok bunu soruyor.
+    await sendMessage(token, chatId, await renderPendingRegistrations(workspaceId), MAIN_MENU);
   // ── Grup 4: Root-DB okuma ──────────────────────────────────────────────────
   } else if (lower === '/okunmamis-tum' || lower === '/okunmamistum' || lower === '/tumokunmamis') {
     await sendMessage(token, chatId, await renderAllUnread(workspaceId), MAIN_MENU);

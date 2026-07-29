@@ -1064,6 +1064,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicRegisterStatusResponse'
+  /public/v1/whatsapp/register/{id}/retry:
+    post:
+      summary: Retry a stalled/failed WhatsApp registration (same account row)
+      description: >
+        id = accountId. Rotates the device's proxy exit IP (new sticky session) and
+        re-dispatches the registration; the agent wipes WhatsApp data at the start of
+        every fresh register, so the device identity is reset too. Uses the SAME
+        account row on purpose — re-submitting the same number as a NEW registration
+        raises WhatsApp's too-many-attempts counter (the main ban driver in live data).
+        Call this instead of creating a second registration for the same number.
+        Heavy rate limit (drives a real device).
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Retry dispatched
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      accountId: { type: string }
+                      deviceId: { type: string }
+                      ipRotated: { type: boolean, description: Çıkış IP'si yenilendi mi }
+                      country: { type: string, description: Çıkış ülkesi (numara ülkesiyle eşleşir) }
+        '409':
+          description: >
+            WAIT_IN_PROGRESS — bekletme cezası sürüyor (retryAfterSeconds kadar bekleyin);
+            NUMBER_BANNED — numara kalıcı olarak reddedildi, tekrar deneme reddedilir;
+            ALREADY_ACTIVE — hesap aktif, tekrar denemek onu silerdi.
   /public/v1/jobs/{jobId}:
     get:
       summary: Read the result/status of any on-device job (read)
@@ -1538,6 +1572,41 @@ components:
               type: array
               items:
                 type: object
+            # ★2026-07-30 Operatör/entegratör yönlendirme alanları.
+            waitUntil:
+              type: string
+              nullable: true
+              format: date-time
+              description: >
+                WhatsApp'ın bekletme cezasının bitiş anı (ISO). null ise ceza yok.
+                Ceza süresince kayıt AWAITING_OTP'de KORUNUR (otomatik FAILED edilmez).
+            retryAfterSeconds:
+              type: integer
+              description: >
+                waitUntil'e kalan saniye (0 = ceza yok/doldu). Poll döngünüz buna uysun;
+                süre dolmadan /retry çağırmak 409 WAIT_IN_PROGRESS döner VE cezayı uzatır.
+            action:
+              type: string
+              nullable: true
+              description: Tek cümlelik "ne yapmalı" (ör. "1 saat bekleyin, sonra /retry").
+            wallKind:
+              type: string
+              nullable: true
+              enum: [BAN, APK, COK_DENEME, RED]
+              description: >
+                BAN = numara KALICI olarak reddedildi (yeni numara kullanın, /retry 409 verir).
+                APK = cihaz izi reddedildi. COK_DENEME/RED = geçici, bekleyip /retry.
+            otpRejected:
+              type: boolean
+              description: Girilen kod reddedildi; akış AÇIK, doğru kodu /otp ile tekrar gönderin.
+            resumable:
+              type: boolean
+              description: Aynı numarayla /retry çağrılabilir mi (BAN'da false).
+            timings:
+              type: object
+              nullable: true
+              additionalProperties: { type: integer }
+              description: Adım → milisaniye. Hangi adımın yavaş olduğunu/nerede takıldığını gösterir.
     PublicJobResponse:
       type: object
       properties:

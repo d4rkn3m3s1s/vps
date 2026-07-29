@@ -160,6 +160,21 @@ export class StreamHub {
       } catch {
         return;
       }
+      // ★2026-07-29 CANLILIK: agent periyodik `agent.ping` yollar, biz `agent.pong`
+      // ile karşılık veririz. Amaç ZOMBIE SOKET tespiti: API yeniden başlatıldığında
+      // agent'ın soketi yarı-açık kalabiliyor — `close`/`error` HİÇ tetiklenmediği
+      // için agent'ın kendi yeniden-bağlanma zamanlayıcısı da çalışmıyor ve canlı
+      // yayın sessizce ölüyordu (28 Tem'de yaşandı: API restart sonrası agent
+      // saatlerce "bağlı" göründü ama tek kare göndermedi; elle restart gerekti).
+      // Pong gelmezse agent soketi zorla kapatıp yeniden bağlanır.
+      if (msg.type === 'agent.ping') {
+        try {
+          _agent.send(JSON.stringify({ type: 'agent.pong' }));
+        } catch {
+          /* soket zaten ölü; agent kendi tarafında zaman aşımıyla toparlar */
+        }
+        return;
+      }
       if (msg.reqId && this.pending.has(msg.reqId)) {
         const entry = this.pending.get(msg.reqId)!;
         clearTimeout(entry.timer);

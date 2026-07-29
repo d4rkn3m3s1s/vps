@@ -7,6 +7,7 @@ import { webhooksService } from '../webhooks/webhooks.service';
 import { sendMail } from '../mail/mail.service';
 import { alertEmail } from '../mail/mail.templates';
 import { dispatch as notificationsDispatch } from '../notifications/notifications.service';
+import { createNotification } from '../notifications/feed.service';
 
 export type AlertRuleInput = {
   name: string;
@@ -176,6 +177,16 @@ export class AlertsService {
             payload: { id: event.id, title: context.title, detail: context.detail, rule: rule.name },
             timestamp: new Date().toISOString(),
             workspaceId
+          });
+          // ★2026-07-29: alarmı KALICI bildirim beslemesine de yaz. WS push'u yalnızca
+          // o an açık olan sekmeye ulaşır; alarm gece fırlamışsa operatör sabah panelde
+          // hiçbir iz bulamıyordu.
+          void createNotification(workspaceId, {
+            kind: 'err',
+            title: context.title,
+            detail: context.detail,
+            refType: 'alert',
+            refId: event.id
           });
         }
         if (rule.webhook) {

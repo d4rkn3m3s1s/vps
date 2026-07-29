@@ -9,6 +9,7 @@ import { waRegisterService } from '../accounts/wa-register.service';
 import { getJob } from '../jobs/jobs.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
 import { withIdempotency, readIdempotencyKey } from './idempotency.service';
+import { getWhatsappState, capabilitiesOf } from '../devices/whatsappCategory';
 
 const deviceService = new DeviceService();
 
@@ -42,29 +43,83 @@ function jobWarning(job: { status: string; result: unknown; error: string | null
 // GET /public/v1/devices — the workspace's devices, trimmed to the fields an
 // external integration needs to pick a target. Workspace-scoped (never leaks
 // other tenants; see requirePublicWorkspace).
+//
+// ★2026-07-29: filtreler + kategori sayaçları. Eskiden filo TEK düz liste olarak
+// dönüyordu — 38 cihazın hangisi WhatsApp'lı, hangisi boş, hangisi banlı belli
+// olmuyordu; entegratör hepsini çekip kendi süzüyordu. Artık ?category= ile süzülür
+// ve `meta.counts` "ne var ne yok"u tek bakışta verir.
+const listDevicesQuerySchema = z.object({
+  category: z.enum(['empty', 'manual', 'registering', 'whatsapp', 'blocked']).optional(),
+  // Kısayol: sadece mesaj atılabilir cihazlar (category=whatsapp ile aynı küme).
+  whatsappReady: z.enum(['true', 'false']).optional(),
+  status: z.enum(['ONLINE', 'OFFLINE', 'STARTING', 'STOPPING', 'ERROR', 'UPDATING', 'REBOOTING']).optional(),
+  tag: z.string().min(1).max(40).optional(),
+  search: z.string().min(1).max(120).optional()
+});
+
+// Bir cihaz satırını public API şekline indirger (tek yerde, /devices ve /devices/:id
+// aynı alanları döndürsün diye).
+function toPublicDevice(d: unknown): Record<string, unknown> {
+  const x = d as Record<string, unknown>;
+  return {
+    id: x.id,
+    name: x.name,
+    status: x.status,
+    // empty | registering | whatsapp | blocked — hangi uçların çalışacağını belirler.
+    whatsappCategory: (x.whatsappCategory as string | undefined) ?? 'empty',
+    // The registered WhatsApp number on this device (null if none / not registered).
+    whatsappNumber: (x.activeWhatsappPhone as string | null) ?? null,
+    // null = healthy/no account; otherwise RESTRICTED | BANNED | LOGGED_OUT.
+    whatsappHealth: (x.waAccountHealth as string | null) ?? null,
+    // true only when the device holds a usable WhatsApp account (ACTIVE-ish).
+    whatsappReady: Boolean(x.hasActiveWhatsapp),
+    tags: Array.isArray(x.tags) ? (x.tags as string[]) : []
+  };
+}
+
 export async function listDevicesHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
-  const devices = await deviceService.listDevices(workspaceId);
+  const q = listDevicesQuerySchema.parse(req.query);
+  // tag/search zaten servis seviyesinde (SQL) filtreleniyor — orada bırakıyoruz.
+  const devices = await deviceService.listDevices(
+    workspaceId,
+    ...([q.tag, q.search] as [string | undefined, string | undefined])
+  );
+  const mapped = devices.map(toPublicDevice);
+
+  // Sayaçlar FİLTREDEN ÖNCE hesaplanır: "?category=empty" çağıran da filonun
+  // tamamındaki dağılımı görsün (aksi halde counts hep tek kutuyu gösterirdi).
+  const counts = { empty: 0, manual: 0, registering: 0, whatsapp: 0, blocked: 0 } as Record<string, number>;
+  for (const d of mapped) {
+    const c = String(d.whatsappCategory);
+    if (c in counts) counts[c] = (counts[c] ?? 0) + 1;
+  }
+
+  let data = mapped;
+  if (q.category) data = data.filter((d) => d.whatsappCategory === q.category);
+  if (q.whatsappReady) data = data.filter((d) => Boolean(d.whatsappReady) === (q.whatsappReady === 'true'));
+  if (q.status) data = data.filter((d) => d.status === q.status);
+
+  res.json({ data, meta: { total: mapped.length, returned: data.length, counts } });
+}
+
+// GET /public/v1/devices/:id — tek cihaz + YETENEK listesi: bu cihazda hangi
+// endpoint grupları çalışır, çalışmayanlar neden çalışmaz. Entegratör "boş cihaza
+// send atıp 409 yemek" yerine önce buraya bakabilir. available/unavailable listesi
+// guard'ın kullandığı AYNI karar tablosundan türer (whatsappCategory.ts) — ayrı bir
+// liste tutulsaydı zamanla guard'dan ayrışırdı.
+export async function getDeviceHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const id = typeof req.params.id === 'string' ? req.params.id : '';
+  if (!id) throw new AppError('deviceId gerekli', 400, 'MISSING_DEVICE_ID');
+  const device = await deviceService.getDevice(id, workspaceId);
+  if (!device) throw new AppError('Cihaz bulunamadı', 404, 'DEVICE_NOT_FOUND');
+  const state = await getWhatsappState(device.id);
   res.json({
-    // ★2026-07-23: expose the WhatsApp phone number + account health + tags, not just
-    // id/name/status. An integrator picking a send target needs to know WHICH number a
-    // device holds and whether that account is usable (BANNED/LOGGED_OUT can't send) —
-    // before it wastes a send. listDevices already computes these (no extra query).
-    data: devices.map((d) => {
-      const x = d as Record<string, unknown>;
-      return {
-        id: d.id,
-        name: d.name,
-        status: d.status,
-        // The registered WhatsApp number on this device (null if none / not registered).
-        whatsappNumber: (x.activeWhatsappPhone as string | null) ?? null,
-        // null = healthy/no account; otherwise RESTRICTED | BANNED | LOGGED_OUT.
-        whatsappHealth: (x.waAccountHealth as string | null) ?? null,
-        // true only when the device holds a usable WhatsApp account (ACTIVE-ish).
-        whatsappReady: Boolean(x.hasActiveWhatsapp),
-        tags: Array.isArray(x.tags) ? (x.tags as string[]) : []
-      };
-    })
+    data: {
+      ...toPublicDevice(device),
+      capabilities: capabilitiesOf(state)
+    }
   });
 }
 
@@ -875,14 +930,22 @@ export async function registerWhatsappStatusHandler(req: Request, res: Response)
 export async function meHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
   const key = req.apiKey as { id?: string; name?: string; label?: string; scopes?: string[] } | undefined;
-  const deviceCount = await new DeviceService().listDevices(workspaceId).then((d) => d.length).catch(() => 0);
+  const devices = await deviceService.listDevices(workspaceId).catch(() => []);
+  // Filo dağılımı burada da verilir: entegratör tek çağrıda kaç boş / kaç WhatsApp'lı
+  // cihazı olduğunu görür, listeyi çekip saymak zorunda kalmaz.
+  const counts = { empty: 0, manual: 0, registering: 0, whatsapp: 0, blocked: 0 } as Record<string, number>;
+  for (const d of devices) {
+    const c = String((d as Record<string, unknown>).whatsappCategory ?? 'empty');
+    if (c in counts) counts[c] = (counts[c] ?? 0) + 1;
+  }
   res.json({
     data: {
       workspaceId,
       keyId: key?.id ?? null,
       label: key?.label ?? key?.name ?? null,
       scopes: key?.scopes ?? [],
-      deviceCount
+      deviceCount: devices.length,
+      devices: counts
     }
   });
 }

@@ -8,6 +8,7 @@ import { waRegisterService } from '../accounts/wa-register.service';
 import { encryptString, sha256 } from '../../lib/crypto';
 import { logger } from '../../lib/logger';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { createNotification, jobNotification } from '../notifications/feed.service';
 
 // Local copy of whatsapp.service.normalizePeer's phone-canonicalisation, inlined
 // to avoid a jobs↔whatsapp import cycle (whatsapp.service already imports
@@ -368,6 +369,12 @@ export async function reapStaleJobs(): Promise<number> {
       timestamp: new Date().toISOString(),
       workspaceId: job.workspaceId ?? undefined
     });
+
+    // ★Kalıcı bildirim: reaper'ın öldürdüğü iş, operatörün EN ÇOK haberdar olması
+    // gereken durum (iş sessizce kayboldu sanılmasın). WS push'u kaçıran/panelde
+    // olmayan operatör bunu feed'de bulur.
+    const reapNotif = jobNotification({ id: job.id, type: job.type, status: 'FAILED', error: reason });
+    if (reapNotif) void createNotification(job.workspaceId, reapNotif);
 
     // Device provisioning: clear the device's metadata.provisionStatus so the card
     // stops showing a frozen "Kuruluyor". reapStaleJobs previously only flipped the Job

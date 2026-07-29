@@ -1243,7 +1243,46 @@ function withJobTimeout(type, promise) {
 }
 
 // Mirrors apps/api processor.ts job handling, executed locally over ADB.
+// ── EKRAN TEMİZLİĞİ GEREKTİRMEYEN JOB'LAR ───────────────────────────────────
+// Bu tipler cihaz ARAYÜZÜNE hiç dokunmaz (root/sqlite okuması, shell, host-seviyesi
+// instance işleri). Bunlardan sonra HOME'a basmak boşuna ADB maliyeti olur ve
+// operatörün açık bıraktığı ekranı da gereksiz yere kapatır.
+const NO_UI_CLEANUP_JOBS = new Set([
+  'NOOP', 'EMULATOR_SHELL', 'EMULATOR_SCREENSHOT',
+  'PROVISION_DEVICE', 'PROVISION_INTEGRITY', 'DEVICE_WAKE', 'DEVICE_SLEEP', 'DEVICE_DESTROY',
+  'EMULATOR_CREATE', 'EMULATOR_START', 'EMULATOR_STOP', 'EMULATOR_DELETE', 'EMULATOR_INSTALL_APK',
+  'EMULATOR_SET_PROXY',
+  // Root-DB okumaları: WhatsApp'ın kendi SQLite'ını okur, UI gezinmesi yoktur.
+  'WHATSAPP_RECEIPTS', 'WHATSAPP_MEDIA', 'WHATSAPP_FETCH_MEDIA', 'WHATSAPP_CALLS',
+  'WHATSAPP_SEARCH', 'WHATSAPP_UNREAD', 'WHATSAPP_DELETED', 'WHATSAPP_LINKS',
+  'WHATSAPP_REACTIONS', 'WHATSAPP_POLLS', 'WHATSAPP_READ_BY', 'WHATSAPP_STARRED',
+  'WHATSAPP_LABELS_LIST', 'WHATSAPP_VIEW_ONCE', 'WHATSAPP_VOICE_NOTES',
+  'WHATSAPP_CHAT_SUMMARY', 'WHATSAPP_GROUP_MEMBERS', 'WHATSAPP_CONTACTS'
+]);
+
+// ★2026-07-29 — HER İŞ SONUNDA CİHAZ TEMİZ KALIR.
+//
+// Eskiden yalnızca `whatsappSend`'in BAŞARI yolu HOME'a dönüyordu; her hata çıkışı
+// (ACCOUNT_BANNED / CHAT_NOT_OPENED / NO_CROP / ATTACH_FAILED …) cihazı olduğu ekranda
+// bırakıyordu. Canlı sonuç: 38 cihazın 6'sı izin diyaloğunda, 2'si ContactPicker'da
+// TAKILI kalmıştı ve RUNNING job yoktu — yani kimse onları kurtarmıyordu.
+//
+// ⚠️ Temizlik neden `runJob`'un finally'sinde, `runJobTask`'ta DEĞİL: `withJobTimeout`
+// akışı ÖLDÜRMÜYOR (bkz. oradaki not) — timeout'ta job FAILED yazılır ama runJob arka
+// planda ADB sürmeye devam eder. Temizlik daha dışta olsaydı, geç gelen tap'ler
+// HOME'dan SONRA çalışıp cihazı yine kirli bırakırdı.
 async function runJob(job) {
+  const { type, serial } = job;
+  try {
+    return await runJobInner(job);
+  } finally {
+    if (serial && !NO_UI_CLEANUP_JOBS.has(type)) {
+      await returnToHome(serial).catch(() => undefined);
+    }
+  }
+}
+
+async function runJobInner(job) {
   const { type, payload, serial } = job;
   // These job types operate on a Waydroid INSTANCE (host-level), not an ADB
   // endpoint — a stopped device has no serial yet. Exempt them from the guard.
@@ -5818,6 +5857,109 @@ async function currentActivity(serial) {
   return m ? m[1] : '';
 }
 
+// Odaktaki pencere (dumpsys window). currentActivity ile aynı şeyi vermez: bir
+// DİYALOG (izin isteme) odaktadır ama altındaki activity "resumed" görünebilir.
+async function focusedWindow(serial) {
+  const out = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  const m = /mCurrentFocus=Window\{[^ ]+ [^ ]+ ([^}]+)\}/.exec(String(out || ''));
+  return m ? String(m[1]).trim() : '';
+}
+
+// ── EKRAN KURTARMA ──────────────────────────────────────────────────────────
+//
+// ★2026-07-29 — NEDEN VAR: canlı ölçümde 38 cihazın 6'sı `GrantPermissionsActivity`
+// üzerinde, 2'si ContactPicker'da TAKILI kalmıştı ve o sırada RUNNING job YOKTU.
+// Yani işler bitmiş, ekran kimse tarafından temizlenmemişti (operatör "cihaz kendi
+// kendine galeriye girmiş" diye bildirdi). Kökler: (a) izin diyaloğunu kapatan mantık
+// 7 ayrı yere kopyalanmıştı, hepsi kayıt akışının içindeydi ve medya/avatar
+// akışlarında hiç yoktu; (b) hiçbir job bitiminde cihazı temiz duruma döndürmüyordu.
+// Bu iki yardımcı o boşluğu kapatır ve tek kaynak olur.
+
+// Runtime izin diyaloğu açıksa ONAYLA. Paket-bağımsızdır: WhatsApp'ın da, üçüncü
+// parti Galeri uygulamasının da diyaloğunu kapatır.
+// ⚠️ Türkçe metinler BİLEREK eklendi — dosyadaki eski kopyalar yalnızca İngilizce
+// ('Allow'/'Continue') arıyordu, Türkçe yerelli cihazda yalnızca resource-id ve kör
+// koordinata kalıyordu.
+const PERM_ALLOW_IDS = [
+  'com.android.permissioncontroller:id/permission_allow_button',
+  'com.android.permissioncontroller:id/permission_allow_all_button',
+  'com.android.permissioncontroller:id/permission_allow_foreground_only_button',
+  'com.android.packageinstaller:id/permission_allow_button'
+];
+const PERM_ALLOW_TEXTS = [
+  'Allow all', 'Tümüne izin ver',
+  'While using the app', 'Uygulamayı kullanırken',
+  'Allow', 'İzin ver', 'İzin Ver', 'Buna izin ver', 'Ver',
+  'Continue', 'Devam'
+];
+
+function isPermissionDialog(focus) {
+  return /permissioncontroller|GrantPermissions|packageinstaller/i.test(String(focus || ''));
+}
+
+// Diyalog açık kaldığı sürece (en fazla `tries` tur) onaylamayı dener.
+// Dönüş: kapatıldıysa true.
+async function dismissPermissionDialog(serial, { tries = 3 } = {}) {
+  let dismissed = false;
+  for (let i = 0; i < tries; i++) {
+    const focus = await focusedWindow(serial).catch(() => '');
+    if (!isPermissionDialog(focus)) return dismissed;
+    // Tek dump, sonra sırayla: resource-id (dile bağımsız, en güvenilir) → metin.
+    const nodes = await uiDumpXml(serial).then(parseUiNodes).catch(() => []);
+    let tapped = false;
+    for (const id of PERM_ALLOW_IDS) {
+      const node = nodes.find((n) => String(n.resId || '').includes(id));
+      if (node) {
+        await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]).catch(() => undefined);
+        tapped = true;
+        break;
+      }
+    }
+    if (!tapped) {
+      for (const label of PERM_ALLOW_TEXTS) {
+        const q = label.toLowerCase();
+        const node = nodes.find(
+          (n) => String(n.text || '').trim().toLowerCase() === q || String(n.desc || '').trim().toLowerCase() === q
+        );
+        if (node) {
+          await adb(serial, ['shell', 'input', 'tap', String(node.cx), String(node.cy)]).catch(() => undefined);
+          tapped = true;
+          break;
+        }
+      }
+    }
+    // 3) son çare: bilinen buton konumu (ekran oranıyla)
+    if (!tapped) {
+      const { sw, sh } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
+      await adb(serial, ['shell', 'input', 'tap', String(Math.round(sw * 0.5)), String(Math.round(sh * 0.52))])
+        .catch(() => undefined);
+    }
+    dismissed = true;
+    await sleep(700);
+  }
+  return dismissed;
+}
+
+// Cihazı TEMİZ duruma döndür: açık izin diyaloğunu kapat, sonra ana ekrana dön.
+// Her UI süren job'ın sonunda (başarı VE hata) çağrılır — bkz. runJob'un finally'si.
+// Best-effort: buradaki hiçbir hata job sonucunu etkilemez.
+async function returnToHome(serial) {
+  try {
+    // Açık bir izin diyaloğu HOME'u yutabilir → önce onu temizle.
+    await dismissPermissionDialog(serial, { tries: 2 }).catch(() => undefined);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+    // Doğrula: hâlâ launcher'da değilsek bir kez daha dene (picker/crop ekranları
+    // ilk HOME'u bazen yutuyor).
+    const focus = await focusedWindow(serial).catch(() => '');
+    if (focus && !/launcher/i.test(focus)) {
+      await sleep(400);
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+    }
+  } catch {
+    /* temizlik asla job'ı bozmaz */
+  }
+}
+
 // ── Kendi WhatsApp profilini DEĞİŞTİR: isim + avatar (2026-07-24) ────────────
 // SS-SS canlı tespit edilen koordinat reçetesi (watest48/mi2, 1080x2368, WA v2.26).
 // Koordinatlar EKRAN-ORANI olarak yazıldı (çözünürlükten bağımsız → farklı cihazlar
@@ -5826,20 +5968,40 @@ async function currentActivity(serial) {
 //
 // Profil ekranına navigasyon (isim + avatar için ORTAK):
 //   Main → ⋮ menü → Settings → avatar(profil kartı) → ProfileInfoActivity.
+// ★2026-07-29 HIZ: bu fonksiyon isim + avatar akışlarının ORTAK yoluydu ve toplam
+// 10.3 saniye KÖR bekleme içeriyordu (800+3500+1500+2500+2500). Her adım artık
+// "ekran hazır mı" pollingine çevrildi: tipik cihazda saniyeler kazanılıyor, yavaş
+// cihazda üst sınır eski süreden daha toleranslı. Davranış (tap reçetesi) aynı.
 async function waOpenProfileScreen(serial) {
   const { sw, sh } = await wmSize(serial);
   const tap = (fx, fy) => adb(serial, ['shell', 'input', 'tap', String(Math.round(sw * fx)), String(Math.round(sh * fy))]);
+  // Bir koşul sağlanana kadar bekle (400 ms aralık). Sağlanmazsa sessizce devam
+  // eder — eski kör sleep davranışının en kötü hâlinden daha kötü olmaz.
+  const waitFor = async (pred, maxMs) => {
+    const until = Date.now() + maxMs;
+    while (Date.now() < until) {
+      if (await pred().catch(() => false)) return true;
+      await sleep(400);
+    }
+    return false;
+  };
+  const actIs = (re) => async () => re.test(await currentActivity(serial).catch(() => ''));
+
   // WA'yı temiz aç (soğuk başlatınca chat listesinde durabilir; force-stop garanti).
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
-  await sleep(800);
   await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.Main`]).catch(() => undefined);
-  await sleep(3500);
+  // Ana ekran gelene kadar bekle (eski: kör 800+3500).
+  await waitFor(actIs(/whatsapp/i), 6000);
   // ⋮ menü (sağ üst) → Settings.
-  await tap(0.943, 0.063); await sleep(1500);
-  await tap(0.633, 0.395); await sleep(2500);
+  await tap(0.943, 0.063);
+  await sleep(600); // menü animasyonu — activity değişmediği için poll edilemez
+  await tap(0.633, 0.395);
+  // Settings ekranı gelene kadar bekle (eski: kör 2500).
+  await waitFor(actIs(/Settings|Preferences/i), 4000);
   // Settings üst profil kartındaki AVATAR'a tap → ProfileInfoActivity. (İsim metnine
   // tap YANLIŞ: yanındaki ⊕ "hesap ekle" sheet'ini açar — avatar dairesine tap DOĞRU.)
-  await tap(0.5, 0.205); await sleep(2500);
+  await tap(0.5, 0.205);
+  await waitFor(actIs(/ProfileInfo/i), 4000);
   const act = await currentActivity(serial).catch(() => '');
   return /ProfileInfo/i.test(act);
 }
@@ -5890,12 +6052,18 @@ async function whatsappSetAvatar(serial, payload) {
     await adb(serial, ['push', tmp, remote]);
     // 2) MediaStore'a indeksle + _id al (SetAsProfilePhoto content:// URI ister).
     await adb(serial, ['shell', 'su', '-c', 'content call --uri content://media --method scan_volume --arg external_primary']).catch(() => undefined);
-    await sleep(1200);
-    const q = await adb(serial, ['shell', 'content', 'query', '--uri', 'content://media/external/images/media',
-      '--projection', '_id:_data', '--where', `"_data='/storage/emulated/0/DCIM/Camera/wa_avatar.png'"`]).catch(() => '');
-    const m = /_id=(\d+)/.exec(String(q || ''));
-    if (!m) return { status: 'NO_INDEX', note: 'Resim MediaStore\'a indekslenemedi' };
-    const mediaId = m[1];
+    // ★2026-07-29 HIZ: eskiden burada sabit 1200 ms bekleniyordu. Tarama genelde çok
+    // daha hızlı bitiyor; indeks görünene kadar POLL et (üst sınır eski davranışın
+    // ~3 katı, yani yavaş cihazda daha da toleranslı).
+    let mediaId = '';
+    for (let i = 0; i < 12; i++) {
+      const q = await adb(serial, ['shell', 'content', 'query', '--uri', 'content://media/external/images/media',
+        '--projection', '_id:_data', '--where', `"_data='/storage/emulated/0/DCIM/Camera/wa_avatar.png'"`]).catch(() => '');
+      const m = /_id=(\d+)/.exec(String(q || ''));
+      if (m) { mediaId = m[1]; break; }
+      await sleep(300);
+    }
+    if (!mediaId) return { status: 'NO_INDEX', note: 'Resim MediaStore\'a indekslenemedi' };
     // 3) WA'ya foto izni ver (yeni Android scoped-storage için şart).
     for (const perm of ['android.permission.READ_MEDIA_IMAGES', 'android.permission.READ_EXTERNAL_STORAGE']) {
       await adb(serial, ['shell', 'pm', 'grant', WA_PKG, perm]).catch(() => undefined);
@@ -5903,14 +6071,30 @@ async function whatsappSetAvatar(serial, payload) {
     // 4) SetAsProfilePhoto'yu content:// URI ile DOĞRUDAN aç → CropImage.
     await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.SetAsProfilePhoto`,
       '-a', 'android.intent.action.ATTACH_DATA', '-d', `content://media/external/images/media/${mediaId}`, '-t', 'image/png']);
-    await sleep(3500);
-    const cropAct = await currentActivity(serial).catch(() => '');
+    // ★HIZ: sabit 3500 ms yerine crop ekranı görünene kadar poll.
+    let cropAct = '';
+    for (let i = 0; i < 20; i++) {
+      cropAct = await currentActivity(serial).catch(() => '');
+      if (/CropImage|SetAsProfile/i.test(cropAct)) break;
+      // ★Araya bir izin diyaloğu veya uygulama seçici girmiş olabilir; onayla ve
+      // devam et. Eskiden bu ele alınmıyordu ve iş cihazı O EKRANDA bırakıp ölüyordu.
+      if (isPermissionDialog(await focusedWindow(serial).catch(() => ''))) {
+        await dismissPermissionDialog(serial, { tries: 1 }).catch(() => undefined);
+      }
+      await sleep(250);
+    }
     if (!/CropImage|SetAsProfile/i.test(cropAct)) {
       return { status: 'NO_CROP', note: 'Crop ekranı açılmadı', activity: cropAct };
     }
     // 5) Done (crop sağ alt).
-    await tap(0.833, 0.933); await sleep(4000);
-    const act = await currentActivity(serial).catch(() => '');
+    await tap(0.833, 0.933);
+    // ★HIZ: sabit 4000 ms yerine sonuç ekranı görünene kadar poll.
+    let act = '';
+    for (let i = 0; i < 20; i++) {
+      act = await currentActivity(serial).catch(() => '');
+      if (/ProfileInfo|Home/i.test(act)) break;
+      await sleep(250);
+    }
     const ok = /ProfileInfo|SetAsProfile|Home/i.test(act);
     return { status: ok ? 'OK' : 'UNCONFIRMED', mediaId, activity: act };
   } finally {
@@ -6392,6 +6576,12 @@ async function whatsappSendMedia(serial, payload) {
       // No inline grid — open Gallery and take the first (top-left) item.
       await h.tapSynIf(['Gallery', 'Galeri'], 'any').catch(() => false);
       await h.sleep(2500);
+      // ★2026-07-29: Galeri uygulaması İLK AÇILIŞTA kendi runtime izin diyaloğunu
+      // gösterir ("Allow Gallery to access photos…"). Eskiden bu ele alınmıyordu:
+      // izinler yalnızca WA_PKG'ye veriliyordu, diyalog ekranda kalıyor, aşağıdaki
+      // düğüm araması boşa düşüyor ve iş cihazı O DİYALOGDA bırakıp ölüyordu
+      // (canlı olarak 6 cihaz böyle takılı bulundu). Önce diyaloğu onayla.
+      await dismissPermissionDialog(serial, { tries: 2 }).catch(() => undefined);
       const galNodes = await h.dumpOrRetry({ tries: 2, gapMs: 500 });
       const first = galNodes
         .filter((n) => /^Photo,|^Fotoğraf,|^Image|image_thumb/i.test((n.desc || '') + (n.resId || '')))
@@ -10274,16 +10464,58 @@ function startStreamClient() {
     return;
   }
   let stream;
-  const connect = () => {
+  // ── ZOMBIE SOKET KORUMASI ──────────────────────────────────────────────────
+  // Sorun (28 Tem, canlı): API yeniden başlatılınca bu soket YARI-AÇIK kalabiliyor.
+  // `onclose`/`onerror` HİÇ tetiklenmiyor, dolayısıyla aşağıdaki 5 sn'lik yeniden
+  // bağlanma da çalışmıyor. Agent "bağlı" görünüyor (heartbeat + job long-poll ayrı
+  // HTTP yolundan gittiği için filo sağlıklı raporlanıyor) ama tek kare göndermiyor;
+  // panelde yayın "Bağlanıyor…"da kalıyor ve ancak agent ELLE restart edilince
+  // düzeliyordu.
+  // Çözüm: uygulama seviyesinde ping/pong. PING_MS'te bir `agent.ping` yollarız,
+  // sunucu `agent.pong` döner. PONG_TIMEOUT_MS boyunca hiç pong gelmezse soket
+  // ölüdür → zorla kapat, yeniden bağlan. Ayrıca soket beklenmedik bir durumda
+  // (CLOSED ama retry planlanmamış) kalırsa watchdog onu da toparlar.
+  const PING_MS = 30_000;
+  const PONG_TIMEOUT_MS = 75_000;
+  let lastPongAt = 0;
+  let watchdog;
+  let reconnectTimer;
+  // Aynı anda birden fazla soket açılmasını engeller (watchdog + onclose yarışı).
+  let connecting = false;
+
+  const scheduleReconnect = (ms) => {
     if (stopping) return;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { reconnectTimer = undefined; connect(); }, ms);
+  };
+
+  const killSocket = (why) => {
+    log(`stream channel ${why} — yeniden bağlanılıyor`);
+    try { stream && stream.close(); } catch { /* ignore */ }
+    // close olayı gelmeyebilir (zombie): kaptürleri burada da durdur ve retry kur.
+    for (const id of [...captures.keys()]) stopCapture(id);
+    stream = undefined;
+    scheduleReconnect(1000);
+  };
+
+  const connect = () => {
+    if (stopping || connecting) return;
+    // Zaten canlı bir soket varsa ikinci bir tane açma.
+    if (stream && (stream.readyState === 0 || stream.readyState === 1)) return;
+    connecting = true;
     try {
       stream = new WebSocket(STREAM_URL);
     } catch {
-      setTimeout(connect, 5000);
+      connecting = false;
+      scheduleReconnect(5000);
       return;
     }
     stream.binaryType = 'arraybuffer';
-    stream.onopen = () => log('stream channel connected');
+    stream.onopen = () => {
+      connecting = false;
+      lastPongAt = Date.now(); // ilk pong'a kadar sayaç açılış anından işler
+      log('stream channel connected');
+    };
     stream.onmessage = async (ev) => {
       let msg;
       try {
@@ -10291,16 +10523,42 @@ function startStreamClient() {
       } catch {
         return;
       }
+      // Sunucudan gelen HER mesaj canlılık kanıtıdır (pong'u beklemeye gerek yok).
+      lastPongAt = Date.now();
+      if (msg.type === 'agent.pong') return;
       if (msg.type === 'stream.start') startCapture(stream, msg.deviceId, msg.serial, msg.fps);
       else if (msg.type === 'agent.dump' || msg.type === 'agent.action') await handleAgentRequest(stream, msg).catch(() => undefined);
       else await handleControl(msg).catch(() => undefined);
     };
     stream.onclose = () => {
+      connecting = false;
       for (const id of [...captures.keys()]) stopCapture(id);
-      if (!stopping) setTimeout(connect, 5000);
+      if (!stopping) scheduleReconnect(5000);
     };
-    stream.onerror = () => { try { stream.close(); } catch { /* ignore */ } };
+    stream.onerror = () => { connecting = false; try { stream.close(); } catch { /* ignore */ } };
   };
+
+  // Watchdog: hem ping atar hem de "soket yok / kapalı ama kimse yeniden bağlamıyor"
+  // durumunu yakalar. .unref() ile sürecin kapanmasını engellemez.
+  watchdog = setInterval(() => {
+    if (stopping) return;
+    if (!stream || stream.readyState === 3 /* CLOSED */) {
+      if (!reconnectTimer && !connecting) connect();
+      return;
+    }
+    if (stream.readyState !== 1 /* OPEN */) return; // CONNECTING/CLOSING: bekle
+    if (lastPongAt && Date.now() - lastPongAt > PONG_TIMEOUT_MS) {
+      killSocket('yanıt vermiyor (pong yok)');
+      return;
+    }
+    try {
+      stream.send(JSON.stringify({ type: 'agent.ping', ts: Date.now() }));
+    } catch {
+      killSocket('gönderim başarısız');
+    }
+  }, PING_MS);
+  if (watchdog.unref) watchdog.unref();
+
   connect();
 }
 
@@ -10438,14 +10696,30 @@ async function eulaReaperTick() {
     try { foc = await adb(serial, ['shell', 'dumpsys', 'window'], 8000); } catch { eulaStuckSince.delete(serial); continue; }
     // Is the foreground a WhatsApp registration/EULA/welcome screen? (the CPU-burning states)
     const onReg = /mCurrentFocus[^\n]*com\.whatsapp\/[^\n]*(registration|\.EULA|EulaActivity|verifynumber|RegisterName)/i.test(foc);
-    if (!onReg) { eulaStuckSince.delete(serial); continue; }
+    // ★2026-07-29 — KAPSAM GENİŞLETİLDİ. Bu reaper filonun TEK ekran-kurtarma ağıydı ama
+    // yalnızca WhatsApp kayıt ekranlarını görüyordu. Canlı ölçümde 6 cihaz izin
+    // diyaloğunda, 2'si ContactPicker'da TAKILI kalmıştı (RUNNING job yokken) ve bu
+    // regex onları GÖREMEDİĞİ için sonsuza kadar öyle kaldılar — operatör "cihaz kendi
+    // kendine galeriye girmiş" diye bildirdi. Artık bırakılmış her modal/picker ekranı
+    // da kurtarılıyor: izin diyaloğu, kişi/medya seçici, kırpma ekranı, dosya seçici ve
+    // üçüncü parti galeri uygulamaları.
+    const onStuckModal = /mCurrentFocus[^\n]*(permissioncontroller|GrantPermissions|packageinstaller|ContactPicker|CropImage|documentsui|\.gallery|gallery3d|SetAsProfilePhoto|ResolverActivity|ChooserActivity)/i.test(foc);
+    if (!onReg && !onStuckModal) { eulaStuckSince.delete(serial); continue; }
     const since = eulaStuckSince.get(serial);
     if (!since) { eulaStuckSince.set(serial, now); continue; } // first sighting — start the clock
     if (now - since < EULA_GRACE_MS) continue; // still within grace — give a real registration time
     // Stuck past the grace window with no job → abandoned registration burning CPU. Reap it.
-    log(`eula-reaper: ${serial} stuck on WA registration ${Math.round((now - since) / 60000)}min → force-stop + HOME`);
+    log(`eula-reaper: ${serial} ${onReg ? 'WA kayit ekraninda' : 'birakilmis modal/picker ekraninda'} ${Math.round((now - since) / 60000)}dk takili → temizleniyor`);
     try {
-      await adb(serial, ['shell', 'am', 'force-stop', 'com.whatsapp'], 8000);
+      // Modal/picker durumunda ÖNCE diyaloğu onayla/kapat: açık bir izin diyaloğu
+      // HOME'u yutabiliyor. Kayıt ekranında ise eski davranış (force-stop) korunur —
+      // oradaki dert CPU yakan spinner'dır.
+      if (onStuckModal && !onReg) {
+        await dismissPermissionDialog(serial, { tries: 2 }).catch(() => undefined);
+        await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK'], 5000).catch(() => undefined);
+      } else {
+        await adb(serial, ['shell', 'am', 'force-stop', 'com.whatsapp'], 8000);
+      }
       await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME'], 5000);
     } catch { /* best-effort; next tick retries */ }
     eulaStuckSince.delete(serial);

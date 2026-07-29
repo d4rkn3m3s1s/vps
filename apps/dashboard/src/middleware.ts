@@ -65,6 +65,23 @@ export function middleware(request: NextRequest) {
   // Logged-out (veya geçersiz/süresi dolmuş oturum) ziyaretçiler marketing
   // sayfasına gider. Geçersiz cookie'yi de temizle ki döngüye girmesin.
   if (!session && !isPublic) {
+    // ★2026-07-29: API yollarına REDIRECT DÖNME — JSON 401 dön.
+    //
+    // Bir fetch() varsayılan olarak yönlendirmeyi TAKİP EDER: /api/ws-token için
+    // dönen 307 → /welcome zincirinin sonunda tarayıcı 200 + HTML görür, yani
+    // `res.ok` TRUE olur. Çağıran kod cevabı başarılı sanıp `res.json()` çağırır,
+    // HTML parse edilemeyince catch'e düşer ve (live.tsx'te olduğu gibi) TOKENSİZ
+    // WebSocket açmaya çalışır — API bunu reddeder, bağlantı sonsuza kadar
+    // kopuk kalır ve kendi kendine ASLA düzelmez (canlı olarak yaşandı).
+    // JSON 401 ile çağıran net bir hata görür ve doğru dalda çalışır.
+    if (pathname.startsWith('/api/')) {
+      const res = NextResponse.json(
+        { error: 'UNAUTHENTICATED', message: 'Oturum geçersiz veya süresi dolmuş.' },
+        { status: 401 }
+      );
+      if (rawSession) res.cookies.set('fleet_session', '', { httpOnly: true, path: '/', maxAge: 0 });
+      return res;
+    }
     const target = externalUrl(request, '/welcome');
     const res = NextResponse.redirect(target);
     if (rawSession) res.cookies.set('fleet_session', '', { httpOnly: true, path: '/', maxAge: 0 });

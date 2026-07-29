@@ -11,6 +11,7 @@ import type {
   DeviceGroupUpdateInput,
   DeviceUpdateInput
 } from './device.types';
+import { getWhatsappStates, getWhatsappState, EMPTY_WHATSAPP_STATE } from './whatsappCategory';
 
 function buildJsonMetadata(metadata: unknown): Prisma.InputJsonValue | undefined {
   return metadata === undefined ? undefined : (metadata as Prisma.InputJsonValue);
@@ -48,38 +49,25 @@ export class DeviceService {
     // ACTIVE/AWAITING_MANUAL — the same authoritative check the API start-guard uses.
     if (devices.length) {
       const ids = devices.map((d) => d.id);
-      // Pull the account row (newest per device) for BOTH the data-loss guard (a live
-      // account) AND the health badge (RESTRICTED/BANNED/LOGGED_OUT). One grouped query.
-      const waAccounts = await prisma.generatedAccount.findMany({
-        where: {
-          deviceId: { in: ids },
-          platform: 'whatsapp',
-          status: { in: ['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED', 'BANNED', 'LOGGED_OUT'] }
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { deviceId: true, phoneNumber: true, status: true }
-      });
-      // Health states that count as "device still holds a live account" for the
-      // data-loss guard: ACTIVE + AWAITING_MANUAL + RESTRICTED (temporary, may
-      // recover). BANNED/LOGGED_OUT no longer protect a usable account.
-      const LIVE = new Set(['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED']);
-      const byDevice = new Map<string, { phone: string | null; status: string }>();
-      // findMany is newest-first; keep the FIRST (newest) row seen per device.
-      for (const a of waAccounts) {
-        if (a.deviceId && !byDevice.has(a.deviceId)) {
-          byDevice.set(a.deviceId, { phone: a.phoneNumber ?? null, status: a.status });
-        }
-      }
+      // ★Kategori/hesap durumu TEK yerden gelir (devices/whatsappCategory.ts) — panel
+      // kartı, public API guard'ı ve /devices/:id capabilities hep aynı kuralı görsün
+      // diye. Eskiden bu sorgu burada kopyalanmıştı ve send-guard'daki ikinci kopyayla
+      // ayrışmıştı (panel "sağlıklı" derken API 409 veriyordu).
+      // `protected` = elle kaydedilmiş/değerli cihaz işareti; kategori bunu kullanır
+      // (satır yok + korumalı = 'manual'). Cihaz satırları zaten elimizde olduğu için
+      // yardımcının kendi Device sorgusunu atlatıyoruz.
+      const protectedIds = new Set(devices.filter((d) => d.protected).map((d) => d.id));
+      const states = await getWhatsappStates(ids, protectedIds);
       for (const d of devices) {
-        const acc = byDevice.get(d.id);
-        (d as Record<string, unknown>).hasActiveWhatsapp = acc ? LIVE.has(acc.status) : false;
-        (d as Record<string, unknown>).activeWhatsappPhone = acc?.phone ?? null;
-        // Surface a health badge only for the trouble states; ACTIVE/AWAITING_MANUAL
-        // render as normal (no badge). null = healthy or no account.
-        (d as Record<string, unknown>).waAccountHealth =
-          acc && (acc.status === 'RESTRICTED' || acc.status === 'BANNED' || acc.status === 'LOGGED_OUT')
-            ? acc.status
-            : null;
+        const st = states.get(d.id) ?? EMPTY_WHATSAPP_STATE;
+        // "Device still holds a live account" (veri-kaybı guard'ı): ACTIVE +
+        // AWAITING_MANUAL + RESTRICTED = kategori 'whatsapp'.
+        (d as Record<string, unknown>).hasActiveWhatsapp = st.category === 'whatsapp';
+        (d as Record<string, unknown>).activeWhatsappPhone = st.phone;
+        // Sorun rozeti yalnızca RESTRICTED/BANNED/LOGGED_OUT için; null = sağlıklı ya da hesap yok.
+        (d as Record<string, unknown>).waAccountHealth = st.health;
+        // empty | registering | whatsapp | blocked
+        (d as Record<string, unknown>).whatsappCategory = st.category;
       }
     }
     return devices;
@@ -93,6 +81,15 @@ export class DeviceService {
     // Decrypt the eager-loaded fingerprint's identity fields (IMEI/MAC/serial/
     // androidId/phone) so the detail panel shows real values, not ciphertext.
     if (device?.fingerprint) device.fingerprint = decryptFingerprint(device.fingerprint);
+    // listDevices ile aynı WhatsApp alanlarını iliştir — tek cihaz okuyan çağıranın
+    // (public /v1/devices/:id, dashboard detay) listeden farklı bir cevap görmemesi için.
+    if (device) {
+      const st = await getWhatsappState(device.id);
+      (device as Record<string, unknown>).hasActiveWhatsapp = st.category === 'whatsapp';
+      (device as Record<string, unknown>).activeWhatsappPhone = st.phone;
+      (device as Record<string, unknown>).waAccountHealth = st.health;
+      (device as Record<string, unknown>).whatsappCategory = st.category;
+    }
     return device;
   }
 

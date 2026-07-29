@@ -12,6 +12,7 @@ export type FleetEvent = {
     | 'job.created'
     | 'job.updated'
     | 'alert.fired'
+    | 'notification.created'
     | 'whatsapp.message'
     | 'provision.progress'
     | 'whatsapp.register.progress'
@@ -24,20 +25,50 @@ export type FleetEvent = {
 
 type Listener = (e: FleetEvent) => void;
 
+// Bağlantının kullanıcıya gösterilebilir durumu.
+//   connecting — ilk bağlantı ya da yeniden deneme sürüyor
+//   open       — canlı
+//   offline    — koptu, otomatik yeniden deneniyor
+//   unauthorized — oturum geçersiz; yeniden denemek düzeltmez, giriş gerekir
+export type LiveStatus = 'connecting' | 'open' | 'offline' | 'unauthorized';
+
 type LiveCtx = {
   connected: boolean;
+  status: LiveStatus;
+  // Bir sonraki otomatik denemeyi beklemeden hemen bağlan (panelde "Yeniden bağlan").
+  reconnect: () => void;
   subscribe: (fn: Listener) => () => void;
 };
 
-const Ctx = createContext<LiveCtx>({ connected: false, subscribe: () => () => {} });
+const Ctx = createContext<LiveCtx>({
+  connected: false,
+  status: 'connecting',
+  reconnect: () => {},
+  subscribe: () => () => {}
+});
+
+// Sunucu bu aralıkta hiçbir şey göndermezse bağlantıyı ÖLÜ kabul edip kapatırız.
+// Hub 30 sn'de bir heartbeat/olay yayar; 70 sn tam sessizlik = zombie soket.
+const SILENCE_TIMEOUT_MS = 70_000;
 
 // Single shared WebSocket to the API event hub. Auto-reconnects with backoff.
 // Broadcasts only non-sensitive event metadata (ids/status), so a direct browser
 // connection is safe.
+//
+// ★2026-07-29 DAYANIKLILIK: eskiden token alınamadığında (oturum süresi dolunca
+// /api/ws-token 307 → /welcome HTML döndürüyordu) kod TOKENSİZ bağlanmaya
+// çalışıyordu; API bunu reddediyor, soket sonsuza kadar kopuk kalıyor ve kendi
+// kendine ASLA düzelmiyordu — kullanıcı da hiçbir şey göremiyordu. Artık:
+//   • token yoksa HİÇ bağlanmayız (boşuna 502 üretmeyiz), durum dışarı verilir
+//   • yönlendirme takip edilmez (HTML token sanılmaz)
+//   • sekmeye dönünce / ağ gelince anında yeniden denenir
+//   • sunucu sessizliği (zombie soket) tespit edilip kapatılır
 export function LiveProvider({ children }: { children: ReactNode }) {
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<LiveStatus>('connecting');
   const listeners = useRef<Set<Listener>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
+  // connect() referansını dışarı (reconnect) taşımak için.
+  const connectRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const baseUrl = process.env.NEXT_PUBLIC_WS_URL;
@@ -46,26 +77,67 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     let stopped = false;
     let retry = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let silenceTimer: ReturnType<typeof setTimeout> | undefined;
 
-    // The event hub now authenticates the upgrade with a JWT (workspace-scoped).
-    // Fetch a short-lived token server-side and append it to the socket URL.
+    function clearTimers() {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (silenceTimer) clearTimeout(silenceTimer);
+      reconnectTimer = undefined;
+      silenceTimer = undefined;
+    }
+
+    // Sunucudan her mesaj geldiğinde sessizlik sayacını sıfırla. Süre dolarsa
+    // soket "açık" görünse bile ölüdür (TCP yarı-açık kalabilir) → kapat, yeniden bağlan.
+    function armSilenceTimer(ws: WebSocket) {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      }, SILENCE_TIMEOUT_MS);
+    }
+
+    // Kısa ömürlü JWT'yi sunucu tarafından al. Yönlendirme TAKİP EDİLMEZ:
+    // aksi halde /welcome HTML'i 200 döner, `res.ok` true olur ve HTML token
+    // sanılır (yaşanan bug). 401 → oturum gerçekten geçersiz.
+    async function fetchToken(): Promise<{ token: string | null; unauthorized: boolean }> {
+      try {
+        const res = await fetch('/api/ws-token', { method: 'POST', redirect: 'manual' });
+        if (res.status === 401) return { token: null, unauthorized: true };
+        // redirect:'manual' → yönlendirme "opaqueredirect" olarak gelir (status 0).
+        if (!res.ok || res.type === 'opaqueredirect') return { token: null, unauthorized: false };
+        const ct = res.headers.get('content-type') ?? '';
+        if (!ct.includes('application/json')) return { token: null, unauthorized: false };
+        const { data } = (await res.json()) as { data: { token?: string } | null };
+        return { token: data?.token ?? null, unauthorized: false };
+      } catch {
+        return { token: null, unauthorized: false };
+      }
+    }
+
     async function connect() {
       if (stopped) return;
-      let url = baseUrl as string;
-      try {
-        const res = await fetch('/api/ws-token', { method: 'POST' });
-        if (res.ok) {
-          const { data } = (await res.json()) as { data: { token?: string } | null };
-          if (data?.token) url = `${baseUrl}?token=${encodeURIComponent(data.token)}`;
-        }
-      } catch {
-        /* fall back to tokenless — will be rejected, then retried */
-      }
+      clearTimers();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+      setStatus((s) => (s === 'open' ? s : 'connecting'));
+
+      const { token, unauthorized } = await fetchToken();
       if (stopped) return;
+
+      if (!token) {
+        // Tokensiz bağlanmak anlamsız: hub upgrade'i reddeder ve sonsuz 502 üretiriz.
+        setStatus(unauthorized ? 'unauthorized' : 'offline');
+        scheduleReconnect();
+        return;
+      }
+
       let ws: WebSocket;
       try {
-        ws = new WebSocket(url);
+        ws = new WebSocket(`${baseUrl}?token=${encodeURIComponent(token)}`);
       } catch {
+        setStatus('offline');
         scheduleReconnect();
         return;
       }
@@ -73,10 +145,13 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
       ws.onopen = () => {
         retry = 0;
-        setConnected(true);
+        setStatus('open');
+        armSilenceTimer(ws);
       };
       ws.onclose = () => {
-        setConnected(false);
+        if (silenceTimer) clearTimeout(silenceTimer);
+        if (wsRef.current === ws) wsRef.current = null;
+        setStatus('offline');
         scheduleReconnect();
       };
       ws.onerror = () => {
@@ -87,6 +162,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         }
       };
       ws.onmessage = (msg) => {
+        armSilenceTimer(ws);
         try {
           const event = JSON.parse(msg.data as string) as FleetEvent;
           listeners.current.forEach((fn) => fn(event));
@@ -98,16 +174,39 @@ export function LiveProvider({ children }: { children: ReactNode }) {
 
     function scheduleReconnect() {
       if (stopped) return;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       retry = Math.min(retry + 1, 6);
       const delay = Math.min(1000 * 2 ** retry, 15000);
-      reconnectTimer = setTimeout(connect, delay);
+      reconnectTimer = setTimeout(() => void connect(), delay);
     }
 
-    connect();
+    // Elle / olay tetikli anında deneme: backoff sayacını sıfırlar.
+    function connectNow() {
+      if (stopped) return;
+      retry = 0;
+      void connect();
+    }
+    connectRef.current = connectNow;
+
+    // Sekmeye geri dönüldüğünde veya ağ geri geldiğinde beklemeden dene. Uyuyan
+    // sekmede soket sessizce ölmüş olabilir; kullanıcı geri geldiğinde panelin
+    // canlı olmasını bekler.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && wsRef.current?.readyState !== WebSocket.OPEN) connectNow();
+    };
+    const onOnline = () => connectNow();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('focus', onVisible);
+
+    void connect();
 
     return () => {
       stopped = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
+      clearTimers();
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('focus', onVisible);
       wsRef.current?.close();
     };
   }, []);
@@ -119,7 +218,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     };
   }
 
-  return <Ctx.Provider value={{ connected, subscribe }}>{children}</Ctx.Provider>;
+  const reconnect = () => connectRef.current();
+
+  return (
+    <Ctx.Provider value={{ connected: status === 'open', status, reconnect, subscribe }}>{children}</Ctx.Provider>
+  );
 }
 
 export function useLive(): LiveCtx {

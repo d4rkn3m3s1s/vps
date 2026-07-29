@@ -76,27 +76,124 @@ fazla iş gönderseniz bile üst üste binmez, sırayla ve güvenle işlenir.
 
 ---
 
+## 2.1. Cihaz kategorileri — hangi uç hangi cihazda çalışır
+
+Her cihazın bir **`whatsappCategory`** değeri vardır. Bir uç, gerektirdiği kategoriyi
+karşılamayan cihazda **409** döner: iş kuyruğa **girmez**, cihaz slotu boşa gitmez ve
+hata mesajı ne yapılması gerektiğini söyler.
+
+| Kategori | Anlamı | Çalışan uçlar |
+|---|---|---|
+| `empty` | WhatsApp hesabı yok — boş cihaz | Kurulum + kayıt |
+| `registering` | Kayıt sürüyor, tamamlanmadı | Kayıt durumu / OTP |
+| `whatsapp` | Kullanılabilir hesap (ACTIVE / KISITLI) | **Hepsi** |
+| `manual` | Cihaz **korumalı**, hesap elle kaydedilmiş (panelde numara kaydı yok) | **Hepsi** |
+| `blocked` | YASAKLI / ÇIKIŞ YAPMIŞ | Okuma çalışır, **gönderim 409** |
+
+`manual` şunun içindir: bir numarayı panel dışında elle kaydettiğinizde hesap kaydı
+oluşmaz, ama cihaz "korumalı" işaretlenir. Bu cihazlara `empty` deseydik, gerçekte
+hesabı **olan** cihazlarda tüm uçlar 409 verirdi.
+
+**Kategori kodları (409):** `NO_WHATSAPP_ACCOUNT` · `REGISTRATION_IN_PROGRESS` ·
+`ACCOUNT_BANNED` · `ACCOUNT_LOGGED_OUT`
+
+> **Takıldıysanız:** "cihazda hesabım var ama API boş diyor" durumunda
+> `POST /v1/whatsapp/account/health` çağırın — bu uç bilerek kontrolsüzdür, gerçeği
+> doğrudan cihazdan okur ve kaydı tazeler.
+
+### Yol kategorileri
+
+Uçlar 2026-07-29'da kategorilere ayrıldı. **Eski yolların hiçbiri kırılmadı** — aynı
+handler'a giderler; aşağıdaki her bölümde eski karşılığı yazılıdır.
+
+| Kategori | Önek | İçerik |
+|---|---|---|
+| Gönderim | `/v1/whatsapp/send/*` | text · media · bulk · broadcast |
+| Sohbetler | `/v1/whatsapp/chats/*` | liste · thread · messages · read · state · labels · clear · summary · delete-message · stats |
+| Kişiler | `/v1/whatsapp/contacts/*` | list · profile · block · blocklist · group-members |
+| Kendi hesabım | `/v1/whatsapp/account/*` | health · number · name · avatar |
+| Veri okuma | `/v1/whatsapp/data/*` | receipts · media · fetch-media · calls · search · unread · deleted · links · reactions · polls · read-by · starred · labels-list · view-once · voice-notes |
+| Kurulum & kayıt | `/v1/devices/provision*`, `/v1/whatsapp/register/*` | — |
+
+---
+
 ## 3. Endpoint referansı
 
 ### GET /v1/devices
 
+> **Gereken cihaz:** her cihazda çalışır
+
 Çalışma alanının cihazlarını listeler (WhatsApp işlemleri için hedef `deviceId`
-seçmek üzere).
+seçmek üzere). **Filtreler:** `?category=` · `?whatsappReady=true` · `?status=ONLINE`
+· `?tag=` · `?search=`
 
 ```bash
-curl https://<sunucu-adresi>/public/v1/devices \
+# Sadece mesaj atılabilir cihazlar
+curl "https://<sunucu-adresi>/public/v1/devices?category=whatsapp" \
   -H "x-api-key: flk_..."
 ```
 
 ```json
-{ "data": [
-  { "id": "cmr3r9l8s00dwj5rsh1zi8wml", "name": "Cloud Phone 01", "status": "ONLINE" }
-] }
+{
+  "data": [
+    {
+      "id": "cmr3r9l8s00dwj5rsh1zi8wml",
+      "name": "Cloud Phone 01",
+      "status": "ONLINE",
+      "whatsappCategory": "whatsapp",
+      "whatsappNumber": "905400403800",
+      "whatsappHealth": null,
+      "whatsappReady": true,
+      "tags": ["test"]
+    }
+  ],
+  "meta": {
+    "total": 38,
+    "returned": 18,
+    "counts": { "empty": 12, "manual": 2, "registering": 0, "whatsapp": 18, "blocked": 6 }
+  }
+}
+```
+
+`meta.counts` **filonun tamamını** yansıtır (filtreden bağımsız) — tek kategoriye
+daralttığınızda bile genel dağılımı görürsünüz.
+
+---
+
+### GET /v1/devices/:id
+
+> **Gereken cihaz:** her cihazda çalışır
+
+Tek cihaz + **yetenekler**: bu cihazda hangi endpoint grupları çalışır, çalışmayanlar
+neden çalışmaz. Bir uca istek atıp 409 toplamak yerine önce buraya bakın — guard'ın
+kullandığı **aynı** karar tablosundan üretilir, dolayısıyla gerçek çağrıyla asla
+çelişmez.
+
+```bash
+curl https://<sunucu-adresi>/public/v1/devices/CIHAZ_ID \
+  -H "x-api-key: flk_..."
+```
+
+```json
+{ "data": {
+  "id": "cmr3...", "name": "wa-g6gm", "status": "ONLINE",
+  "whatsappCategory": "empty", "whatsappNumber": null, "whatsappReady": false,
+  "capabilities": {
+    "available": ["devices", "whatsapp.register"],
+    "unavailable": [
+      { "group": "whatsapp.send", "code": "NO_WHATSAPP_ACCOUNT",
+        "reason": "Bu cihazda kayıtlı WhatsApp hesabı görünmüyor (boş cihaz). Önce POST /public/v1/whatsapp/register ile bir numara kaydedin. …" }
+    ]
+  }
+} }
 ```
 
 ---
 
-### GET /v1/whatsapp/messages
+### GET /v1/whatsapp/chats/messages
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `GET /v1/whatsapp/messages` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazda saklanan mesaj geçmişi (agent'ın yakaladığı gelenler + gönderdiğiniz
 gidenler). Mesaj gövdeleri çözülmüş (decrypted) olarak döner.
@@ -128,7 +225,10 @@ curl "https://<sunucu-adresi>/public/v1/whatsapp/messages?deviceId=cmr3r9l8s00dw
 
 ---
 
-### GET /v1/whatsapp/conversations
+### GET /v1/whatsapp/chats
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `GET /v1/whatsapp/conversations` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 WhatsApp Web tarzı sohbet listesi: her kişi (peer) için son mesaj önizlemesi +
 okunmamış sayısı.
@@ -170,7 +270,10 @@ curl "https://<sunucu-adresi>/public/v1/whatsapp/conversations?deviceId=cmr3...&
 
 ---
 
-### GET /v1/whatsapp/thread
+### GET /v1/whatsapp/chats/thread
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `GET /v1/whatsapp/thread` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Tek bir sohbetin mesaj geçmişi (eskiden yeniye, yukarı kaydırma sayfalaması).
 
@@ -209,7 +312,10 @@ durumda `failReason` doludur).
 
 ---
 
-### GET /v1/whatsapp/stats
+### GET /v1/whatsapp/chats/stats
+
+> **Gereken cihaz:** her cihazda çalışır (deviceId opsiyonel)  
+> **Eski yol:** `GET /v1/whatsapp/stats` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Mesajlaşma sayıları + yanıt süresi (SLA).
 
@@ -273,7 +379,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/labels \
 
 ---
 
-### POST /v1/whatsapp/send
+### POST /v1/whatsapp/send/text
+
+> **Gereken cihaz:** kullanılabilir hesap gerekir — boş/kayıt-süren/ölü hesapta **409**  
+> **Eski yol:** `POST /v1/whatsapp/send` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Seçili cihazdan bir WhatsApp mesajı gönderir (alıcı rehberde kayıtlı olmasa da
 çalışır). **write kapsamı gerekir.** Anında `jobId` döner; mesaj birkaç saniye
@@ -297,7 +406,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/send \
 
 ---
 
-### POST /v1/whatsapp/broadcast
+### POST /v1/whatsapp/send/broadcast
+
+> **Gereken cihaz:** kullanılabilir hesap gerekir — boş/kayıt-süren/ölü hesapta **409**  
+> **Eski yol:** `POST /v1/whatsapp/broadcast` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir mesajı birden çok kişiye (veya bir etiketteki tüm sohbetlere) **jitter'lı**
 (aralıklı) olarak gönderir. **write kapsamı gerekir.**
@@ -323,7 +435,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/broadcast \
 
 ---
 
-### POST /v1/whatsapp/profile
+### POST /v1/whatsapp/contacts/profile
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/profile` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir kişinin WhatsApp profilini cihazdan çeker: profil fotoğrafı (avatar) +
 görünen ad/durum. **write kapsamı gerekir.** Cihazda çalışan bir iş başlatır
@@ -350,7 +465,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/profile \
 
 ---
 
-### POST /v1/whatsapp/block
+### POST /v1/whatsapp/contacts/block
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/block` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir kişiyi cihazda engeller veya engelini kaldırır. **write kapsamı gerekir.**
 `block` varsayılanı `true` (engelle).
@@ -376,7 +494,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/block \
 
 ---
 
-### POST /v1/whatsapp/blocklist
+### POST /v1/whatsapp/contacts/blocklist
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/blocklist` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazdaki engellenen hesaplar listesini okur (Ayarlar › Gizlilik › Engellenenler).
 **write kapsamı gerekir.** Sonuç iş sonucuna (job result) düşer.
@@ -399,7 +520,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/blocklist \
 
 ---
 
-### POST /v1/whatsapp/mynumber
+### POST /v1/whatsapp/account/number
+
+> **Gereken cihaz:** her cihazda çalışır — gerçeği **cihazdan** okur, panelde kaydı olmayan (elle kayıtlı) cihazda da çalışır  
+> **Eski yol:** `POST /v1/whatsapp/mynumber` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazdaki hesabın **kendi** WhatsApp numarasını okur (Ayarlar › profil satırı).
 **write kapsamı gerekir.** Numara iş sonucuna düşer; ayrıca bildirim kanalına
@@ -423,7 +547,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/mynumber \
 
 ---
 
-### POST /v1/whatsapp/send-media
+### POST /v1/whatsapp/send/media
+
+> **Gereken cihaz:** kullanılabilir hesap gerekir — boş/kayıt-süren/ölü hesapta **409**  
+> **Eski yol:** `POST /v1/whatsapp/send-media` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir kişiye görsel/belge gönderir. Medya bir URL'den indirilip cihaza yüklenir ve
 WhatsApp galeri/belge akışıyla gönderilir. **write kapsamı gerekir.**
@@ -448,7 +575,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/send-media \
 
 ---
 
-### POST /v1/whatsapp/delete-message
+### POST /v1/whatsapp/chats/delete-message
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/delete-message` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetteki mesajı siler. **write kapsamı gerekir.** `scope` **varsayılanı
 `everyone`** (herkesten sil).
@@ -476,7 +606,10 @@ seçeneği (2 saatlik pencere geçmişse) yoksa benden silmeye düşer ve sonuç
 
 ---
 
-### POST /v1/whatsapp/clear-chat
+### POST /v1/whatsapp/chats/clear
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/clear-chat` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetin yerel geçmişini tamamen temizler (Sohbet ⋮ › Sohbeti temizle).
 Karşı taraftan silmez. **write kapsamı gerekir.**
@@ -507,7 +640,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/clear-chat \
 > sonucu `GET /v1/jobs/:jobId` (veya `.../wait`) ile okuyun. **write kapsamı
 > gerekir.** Cihaz root'lu değilse iş sonucu `{ "status": "NO_ROOT", ... }` döner.
 
-### POST /v1/whatsapp/receipts
+### POST /v1/whatsapp/data/receipts
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/receipts` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetteki **giden** mesajların tik durumunu (gönderildi/iletildi/okundu) tek
 tek, zaman damgalarıyla verir. Thread'in kaba `status` alanından çok daha
@@ -530,7 +666,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/receipts \
 
 ---
 
-### POST /v1/whatsapp/media
+### POST /v1/whatsapp/data/media
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/media` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetteki (veya `to` verilmezse tüm cihazdaki) medya envanterini
 (görsel/video/belge/ses) `message_media`'dan okur: dosya adı/tür/boyut + cihazdaki
@@ -552,7 +691,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/media \
 
 ---
 
-### POST /v1/whatsapp/calls
+### POST /v1/whatsapp/data/calls
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/calls` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın WhatsApp arama geçmişini (sesli/görüntülü, gelen/giden/cevapsız)
 `call_log`'dan okur.
@@ -572,7 +714,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/calls \
 
 ---
 
-### POST /v1/whatsapp/search
+### POST /v1/whatsapp/data/search
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/search` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın **tüm** mesajlarında sunucu-taraflı metin araması yapar (`message` tablosu).
 Eşleşen mesajları, hangi sohbette olduklarını ve tarihini döndürür.
@@ -593,7 +738,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/search \
 
 ---
 
-### POST /v1/whatsapp/unread
+### POST /v1/whatsapp/data/unread
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/unread` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazdaki toplam okunmamış mesaj sayısını + okunmamış sohbet sayısını
 (`chat.unseen_message_count`) verir. Cihazın **kendi gerçeği** — bizim yakaladığımız
@@ -613,7 +761,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/unread \
 
 ---
 
-### POST /v1/whatsapp/contacts
+### POST /v1/whatsapp/contacts/list
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/contacts` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın **tüm rehberini** (bildiği WhatsApp kişileri: numara + görünen ad)
 `wa.db`'den okur.
@@ -633,7 +784,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/contacts \
 
 ---
 
-### POST /v1/whatsapp/group-members
+### POST /v1/whatsapp/contacts/group-members
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/group-members` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir grup sohbetinin üyelerini (konu adı **veya** grup jid numarasıyla) verir:
 her üyenin numarası + yönetici (admin) bayrağı. `msgstore.db`'den okunur.
@@ -654,7 +808,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/group-members \
 
 ---
 
-### POST /v1/whatsapp/chat-summary
+### POST /v1/whatsapp/chats/summary
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/chat-summary` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetin **toplu istatistiği**: toplam / gelen / giden mesaj sayısı, medya
 sayısı, ilk & son mesaj zaman damgaları. Ucuz analitik, sıfır ekran gezme.
@@ -674,7 +831,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/chat-summary \
 
 ---
 
-### POST /v1/whatsapp/account-health
+### POST /v1/whatsapp/account/health
+
+> **Gereken cihaz:** her cihazda çalışır — gerçeği **cihazdan** okur, panelde kaydı olmayan (elle kayıtlı) cihazda da çalışır  
+> **Eski yol:** `POST /v1/whatsapp/account-health` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazdaki **oturum açık hesabın** kendi durumu: kayıtlı numara, WhatsApp sürümü,
 kayıtlı-mı bayrağı. Doğrudan cihazdan (ekran gezme yok) okunur, gerçek hesabı
@@ -695,7 +855,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/account-health \
 
 ---
 
-### POST /v1/whatsapp/fetch-media
+### POST /v1/whatsapp/data/fetch-media
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/fetch-media` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbetteki **indirilmiş** medya dosyalarını cihazdan **base64** olarak çeker
 (root ile). WhatsApp bir medyayı yalnızca **açıldığında/indirildiğinde** diske
@@ -720,7 +883,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/fetch-media \
 
 ---
 
-### POST /v1/whatsapp/reactions
+### POST /v1/whatsapp/data/reactions
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/reactions` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Mesajlara verilen **emoji tepkilerini** okur (`message_add_on_reaction`). İsteğe
 bağlı `to` ile tek sohbete daraltılır. **write kapsamı gerekir.**
@@ -735,7 +901,10 @@ bağlı `to` ile tek sohbete daraltılır. **write kapsamı gerekir.**
 
 ---
 
-### POST /v1/whatsapp/polls
+### POST /v1/whatsapp/data/polls
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/polls` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın sohbetlerindeki **anketleri** (soru + seçenekler + oy sayıları) okur
 (`message_poll`). **write kapsamı gerekir.**
@@ -749,7 +918,10 @@ Hesabın sohbetlerindeki **anketleri** (soru + seçenekler + oy sayıları) okur
 
 ---
 
-### POST /v1/whatsapp/read-by
+### POST /v1/whatsapp/data/read-by
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/read-by` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın bir sohbette **gönderdiği** mesajları alıcı-bazında kimin
 okuduğunu/aldığını verir (`receipt_user`). Grupta **hangi üyenin** mesajı
@@ -766,7 +938,10 @@ okuduğunu gösterir. **write kapsamı gerekir.**
 
 ---
 
-### POST /v1/whatsapp/starred
+### POST /v1/whatsapp/data/starred
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/starred` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın **yıldızlı (kaydedilmiş)** mesajlarını tüm sohbetlerden okur. **write
 kapsamı gerekir.**
@@ -780,7 +955,10 @@ kapsamı gerekir.**
 
 ---
 
-### POST /v1/whatsapp/labels-list
+### POST /v1/whatsapp/data/labels-list
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/labels-list` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Cihazdaki **WhatsApp Business etiketlerini** (ad/renk/sohbet-sayısı) okur.
 `predefined:true` → WhatsApp'ın hazır etiketi (Okunmamış/Favoriler/Gruplar);
@@ -796,7 +974,10 @@ kapsamı gerekir.**
 
 ---
 
-### POST /v1/whatsapp/view-once
+### POST /v1/whatsapp/data/view-once
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/view-once` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 **Tek görünümlük (view-once)** foto/video'ları cihazdan base64 olarak çeker. Normal
 kullanıcı bir kez açınca kaybolur — ama root, dosya diskteyse (açılmış olsa bile)
@@ -812,7 +993,10 @@ onu görebilir. `state`: 1=açılmamış, 2=açılmış. Dosya artık yoksa `pen
 
 ---
 
-### POST /v1/whatsapp/voice-notes
+### POST /v1/whatsapp/data/voice-notes
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/voice-notes` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın **sesli mesajlarını** (PTT) okur; isteğe bağlı base64 ses ile. Sadece
 üstveri için `withAudio:false` (daha hızlı). **write kapsamı gerekir.**
@@ -828,7 +1012,10 @@ Hesabın **sesli mesajlarını** (PTT) okur; isteğe bağlı base64 ses ile. Sad
 
 ---
 
-### POST /v1/whatsapp/deleted
+### POST /v1/whatsapp/data/deleted
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/deleted` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Karşı tarafın **"herkesten sil" ile sildiği** ama cihazın veritabanında kalan
 mesajları okur (anti-delete): ne silindi, kim sildi, ne zaman + orijinal metin.
@@ -843,7 +1030,10 @@ mesajları okur (anti-delete): ne silindi, kim sildi, ne zaman + orijinal metin.
 
 ---
 
-### POST /v1/whatsapp/links
+### POST /v1/whatsapp/data/links
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/links` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Hesabın sohbetlerinde **paylaşılan tüm URL'leri** çıkarır (isteğe bağlı tek sohbet).
 **write kapsamı gerekir.**
@@ -882,7 +1072,10 @@ gönderilir (dosya adı/tür/boyut/klasör); baytları `fetch-media` ile çekin.
 
 ---
 
-### POST /v1/whatsapp/conversations/labels
+### POST /v1/whatsapp/chats/labels
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/conversations/labels` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbete kategori (etiket) atar. **write kapsamı gerekir.**
 
@@ -904,7 +1097,10 @@ curl -X POST https://<sunucu-adresi>/public/v1/whatsapp/conversations/labels \
 
 ---
 
-### POST /v1/whatsapp/conversations/state
+### POST /v1/whatsapp/chats/state
+
+> **Gereken cihaz:** hesap gerekir; **YASAKLI/ÇIKIŞ-YAPMIŞ** cihazda da çalışır (cevaba `accountWarning` eklenir)  
+> **Eski yol:** `POST /v1/whatsapp/conversations/state` — hâlâ çalışır (aynı handler), yeni entegrasyonlarda kullanmayın.
 
 Bir sohbeti favori / arşiv / sabit yapar. **write kapsamı gerekir.**
 

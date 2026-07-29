@@ -1,95 +1,163 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
-import { apiRateLimiter } from '../../middleware/rateLimit';
-import { listDevicesHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, setNameHandler, setAvatarHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionBatchHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
-import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
+import { apiRateLimiter, heavyOperationRateLimiter } from '../../middleware/rateLimit';
+import { requireWhatsappAccount } from './public.middleware';
+import { listDevicesHandler, getDeviceHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, setNameHandler, setAvatarHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionBatchHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
 // bound flk_ key minted in /admin/api-keys) — NO JWT. The workspace is resolved
 // from the key; requirePublicWorkspace (in the handlers) refuses any key that has
 // no workspace so this can never leak across tenants.
+//
+// ★2026-07-29 — KATEGORİLİ YOLLAR. Yüzey 52 ucun düz listesiydi; hangi ucun hangi
+// cihazda anlamlı olduğu görünmüyordu. Artık uçlar kategorilere ayrıldı
+// (send / chats / contacts / account / data) ve her uç, gerektirdiği cihaz durumunu
+// bir guard ile ilan ediyor (devices/whatsappCategory.ts'teki tek karar tablosu).
+//
+// ⚠️ ESKİ YOLLAR KIRILMADI: her uç `mount()` ile hem yeni hem eski yola bağlanır,
+// ikisi de AYNI handler'a ve AYNI guard'a gider. Dışarıdaki entegrasyonların
+// değişmesi gerekmez; eski yollar dokümanlarda "legacy" olarak işaretlidir.
 export const publicRouter = Router();
 
 publicRouter.use(requireApiKey);
 
-publicRouter.get('/v1/me', asyncHandler(meHandler));
-publicRouter.get('/v1/devices', asyncHandler(listDevicesHandler));
+type Method = 'get' | 'post';
+type MountOpts = {
+  // Eski (legacy) yol — verilirse aynı handler'a ikinci kez bağlanır.
+  alias?: string;
+  // Sıralı ön-middleware (rate limit + WhatsApp guard).
+  use?: RequestHandler[];
+};
+
+// Tek tanım → iki yol. Handler ve guard zinciri tek yerde kalır, alias otomatik
+// bağlanır; böylece bir uç güncellendiğinde eski yolun geride kalması imkânsız.
+function mount(method: Method, path: string, handler: RequestHandler, opts: MountOpts = {}): void {
+  const chain = [...(opts.use ?? []), handler];
+  publicRouter[method](path, ...chain);
+  if (opts.alias) publicRouter[method](opts.alias, ...chain);
+}
+
+// Guard kısayolları. `send` = gönderim (ölü/boş hesapta 409), `read` = okuma
+// (banlı hesapta ÇALIŞIR + accountWarning), `register` = kayıt.
+const send = requireWhatsappAccount('send');
+const read = requireWhatsappAccount('read');
+const register = requireWhatsappAccount('register');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1) Hesap & Cihazlar — her cihazda çalışır, WhatsApp durumu aranmaz.
+// ─────────────────────────────────────────────────────────────────────────────
+mount('get', '/v1/me', asyncHandler(meHandler));
+mount('get', '/v1/devices', asyncHandler(listDevicesHandler));
 // Add / remove / replace a device's tags (e.g. "#test") — write scope, rate-limited.
-publicRouter.post('/v1/devices/:id/tags', apiRateLimiter, asyncHandler(deviceTagsHandler));
+mount('post', '/v1/devices/:id/tags', asyncHandler(deviceTagsHandler), { use: [apiRateLimiter] });
 // Rename a device (cosmetic label only) — write scope, rate-limited.
-publicRouter.post('/v1/devices/:id/rename', apiRateLimiter, asyncHandler(deviceRenameHandler));
-publicRouter.get('/v1/whatsapp/messages', asyncHandler(messagesHandler));
-// WhatsApp-Web-style chat list + per-thread history for external integrations.
-publicRouter.get('/v1/whatsapp/conversations', asyncHandler(conversationsHandler));
-publicRouter.get('/v1/whatsapp/thread', asyncHandler(threadHandler));
-// Mark a thread read (clear its unread badge) — write scope, rate-limited.
-publicRouter.post('/v1/whatsapp/thread/read', apiRateLimiter, asyncHandler(markReadHandler));
-publicRouter.get('/v1/whatsapp/stats', asyncHandler(statsHandler));
-// Categories (labels): read + create + assign to a chat, and chat state.
-publicRouter.get('/v1/whatsapp/labels', asyncHandler(labelsHandler));
-publicRouter.post('/v1/whatsapp/labels', asyncHandler(createLabelHandler));
-publicRouter.post('/v1/whatsapp/conversations/labels', asyncHandler(setLabelsHandler));
-publicRouter.post('/v1/whatsapp/conversations/state', asyncHandler(stateHandler));
-// Send drives a real device — rate-limit it to blunt abuse from a leaked key.
-publicRouter.post('/v1/whatsapp/send', apiRateLimiter, asyncHandler(sendHandler));
-// Bulk send (many distinct messages, one call) — heavy-limited (dispatches up to 100 device jobs).
-publicRouter.post('/v1/whatsapp/send/bulk', heavyOperationRateLimiter, asyncHandler(bulkSendHandler));
-// Broadcast (one-to-many throttled) — write scope, rate-limited.
-publicRouter.post('/v1/whatsapp/broadcast', apiRateLimiter, asyncHandler(broadcastHandler));
-// Contact profile (avatar + name), block/unblock, and blocked-list — on-device
-// jobs, write scope, rate-limited (they each drive a real device).
-publicRouter.post('/v1/whatsapp/profile', apiRateLimiter, asyncHandler(profileHandler));
-// Change the device's OWN profile — display name + picture. On-device jobs, write scope.
-publicRouter.post('/v1/whatsapp/profile/name', apiRateLimiter, asyncHandler(setNameHandler));
-publicRouter.post('/v1/whatsapp/profile/avatar', heavyOperationRateLimiter, asyncHandler(setAvatarHandler));
-publicRouter.post('/v1/whatsapp/block', apiRateLimiter, asyncHandler(blockHandler));
-publicRouter.post('/v1/whatsapp/blocklist', apiRateLimiter, asyncHandler(blocklistHandler));
-// Own number, media send, message delete, clear chat — on-device, rate-limited.
-publicRouter.post('/v1/whatsapp/mynumber', apiRateLimiter, asyncHandler(myNumberHandler));
-publicRouter.post('/v1/whatsapp/send-media', apiRateLimiter, asyncHandler(sendMediaHandler));
-publicRouter.post('/v1/whatsapp/delete-message', apiRateLimiter, asyncHandler(deleteMessageHandler));
-publicRouter.post('/v1/whatsapp/clear-chat', apiRateLimiter, asyncHandler(clearChatHandler));
+mount('post', '/v1/devices/:id/rename', asyncHandler(deviceRenameHandler), { use: [apiRateLimiter] });
 
-// ── Root-DB reads (agent reads WhatsApp's own SQLite — no UI walk). On-device
-// jobs → return a jobId to poll. write scope, rate-limited. ─────────────────
-publicRouter.post('/v1/whatsapp/receipts', apiRateLimiter, asyncHandler(receiptsHandler));
-publicRouter.post('/v1/whatsapp/media', apiRateLimiter, asyncHandler(mediaHandler));
-publicRouter.post('/v1/whatsapp/calls', apiRateLimiter, asyncHandler(callsHandler));
-publicRouter.post('/v1/whatsapp/search', apiRateLimiter, asyncHandler(searchHandler));
-publicRouter.post('/v1/whatsapp/unread', apiRateLimiter, asyncHandler(unreadHandler));
-publicRouter.post('/v1/whatsapp/contacts', apiRateLimiter, asyncHandler(contactsHandler));
-publicRouter.post('/v1/whatsapp/group-members', apiRateLimiter, asyncHandler(groupMembersHandler));
-publicRouter.post('/v1/whatsapp/chat-summary', apiRateLimiter, asyncHandler(chatSummaryHandler));
-publicRouter.post('/v1/whatsapp/account-health', apiRateLimiter, asyncHandler(accountHealthHandler));
-publicRouter.post('/v1/whatsapp/fetch-media', apiRateLimiter, asyncHandler(fetchMediaHandler));
-publicRouter.post('/v1/whatsapp/reactions', apiRateLimiter, asyncHandler(reactionsHandler));
-publicRouter.post('/v1/whatsapp/polls', apiRateLimiter, asyncHandler(pollsHandler));
-publicRouter.post('/v1/whatsapp/read-by', apiRateLimiter, asyncHandler(readByHandler));
-publicRouter.post('/v1/whatsapp/starred', apiRateLimiter, asyncHandler(starredHandler));
-publicRouter.post('/v1/whatsapp/labels-list', apiRateLimiter, asyncHandler(labelsListHandler));
-publicRouter.post('/v1/whatsapp/view-once', apiRateLimiter, asyncHandler(viewOnceHandler));
-publicRouter.post('/v1/whatsapp/voice-notes', apiRateLimiter, asyncHandler(voiceNotesHandler));
-publicRouter.post('/v1/whatsapp/deleted', apiRateLimiter, asyncHandler(deletedHandler));
-publicRouter.post('/v1/whatsapp/links', apiRateLimiter, asyncHandler(linksHandler));
-
-// ── One-click provision + WhatsApp registration (write scope, heavily throttled
-// because they spin up instances / rent-free operator numbers and drive a real
-// device end-to-end). ──────────────────────────────────────────────────────
-publicRouter.post('/v1/devices/provision', heavyOperationRateLimiter, asyncHandler(provisionDeviceHandler));
+// ─────────────────────────────────────────────────────────────────────────────
+// 2) Kurulum & Kayıt — boş cihazın (category=empty) tek girişi.
+//    ⚠️ Express sırası: '/v1/devices/provision*' yolları '/v1/devices/:id'den ÖNCE
+//    tanımlanmalı, aksi halde ':id' onları yutar.
+// ─────────────────────────────────────────────────────────────────────────────
+mount('post', '/v1/devices/provision', asyncHandler(provisionDeviceHandler), { use: [heavyOperationRateLimiter] });
 // Batch one-click provision (1–20 devices, adet + isim öneki + proxy ülkesi).
-publicRouter.post('/v1/devices/provision/batch', heavyOperationRateLimiter, asyncHandler(provisionBatchHandler));
+mount('post', '/v1/devices/provision/batch', asyncHandler(provisionBatchHandler), { use: [heavyOperationRateLimiter] });
 // Live step-by-step provision progress (same data the dashboard modal shows).
-publicRouter.get('/v1/devices/provision/:jobId/status', asyncHandler(provisionStatusHandler));
-publicRouter.post('/v1/whatsapp/register', heavyOperationRateLimiter, asyncHandler(registerWhatsappHandler));
-publicRouter.post('/v1/whatsapp/register/:id/otp', apiRateLimiter, asyncHandler(registerWhatsappOtpHandler));
+mount('get', '/v1/devices/provision/:jobId/status', asyncHandler(provisionStatusHandler));
+mount('post', '/v1/whatsapp/register', asyncHandler(registerWhatsappHandler), { use: [heavyOperationRateLimiter, register] });
+mount('post', '/v1/whatsapp/register/:id/otp', asyncHandler(registerWhatsappOtpHandler), { use: [apiRateLimiter] });
 // Operator picks SMS/voice/missed-call when registration parks on the method sheet.
-publicRouter.post('/v1/whatsapp/register/:id/verify-method', apiRateLimiter, asyncHandler(registerWhatsappVerifyMethodHandler));
-publicRouter.get('/v1/whatsapp/register/:id/status', asyncHandler(registerWhatsappStatusHandler));
+mount('post', '/v1/whatsapp/register/:id/verify-method', asyncHandler(registerWhatsappVerifyMethodHandler), { use: [apiRateLimiter] });
+mount('get', '/v1/whatsapp/register/:id/status', asyncHandler(registerWhatsappStatusHandler));
 
-// Universal async-job poll: read the result/status of any jobId an on-device write
-// endpoint returned (send, blocklist, mynumber, profile, delete-message, …).
-publicRouter.get('/v1/jobs/:jobId', asyncHandler(jobHandler));
+// Tek cihaz + yetenek listesi. provision yollarından SONRA gelir (bkz. yukarıdaki not).
+mount('get', '/v1/devices/:id', asyncHandler(getDeviceHandler));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3) WhatsApp — Gönderim. Hepsi gerçek bir cihazı sürer → rate-limit + `send` guard
+//    (boş / kayıt-süren / banlı-çıkışyapmış cihazda 409).
+// ─────────────────────────────────────────────────────────────────────────────
+mount('post', '/v1/whatsapp/send/text', asyncHandler(sendHandler), { alias: '/v1/whatsapp/send', use: [apiRateLimiter, send] });
+mount('post', '/v1/whatsapp/send/media', asyncHandler(sendMediaHandler), { alias: '/v1/whatsapp/send-media', use: [apiRateLimiter, send] });
+// Bulk send (many distinct messages, one call) — heavy-limited (dispatches up to 100 device jobs).
+// ⚠️ Guard YOK: gövde çok cihazlı olabilir (messages[].deviceId), tek deviceId yok.
+// Her mesaj zaten sendFromDevice'ın kendi kontrolünden geçer.
+mount('post', '/v1/whatsapp/send/bulk', asyncHandler(bulkSendHandler), { use: [heavyOperationRateLimiter] });
+mount('post', '/v1/whatsapp/send/broadcast', asyncHandler(broadcastHandler), { alias: '/v1/whatsapp/broadcast', use: [apiRateLimiter, send] });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4) WhatsApp — Sohbetler & Etiketler (okuma + sohbet durumu).
+// ─────────────────────────────────────────────────────────────────────────────
+mount('get', '/v1/whatsapp/chats', asyncHandler(conversationsHandler), { alias: '/v1/whatsapp/conversations', use: [read] });
+mount('get', '/v1/whatsapp/chats/thread', asyncHandler(threadHandler), { alias: '/v1/whatsapp/thread', use: [read] });
+mount('get', '/v1/whatsapp/chats/messages', asyncHandler(messagesHandler), { alias: '/v1/whatsapp/messages', use: [read] });
+mount('post', '/v1/whatsapp/chats/read', asyncHandler(markReadHandler), { alias: '/v1/whatsapp/thread/read', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/chats/state', asyncHandler(stateHandler), { alias: '/v1/whatsapp/conversations/state', use: [read] });
+mount('post', '/v1/whatsapp/chats/labels', asyncHandler(setLabelsHandler), { alias: '/v1/whatsapp/conversations/labels', use: [read] });
+mount('post', '/v1/whatsapp/chats/clear', asyncHandler(clearChatHandler), { alias: '/v1/whatsapp/clear-chat', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/chats/summary', asyncHandler(chatSummaryHandler), { alias: '/v1/whatsapp/chat-summary', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/chats/delete-message', asyncHandler(deleteMessageHandler), { alias: '/v1/whatsapp/delete-message', use: [apiRateLimiter, read] });
+// deviceId opsiyonel (tüm workspace'i özetler) → guard deviceId yoksa kendini atlar.
+mount('get', '/v1/whatsapp/chats/stats', asyncHandler(statsHandler), { alias: '/v1/whatsapp/stats', use: [read] });
+// Etiketler workspace seviyesindedir (cihaza bağlı değil) → guard yok.
+mount('get', '/v1/whatsapp/labels', asyncHandler(labelsHandler));
+mount('post', '/v1/whatsapp/labels', asyncHandler(createLabelHandler));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5) WhatsApp — Kişi işlemleri (karşı taraf: profil, engelleme, rehber).
+// ─────────────────────────────────────────────────────────────────────────────
+mount('post', '/v1/whatsapp/contacts/list', asyncHandler(contactsHandler), { alias: '/v1/whatsapp/contacts', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/contacts/profile', asyncHandler(profileHandler), { alias: '/v1/whatsapp/profile', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/contacts/block', asyncHandler(blockHandler), { alias: '/v1/whatsapp/block', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/contacts/blocklist', asyncHandler(blocklistHandler), { alias: '/v1/whatsapp/blocklist', use: [apiRateLimiter, read] });
+mount('post', '/v1/whatsapp/contacts/group-members', asyncHandler(groupMembersHandler), { alias: '/v1/whatsapp/group-members', use: [apiRateLimiter, read] });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6) WhatsApp — Kendi hesabım.
+//    ★health ve number bilerek GUARD'SIZ: ikisi de gerçeği CİHAZDAN okur, yani
+//    "DB'de satır yok ama cihazda hesap var" durumunun kaçış valfidir (canlı filoda
+//    böyle cihazlar mevcut). Guard koysaydık, kaydı tazeleyecek tek uç da 409 verir
+//    ve cihaz kalıcı olarak 'empty' kalırdı.
+// ─────────────────────────────────────────────────────────────────────────────
+mount('post', '/v1/whatsapp/account/health', asyncHandler(accountHealthHandler), { alias: '/v1/whatsapp/account-health', use: [apiRateLimiter] });
+mount('post', '/v1/whatsapp/account/number', asyncHandler(myNumberHandler), { alias: '/v1/whatsapp/mynumber', use: [apiRateLimiter] });
+// Change the device's OWN profile — display name + picture. On-device jobs, write scope.
+mount('post', '/v1/whatsapp/account/name', asyncHandler(setNameHandler), { alias: '/v1/whatsapp/profile/name', use: [apiRateLimiter, send] });
+mount('post', '/v1/whatsapp/account/avatar', asyncHandler(setAvatarHandler), { alias: '/v1/whatsapp/profile/avatar', use: [heavyOperationRateLimiter, send] });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7) WhatsApp — Veri okuma (root-DB). Ajan WhatsApp'ın kendi SQLite'ını okur (UI
+//    gezinmesi yok). Hepsi jobId döner. Banlı hesapta da ÇALIŞIR (msgstore.db
+//    cihazda durur) — cevaba accountWarning eklenir.
+// ─────────────────────────────────────────────────────────────────────────────
+const dataEndpoints: Array<[string, RequestHandler]> = [
+  ['receipts', asyncHandler(receiptsHandler)],
+  ['media', asyncHandler(mediaHandler)],
+  ['fetch-media', asyncHandler(fetchMediaHandler)],
+  ['calls', asyncHandler(callsHandler)],
+  ['search', asyncHandler(searchHandler)],
+  ['unread', asyncHandler(unreadHandler)],
+  ['deleted', asyncHandler(deletedHandler)],
+  ['links', asyncHandler(linksHandler)],
+  ['reactions', asyncHandler(reactionsHandler)],
+  ['polls', asyncHandler(pollsHandler)],
+  ['read-by', asyncHandler(readByHandler)],
+  ['starred', asyncHandler(starredHandler)],
+  ['labels-list', asyncHandler(labelsListHandler)],
+  ['view-once', asyncHandler(viewOnceHandler)],
+  ['voice-notes', asyncHandler(voiceNotesHandler)]
+];
+for (const [name, handler] of dataEndpoints) {
+  mount('post', `/v1/whatsapp/data/${name}`, handler, {
+    alias: `/v1/whatsapp/${name}`,
+    use: [apiRateLimiter, read]
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8) İşler (jobs) — her on-device ucun döndürdüğü jobId'nin evrensel poll hedefi.
+// ─────────────────────────────────────────────────────────────────────────────
+mount('get', '/v1/jobs/:jobId', asyncHandler(jobHandler));
 // Long-poll variant: block (server-side) until the job finishes or ?timeout= s
 // elapses, so an integrator gets the result in ONE request instead of a poll loop.
-publicRouter.get('/v1/jobs/:jobId/wait', asyncHandler(jobWaitHandler));
+mount('get', '/v1/jobs/:jobId/wait', asyncHandler(jobWaitHandler));

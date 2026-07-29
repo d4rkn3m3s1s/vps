@@ -241,6 +241,7 @@ model Workspace {
   socialAccounts        SocialAccount[]
   alertRules            AlertRule[]
   alertEvents           AlertEvent[]
+  notifications         Notification[]
   snapshots             DeviceSnapshot[]
   scheduledPosts        ScheduledPost[]
   generatedAccounts     GeneratedAccount[]
@@ -363,6 +364,31 @@ model AlertEvent {
 
   @@index([workspaceId])
   @@index([ruleId])
+}
+
+// Panelin bildirim merkezi (zil ikonu) için KALICI besleme.
+//
+// ★2026-07-29: bildirimler eskiden yalnızca tarayıcı belleğindeydi (NotificationCenter'da
+// `useState([])`), dolayısıyla sayfa yenilenince hepsi kayboluyordu ve "okundu" bilgisi de
+// uçuyordu. Dahası istemci /api/jobs'u fark-alarak bildirim üretiyordu ve her mount'ta ilk
+// turu bilerek atıyordu — yani operatör panelde değilken biten işler HİÇ görünmüyordu.
+// Artık bildirim sunucuda üretilip burada saklanıyor; panel açılışta buradan hidrat ediyor.
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  kind        String    @default("info") // ok | err | info
+  title       String
+  detail      String    @default("")
+  // İlgili kayıt (varsa) — panelde tıklanınca ilgili sayfaya gitmek için.
+  refType     String? // job | alert | device
+  refId       String?
+  read        Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Feed sorgusu "workspace + en yeni" şeklinde; okunmamış sayacı için ayrı indeks.
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, read])
 }
 
 // Billing state for a workspace. `plan` is one of the keys in billing.plans.ts

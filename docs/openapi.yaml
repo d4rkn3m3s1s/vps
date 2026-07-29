@@ -5,6 +5,44 @@ info:
   description: REST API for managing Android emulator containers and ADB jobs.
 servers:
   - url: http://localhost:4000
+
+# ── Public API kategorileri ───────────────────────────────────────────────────
+# Her /public/v1 ucu bir kategoriye ve bir CİHAZ GEREKSİNİMİNE aittir. Gereksinimi
+# karşılamayan cihazda çağrı 409 döner (iş kuyruğa girmez). Cihazın kategorisi
+# GET /public/v1/devices cevabındaki `whatsappCategory` alanıdır:
+#
+#   empty       — WhatsApp hesabı yok. Sadece kurulum + kayıt uçları çalışır.
+#   registering — kayıt sürüyor; WhatsApp uçları henüz çalışmaz.
+#   whatsapp    — kullanılabilir hesap (ACTIVE / RESTRICTED). Tüm uçlar çalışır.
+#   manual      — cihaz korumalı, hesap elle kaydedilmiş (panelde numara kaydı yok)
+#                 ama uçlar çalışır.
+#   blocked     — YASAKLI / ÇIKIŞ YAPMIŞ. Okuma uçları çalışır (veri cihazda durur),
+#                 gönderim 409 verir.
+#
+# Bir cihazda hangi grupların çalıştığını GET /public/v1/devices/{id} söyler
+# (capabilities.available[] / capabilities.unavailable[]).
+tags:
+  - name: public:account
+    description: Kimlik, cihaz listesi/detayı, etiketler — her cihazda çalışır.
+  - name: public:provision
+    description: Cihaz kurma + WhatsApp kaydı — boş (veya yeniden kaydedilecek) cihaz içindir.
+  - name: public:send
+    description: WhatsApp gönderim — kullanılabilir hesap gerekir; ölü/boş hesapta 409.
+  - name: public:chats
+    description: Sohbetler, mesaj geçmişi, etiket atama — hesap gerekir (yasaklı hesapta da okunur).
+  - name: public:contacts
+    description: Kişi profili, engelleme, rehber, grup üyeleri.
+  - name: public:whatsapp-account
+    description: Cihazın KENDİ hesabı — sağlık/numara (her cihazda) + profil adı/resmi.
+  - name: public:data
+    description: Root-DB okuma (teslim/okundu, medya, arama, anket, silinenler…).
+  - name: public:jobs
+    description: On-device işlerin sonucunu okuma (poll + long-poll).
+  - name: public:legacy
+    description: >
+      Eski (kategorisiz) yollar. Kırılmadılar — aynı handler'a giderler — ama yeni
+      entegrasyonlarda kategorili karşılıklarını kullanın.
+
 paths:
   /health:
     get:
@@ -151,12 +189,14 @@ paths:
   # asynchronous: they return { jobId, status: "PENDING" } and complete in ~10-40s.
   /public/v1/me:
     get:
-      summary: Identify the calling API key (workspace, scopes, device count)
+      tags: [public:account]
+      summary: Identify the calling API key (workspace, scopes, fleet breakdown)
       description: >
         Self-discovery for an integration: returns the key's workspaceId, its keyId,
-        label, scopes, and this workspace's device count — so a client can learn its
-        own permissions (read vs write) and scale without trial-and-error 403s. Any
-        valid key (read).
+        label, scopes, this workspace's device count, and `devices` — the fleet's
+        WhatsApp category breakdown (how many empty / registering / whatsapp / manual /
+        blocked) so a client can size its work without listing every device. Any valid
+        key (read).
       security: [ { apiKeyAuth: [] } ]
       responses:
         '200':
@@ -174,13 +214,84 @@ paths:
                       label: { type: string, nullable: true }
                       scopes: { type: array, items: { type: string } }
                       deviceCount: { type: integer }
+                      devices:
+                        $ref: '#/components/schemas/CategoryCounts'
   /public/v1/devices:
     get:
-      summary: List the workspace's devices (public API)
+      tags: [public:account]
+      summary: List the workspace's devices, filtered by WhatsApp category
+      description: >
+        Every device carries a `whatsappCategory` telling you which endpoint groups
+        work on it. Filter with ?category= (empty | registering | whatsapp | manual |
+        blocked), ?whatsappReady=true, ?status=ONLINE, ?tag=, ?search=.
+        `meta.counts` always reflects the WHOLE fleet, not the filtered slice, so a
+        caller narrowing to one category still sees the overall distribution.
       security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string, enum: [empty, registering, whatsapp, manual, blocked] }
+        - { name: whatsappReady, in: query, schema: { type: string, enum: ['true', 'false'] } }
+        - { name: status, in: query, schema: { type: string, enum: [ONLINE, OFFLINE, STARTING, STOPPING, ERROR, UPDATING, REBOOTING] } }
+        - { name: tag, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
       responses:
         '200':
-          description: '{ data: [ { id, name, status } ] }'
+          description: Devices + fleet-wide category counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PublicDevice' }
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      returned: { type: integer }
+                      counts: { $ref: '#/components/schemas/CategoryCounts' }
+  /public/v1/devices/{id}:
+    get:
+      tags: [public:account]
+      summary: One device + CAPABILITIES (which endpoint groups work on it, and why not)
+      description: >
+        Returns the device plus `capabilities`: `available[]` lists the endpoint groups
+        that work right now, `unavailable[]` gives {group, code, reason} for each one
+        that does not. The same decision table the request guards use, so this never
+        disagrees with what an actual call would do — check here instead of probing
+        endpoints and collecting 409s.
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Device + capabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/PublicDevice'
+                      - type: object
+                        properties:
+                          capabilities:
+                            type: object
+                            properties:
+                              available: { type: array, items: { type: string } }
+                              unavailable:
+                                type: array
+                                items:
+                                  type: object
+                                  properties:
+                                    group: { type: string }
+                                    code: { type: string }
+                                    reason: { type: string }
+        '404':
+          description: Device not found (or belongs to another workspace)
   /public/v1/whatsapp/messages:
     get:
       summary: Stored WhatsApp message history (IN + OUT), decrypted
@@ -1002,6 +1113,286 @@ paths:
                 $ref: '#/components/schemas/PublicJobResponse'
         '404':
           description: '{ error: JOB_NOT_FOUND }'
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # KATEGORİLİ YOLLAR (2026-07-29)
+  #
+  # Aşağıdaki uçlar, yukarıdaki düz listeyi kategorilere ayırır. Her biri eski
+  # yoluyla AYNI handler'a gider — eski yollar kırılmadı, `public:legacy` tag'i
+  # ile işaretlidir ve çalışmaya devam eder. Yeni entegrasyonlar buradakileri
+  # kullanmalı.
+  #
+  # Her ucun `x-requires-device` alanı, cihazın hangi durumda olması gerektiğini
+  # söyler:
+  #   any     — cihaz durumu aranmaz
+  #   wa      — kullanılabilir hesap gerekir (whatsapp | manual); aksi halde 409
+  #   wa-read — hesap gerekir ama YASAKLI/ÇIKIŞ-YAPMIŞ cihazda da çalışır
+  #             (veri cihazda durur); cevaba `accountWarning` eklenir
+  # ══════════════════════════════════════════════════════════════════════════
+
+  /public/v1/whatsapp/send/text:
+    post:
+      tags: [public:send]
+      summary: "Mesaj gönder (eski yol: /public/v1/whatsapp/send)"
+      x-requires-device: wa
+      security: [ { apiKeyAuth: [] } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, to, message]
+              properties:
+                deviceId: { type: string }
+                to: { type: string, example: '905400403800' }
+                message: { type: string }
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+        '409':
+          description: Cihazda kullanılabilir WhatsApp hesabı yok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+  /public/v1/whatsapp/send/media:
+    post:
+      tags: [public:send]
+      summary: "Medya gönder (eski yol: /public/v1/whatsapp/send-media)"
+      x-requires-device: wa
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+        '409':
+          description: Cihazda kullanılabilir WhatsApp hesabı yok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+  /public/v1/whatsapp/send/broadcast:
+    post:
+      tags: [public:send]
+      summary: "Yayın / broadcast (eski yol: /public/v1/whatsapp/broadcast)"
+      x-requires-device: wa
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { broadcastId, queued } }' }
+        '409':
+          description: Cihazda kullanılabilir WhatsApp hesabı yok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+
+  /public/v1/whatsapp/chats:
+    get:
+      tags: [public:chats]
+      summary: "Sohbet listesi (eski yol: /public/v1/whatsapp/conversations)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: query, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer } }
+        - { name: filter, in: query, schema: { type: string, enum: [all, unread, favorite, archived] } }
+      responses:
+        '200': { description: '{ data: { conversations: [...] } }' }
+        '409':
+          description: Cihazda WhatsApp hesabı yok / kayıt sürüyor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+  /public/v1/whatsapp/chats/thread:
+    get:
+      tags: [public:chats]
+      summary: "Sohbet geçmişi (eski yol: /public/v1/whatsapp/thread)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { messages: [...] } }' }
+  /public/v1/whatsapp/chats/messages:
+    get:
+      tags: [public:chats]
+      summary: "Kaydedilmiş mesaj geçmişi (eski yol: /public/v1/whatsapp/messages)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { messages: [...] } }' }
+  /public/v1/whatsapp/chats/read:
+    post:
+      tags: [public:chats]
+      summary: "Sohbeti okundu işaretle (eski yol: /public/v1/whatsapp/thread/read)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: OK }
+  /public/v1/whatsapp/chats/state:
+    post:
+      tags: [public:chats]
+      summary: "Sohbet durumu — favori/arşiv/sabit (eski yol: /public/v1/whatsapp/conversations/state)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: OK }
+  /public/v1/whatsapp/chats/labels:
+    post:
+      tags: [public:chats]
+      summary: "Sohbete etiket ata (eski yol: /public/v1/whatsapp/conversations/labels)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: OK }
+  /public/v1/whatsapp/chats/clear:
+    post:
+      tags: [public:chats]
+      summary: "Sohbeti temizle (eski yol: /public/v1/whatsapp/clear-chat)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/chats/summary:
+    post:
+      tags: [public:chats]
+      summary: "Sohbet özeti (eski yol: /public/v1/whatsapp/chat-summary)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/chats/delete-message:
+    post:
+      tags: [public:chats]
+      summary: "Mesaj sil (eski yol: /public/v1/whatsapp/delete-message)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/chats/stats:
+    get:
+      tags: [public:chats]
+      summary: "İstatistik (eski yol: /public/v1/whatsapp/stats)"
+      description: deviceId opsiyoneldir; verilmezse tüm workspace özetlenir ve cihaz kontrolü uygulanmaz.
+      x-requires-device: any
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { ... } }' }
+
+  /public/v1/whatsapp/contacts/list:
+    post:
+      tags: [public:contacts]
+      summary: "Kişileri listele (eski yol: /public/v1/whatsapp/contacts)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/contacts/profile:
+    post:
+      tags: [public:contacts]
+      summary: "Kişi profili getir (eski yol: /public/v1/whatsapp/profile)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/contacts/block:
+    post:
+      tags: [public:contacts]
+      summary: "Engelle / engel kaldır (eski yol: /public/v1/whatsapp/block)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/contacts/blocklist:
+    post:
+      tags: [public:contacts]
+      summary: "Engellenenler listesi (eski yol: /public/v1/whatsapp/blocklist)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/contacts/group-members:
+    post:
+      tags: [public:contacts]
+      summary: "Grup üyeleri (eski yol: /public/v1/whatsapp/group-members)"
+      x-requires-device: wa-read
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+
+  /public/v1/whatsapp/account/health:
+    post:
+      tags: [public:whatsapp-account]
+      summary: "Hesap sağlığı — HER cihazda çalışır (eski yol: /public/v1/whatsapp/account-health)"
+      description: >
+        Bilerek kontrolsüzdür: gerçeği doğrudan cihazdan okur, bu yüzden panelde hesap
+        kaydı görünmeyen (elle kaydedilmiş) bir cihazda da çalışır. "Cihazda hesabım var
+        ama API boş diyor" durumunun çıkış yolu budur — sonuç kaydı tazeler.
+      x-requires-device: any
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/account/number:
+    post:
+      tags: [public:whatsapp-account]
+      summary: "Kendi numaram — HER cihazda çalışır (eski yol: /public/v1/whatsapp/mynumber)"
+      x-requires-device: any
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+  /public/v1/whatsapp/account/name:
+    post:
+      tags: [public:whatsapp-account]
+      summary: "Kendi profil ismini değiştir (eski yol: /public/v1/whatsapp/profile/name)"
+      x-requires-device: wa
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+        '409':
+          description: Cihazda kullanılabilir WhatsApp hesabı yok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+  /public/v1/whatsapp/account/avatar:
+    post:
+      tags: [public:whatsapp-account]
+      summary: "Kendi profil resmini değiştir (eski yol: /public/v1/whatsapp/profile/avatar)"
+      x-requires-device: wa
+      security: [ { apiKeyAuth: [] } ]
+      responses:
+        '200': { description: '{ data: { jobId, status } }' }
+        '409':
+          description: Cihazda kullanılabilir WhatsApp hesabı yok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceCategoryError' }
+
+  # Root-DB okuma uçları — hepsi POST { deviceId, ... } alır ve { jobId, status }
+  # döndürür. Eski yolları /public/v1/whatsapp/<ad> şeklindedir ve çalışmaya devam eder.
+  /public/v1/whatsapp/data/receipts:
+    post: { tags: [public:data], summary: 'Teslim/okundu (eski: /whatsapp/receipts)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/unread:
+    post: { tags: [public:data], summary: 'Okunmamışlar (eski: /whatsapp/unread)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/search:
+    post: { tags: [public:data], summary: 'Tam-metin arama (eski: /whatsapp/search)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/media:
+    post: { tags: [public:data], summary: 'Medya listesi (eski: /whatsapp/media)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/fetch-media:
+    post: { tags: [public:data], summary: 'Medya indir base64 (eski: /whatsapp/fetch-media)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/calls:
+    post: { tags: [public:data], summary: 'Arama kaydı (eski: /whatsapp/calls)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/deleted:
+    post: { tags: [public:data], summary: 'Silinen mesajlar / anti-delete (eski: /whatsapp/deleted)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/links:
+    post: { tags: [public:data], summary: 'Paylaşılan linkler (eski: /whatsapp/links)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/reactions:
+    post: { tags: [public:data], summary: 'Emoji tepkileri (eski: /whatsapp/reactions)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/polls:
+    post: { tags: [public:data], summary: 'Anketler (eski: /whatsapp/polls)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/read-by:
+    post: { tags: [public:data], summary: 'Kim okudu (eski: /whatsapp/read-by)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/starred:
+    post: { tags: [public:data], summary: 'Yıldızlı mesajlar (eski: /whatsapp/starred)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/labels-list:
+    post: { tags: [public:data], summary: 'Business etiketleri (eski: /whatsapp/labels-list)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/view-once:
+    post: { tags: [public:data], summary: 'Tek görünümlük medya (eski: /whatsapp/view-once)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  /public/v1/whatsapp/data/voice-notes:
+    post: { tags: [public:data], summary: 'Sesli notlar PTT (eski: /whatsapp/voice-notes)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1013,6 +1404,45 @@ components:
       in: header
       name: x-api-key
   schemas:
+    # ── Cihaz kategorisi + yetenek şemaları ──
+    CategoryCounts:
+      type: object
+      description: Filonun WhatsApp kategori dağılımı.
+      properties:
+        empty: { type: integer, description: WhatsApp hesabı yok — sadece kurulum/kayıt çalışır }
+        registering: { type: integer, description: Kayıt sürüyor }
+        whatsapp: { type: integer, description: Kullanılabilir hesap }
+        manual: { type: integer, description: Korumalı cihaz, elle kaydedilmiş hesap }
+        blocked: { type: integer, description: YASAKLI / ÇIKIŞ YAPMIŞ — okuma çalışır, gönderim 409 }
+    PublicDevice:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string, example: ONLINE }
+        whatsappCategory:
+          type: string
+          enum: [empty, registering, whatsapp, manual, blocked]
+          description: Bu cihazda hangi uçların çalıştığını belirler.
+        whatsappNumber: { type: string, nullable: true, description: Kayıtlı WhatsApp numarası (yoksa null) }
+        whatsappHealth:
+          type: string
+          nullable: true
+          enum: [RESTRICTED, BANNED, LOGGED_OUT]
+          description: Yalnızca sorun durumlarında dolu; sağlıklı ya da hesapsız cihazda null.
+        whatsappReady: { type: boolean, description: Mesaj atılabilir bir hesap tutuyor mu }
+        tags: { type: array, items: { type: string } }
+    # Cihaz gereksinimi karşılanmadığında dönen 409 gövdesi.
+    DeviceCategoryError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum: [NO_WHATSAPP_ACCOUNT, REGISTRATION_IN_PROGRESS, ACCOUNT_BANNED, ACCOUNT_LOGGED_OUT]
+            message: { type: string, description: Ne yapılması gerektiğini söyleyen Türkçe açıklama }
     # ── Public one-click provision / registration / job schemas ──
     PublicProvisionResponse:
       type: object

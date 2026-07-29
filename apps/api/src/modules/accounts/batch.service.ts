@@ -22,6 +22,7 @@ import { IG_REGISTER_STEPS } from './ig-register.service';
 import { autoAttachCountryProxy, autoAttachCountryProxyByCountry } from './auto-proxy';
 import { accountsService } from './accounts.service';
 import * as fivesim from './providers/fivesim.provider';
+import { getWhatsappState, checkWhatsappAccess, EMPTY_WHATSAPP_STATE } from '../devices/whatsappCategory';
 
 type Platform = 'whatsapp' | 'instagram' | 'facebook';
 type SmsProvider = 'sms-bus' | '5sim';
@@ -456,21 +457,16 @@ export class BatchService {
     // ayni gonderim status=SENT ile GECTI.
     // FIX: kart ile AYNI kurali kullan — EN YENI hesap satiri (FAILED gibi ara durumlar
     // haric) neyse ona bak. Boylece panel ile API asla celismez.
-    const acct = await prisma.generatedAccount.findFirst({
-      where: {
-        deviceId: input.deviceId,
-        platform: 'whatsapp',
-        status: { in: ['ACTIVE', 'AWAITING_MANUAL', 'RESTRICTED', 'BANNED', 'LOGGED_OUT'] }
-      },
-      select: { status: true, phoneNumber: true },
-      orderBy: { createdAt: 'desc' }
-    }).catch(() => null);
-    if (acct && (acct.status === 'BANNED' || acct.status === 'LOGGED_OUT')) {
-      const dead = acct.status === 'BANNED'
-        ? 'Bu cihazın WhatsApp hesabı YASAKLI (ban) — mesaj gönderilemez.'
-        : 'Bu cihazın WhatsApp hesabı ÇIKIŞ YAPMIŞ / kayıt silinmiş — mesaj gönderilemez, yeniden kayıt gerekir.';
-      throw new AppError(dead, 409, `ACCOUNT_${acct.status}`);
-    }
+    // ★2026-07-29: bu kural artik devices/whatsappCategory.ts'te TEK yerde yasiyor
+    // (panel karti, public API guard'i ve /devices/:id capabilities ayni tabloyu okur).
+    // requireAccountRow:false — bu yol dashboard'un WhatsApp sayfasindir ve HESAP SATIRI
+    // SART KOSMAZ (fonksiyon aciklamasindaki "no account row needed"). Canli filoda DB'de
+    // satiri olmayan ama cihazda WhatsApp'i KAYITLI cihazlar var; onlari kirmamak icin
+    // burada sadece OLU hesap (BANNED/LOGGED_OUT) reddedilir. Public API katmani ayni
+    // tabloyu kati modda uygular.
+    const waState = await getWhatsappState(input.deviceId).catch(() => EMPTY_WHATSAPP_STATE);
+    const access = checkWhatsappAccess(waState, 'send', { requireAccountRow: false });
+    if (!access.allowed) throw new AppError(access.message, 409, access.code);
     const to = input.to.replace(/[^\d]/g, '');
     if (!to) throw new AppError('Geçerli bir telefon numarası gerekli', 400, 'INVALID_RECIPIENT');
     const payload = { deviceId: input.deviceId, to, message: input.message } as unknown as JobPayload;

@@ -20,6 +20,7 @@ import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
 import { calendarService } from '../calendar/calendar.service';
 import { notificationsService } from '../notifications/notifications.service';
+import { createNotification, jobNotification } from '../notifications/feed.service';
 import { whatsappService, normalizePeer, type WaAccountHealth } from '../whatsapp/whatsapp.service';
 import { provisionService } from '../provision/provision.service';
 import { waRegisterService } from '../accounts/wa-register.service';
@@ -280,6 +281,18 @@ export class AgentService {
       timestamp: new Date().toISOString(),
       workspaceId: updated.workspaceId ?? undefined
     });
+
+    // ★2026-07-29: KALICI bildirim üret. WS push'u yalnızca o an panelde açık olan
+    // sekmeye ulaşır; operatör panelde değilse veya sayfayı yenilerse sonucu bir daha
+    // göremiyordu. Kalıcı besleme (Notification tablosu) bu boşluğu kapatır.
+    const jobNotif = jobNotification({
+      id: updated.id,
+      type: updated.type,
+      status: updated.status,
+      error: updated.error,
+      result: updated.result
+    });
+    if (jobNotif) void createNotification(updated.workspaceId, jobNotif);
 
     // ── WhatsApp on-device job → operator notification (Telegram/Slack/Discord) ──
     // Every WhatsApp device action fired from Telegram/dashboard/public-API is an

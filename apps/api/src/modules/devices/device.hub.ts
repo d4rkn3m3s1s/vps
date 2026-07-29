@@ -17,6 +17,8 @@ export type DeviceHubEvent = {
     | 'job.created'
     | 'job.updated'
     | 'alert.fired'
+    // Kalıcı bildirim beslemesine yeni satır yazıldı (notifications/feed.service.ts).
+    | 'notification.created'
     | 'whatsapp.message'
     | 'whatsapp.media'
     | 'provision.progress'

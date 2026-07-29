@@ -4,6 +4,7 @@ import { AppError } from '../../lib/errors';
 import { AdbService } from '../adb/adb.service';
 import { DockerService } from '../emulators/docker.service';
 import { webhooksService } from '../webhooks/webhooks.service';
+import { createNotification, jobNotification } from '../notifications/feed.service';
 import { deviceHub } from '../devices/device.hub';
 import { farmService } from '../farm/farm.service';
 import type { JobPayload, JobType } from './job.types';
@@ -47,6 +48,20 @@ async function updateJob(jobId: string, data: { status: 'RUNNING' | 'COMPLETED' 
     timestamp: new Date().toISOString(),
     workspaceId: updated.workspaceId ?? undefined
   });
+
+  // ★2026-07-29: terminal durumda KALICI bildirim (in-process kuyruk yolu). Agent
+  // yolundaki (agent.service.ts) eşdeğeriyle aynı kural — emülatör yaşam döngüsü
+  // işleri de panelde kalıcı iz bıraksın.
+  if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+    const notif = jobNotification({
+      id: updated.id,
+      type: updated.type,
+      status: updated.status,
+      error: updated.error,
+      result: updated.result
+    });
+    if (notif) void createNotification(updated.workspaceId, notif);
+  }
 
   // Fire outbound webhooks on terminal states (best-effort, never blocks).
   if (data.status === 'COMPLETED' || data.status === 'FAILED') {

@@ -1,8 +1,22 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useFleetEvents } from '../lib/live';
+import { fetchJson } from '../lib/safeFetch';
+
+// Bildirim merkezi (üst bardaki zil).
+//
+// ★2026-07-29 — KÖKTEN DEĞİŞTİ. Eskiden bu bileşen bildirimleri KENDİSİ üretiyordu:
+// 5 saniyede bir /api/jobs'u çekip önceki durumla farkını alıyor ve sonucu yalnızca
+// `useState` içinde tutuyordu. Üç sonucu vardı:
+//   1. Sayfa yenilenince TÜM bildirimler ve "okundu" bilgisi kayboluyordu.
+//   2. Her mount'ta ilk tur bilerek atlanıyordu (`bootstrapped` guard) — yani operatör
+//      panelde DEĞİLKEN biten işler hiç görünmüyordu.
+//   3. `res.json()` `res.ok`/content-type kontrolsüz çağrılıp boş bir catch'e düşüyordu;
+//      oturum süresi dolunca bildirimler SESSİZCE sonsuza dek duruyordu.
+// Artık kaynak sunucu: bildirimler Notification tablosunda üretiliyor, bu bileşen
+// açılışta oradan hidrat ediyor ve WS ile canlı ekliyor. Okundu durumu sunucuda.
 
 type Notification = {
   id: string;
@@ -13,12 +27,27 @@ type Notification = {
   read: boolean;
 };
 
-type Job = { id: string; type: string; status: string; finishedAt?: string | null };
-
-const KINDS: Record<string, 'ok' | 'err' | 'info'> = {
-  COMPLETED: 'ok',
-  FAILED: 'err'
+// Sunucudan gelen satır şekli (feed.service.ts).
+type FeedRow = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  read: boolean;
+  createdAt: string;
 };
+
+function toNotification(r: FeedRow): Notification {
+  const kind: Notification['kind'] = r.kind === 'ok' || r.kind === 'err' ? r.kind : 'info';
+  return {
+    id: r.id,
+    title: r.title,
+    detail: r.detail ?? '',
+    kind,
+    at: new Date(r.createdAt).getTime(),
+    read: r.read
+  };
+}
 
 function timeAgo(ts: number): string {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -32,108 +61,89 @@ export function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Notification[]>([]);
   const [toast, setToast] = useState<Notification | null>(null);
-  // Track which job→status pairs we've already notified so we don't double-fire.
-  const seen = useRef<Map<string, string>>(new Map());
-  const bootstrapped = useRef(false);
+  // Oturum düştüyse "bildirim yok" demek yanıltıcı olur — ayrı bir durum gösteriyoruz.
+  const [sessionLost, setSessionLost] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
-  useEffect(() => {
-    let alive = true;
-    async function poll() {
-      // Skip the poll while the tab is hidden — the primary channel is the WS push
-      // (job.updated/alert.fired); this 5s /api/jobs poll is only a fallback and just
-      // wastes requests in background tabs.
-      if (typeof document !== 'undefined' && document.hidden) return;
-      try {
-        const res = await fetch('/api/jobs', { cache: 'no-store' });
-        const json = await res.json();
-        const jobs: Job[] = Array.isArray(json.data) ? json.data : [];
-
-        // First pass: record current states silently (don't notify history).
-        if (!bootstrapped.current) {
-          for (const j of jobs) seen.current.set(j.id, j.status);
-          bootstrapped.current = true;
-          return;
-        }
-
-        const fresh: Notification[] = [];
-        for (const j of jobs) {
-          const prev = seen.current.get(j.id);
-          if (prev !== j.status && (j.status === 'COMPLETED' || j.status === 'FAILED')) {
-            fresh.push({
-              id: `${j.id}-${j.status}`,
-              title: j.status === 'COMPLETED' ? 'İş tamamlandı' : 'İş başarısız oldu',
-              detail: j.type,
-              kind: KINDS[j.status] ?? 'info',
-              at: Date.now(),
-              read: false
-            });
-          }
-          seen.current.set(j.id, j.status);
-        }
-
-        if (fresh.length > 0 && alive) {
-          setItems((prev) => [...fresh, ...prev].slice(0, 50));
-          setToast(fresh[0] ?? null);
-          setTimeout(() => alive && setToast(null), 4000);
-        }
-      } catch {
-        /* ignore transient errors */
-      }
-    }
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
+  const showToast = useCallback((n: Notification) => {
+    setToast(n);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // Real-time: push notifications the instant a job finishes or an alert fires,
-  // instead of waiting for the 5s poll. Polling stays as a fallback.
-  useFleetEvents(['job.updated', 'alert.fired'], (e) => {
-    if (e.type === 'alert.fired') {
-      const p = (e.payload ?? {}) as { title?: string; detail?: string };
-      const n: Notification = {
-        id: `alert-${e.timestamp ?? Date.now()}`,
-        title: p.title ?? 'Uyarı',
-        detail: p.detail ?? '',
-        kind: 'err',
-        at: Date.now(),
-        read: false
-      };
-      setItems((prev) => [n, ...prev].slice(0, 50));
-      setToast(n);
-      setTimeout(() => setToast(null), 4000);
+  // Sunucudan hidrat. Bu, "yenilemede kaybolma" ve "sen yokken bitenler görünmüyor"
+  // sorunlarının ikisini birden çözer.
+  const load = useCallback(async () => {
+    const res = await fetchJson<{ data: FeedRow[] }>('/api/notifications/feed?limit=50');
+    if (res.unauthorized) {
+      setSessionLost(true);
       return;
     }
-    const job = (e.payload ?? {}) as { id?: string; type?: string; status?: string };
-    if (!job.id || !job.status) return;
-    if (seen.current.get(job.id) === job.status) return;
-    seen.current.set(job.id, job.status);
-    if (job.status !== 'COMPLETED' && job.status !== 'FAILED') return;
-    const n: Notification = {
-      id: `${job.id}-${job.status}`,
-      title: job.status === 'COMPLETED' ? 'İş tamamlandı' : 'İş başarısız oldu',
-      detail: job.type ?? '',
-      kind: KINDS[job.status] ?? 'info',
-      at: Date.now(),
-      read: false
+    if (!res.ok || !res.data) return; // geçici hata: mevcut listeyi koru
+    setSessionLost(false);
+    const rows = Array.isArray(res.data.data) ? res.data.data : [];
+    setItems(rows.map(toNotification));
+  }, []);
+
+  useEffect(() => {
+    void load();
+    // Güvenlik ağı: WS kopuksa bile liste bayatlamasın. Sekme gizliyken atla.
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void load();
+    }, 30000);
+    // Sekmeye dönünce hemen tazele.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
     };
-    setItems((prev) => [n, ...prev].slice(0, 50));
-    setToast(n);
-    setTimeout(() => setToast(null), 4000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, [load]);
+
+  // Canlı: sunucu bildirim yazdığı anda ittirir (feed.service → deviceHub).
+  useFleetEvents(['notification.created'], (e) => {
+    const row = e.payload as FeedRow | undefined;
+    if (!row?.id) return;
+    const n = toNotification(row);
+    setItems((prev) => (prev.some((p) => p.id === n.id) ? prev : [n, ...prev].slice(0, 50)));
+    showToast(n);
+  });
+
+  // Alarm olayı ayrıca gelir; sunucu bunu da feed'e yazdığı için burada YALNIZCA
+  // anlık toast gösterip listeyi tazeliyoruz (çift kayıt olmasın).
+  useFleetEvents(['alert.fired'], () => {
+    void load();
   });
 
   const unread = items.filter((i) => !i.read).length;
 
-  function toggle() {
-    setOpen((v) => !v);
-    if (!open) setItems((prev) => prev.map((i) => ({ ...i, read: true })));
+  async function toggle() {
+    const opening = !open;
+    setOpen(opening);
+    if (opening && unread > 0) {
+      // İyimser güncelleme + sunucuya yaz (okundu durumu artık kalıcı).
+      setItems((prev) => prev.map((i) => ({ ...i, read: true })));
+      await fetchJson('/api/notifications/feed/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+    }
+  }
+
+  async function clearAll() {
+    setItems([]);
+    await fetchJson('/api/notifications/feed', { method: 'DELETE' });
+    void load();
   }
 
   return (
     <>
-      <button type="button" className="notif-bell" onClick={toggle} aria-label="Bildirimler">
+      <button type="button" className="notif-bell" onClick={() => void toggle()} aria-label="Bildirimler">
         <span className="notif-bell-icon">◔</span>
         {unread > 0 ? <span className="notif-badge">{unread > 9 ? '9+' : unread}</span> : null}
       </button>
@@ -152,13 +162,26 @@ export function NotificationCenter() {
               <div className="notif-head">
                 <strong>Bildirimler</strong>
                 {items.length > 0 ? (
-                  <button type="button" className="notif-clear" onClick={() => setItems([])}>
+                  <button type="button" className="notif-clear" onClick={() => void clearAll()}>
                     Temizle
                   </button>
                 ) : null}
               </div>
               <div className="notif-list">
-                {items.length === 0 ? (
+                {sessionLost ? (
+                  <div className="notif-empty">
+                    Oturumun süresi dolmuş — bildirimler yüklenemiyor.
+                    <br />
+                    <button
+                      type="button"
+                      className="notif-clear"
+                      onClick={() => window.location.reload()}
+                      style={{ marginTop: '.4rem' }}
+                    >
+                      Sayfayı yenile
+                    </button>
+                  </div>
+                ) : items.length === 0 ? (
                   <div className="notif-empty">Henüz bildirim yok</div>
                 ) : (
                   items.map((n) => (

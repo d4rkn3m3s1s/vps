@@ -10,6 +10,7 @@ import { getJob } from '../jobs/jobs.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
 import { withIdempotency, readIdempotencyKey } from './idempotency.service';
 import { getWhatsappState, capabilitiesOf } from '../devices/whatsappCategory';
+import { normalizePhoneInput, normalizeOtpInput } from '../../lib/phone';
 
 const deviceService = new DeviceService();
 
@@ -861,7 +862,22 @@ export async function provisionStatusHandler(req: Request, res: Response): Promi
 // /register/:id/otp to finish. Poll /register/:id/status for live progress.
 const registerSchema = z.object({
   deviceId: z.string().min(1),
-  phoneNumber: z.string().min(6)
+  // ★2026-07-29: dış entegratörler numarayı biçimli gönderebiliyor
+  // ("+90 555 111 22 33"). Ayırıcılar temizlenir; rakamlara dokunulmaz.
+  phoneNumber: z
+    .string()
+    .min(6)
+    .transform((v, ctx) => {
+      const n = normalizePhoneInput(v);
+      if (!n) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Geçerli bir telefon numarası girin (ülke kodu dahil, örn. +90 555 111 22 33)'
+        });
+        return z.NEVER;
+      }
+      return n;
+    })
 });
 export async function registerWhatsappHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
@@ -883,7 +899,22 @@ export async function registerWhatsappHandler(req: Request, res: Response): Prom
 
 // POST /public/v1/whatsapp/register/:id/otp — submit the SMS code so the agent
 // enters it + finishes the profile. Account flips to ACTIVE (or FAILED).
-const otpSchema = z.object({ otpCode: z.string().min(4).max(8) });
+// ★2026-07-29: SMS'ten kopyalanan kod boşluklu gelebilir ("123 456") — ayırıcılar
+// temizlenir, cihaza yalnız rakam iletilir.
+const otpSchema = z.object({
+  otpCode: z
+    .string()
+    .min(4)
+    .max(16)
+    .transform((v, ctx) => {
+      const n = normalizeOtpInput(v);
+      if (!n) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Doğrulama kodu 4-8 haneli olmalı (örn. 123456)' });
+        return z.NEVER;
+      }
+      return n;
+    })
+});
 export async function registerWhatsappOtpHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
   requireScope(req, 'write');

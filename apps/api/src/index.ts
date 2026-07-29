@@ -275,10 +275,25 @@ async function main(): Promise<void> {
       // "bildirim gelmiyor çünkü her şey yolunda" ile "bildirim gelmiyor çünkü izleme
       // ölmüş" birbirinden ayrılır (ikincisini raporun kendisi söyler).
       (async () => {
-        const hour = Number(process.env.FLEET_DIGEST_HOUR ?? 9); // sunucu saati (UTC)
+        // ★Saat OPERATÖRÜN diliminde yorumlanır (varsayılan Europe/Istanbul) — aksi
+        // halde "sabah 9" UTC'ye göre TR'de 12:00 olurdu.
+        const tz = process.env.FLEET_TZ || 'Europe/Istanbul';
+        const hour = Number(process.env.FLEET_DIGEST_HOUR ?? 9);
         const now = new Date();
-        const today = now.toISOString().slice(0, 10);
-        if (now.getUTCHours() !== hour || digestSentOn === today) return 0;
+        let localHour: number;
+        let today: string;
+        try {
+          const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz, hour: '2-digit', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit'
+          }).formatToParts(now);
+          const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? '';
+          localHour = Number(get('hour'));
+          today = `${get('year')}-${get('month')}-${get('day')}`;
+        } catch {
+          localHour = now.getUTCHours();
+          today = now.toISOString().slice(0, 10);
+        }
+        if (localHour !== hour || digestSentOn === today) return 0;
         digestSentOn = today;
         const workspaces = await prisma.workspace.findMany({ select: { id: true } }).catch(() => []);
         for (const ws of workspaces) {

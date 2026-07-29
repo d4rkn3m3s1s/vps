@@ -18,6 +18,25 @@ import type { JobPayload } from '../jobs/job.types';
 const esc = (s: string): string =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+// Zaman damgasını OPERATÖRÜN saat diliminde göster.
+//
+// ★2026-07-29: alarm saatleri `toISOString()` ile basılıyordu, yani UTC — Türkiye'de
+// 3 saat geride görünüyordu ve operatör olayın ne zaman olduğunu yanlış değerlendiriyordu
+// ("gece 00:30'da olmuş" derken aslında 03:30). FLEET_TZ ile ayarlanabilir.
+const DISPLAY_TZ = process.env.FLEET_TZ || 'Europe/Istanbul';
+function localHm(d: Date): string {
+  try {
+    return new Intl.DateTimeFormat('tr-TR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: DISPLAY_TZ
+    }).format(d);
+  } catch {
+    // Geçersiz TZ adı → sessizce UTC'ye düş (hiç saat göstermemekten iyi).
+    return new Date(d).toISOString().slice(11, 16);
+  }
+}
+
 // Bir cihazın "şu an gerçekten çalışıyor mu" özeti için gereken alanlar.
 type DeviceRow = {
   id: string;
@@ -148,8 +167,7 @@ export async function renderDiagnostics(workspaceId: string): Promise<string> {
   if (recentAlerts.length) {
     lines.push('', '<b>🔔 Son 6 saat</b>');
     for (const a of recentAlerts) {
-      const hhmm = new Date(a.createdAt).toISOString().slice(11, 16);
-      lines.push(`• <code>${hhmm}</code> ${esc(a.title).slice(0, 70)}`);
+      lines.push(`• <code>${localHm(a.createdAt)}</code> ${esc(a.title).slice(0, 70)}`);
     }
   } else {
     lines.push('', '🔕 Son 6 saatte alarm yok.');

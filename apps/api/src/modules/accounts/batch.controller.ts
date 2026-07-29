@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
+import { normalizePhoneInput, normalizeOtpInput } from '../../lib/phone';
 import { batchService } from './batch.service';
 import { waRegisterService } from './wa-register.service';
 import { igRegisterService } from './ig-register.service';
@@ -324,7 +325,24 @@ export async function autoRegisterWhatsAppHandler(req: Request, res: Response): 
 // (status REGISTERING → AWAITING_OTP as the agent reports back).
 const startRegisterSchema = z.object({
   deviceId: z.string().min(1),
-  phoneNumber: z.string().min(6),
+  // ★2026-07-29: operatör numarayı doğal biçimde yazabilsin ("+90 555 111 22 33",
+  // "0090-555…"). Normalizasyon YALNIZCA ayırıcıları temizler; rakamları değiştirmez,
+  // ülke kodu uydurmaz. Geçersizse net bir hata döner (sessizce yanlış numaraya
+  // kaydolmaktansa hata iyidir).
+  phoneNumber: z
+    .string()
+    .min(6)
+    .transform((v, ctx) => {
+      const n = normalizePhoneInput(v);
+      if (!n) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Geçerli bir telefon numarası girin (ülke kodu dahil, örn. +90 555 111 22 33)'
+        });
+        return z.NEVER;
+      }
+      return n;
+    }),
   // Optional operator-chosen profile name. Absent → backend auto-generates one.
   fullName: z.string().trim().min(1).max(60).optional(),
   // Explicit confirmation to proceed when the device already has a live WhatsApp account
@@ -345,7 +363,23 @@ export async function startRegisterHandler(req: Request, res: Response): Promise
 
 // Operator hands us the SMS code; re-dispatch so the agent enters it + finishes
 // the profile (random name). Account flips to ACTIVE (or FAILED) via the hook.
-const provideOtpSchema = z.object({ otpCode: z.string().min(4).max(8) });
+// ★2026-07-29: SMS'ten kopyalanan kod boşluklu gelebiliyor ("123 456"). Eski şema
+// ham hâliyle max(8) uyguluyordu; boşluklu 6 haneli kod (7 karakter) geçse bile
+// cihaza BOŞLUKLU yazılıyordu. Artık ayırıcılar temizlenip yalnız rakam iletilir.
+const provideOtpSchema = z.object({
+  otpCode: z
+    .string()
+    .min(4)
+    .max(16) // ayırıcılarla birlikte gelebilir; normalize sonrası 4-8 hane kontrol edilir
+    .transform((v, ctx) => {
+      const n = normalizeOtpInput(v);
+      if (!n) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Doğrulama kodu 4-8 haneli olmalı (örn. 123456)' });
+        return z.NEVER;
+      }
+      return n;
+    })
+});
 export async function provideOtpHandler(req: Request, res: Response): Promise<void> {
   const { otpCode } = provideOtpSchema.parse(req.body);
   const account = await batchService.provideOperatorOtp(getWorkspaceId(req), id(req), otpCode);

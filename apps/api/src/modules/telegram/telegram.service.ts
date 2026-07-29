@@ -27,6 +27,7 @@ import {
   renderEmergencyHelp,
   renderDailyDigest
 } from './ops.service';
+import { splitLeadingPhone } from '../../lib/phone';
 
 const deviceService = new DeviceService();
 
@@ -208,6 +209,9 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'adver', description: '✏️ Cihaz adını değiştir — /adver <cihaz> <ad>' },
   { command: 'sil', description: '🗑 Cihaz sil (korumalıysa reddedilir) — /sil <cihaz>' },
   // 💬 WA hesap-sağlık
+  // ★2026-07-29: /kayit dispatcher'da vardı ama palette/menüde YOKTU → operatör
+  // komutun varlığını keşfedemiyordu. (Kendisi panele yönlendirir; bu bilinçli.)
+  { command: 'kayit', description: '📝 WhatsApp kaydı nasıl yapılır (panele yönlendirir)' },
   { command: 'hesaplar', description: '💬 WhatsApp hesapları + sağlık rozeti' },
   { command: 'banlar', description: '⚠️ Son 7 günün ban/kısıt dalgası' },
   // 📂 Kayıt okuma
@@ -342,9 +346,12 @@ const MAIN_MENU: InlineButton[][] = [
   [{ text: '✉️ Mesaj Gönder', callback_data: 'send' }, { text: '📢 Toplu Test', callback_data: 'broadcast' }],
   [{ text: '🩺 Sağlık', callback_data: 'health' }, { text: '📈 İstatistik', callback_data: 'stats' }],
   [{ text: '🏷 Etiketler', callback_data: 'labels' }, { text: '📊 Durum', callback_data: 'status' }],
-  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: 'ℹ️ Yardım', callback_data: 'help' }],
+  // ★2026-07-29: 'read' (Mesajları Oku) handler'ı vardı ama HİÇBİR buton onu
+  // göndermiyordu — readpick akışı UI'dan erişilemez ölü koddu. Menüye bağlandı.
+  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: '📨 Mesajları Oku', callback_data: 'read' }],
   // ★2026-07-29: operatör dışarıdayken teşhis + onarım tek dokunuşla erişilebilir olmalı.
-  [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🔧 Kurtar', callback_data: 'ops:fix' }]
+  [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🔧 Kurtar', callback_data: 'ops:fix' }],
+  [{ text: 'ℹ️ Yardım', callback_data: 'help' }]
 ];
 
 // Operasyon (teşhis/onarım) ekranlarının altındaki menü — buradan hızlıca diğer
@@ -1103,12 +1110,18 @@ async function handleCommand(
       await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.', MAIN_MENU);
     } else {
       const rest = cmd.replace(/^\/?(testmesaj|toplutest)\s*/i, '').trim();
-      const m = /^(\+?\d[\d\s]{4,})(?:\s+([\s\S]+))?$/.exec(rest);
-      if (m) {
-        // Numara verildi → hemen gönder (mesaj yoksa varsayılan test metni).
-        const to = m[1]!.replace(/[^\d]/g, '');
-        const message = (m[2] ?? '').trim() || 'Test mesajı ✅';
-        await sendMessage(token, chatId, `📢 <b>${esc(to)}</b> numarasına tüm WhatsApp'lı cihazlardan test gönderiliyor…`);
+      // ★2026-07-29 KRİTİK BUG: eski desen `^(\+?\d[\d\s]{4,})(?:\s+([\s\S]+))?$`
+      // AÇGÖZLÜ idi — `[\d\s]{4,}` boşlukları da yuttuğu için
+      // "/testmesaj 90 555 111 22 33 Merhaba" girdisinde numara grubu mesajın
+      // başındaki rakam+boşlukları da içine alıyor, operatörün yazdığı "Merhaba"
+      // kayboluyor ve GERÇEK bir kişiye varsayılan "Test mesajı ✅" gidiyordu.
+      // splitLeadingPhone rakamları soldan toplar, E.164 üst sınırında (15) durur
+      // ve kalanı mesaj sayar → boşluklu numara artık doğru ayrışıyor.
+      const parsed = splitLeadingPhone(rest);
+      if (parsed.phone) {
+        const to = parsed.phone;
+        const message = parsed.rest || 'Test mesajı ✅';
+        await sendMessage(token, chatId, `📢 <b>${esc(to)}</b> numarasına tüm WhatsApp'lı cihazlardan test gönderiliyor…\n<i>Mesaj:</i> ${esc(message.slice(0, 80))}`);
         const report = await broadcastTestMessage(workspaceId, to, message);
         await sendMessage(token, chatId, report, MAIN_MENU);
       } else {
@@ -1400,10 +1413,13 @@ async function handleCommand(
     await sendMessage(token, chatId, menuText(), MAIN_MENU);
   } else {
     // Quick-send shorthand: "/gonder 905551112233 Merhaba"
-    const m = /^\/?gonder\s+(\+?\d[\d\s]{4,})\s+([\s\S]+)$/i.exec(cmd);
-    if (m) {
-      const to = m[1]!.replace(/[^\d]/g, '');
-      const message = m[2]!.trim();
+    // ★2026-07-29: /testmesaj ile AYNI açgözlü-regex bug'ı buradaydı — boşluklu
+    // numarada mesaj metni numaraya karışıyordu. splitLeadingPhone ile ayrıştırılıyor.
+    const gonderRest = /^\/?gonder\s+([\s\S]+)$/i.exec(cmd)?.[1]?.trim() ?? '';
+    const gp = gonderRest ? splitLeadingPhone(gonderRest) : { phone: null, rest: '' };
+    if (gp.phone && gp.rest) {
+      const to = gp.phone;
+      const message = gp.rest;
       // Use the first ONLINE device.
       const devices = await deviceService.listDevices(workspaceId);
       const dev = devices.find((d) => d.status === 'ONLINE') ?? devices[0];
@@ -1799,16 +1815,51 @@ async function loadBots(): Promise<Array<{ workspaceId: string; token: string; c
   });
   const bots: Array<{ workspaceId: string; token: string; chatIds: string[] }> = [];
   for (const row of rows) {
+    // ★2026-07-29 SESSİZ BOT KAYBI: burada iki ayrı sessiz eleme vardı —
+    //   (a) `catch { /* skip malformed */ }`: configEnc çözülemezse (şifreleme
+    //       anahtarı değişmiş, kayıt bozulmuş) bot listeden düşüyordu,
+    //   (b) `if (botToken && chatIds.length && workspaceId)`: eksik alan varsa
+    //       kayıt sessizce atlanıyordu.
+    // Her iki durumda da bot KALICI olarak cevap vermeyi bırakıyor, LOG BİLE
+    // yazılmıyordu. Operatör "bot ölmüş" diyor, sunucuda hiçbir iz yok — teşhisi
+    // neredeyse imkânsız. Artık her eleme sebebiyle birlikte loglanıyor.
     try {
       const cfg = JSON.parse(decryptString(row.configEnc)) as { botToken?: string; chatId?: string };
       const chatIds = String(cfg.chatId ?? '')
         .split(/[\s,]+/)
         .map((s) => s.trim())
         .filter(Boolean);
-      if (cfg.botToken && chatIds.length && row.workspaceId) {
-        bots.push({ workspaceId: row.workspaceId, token: cfg.botToken, chatIds });
+      if (!row.workspaceId) {
+        logger.warn('tg bot atlandi: kanalin workspace bagi yok', { channelId: row.id });
+        continue;
       }
-    } catch { /* skip malformed */ }
+      if (!cfg.botToken) {
+        logger.warn('tg bot atlandi: botToken bos', { channelId: row.id, workspaceId: row.workspaceId });
+        continue;
+      }
+      if (!chatIds.length) {
+        logger.warn('tg bot atlandi: kayitli chatId yok (bota kimse komut veremez)', {
+          channelId: row.id,
+          workspaceId: row.workspaceId
+        });
+        continue;
+      }
+      bots.push({ workspaceId: row.workspaceId, token: cfg.botToken, chatIds });
+    } catch (e) {
+      // En kritik hâli: şifre çözme/JSON hatası → bot kalıcı olarak susar.
+      logger.error('tg bot yapilandirmasi OKUNAMADI — bot devre disi', {
+        channelId: row.id,
+        workspaceId: row.workspaceId,
+        error: e instanceof Error ? e.message : String(e)
+      });
+    }
+  }
+  // Kanal tanımlı ama HİÇBİRİ kullanılabilir değilse bunu da söyle: "bot cevap
+  // vermiyor" şikâyetinin kaynağı çoğu zaman burasıdır.
+  if (rows.length && !bots.length) {
+    logger.error('tg: telegram kanali tanimli ama calisan bot YOK (yukaridaki sebeplere bakin)', {
+      channels: rows.length
+    });
   }
   return bots;
 }

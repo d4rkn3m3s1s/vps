@@ -212,6 +212,16 @@ async function main(): Promise<void> {
         });
         for (const d of stale) {
           await prisma.device.update({ where: { id: d.id }, data: { status: 'OFFLINE' } });
+          // ★2026-07-30 Durum değişimini WS'e yayınla — panelin üst kartları ve cihaz
+          // listesi ANINDA güncellensin. Eskiden yalnızca DB'ye yazılıyordu, panel bunu
+          // 20 saniyelik yoklamayla öğreniyordu (operatör: "anlık olmalı").
+          deviceHub.broadcast({
+            type: 'device.updated',
+            deviceId: d.id,
+            payload: { id: d.id, status: 'OFFLINE' },
+            timestamp: new Date().toISOString(),
+            ...(d.workspaceId ? { workspaceId: d.workspaceId } : {})
+          });
           void alertsService.evaluate(d.workspaceId ?? undefined, 'DEVICE_OFFLINE', {
             title: `Cihaz çevrimdışı: ${d.name}`,
             detail: 'Cihaz heartbeat zaman aşımına uğradı (>5 dk).'

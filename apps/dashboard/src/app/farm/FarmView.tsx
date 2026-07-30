@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, ShieldAlert, RotateCw, KeyRound, FileDown, History, ShieldCheck, Search, TrendingUp, Globe, Copy, Tag, Siren, HeartPulse, Megaphone, LayoutDashboard, Users } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 import { AnimatedNumber } from '../../components/Motion';
+import { useFleetEvents } from '../../lib/live';
 
 type Flow = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -412,6 +413,20 @@ export function FarmView() {
   useEffect(() => {
     void loadAll();
   }, []);
+
+  // ★2026-07-30 CANLI FARM. Veri açılışta BİR KEZ yükleniyor ve yalnızca operatörün
+  // kendi eylemlerinden sonra tazeleniyordu. Oysa farm motoru API içinde bir TICKER
+  // olarak arka planda çalışıyor (60-90 sn) ve ısıtma aşamalarını, sağlık skorlarını,
+  // ban-risk puanlarını kendi başına ilerletiyor → ekran donuk kalıyor, operatör
+  // ilerlemeyi ancak sayfayı yenileyerek görüyordu. Farm ban-risk alarmları
+  // (FARM_BAN_RISK) ve cihaz işleri ZATEN WS'te yayınlanıyor; abonelik eksikti.
+  // 800ms debounce: loadAll 6 uç birden çekiyor, olay fırtınasında tek tur yeter.
+  const liveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFleetEvents(['alert.fired', 'job.updated', 'device.updated'], () => {
+    if (liveRef.current) clearTimeout(liveRef.current);
+    liveRef.current = setTimeout(() => { void loadAll(); }, 800);
+  });
+  useEffect(() => () => { if (liveRef.current) clearTimeout(liveRef.current); }, []);
 
   async function createCampaign() {
     if (!form.name.trim()) return flash('Kampanya adı gereklidir.', 'err');

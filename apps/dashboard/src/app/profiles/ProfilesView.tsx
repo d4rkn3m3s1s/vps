@@ -291,8 +291,14 @@ export function ProfilesView({
       setDevices((prev) => (sameDeviceList(prev, next) ? prev : next));
     } catch { /* keep last good list */ }
   }, []);
+  // ★2026-07-30 `job.updated` + `alert.fired` DE dinleniyor. Üst kartlardan İŞLEMDE
+  // (busyCount) cihazın provision/job durumundan, HATA (errorCount) status==='ERROR'
+  // ten türüyor; ikisi de iş/alarm olaylarıyla değişiyor ama bu bileşen yalnızca
+  // device.* dinlediği için o kartlar 20 saniyelik yoklamayı bekliyordu.
+  // (API tarafında da ONLINE↔OFFLINE geçişi artık yayınlanıyor — eskiden sadece DB'ye
+  // yazılıyordu, yayının kendisi hiç yoktu.)
   useFleetEvents(
-    ['device.created', 'device.updated', 'device.deleted', 'provision.progress'],
+    ['device.created', 'device.updated', 'device.deleted', 'provision.progress', 'job.updated', 'alert.fired'],
     () => {
       if (refreshRef.current) clearTimeout(refreshRef.current);
       refreshRef.current = setTimeout(() => { void fetchDevices(); }, 400);

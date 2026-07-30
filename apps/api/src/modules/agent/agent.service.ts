@@ -1140,6 +1140,37 @@ export class AgentService {
       void webhooksService.dispatch('DEVICE_ONLINE', { deviceId: d.id, name: d.name }, d.workspaceId ?? undefined);
     }
 
+    // ★2026-07-30 DURUM DEĞİŞİMİNİ YAYINLA. Operatör: "bu kısımda anlık olmalı,
+    // websocket gibi". Kök neden: ONLINE↔OFFLINE geçişi SADECE DB'ye yazılıyordu,
+    // hiçbir yerde `deviceHub.broadcast` çağrılmıyordu — WS altyapısı, `device.updated`
+    // olayı ve panelin aboneliği ZATEN vardı, yayının kendisi eksikti. Bu yüzden
+    // panelin üst kartları (TOPLAM/ÇEVRİMİÇİ/İŞLEMDE/HATA) ve cihaz listesi durum
+    // değişimini 20 SANİYELİK yoklamayla öğreniyordu.
+    // Yalnızca GEÇİŞ yapanlar yayınlanır (her heartbeat'te tüm filo değil) — aksi
+    // halde 34 cihaz × 30s = sürekli gereksiz WS trafiği olurdu.
+    for (const d of newlyOnline) {
+      deviceHub.broadcast({
+        type: 'device.updated',
+        deviceId: d.id,
+        payload: { id: d.id, status: 'ONLINE' },
+        timestamp: now.toISOString(),
+        ...(d.workspaceId ? { workspaceId: d.workspaceId } : {})
+      });
+    }
+    if (downIds.length) {
+      const downSet = new Set(downIds);
+      for (const d of affected) {
+        if (!downSet.has(d.id)) continue;
+        deviceHub.broadcast({
+          type: 'device.updated',
+          deviceId: d.id,
+          payload: { id: d.id, status: 'OFFLINE' },
+          timestamp: now.toISOString(),
+          ...(d.workspaceId ? { workspaceId: d.workspaceId } : {})
+        });
+      }
+    }
+
     return updated;
   }
 

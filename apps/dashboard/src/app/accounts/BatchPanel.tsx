@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus, MessageCircle, X, Send, Inbox } from 'lucide-react';
+import { useFleetEvents } from '../../lib/live';
 
 type Account = {
   id: string;
@@ -80,6 +81,23 @@ export function BatchPanel() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // ★2026-07-30 CANLI HESAP LİSTESİ. Liste açılışta BİR KEZ yükleniyor ve yalnızca
+  // operatörün kendi eylemlerinden sonra tazeleniyordu — kayıt akışı ilerlerken
+  // (REGISTERING → AWAITING_OTP → ACTIVE/FAILED) tablo DONUK kalıyor, operatör
+  // "sayfayı yenileyince görüyorum" durumunda oluyordu. Kayıt ilerlemesi ve hesap
+  // durumu değişimi ZATEN WS'te yayınlanıyor (whatsapp/instagram.register.progress,
+  // alert.fired); bu bileşen sadece abone değildi. 600ms debounce ile olay
+  // fırtınasında (her adım bir olay) tek istek atılır.
+  const reloadRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFleetEvents(
+    ['whatsapp.register.progress', 'instagram.register.progress', 'alert.fired', 'device.updated'],
+    () => {
+      if (reloadRef.current) clearTimeout(reloadRef.current);
+      reloadRef.current = setTimeout(() => { void load(); }, 600);
+    }
+  );
+  useEffect(() => () => { if (reloadRef.current) clearTimeout(reloadRef.current); }, []);
 
   // Load devices so the operator can pick where to run the on-device signup.
   useEffect(() => {

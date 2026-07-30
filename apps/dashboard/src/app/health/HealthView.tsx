@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Activity, Cpu, MemoryStick, HardDrive, RefreshCw, ServerCog, Wifi, AlertTriangle, Gauge } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
 import { usePolling } from '../../lib/usePolling';
+import { useFleetEvents } from '../../lib/live';
 
 type Device = {
   id: string;
@@ -144,6 +145,18 @@ export function HealthView() {
   useEffect(() => { void load(); }, []);
   // Auto-refresh every 15s for a live feel (skips while the tab is hidden).
   usePolling(() => void load(true), 15000);
+
+  // ★2026-07-30 CANLI SAĞLIK. 15 saniyelik yoklama "canlı hissi" veriyordu ama ANLIK
+  // değildi: bir cihaz düştüğünde sağlık sayfası 15 saniyeye kadar yanlış rakam
+  // gösteriyordu. Durum değişimi ve alarmlar ZATEN WS'te yayınlanıyor (API tarafında
+  // ONLINE↔OFFLINE geçişi bu turda yayına eklendi), bu sayfa sadece abone değildi.
+  // Yoklama güvenlik ağı olarak KALIYOR (WS kopması / kaçan olay).
+  const liveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFleetEvents(['device.updated', 'device.created', 'device.deleted', 'alert.fired'], () => {
+    if (liveRef.current) clearTimeout(liveRef.current);
+    liveRef.current = setTimeout(() => void load(true), 500);
+  });
+  useEffect(() => () => { if (liveRef.current) clearTimeout(liveRef.current); }, []);
 
   const stats = useMemo(() => {
     const total = devices.length;

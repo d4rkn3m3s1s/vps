@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import { useFleetEvents } from '../../../lib/live';
 import {
   Activity,
   Fingerprint,
@@ -167,6 +168,24 @@ export function ProfileDetailView({
   const [toast, setToast] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
   const [hostId, setHostId] = useState<string>(device.host?.id ?? device.hostId ?? '');
   const fp = device.fingerprint;
+
+  // ★2026-07-30 CANLI CİHAZ DETAYI. Bu sayfa sunucuda render ediliyordu ve YALNIZCA
+  // operatörün kendi eylemlerinden sonra (router.refresh) tazeleniyordu — cihaz
+  // dışarıdan durum değiştirdiğinde (OFFLINE düşme, iş bitmesi, kayıt ilerlemesi)
+  // ekran DONUK kalıyordu; operatör "sayfayı yenileyince görüyorum" durumundaydı.
+  // Artık ilgili WS olaylarında sunucu bileşeni yeniden çekilir. Sadece BU cihazın
+  // olayları dikkate alınır (34 cihazlı filoda her olayda refresh gereksiz maliyet).
+  // Olay fırtınasına karşı 500ms debounce.
+  const refreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFleetEvents(
+    ['device.updated', 'device.deleted', 'job.created', 'job.updated', 'provision.progress', 'alert.fired'],
+    (e) => {
+      if (e.deviceId && e.deviceId !== device.id) return;
+      if (refreshRef.current) clearTimeout(refreshRef.current);
+      refreshRef.current = setTimeout(() => router.refresh(), 500);
+    }
+  );
+  useEffect(() => () => { if (refreshRef.current) clearTimeout(refreshRef.current); }, []);
 
   function flash(text: string, kind: 'ok' | 'err' = 'ok') {
     setToast({ text, kind });

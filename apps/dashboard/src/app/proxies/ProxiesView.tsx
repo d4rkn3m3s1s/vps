@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useFleetEvents } from '../../lib/live';
 import {
   Network,
   Upload,
@@ -43,6 +44,18 @@ function StatusDot({ status }: { status: string }) {
 
 export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
   const router = useRouter();
+  // ★2026-07-30 CANLI PROXY DURUMU. Bu sayfa sunucuda render edilip yalnızca
+  // operatörün kendi eylemlerinden sonra tazeleniyordu. Oysa proxy sağlığı ASENKRON
+  // değişiyor: health-check işleri, otomatik ülke-ataması ve retry akışının sessid
+  // rotasyonu proxy satırlarını arka planda günceller. Sonuç: operatör OK sanıp
+  // ölü bir proxy üzerinden kayıt başlatabiliyordu (ban riski).
+  // Alarm ve iş olaylarında sunucu bileşeni yeniden çekilir; 700ms debounce.
+  const liveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useFleetEvents(['job.updated', 'alert.fired', 'device.updated'], () => {
+    if (liveRef.current) clearTimeout(liveRef.current);
+    liveRef.current = setTimeout(() => router.refresh(), 700);
+  });
+  useEffect(() => () => { if (liveRef.current) clearTimeout(liveRef.current); }, []);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState('');

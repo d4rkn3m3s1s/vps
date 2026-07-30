@@ -65,7 +65,12 @@ export async function getAccessToken(): Promise<string> {
     token = json.data.accessToken;
   }
 
-  cacheByWorkspace.set(workspaceId, { token, expiresAt: now + 12 * 60_000 });
+  // ★2026-07-30: 12 dk → 100 dk. Bu, SERVİS kimliğinin (panelin sunucu tarafı)
+  // token önbelleği; access-token ömrü 2 saate çıkarıldığı için 12 dakikada bir
+  // yeniden login olmak gereksiz trafik. Ömrün ALTINDA kalıyor (100 < 120) ki
+  // önbellekten süresi dolmuş bir token dönmesin.
+  // ⚠️ JWT_ACCESS_EXPIRES_IN düşürülürse bu değer de düşürülmeli.
+  cacheByWorkspace.set(workspaceId, { token, expiresAt: now + 100 * 60_000 });
   return token;
 }
 

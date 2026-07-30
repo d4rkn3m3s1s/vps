@@ -51,11 +51,15 @@ export async function POST(request: Request) {
   const response = NextResponse.json({ ok: true });
   // Session marker — httpOnly so JS can't read it. The actual API calls still
   // run server-side via apiClient; this cookie gates dashboard access.
+  // ★2026-07-30 maxAge, token'ın GERÇEK ömrüyle hizalandı (2 sa + 5 dk pay).
+  // Eskiden 12 saatti ama içindeki JWT 15 dakikada ölüyordu: çerez duruyor,
+  // middleware `exp`'e bakıp "geçersiz" diyor → operatör 15 dakikada bir atılıyordu.
+  // Uzun bir maxAge, kısa ömürlü bir token'ı UZATMAZ; yalnızca ölü çerezi saklar.
   response.cookies.set('fleet_session', json.data.accessToken!, {
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
-    maxAge: 60 * 60 * 12
+    maxAge: 60 * 60 * 2 + 300
   });
   return response;
 }

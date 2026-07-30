@@ -156,14 +156,21 @@ export class FingerprintService {
   // exactly as-is, then push the identity to the device WITHOUT touching wm
   // size/density/timezone (those would shift WhatsApp's coordinate recipe). This
   // is the safe reroll the operator asked for: "hiçbir özelliğini bozmadan".
-  async rerollIdentity(deviceId: string, workspaceId?: string) {
+  // opts.skipBusyCheck: çağıran akış AYNI cihazda az önce başka bir ön-iş açtıysa
+  // (ör. WhatsApp retry'ı önce EMULATOR_SET_PROXY kuyruğa alıyor) busy-check bu
+  // APPLY_FINGERPRINT'i DEVICE_BUSY ile reddeder ve kimlik cihaza HİÇ yazılmaz.
+  // ⚠️ CANLI TESPİT (30 Tem): tam bu yaşandı — DB'de kimlik yenilendi ama
+  // APPLY_FINGERPRINT işi açılmadı, yani cihaz eski kimliğiyle kaldı. Kimlik
+  // yenilemenin "yapıldı" görünüp cihaza ulaşmaması, kurtarmanın sessizce
+  // etkisiz kalması demekti.
+  async rerollIdentity(deviceId: string, workspaceId?: string, opts?: { skipBusyCheck?: boolean }) {
     await this.assertDevice(deviceId, workspaceId);
     const existing = await prisma.deviceFingerprint.findUnique({ where: { deviceId } });
     if (!existing) {
       // No fingerprint yet — fall back to a full generate (screen included, since
       // there's nothing to preserve) and apply everything.
       const created = await this.ensure(deviceId, {}, workspaceId);
-      const job = await this.applyIdentityJob(deviceId, created, { includeScreen: true }, workspaceId);
+      const job = await this.applyIdentityJob(deviceId, created, { includeScreen: true, ...(opts?.skipBusyCheck ? { skipBusyCheck: true } : {}) }, workspaceId);
       return { jobId: job.jobId, fingerprint: created };
     }
     // Keep model/os/screen/locale; reroll only the identifiers.
@@ -176,7 +183,12 @@ export class FingerprintService {
     };
     const saved = decryptFingerprint(await prisma.deviceFingerprint.update({ where: { deviceId }, data }));
     // Apply WITHOUT screen/timezone so the WhatsApp-ready layout stays intact.
-    const job = await this.applyIdentityJob(deviceId, saved, { includeScreen: false }, workspaceId);
+    const job = await this.applyIdentityJob(
+      deviceId,
+      saved,
+      { includeScreen: false, ...(opts?.skipBusyCheck ? { skipBusyCheck: true } : {}) },
+      workspaceId
+    );
     return { jobId: job.jobId, fingerprint: saved };
   }
 
@@ -186,7 +198,7 @@ export class FingerprintService {
   private async applyIdentityJob(
     deviceId: string,
     fp: DeviceFingerprint,
-    opts: { includeScreen: boolean },
+    opts: { includeScreen: boolean; skipBusyCheck?: boolean },
     workspaceId?: string
   ): Promise<{ jobId: string }> {
     const fingerprint = {
@@ -199,7 +211,13 @@ export class FingerprintService {
       androidId: fp.androidId,
       ...(opts.includeScreen ? { resolution: fp.resolution, dpi: fp.dpi, timezone: fp.timezone } : {})
     };
-    const job = await createJobRecord('APPLY_FINGERPRINT', { deviceId, fingerprint } as never, undefined, workspaceId);
+    const job = await createJobRecord(
+      'APPLY_FINGERPRINT',
+      { deviceId, fingerprint } as never,
+      undefined,
+      workspaceId,
+      opts.skipBusyCheck ? { skipBusyCheck: true } : undefined
+    );
     return { jobId: job.id };
   }
 

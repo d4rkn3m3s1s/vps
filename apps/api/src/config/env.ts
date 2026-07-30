@@ -13,7 +13,14 @@ const envSchema = z.object({
   REDIS_URL: z.string().min(1),
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
-  JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
+  // ★2026-07-30: 15m → 2h (operatör isteği: "oturum çok hızlı bitiyor, bunu 2 saat yap").
+  // Panelin oturumu bu token'ın `exp`'ine bağlı: dashboard middleware'i fleet_session
+  // çerezindeki JWT'nin exp'ine bakıyor, çerezin kendi 12 saatlik maxAge'i değil. Yani
+  // 15m access-token = 15 dakikada panelden atılmak. Yenileme (refresh) akışı panelde
+  // otomatik değil, bu yüzden ömrü uzatmak doğru çözüm.
+  // ⚠️ Bu bir GÜVENLİK ödünüdür: çalınan bir access-token 2 saat geçerli kalır.
+  // Kabul edilebilir çünkü çerez httpOnly+sameSite'dir ve panel tek operatörlüdür.
+  JWT_ACCESS_EXPIRES_IN: z.string().default('2h'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
   ADMIN_EMAIL: z.string().email(),
   ADMIN_PASSWORD: z.string().min(8),

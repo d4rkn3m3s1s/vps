@@ -20,6 +20,9 @@ import type { JobPayload } from '../jobs/job.types';
 import { WA_REGISTER_STEPS, waRegisterService } from './wa-register.service';
 import { IG_REGISTER_STEPS } from './ig-register.service';
 import { autoAttachCountryProxy, autoAttachCountryProxyByCountry, rotateExitIp } from './auto-proxy';
+// Retry akışı cihaz kimliğini (IMEI/android_id/serial/MAC/build) yeniden üretir —
+// "resmî WhatsApp duvarı" yalnızca yeni IP ile aşılmıyor, cihaz izi de değişmeli.
+import { fingerprintService } from '../fingerprint/fingerprint.service';
 import { accountsService } from './accounts.service';
 import * as fivesim from './providers/fivesim.provider';
 import { getWhatsappState, checkWhatsappAccess, EMPTY_WHATSAPP_STATE } from '../devices/whatsappCategory';
@@ -1283,6 +1286,41 @@ export class BatchService {
       rotated = await rotateExitIp(acc.deviceId, instance, phoneE164, workspaceId).catch(() => null);
     }
 
+    // 1b) CİHAZ KİMLİĞİNİ YENİLE (parmak izi reroll).
+    //
+    // ★2026-07-30 (operatör kararı: "B — parmak izi yenileme"). "Resmî WhatsApp
+    // duvarı" (APK/cihaz-izi reddi) durumunda yeni bir çıkış IP'si TEK BAŞINA
+    // yetmiyor: WhatsApp cihazı tanıyor. `rerollIdentity` model/ekran/ülke/GPS'e
+    // DOKUNMADAN yalnızca kimlik yüzeyini (IMEI, android_id, serial, MAC, build
+    // numarası) yeniden üretir ve APPLY_FINGERPRINT ile cihaza yazar — ekran
+    // boyutu/yoğunluğu korunur, çünkü onları değiştirmek WhatsApp'ın koordinat
+    // reçetesini bozar.
+    //
+    // ⚠️ CANLI ÖLÇÜM (30 Tem): android_id 33/33 cihazda GERÇEKTEN farklı ve model
+    // 11 çeşit — yani parmak izi katmanı çalışıyor. Ancak MAC 35/35 instance'ta
+    // AYNIydı (00:16:3e:f9:d3:03 = Xen/LXC OUI): MAC LXC config'inde durur, ADB'den
+    // değiştirilemez (denendi, kernel reddetti + cihazın ağı koptu). Bu yüzden MAC
+    // host tarafında ayrı çözüldü (wd-mac-unique.sh + wd-provision.sh); buradaki
+    // reroll MAC'i DB'de günceller ama cihaza yazamaz — bu bilinçli bir sınırdır.
+    //
+    // Best-effort: kimlik yenilenemezse kayıt yine denenir (yeni IP tek başına da
+    // çoğu geçici engeli aşıyor). Operatör hangi adımların koştuğunu yanıtta görür.
+    let identityRerolled = false;
+    try {
+      // skipBusyCheck ŞART: yukarıdaki rotateExitIp az önce EMULATOR_SET_PROXY'yi
+      // kuyruğa aldı; busy-check olmadan APPLY_FINGERPRINT DEVICE_BUSY ile reddedilir
+      // ve kimlik cihaza HİÇ yazılmaz (canlı olarak yaşandı: DB yenilendi, cihaz eski
+      // kimlikte kaldı → kurtarma sessizce etkisiz). Üç iş de aynı cihazda, agent
+      // tarafından sırayla koşar.
+      await fingerprintService.rerollIdentity(acc.deviceId, workspaceId, { skipBusyCheck: true });
+      identityRerolled = true;
+    } catch (e) {
+      logger.warn('retry: cihaz kimligi yenilenemedi (kayit yine deneniyor)', {
+        deviceId: acc.deviceId,
+        error: e instanceof Error ? e.message : String(e)
+      });
+    }
+
     // 2) Hesabı yeniden akışa al ve kayıt işini gönder.
     await prisma.generatedAccount
       .update({ where: { id: acc.id }, data: { status: 'REGISTERING', error: null } })
@@ -1295,10 +1333,11 @@ export class BatchService {
         { deviceId: acc.deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
         undefined,
         workspaceId,
-        // Az önce SET_PROXY kuyruğa girdiyse busy-check'i atla: o iş BU akışın kendi
-        // ön adımı (aynı cihazda sırayla koşar). Aksi halde DEVICE_BUSY ile reddedilir
-        // — startOperatorRegister'da aynı gerekçeyle aynı bayrak kullanılıyor.
-        rotated ? { skipBusyCheck: true } : undefined
+        // Az önce SET_PROXY ve/veya APPLY_FINGERPRINT kuyruğa girdiyse busy-check'i
+        // atla: onlar BU akışın kendi ön adımları (aynı cihazda sırayla koşar). Aksi
+        // halde DEVICE_BUSY ile reddedilir — startOperatorRegister'da aynı gerekçeyle
+        // aynı bayrak kullanılıyor.
+        rotated || identityRerolled ? { skipBusyCheck: true } : undefined
       );
     } catch (e) {
       await prisma.generatedAccount
@@ -1327,7 +1366,8 @@ export class BatchService {
     logger.info('WA kaydi TEKRAR DENENIYOR (ayni hesap satiri)', {
       accountId: acc.id,
       deviceId: acc.deviceId,
-      ...(rotated ? { cikisDonduruldu: rotated.country } : { cikisDonduruldu: false })
+      ...(rotated ? { cikisDonduruldu: rotated.country } : { cikisDonduruldu: false }),
+      kimlikYenilendi: identityRerolled
     });
 
     return {
@@ -1335,6 +1375,14 @@ export class BatchService {
       deviceId: acc.deviceId,
       steps: WA_REGISTER_STEPS,
       ipRotated: Boolean(rotated),
+      identityRerolled,
+      // Modalda gösterilecek adım listesi — operatör hangi kurtarma adımlarının
+      // GERÇEKTEN koştuğunu görsün ("uyarılar bazen yarım kalıyor" geri bildirimi).
+      recoverySteps: [
+        { key: 'wipe', label: 'WhatsApp verisi silinecek', ok: true },
+        { key: 'ip', label: rotated ? `Çıkış IP'si yenilendi (${rotated.country})` : "Çıkış IP'si yenilenemedi", ok: Boolean(rotated) },
+        { key: 'identity', label: identityRerolled ? 'Cihaz kimliği yenilendi (IMEI/android_id/serial/MAC)' : 'Cihaz kimliği yenilenemedi', ok: identityRerolled }
+      ],
       ...(rotated ? { country: rotated.country } : {})
     };
   }

@@ -106,6 +106,10 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   const [remain, setRemain] = useState(0); // geri sayan saniye
   const [retryBusy, setRetryBusy] = useState(false);
   const [accStatus, setAccStatus] = useState<string | null>(null);
+  // "Sıfırla ve Tekrar Dene" adım listesi: hangi kurtarma adımı GERÇEKTEN koştu.
+  // Operatör geri bildirimi: "butonu süreci logları görelim" — buton bir şey yapıp
+  // yapmadığını göstermeli, sessizce "başladı" demekle kalmamalı.
+  const [recoverySteps, setRecoverySteps] = useState<Array<{ key: string; label: string; ok: boolean }> | null>(null);
   const termRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted history on open (covers "arka plana al" → reopen).
@@ -358,8 +362,15 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
         setOtpMsg(body?.data?.message || body?.error || 'Tekrar deneme başlatılamadı');
         return;
       }
-      const ipNote = body?.data?.ipRotated ? ` (çıkış IP'si yenilendi${body?.data?.country ? `: ${body.data.country}` : ''})` : '';
-      setOtpMsg(`🔄 Tekrar deneme başladı${ipNote} — ajan cihazı sıfırlıyor.`);
+      // Kurtarma adımlarının GERÇEKTEN koşup koşmadığını göster (API bildiriyor).
+      const steps = Array.isArray(body?.data?.recoverySteps) ? body.data.recoverySteps : null;
+      setRecoverySteps(steps);
+      const failed = steps ? steps.filter((s: { ok: boolean }) => !s.ok).length : 0;
+      setOtpMsg(
+        failed > 0
+          ? `🔄 Tekrar deneme başladı — ${failed} adım atlandı (aşağıda).`
+          : '🔄 Tekrar deneme başladı — tüm kurtarma adımları uygulandı.'
+      );
       // Panel durumunu hemen "çalışıyor"a çevir; ilerleme WS'ten akmaya devam eder.
       setCurrent((c) => ({ ...c, step: 'reset', label: 'Sıfırlanıyor ve tekrar deneniyor', percent: 5, status: 'RUNNING' }));
       setWaitUntil(null);
@@ -539,6 +550,35 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           >
             <strong>{wallKind === 'BAN' ? '⛔ Ne yapmalı' : '➡️ Ne yapmalı'}</strong>
             <div style={{ opacity: 0.9, marginTop: 3 }}>{action}</div>
+          </div>
+        )}
+
+        {/* ★2026-07-30 Kurtarma adımı logları. "Sıfırla ve Tekrar Dene"ye basıldığında
+            hangi adımın GERÇEKTEN koştuğu görünür — buton sessizce "başladı" demekle
+            kalmaz. Bir adım atlandıysa (ör. proxy yoksa IP yenilenemez) operatör bunu
+            görür ve gerekirse başka bir şey dener. */}
+        {recoverySteps && recoverySteps.length > 0 && (
+          <div
+            style={{
+              border: '1px solid rgba(148,163,184,0.35)',
+              borderLeft: '3px solid #64748b',
+              background: 'rgba(148,163,184,0.07)',
+              borderRadius: 10,
+              padding: '10px 14px',
+              marginBottom: 14,
+              fontSize: 12
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>🔄 Kurtarma adımları</div>
+            {recoverySteps.map((s) => (
+              <div key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 7, lineHeight: 1.7 }}>
+                {s.ok ? <Check size={13} color="#22c55e" /> : <AlertTriangle size={13} color="#fbbf24" />}
+                <span style={{ opacity: s.ok ? 0.9 : 0.7 }}>{s.label}</span>
+              </div>
+            ))}
+            <div style={{ opacity: 0.55, marginTop: 6, fontSize: 11 }}>
+              ⓘ MAC adresi cihaz yeniden başlatıldığında geçerli olur (LXC ayarında saklanır).
+            </div>
           </div>
         )}
 

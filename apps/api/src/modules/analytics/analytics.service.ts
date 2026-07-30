@@ -11,7 +11,15 @@ export type AnalyticsSummary = {
     jobs: number;
     jobsCompleted: number;
     jobsFailed: number;
-    successRate: number; // %
+    successRate: number; // % — İŞ ÇALIŞMA oranı (COMPLETED/total), gönderim başarısı DEĞİL
+    // ★2026-07-30 GÖNDERİM BAŞARISI AYRI ÖLÇÜLÜR. `successRate` yalnızca "iş koştu ve
+    // rapor döndü" demek; WhatsApp mesajının gidip gitmediği Job.result.status'ta.
+    // CANLI ÖLÇÜM: 28 gönderim işinin 27'si COMPLETED'ken sadece 2'si gerçekten SENT'ti
+    // (17 CHAT_NOT_OPENED, 7 ACCOUNT_RESTRICTED, 1 ACCOUNT_LOGGED_OUT) → %96 "başarı"
+    // görünürken gerçek oran %7. Operatör panele bakıp "her şey yolunda" sanıyordu.
+    sendTotal: number;      // son dönemdeki WHATSAPP_SEND işi sayısı
+    sendDelivered: number;  // bunlardan GERÇEKTEN gönderilen
+    sendRate: number;       // % — gerçek gönderim oranı
     farmAccounts: number;
     avgHealthScore: number; // 0-100
     onlineMinutes: number;
@@ -42,7 +50,9 @@ export class AnalyticsService {
       // jobs in the window doesn't pull them all into memory just to tally.
       prisma.job.findMany({
         where: { createdAt: { gte: since }, ...wsJob },
-        select: { status: true, createdAt: true }
+        // ★2026-07-30 `type` + `result` da çekiliyor: gönderim başarısını ölçmek için
+        // gerekli (bkz. sendRate). `result` bir JSON kolonu, ek sorgu maliyeti yok.
+        select: { status: true, createdAt: true, type: true, result: true }
       }),
       prisma.farmAccount.findMany({
         where: wsFarm,
@@ -52,6 +62,16 @@ export class AnalyticsService {
 
     const jobsCompleted = jobs.filter((j) => j.status === 'COMPLETED').length;
     const jobsFailed = jobs.filter((j) => j.status === 'FAILED').length;
+
+    // ★2026-07-30 GERÇEK GÖNDERİM ORANI. `Job.status === 'COMPLETED'` "iş koştu"
+    // demek; mesajın gidip gitmediği `result.status`ta ('SENT' / 'CHAT_NOT_OPENED' /
+    // 'ACCOUNT_RESTRICTED' / 'ACCOUNT_LOGGED_OUT'…). İkisini ayırmadan bakınca
+    // %96 başarı görünürken gerçek oran %7 olabiliyor (canlı ölçüm, 30 Tem).
+    const sendJobs = jobs.filter((j) => j.type === 'WHATSAPP_SEND');
+    const sendDelivered = sendJobs.filter((j) => {
+      const rs = String(((j.result ?? {}) as Record<string, unknown>).status ?? '');
+      return rs === 'SENT' || rs === 'OK' || rs === 'DELIVERED';
+    }).length;
     // Online-minute metering was removed with the usage module; there is no live
     // per-device online-minute rollup to aggregate, so this is 0 for now.
     const onlineMinutes = 0;
@@ -67,6 +87,9 @@ export class AnalyticsService {
       jobsCompleted,
       jobsFailed,
       successRate: pct(jobsCompleted, jobsCompleted + jobsFailed),
+      sendTotal: sendJobs.length,
+      sendDelivered,
+      sendRate: pct(sendDelivered, sendJobs.length),
       farmAccounts: farmAccounts.length,
       avgHealthScore,
       onlineMinutes

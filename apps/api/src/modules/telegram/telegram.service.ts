@@ -1084,6 +1084,44 @@ async function handleCommand(
   const cmd = text.trim();
   const lower = cmd.toLowerCase();
 
+  // ★★2026-07-30 AKIŞTAN KAÇIŞ KAPISI — YARIM KALAN AKIŞTA SIKIŞMA BİTTİ.
+  //
+  // CANLI OLARAK YAŞANDI: operatör /testmesaj ile toplu-test akışına girdi, sonra
+  // /menu yazdı ve bot ISRARLA "❌ Geçerli bir numara girin" dedi — üç kez. Çünkü
+  // aşağıdaki mod işleyicileri (satır ~1090+) komut dispatcher'ından ÖNCE çalışıyor
+  // ve akış açıkken yazılan HER ŞEYİ girdi sanıyor. Yani bir akışa girdikten sonra
+  // HİÇBİR komut çalışmıyordu; tek çıkış yolu doğru formatta girdi vermekti.
+  //
+  // Çözüm tek noktada: bir akış açıkken gelen metin "/" ile başlıyorsa (ya da açık
+  // bir iptal kelimesiyse) akışı SESSİZCE kapat ve mesajı normal komut olarak işlet.
+  // Böylece /menu, /tani, /iptal — hepsi her zaman çalışır.
+  //
+  // ⚠️ Fotoğraf/medya bekleyen modlar (awaiting_media, awaiting_profile_photo) da
+  // dahil: operatör fotoğraf yerine komut yazarsa da kurtulabilmeli.
+  if (state.mode !== 'idle') {
+    const isCommandLike = cmd.startsWith('/');
+    const isCancelWord = /^(iptal|vazgec|vazgeç|cancel|dur|çık|cik|menu|menü)$/i.test(cmd);
+    if (isCommandLike || isCancelWord) {
+      const wasMode = state.mode;
+      // Tüm akış durumunu temizle — yarım kalan hedef/cihaz sonraki akışa sızmasın.
+      state.mode = 'idle';
+      state.to = undefined;
+      state.deviceId = undefined;
+      state.broadcastTo = undefined;
+      state.targetDeviceId = undefined;
+      state.targetDeviceName = undefined;
+      state.provisionCountry = undefined;
+      state.profileDeviceId = undefined;
+      state.profileDeviceName = undefined;
+      // Sade bir iptal kelimesiyse burada bitir; komutsa aşağıya düşüp çalışsın.
+      if (isCancelWord && !isCommandLike) {
+        await sendMessage(token, chatId, '↩️ İşlem iptal edildi.', MAIN_MENU);
+        return;
+      }
+      logger.info('tg akis iptal edildi (komut geldi)', { wasMode, cmd: cmd.slice(0, 24) });
+    }
+  }
+
   // If we're mid-compose (send flow), interpret the text as number then message.
   if (state.mode === 'awaiting_number') {
     const to = cmd.replace(/[^\d]/g, '');
@@ -1110,7 +1148,7 @@ async function handleCommand(
     const to = cmd.replace(/[^\d]/g, '');
     if (to.length < 5) { await sendMessage(token, chatId, '❌ Geçerli bir numara girin (ülke kodu ile, örn. 905551112233).'); return; }
     state.broadcastTo = to; state.mode = 'awaiting_broadcast_text';
-    await sendMessage(token, chatId, `📞 Hedef: <b>${esc(to)}</b>\nBu numaraya <b>TÜM WhatsApp'lı cihazlardan</b> gönderilecek mesajı yazın:`);
+    await sendMessage(token, chatId, `📞 Hedef: <b>${esc(to)}</b>\nBu numaraya <b>TÜM WhatsApp'lı cihazlardan</b> gönderilecek mesajı yazın:\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>`);
     return;
   }
   if (state.mode === 'awaiting_broadcast_text') {
@@ -1342,7 +1380,7 @@ async function handleCommand(
       state.mode = 'awaiting_profile_name';
       state.targetDeviceId = only.id;
       state.targetDeviceName = only.name;
-      await sendMessage(token, chatId, `📝 <b>${esc(only.name)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):`);
+      await sendMessage(token, chatId, `📝 <b>${esc(only.name)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>`);
       return;
     }
     const ref = parts[0]!;
@@ -1521,7 +1559,7 @@ async function handleCommand(
       state.mode = 'awaiting_tag';
       state.targetDeviceId = only.id;
       state.targetDeviceName = only.name;
-      await sendMessage(token, chatId, `🏷 <b>${esc(only.name)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code></i>`);
+      await sendMessage(token, chatId, `🏷 <b>${esc(only.name)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code>\nvazgeçmek için <b>iptal</b> yazın)</i>`);
       return;
     }
     const ref = parts[0]!;
@@ -1625,7 +1663,7 @@ async function handleCommand(
       state.mode = 'awaiting_rename';
       state.targetDeviceId = dev0.id;
       state.targetDeviceName = dev0.name;
-      await sendMessage(token, chatId, `✏️ <b>${esc(dev0.name)}</b> için yeni <b>cihaz adını</b> yazın:`);
+      await sendMessage(token, chatId, `✏️ <b>${esc(dev0.name)}</b> için yeni <b>cihaz adını</b> yazın:\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>`);
       return;
     }
     const newDevName = parts.slice(1).join(' ').slice(0, 40);
@@ -1764,7 +1802,7 @@ async function handleCallback(
   } else if (data.startsWith('sendpick:')) {
     const deviceId = data.slice('sendpick:'.length);
     state.mode = 'awaiting_number'; state.deviceId = deviceId; state.to = undefined;
-    await sendMessage(token, chatId, '📞 Alıcı <b>numarasını</b> yazın (ülke kodu ile, örn. 905551112233):');
+    await sendMessage(token, chatId, '📞 Alıcı <b>numarasını</b> yazın (ülke kodu ile, örn. 905551112233):\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>');
   // ★2026-07-30 ADIM ADIM cihaz seçicileri. Cihaz butona basılarak seçilir, sonra
   // ilgili değer SORULUR — operatör cihaz adını/kimliğini elle yazmak zorunda kalmaz.
   } else if (data.startsWith('namepick:')) {
@@ -1773,27 +1811,27 @@ async function handleCallback(
     state.mode = 'awaiting_profile_name';
     state.targetDeviceId = deviceId;
     state.targetDeviceName = dev?.name ?? deviceId;
-    await sendMessage(token, chatId, `📝 <b>${esc(state.targetDeviceName)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):`);
+    await sendMessage(token, chatId, `📝 <b>${esc(state.targetDeviceName)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>`);
   } else if (data.startsWith('tagpick:')) {
     const deviceId = data.slice('tagpick:'.length);
     const dev = await deviceService.getDevice(deviceId, workspaceId).catch(() => null);
     state.mode = 'awaiting_tag';
     state.targetDeviceId = deviceId;
     state.targetDeviceName = dev?.name ?? deviceId;
-    await sendMessage(token, chatId, `🏷 <b>${esc(state.targetDeviceName)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code></i>`);
+    await sendMessage(token, chatId, `🏷 <b>${esc(state.targetDeviceName)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code>\nvazgeçmek için <b>iptal</b> yazın)</i>`);
   } else if (data.startsWith('renamepick:')) {
     const deviceId = data.slice('renamepick:'.length);
     const dev = await deviceService.getDevice(deviceId, workspaceId).catch(() => null);
     state.mode = 'awaiting_rename';
     state.targetDeviceId = deviceId;
     state.targetDeviceName = dev?.name ?? deviceId;
-    await sendMessage(token, chatId, `✏️ <b>${esc(state.targetDeviceName)}</b> için yeni <b>cihaz adını</b> yazın:`);
+    await sendMessage(token, chatId, `✏️ <b>${esc(state.targetDeviceName)}</b> için yeni <b>cihaz adını</b> yazın:\n<i>(vazgeçmek için <b>iptal</b> yazın)</i>`);
   } else if (data.startsWith('kurcc:')) {
     // /kur akışı: ülke seçildi → adet sorulur.
     const cc = data.slice('kurcc:'.length).toUpperCase().slice(0, 2);
     state.mode = 'awaiting_provision_count';
     state.provisionCountry = cc;
-    await sendMessage(token, chatId, `🛠 <b>${esc(cc)}</b> için <b>kaç cihaz</b> kurulsun? (1-20)\n<i>Her cihaz kendi benzersiz kimliği ve ${esc(cc)} çıkış IP'siyle kurulur.</i>`);
+    await sendMessage(token, chatId, `🛠 <b>${esc(cc)}</b> için <b>kaç cihaz</b> kurulsun? (1-20)\n<i>Her cihaz kendi benzersiz kimliği ve ${esc(cc)} çıkış IP'siyle kurulur.\nvazgeçmek için <b>iptal</b> yazın</i>`);
   } else if (data.startsWith('readpick:')) {
     const deviceId = data.slice('readpick:'.length);
     try {

@@ -32,7 +32,12 @@ type AnalyticsSummary = {
     jobs: number;
     jobsCompleted: number;
     jobsFailed: number;
-    successRate: number;
+    successRate: number; // İŞ ÇALIŞMA oranı — gönderim başarısı DEĞİL (bkz. sendRate)
+    // ★2026-07-30 Gerçek gönderim oranı. `successRate` "iş koştu" demek; mesajın
+    // gidip gitmediği ayrı ölçülüyor (canlı: %96 "başarı" görünürken gerçek %7).
+    sendTotal: number;
+    sendDelivered: number;
+    sendRate: number;
     farmAccounts: number;
     avgHealthScore: number;
     onlineMinutes: number;
@@ -95,10 +100,23 @@ export default async function AnalyticsPage() {
             <HoloStat
               label="İşler (14g)"
               value={<span className="mono">{fmt(s.totals.jobs)}</span>}
-              sub={`%${s.totals.successRate} başarı`}
+              sub={`%${s.totals.successRate} iş çalıştı`}
               tone={s.totals.successRate >= 90 ? 'success' : s.totals.successRate >= 70 ? 'warning' : 'error'}
               icon={<Activity size={16} />}
             />
+            {/* ★2026-07-30 GERÇEK GÖNDERİM ORANI — "iş çalıştı" ile "mesaj gitti"
+                farklı şeyler. Yukarıdaki kart %96 derken bu kart %7 gösterebilir:
+                iş koşuyor, rapor dönüyor ama mesaj gitmiyor (sohbet açılamadı /
+                hesap kısıtlı / çıkış yapmış). Operatör bu ayrımı GÖRMELİ. */}
+            {s.totals.sendTotal > 0 ? (
+              <HoloStat
+                label="Mesaj gitti (14g)"
+                value={<span className="mono">{fmt(s.totals.sendDelivered)}/{fmt(s.totals.sendTotal)}</span>}
+                sub={`%${s.totals.sendRate} gerçekten gönderildi`}
+                tone={s.totals.sendRate >= 80 ? 'success' : s.totals.sendRate >= 40 ? 'warning' : 'error'}
+                icon={<Activity size={16} />}
+              />
+            ) : null}
             <HoloStat
               label="Farm hesapları"
               value={<span className="mono">{fmt(s.totals.farmAccounts)}</span>}

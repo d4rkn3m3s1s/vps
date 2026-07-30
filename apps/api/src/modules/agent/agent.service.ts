@@ -732,8 +732,20 @@ export class AgentService {
               // ★2026-07-29: kayıt BAŞARILI olunca cihazı numarasıyla adlandır +
               // KORUMALI işaretle. Kural tek yerde: batch.service/markDeviceRegistered
               // (tam-otomatik akış da aynı yardımcıyı çağırıyor).
+              // ★2026-07-30: WA profil ismi de ETİKET olarak eklenir. İsim bu bağlamda
+              // elde olmadığı için hesap satırından okunuyor (tek ek sorgu, best-effort:
+              // okunamazsa yalnızca ad+koruma uygulanır, kayıt yine başarılı sayılır).
               if (nextStatus === 'ACTIVE') {
-                void markDeviceRegistered(devId, String((meta.waRegisterPhone as string) || ''));
+                void prisma.generatedAccount
+                  .findUnique({ where: { id: accountId }, select: { firstName: true, lastName: true } })
+                  .then((a) =>
+                    markDeviceRegistered(
+                      devId,
+                      String((meta.waRegisterPhone as string) || ''),
+                      [a?.firstName, a?.lastName].filter(Boolean).join(' ')
+                    )
+                  )
+                  .catch(() => markDeviceRegistered(devId, String((meta.waRegisterPhone as string) || '')));
               }
               return prisma.device.update({ where: { id: devId }, data: { metadata: nextMeta as object } });
             })

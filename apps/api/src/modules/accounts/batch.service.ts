@@ -77,20 +77,53 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ("Destek Hattı 1") EZİLMEZ — isimlendirme operatörün kararıdır.
 //
 // Best-effort: buradaki hiçbir hata kaydın başarısını geçersiz kılmaz.
-export async function markDeviceRegistered(deviceId: string, phone: string): Promise<void> {
+// ★2026-07-30 ETİKET DE EKLENİYOR (operatör isteği: "etiketlerinde kayıt olurken
+// girdiğimiz isimleri ekleyelim"). Kayıt sırasında girilen WhatsApp profil ismi
+// ("Tarık", "Destek 2") cihaz ADINDA görünmez çünkü ad numaraya çevriliyor — o bilgi
+// kayboluyordu. Artık etiket olarak saklanıyor: numara ADda, kişi ismi ETİKETte.
+export async function markDeviceRegistered(deviceId: string, phone: string, waName?: string): Promise<void> {
   if (!deviceId) return;
   try {
-    const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { name: true } });
+    const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { name: true, tags: true } });
     const digits = String(phone || '').replace(/[^\d]/g, '');
     const desired = digits ? `+${digits}` : '';
     const cur = String(dev?.name ?? '').trim();
-    const autoName = /^(wa-[a-z0-9]{3,6}|mi\d+|hiz-test\d*|cihaz[\s-].*|\+?\d{7,15})$/i.test(cur);
+    const autoName = /^(wa-[a-z0-9]{3,6}|mi\d+|hiz-test\d*|cihaz[\s-].*|watest\d*)$/i.test(cur);
     const data: Record<string, unknown> = { protected: true };
-    if (desired && autoName && cur !== desired) data.name = desired;
+    // ⚠️ AD ZATEN BİR NUMARA ise DOKUNMA (2026-07-30). Geriye dönük tarama sırasında
+    // görüldü: bir cihazın adı `+355682948269` iken hesap satırındaki numara
+    // `+3550682948269` (FAZLA BİR SIFIR) idi — yani hesaptaki numara yanlış girilmiş
+    // olabiliyor ve cihaz adı daha güvenilir. Eskiden desen `\+?\d{7,15}` da içerdiği
+    // için böyle bir adı BOZUK numarayla değiştirirdi. Artık yalnızca numara İÇERMEYEN
+    // otomatik adlar (wa-xxxx / mi7 / hiz-test / watest) numaraya çevrilir.
+    const nameIsAlreadyPhone = cur.replace(/[^\d]/g, '').length >= 7;
+    if (desired && autoName && !nameIsAlreadyPhone && cur !== desired) data.name = desired;
+
+    // WhatsApp profil ismini etiket yap. Etiketler küçük harf + tek kelime tutuluyor
+    // (panel filtreleri böyle çalışıyor), bu yüzden ismi normalize ediyoruz:
+    // "Ahmet Yılmaz" → "ahmet-yilmaz". Türkçe harfler ASCII'ye indirgenir ki
+    // filtre/arama tutarlı olsun.
+    const tagFromName = String(waName ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/ı/g, 'i').replace(/ğ/g, 'g').replace(/ü/g, 'u')
+      .replace(/ş/g, 's').replace(/ö/g, 'o').replace(/ç/g, 'c')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 24);
+    if (tagFromName) {
+      const existing = Array.isArray(dev?.tags) ? dev!.tags : [];
+      // Zaten varsa tekrar EKLEMEYİZ; operatörün elle eklediği etiketler KORUNUR.
+      if (!existing.includes(tagFromName)) {
+        data.tags = [...new Set([...existing, tagFromName])].slice(0, 20);
+      }
+    }
+
     await prisma.device.update({ where: { id: deviceId }, data });
     logger.info('WA kaydi basarili — cihaz korumali isaretlendi', {
       deviceId,
-      ...(data.name ? { yeniAd: data.name } : { ad: cur })
+      ...(data.name ? { yeniAd: data.name } : { ad: cur }),
+      ...(data.tags ? { etiketEklendi: tagFromName } : {})
     });
   } catch (e) {
     logger.warn('markDeviceRegistered basarisiz', { deviceId, error: (e as Error).message });
@@ -1075,7 +1108,8 @@ export class BatchService {
     // Success — mark ACTIVE.
     const done = await prisma.generatedAccount.update({ where: { id: acc.id }, data: { status: 'ACTIVE', error: null } });
     // ★2026-07-29: cihazı numarasıyla adlandır + KORUMALI işaretle (bkz. markDeviceRegistered).
-    await markDeviceRegistered(deviceId, phoneE164);
+    // ★2026-07-30: WA profil ismini de geç — etiket olarak eklenir (numara ADda, isim ETİKETte).
+    await markDeviceRegistered(deviceId, phoneE164, [done.firstName, done.lastName].filter(Boolean).join(' '));
     return { ok: true, status: 'ACTIVE', phoneNumber: phoneE164, otp, account: toPublic(done), result: res2 };
   }
 

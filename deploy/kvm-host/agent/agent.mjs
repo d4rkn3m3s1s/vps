@@ -3021,9 +3021,29 @@ async function registerWhatsApp(job, legacyPayload) {
     if (/missed call|VERIFY ANOTHER WAY/i.test(t)) return true;
     return (await h.find('com.whatsapp:id/secondary_button', 'id')) != null;
   };
+  // ★★2026-07-30 "SMS gönderilemedi" İKİ AYRI ŞEY — KARIŞTIRILIYORDU.
+  //
+  // EKRAN GÖRÜNTÜSÜYLE KANITLANDI (+90 539 521 85 90, mi34):
+  //   "Can't send an SMS with your code because YOU'VE TRIED TO REGISTER
+  //    +90 539 521 85 90 RECENTLY. REQUEST A CALL or wait before requesting an SMS."
+  // Bu bir RATE-LIMIT: numara SAĞLAM, WhatsApp sadece "az önce denedin" diyor ve
+  // ÇÖZÜMÜ DE SUNUYOR ("Request a call" = sesli arama). Eski desen bunu
+  // "itibar/operatör engeli — numara SMS alamıyor" diye TERMİNAL BAŞARISIZLIK
+  // sayıyordu → sağlam numara boşuna "yanmış" ilan ediliyordu.
+  //
+  // Ayrım: metinde "tried to register … recently" / "wait before requesting" varsa
+  // bu RATE-LIMIT'tir (bekle veya sesli aramayı dene), kalıcı bir engel DEĞİL.
+  const onSmsRateLimited = async (foc, txt) => {
+    const t = txt ?? await h.screenTextRich().catch(() => '');
+    return /tried to register .* recently|wait before requesting|request a call/i.test(t);
+  };
   const onSmsSendFailed = async (foc, txt) => {
     const t = txt ?? await h.screenTextRich().catch(() => '');
-    return /send an SMS|send you an SMS|couldn't send|check your number/i.test(t);
+    if (!/send an SMS|send you an SMS|couldn't send|check your number/i.test(t)) return false;
+    // Rate-limit ise "gönderilemedi" SAYMA — çağıran taraf bunu sesli arama /
+    // bekleme dalına yönlendirir (bkz. verify döngüsü).
+    if (await onSmsRateLimited(foc, t)) return false;
+    return true;
   };
   const onConfirmNumber = async (foc, txt) => /correct number/i.test(txt ?? await h.screenTextRich().catch(() => ''));
   const onViewSmsPrompt = async (foc, txt) => /view SMS|automatically detect/i.test(txt ?? await h.screenTextRich().catch(() => ''));
@@ -3067,7 +3087,12 @@ async function registerWhatsApp(job, legacyPayload) {
   // bilemiyordu. Metin de korunuyor (log/telegram aynı okunabilirlikte kalsın).
   const onRateLimit = async (foc, txt) => {
     const t = txt ?? await h.screenTextRich().catch(() => '');
-    if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|before trying again/i.test(t)) return null;
+    // ★2026-07-30 "tried to register … recently" / "wait before requesting an SMS"
+    // deseni de EKLENDİ. Ekran görüntüsüyle kanıtlandı (+90 539 521 85 90): WhatsApp
+    // "Can't send an SMS … you've tried to register … recently. Request a call or wait
+    // before requesting an SMS." diyor — bu bir BEKLETME, kalıcı engel DEĞİL. Eskiden
+    // bu metin onRateLimit'e YAKALANMIYOR, onSmsSendFailed'a düşüp kaydı ÖLDÜRÜYORDU.
+    if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|before trying again|tried to register .* recently|wait before requesting/i.test(t)) return null;
     const m = t.match(/wait\s+(\d+)\s+(minute|hour|dakika|saat)/i);
     const n = m ? parseInt(m[1], 10) : 0;
     const isHour = m ? /hour|saat/i.test(m[2]) : false;
@@ -3075,10 +3100,17 @@ async function registerWhatsApp(job, legacyPayload) {
     // Süre okunamadıysa 60 dk varsay: WhatsApp'ın standart soğuma süresi bu ve
     // 0 dönmek panelde "süre doldu, hemen dene" yalanına yol açardı.
     const waitSeconds = m ? n * (isHour ? 3600 : 60) : 3600;
+    // ★WhatsApp ekranda "Request a call" sunuyorsa bunu SÖYLE: operatör beklemek
+    // zorunda değil, sesli aramayla HEMEN devam edebilir. (Ekran görüntüsüyle
+    // kanıtlandı — eskiden bu seçenek hiç bildirilmiyordu.)
+    const callOffered = /request a call|sesli arama/i.test(t);
     return {
-      note: `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`,
+      note: callOffered
+        ? `⏳ WhatsApp SMS'i şimdi göndermiyor (numara çok yakın zamanda denendi — geçici kısıt, ban DEĞİL). WhatsApp "Request a call" (sesli arama) sunuyor: beklemeden SESLİ ARAMA ile devam edilebilir.`
+        : `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`,
       waitSeconds,
-      waitLabel: waitStr
+      waitLabel: waitStr,
+      callOffered
     };
   };
   // "Switch to WhatsApp Messenger?" — the number already has a WhatsApp **Business**
@@ -3288,7 +3320,26 @@ async function registerWhatsApp(job, legacyPayload) {
       break;
     }
 
-    if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) { wlog(`verify: reached OTP screen (round ${round})`); break; }
+    if (await onOtp(foc, txt) && (otpCode || !(await onOtherPhoneVerify(foc, txt)))) {
+      // ★★2026-07-30 OTP EKRANINA DÖNÜLDÜYSE ESKİ "SMS gönderilemedi" NOTUNU TEMİZLE.
+      //
+      // CANLI OLARAK YAŞANDI (+905395218590, mi34): "Couldn't send an SMS" diyaloğu
+      // çıktı → bothLockedNote set edildi → OK ile kapatıldı → WhatsApp OTP ekranına
+      // GERİ DÖNDÜ ("Verifying your number / Verification code / DIDN'T RECEIVE CODE?"
+      // — operatörün ekranda gördüğü tam bu) → döngü OTP'ye ulaştı ve break etti.
+      // AMA aşağıdaki terminal kontrol (`if (bothLockedNote && !(await onOtp()))`)
+      // notu hâlâ dolu bulduğu için kayıt SMS_SEND_FAILED diye ÖLDÜRÜLÜYORDU.
+      // Oysa WhatsApp kod bekliyordu: operatör SMS'i başka yolla alabilir ya da
+      // "DIDN'T RECEIVE CODE?" ile sesli aramayı deneyebilirdi.
+      // Sonuç: sağlam bir numara boşuna "yanmış" sayılıyordu (kayıt %19 başarı
+      // oranının bir kısmı büyük olasılıkla bu).
+      if (bothLockedNote) {
+        wlog('verify: OTP ekranina donuldu — eski "SMS gonderilemedi" notu TEMIZLENDI');
+        bothLockedNote = null;
+      }
+      wlog(`verify: reached OTP screen (round ${round})`);
+      break;
+    }
 
     // "Deactivate your Business account?" (DowngradeFriction) — handled FIRST (right
     // after onOtp), BEFORE onWall/others. VERIFIED LIVE (mi68, +90 Business number):
@@ -3603,7 +3654,12 @@ async function registerWhatsApp(job, legacyPayload) {
       waitSeconds: rateLimitInfo?.waitSeconds ?? 3600,
       waitLabel: rateLimitInfo?.waitLabel ?? 'bir süre',
       resumable: true,
-      action: `${rateLimitInfo?.waitLabel ?? 'Bir süre'} bekleyin, sonra "Sıfırla ve Tekrar Dene" ile aynı numarayla devam edin. Numara yanmadı — hemen tekrar denemek yakar.`,
+      // ★2026-07-30 WhatsApp "Request a call" sunuyorsa BEKLEMEK ZORUNDA DEĞİLSİN:
+      // panelden sesli arama yöntemini seçmek yeterli. Aksi halde bekleme + retry.
+      action: rateLimitInfo?.callOffered
+        ? 'BEKLEMENE GEREK YOK: panelden "Doğrulama yöntemi" olarak SESLİ ARAMA seçin — WhatsApp bu numaraya arama yapıp kodu söyler. Beklemek isterseniz ' + (rateLimitInfo?.waitLabel ?? 'bir süre') + ' sonra "Sıfırla ve Tekrar Dene".'
+        : `${rateLimitInfo?.waitLabel ?? 'Bir süre'} bekleyin, sonra "Sıfırla ve Tekrar Dene" ile aynı numarayla devam edin. Numara yanmadı — hemen tekrar denemek yakar.`,
+      ...(rateLimitInfo?.callOffered ? { callOffered: true } : {}),
       phoneNumber,
       screenTexts: rateLimitText.slice(0, 400)
     });

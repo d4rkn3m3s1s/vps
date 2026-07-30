@@ -854,6 +854,21 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
                     {retryBusy ? 'Sıfırlanıyor…' : remain > 0 ? `🔄 Tekrar Dene (${hhmmss(remain)})` : '🔄 Sıfırla ve Tekrar Dene'}
                   </button>
                 )}
+                {/* ★2026-07-30 BAŞARISIZ DURUMDA DA "Kaydı İptal Et" (operatör isteği:
+                    "Kapat kaydı iptal et de olmalı"). "Kapat" yalnızca modalı kapatır —
+                    hesap AWAITING/FAILED'de kalır ve cihaz kartındaki WhatsApp butonu
+                    KİLİTLİ görünmeye devam eder. İptal ise hesabı kapatıp kartın
+                    kilidini açar; tekrar denemeyecekse operatörün asıl istediği bu. */}
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}
+                  disabled={cancelBusy || retryBusy}
+                  onClick={cancelRegistration}
+                  title="Kaydı iptal et — hesabı kapatır ve cihaz kartının kilidini açar"
+                >
+                  {cancelBusy ? 'İptal ediliyor…' : 'Kaydı İptal Et'}
+                </button>
                 <button type="button" className="btn-ghost" onClick={onClose}>Kapat</button>
               </div>
             </div>

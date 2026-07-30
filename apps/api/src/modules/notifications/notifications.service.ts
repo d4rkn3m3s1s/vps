@@ -163,17 +163,46 @@ async function postToChannel(
       let anyOk = false;
       let lastErr: string | undefined;
       for (const chatId of chatIds) {
+        // ★2026-07-30 parse_mode: 'HTML' EKSİKTİ → günlük özet gibi HTML biçimli
+        // bildirimlerde etiketler HAM görünüyordu ("<b>☀️ Günlük Özet</b> <i>(son 24
+        // saat)</i>"). Bot'un kendi sendMessage'ı zaten HTML gönderiyor; bu kanal
+        // (notificationsService) ayrı bir yol olduğu için atlanmıştı — günlük özet,
+        // alarm ve hata bildirimleri BU yoldan gidiyor.
+        // ⚠️ Telegram HTML modu geçersiz etiket görürse mesajın TAMAMINI reddeder
+        // (400 Bad Request). Bu yüzden HTML görünmeyen düz metinlerde parse_mode
+        // GÖNDERMİYORUZ: içinde kaçırılmamış bir `<` veya `&` olan bir cihaz adı /
+        // mesaj metni bildirimin hiç gitmemesine yol açardı.
+        const looksHtml = /<\/?(b|i|u|s|code|pre|a|tg-spoiler|blockquote)\b/i.test(text);
         const body: Record<string, unknown> = { chat_id: chatId, text };
+        if (looksHtml) {
+          body.parse_mode = 'HTML';
+          body.disable_web_page_preview = true;
+        }
         if (message.telegramButtons?.length) {
           body.reply_markup = { inline_keyboard: message.telegramButtons };
         }
         try {
-          const res = await fetch(url, {
+          let res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
             signal: AbortSignal.timeout(8000)
           });
+          // ★HTML REDDEDİLİRSE DÜZ METİN OLARAK TEKRAR DENE. Telegram, HTML modunda
+          // kapatılmamış/kaçırılmamış bir etikette 400 döner ve mesaj HİÇ GİTMEZ.
+          // Bildirimin kaybolması, biçimsiz görünmesinden çok daha kötü — bu yüzden
+          // 400'de parse_mode'u düşürüp aynı metni ham gönderiyoruz.
+          if (!res.ok && res.status === 400 && body.parse_mode) {
+            delete body.parse_mode;
+            delete body.disable_web_page_preview;
+            res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+              signal: AbortSignal.timeout(8000)
+            });
+            if (res.ok) logger.warn('tg bildirim: HTML reddedildi, duz metin olarak gonderildi');
+          }
           if (res.ok) anyOk = true;
           else lastErr = `HTTP ${res.status}`;
         } catch (e) {

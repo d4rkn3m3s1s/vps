@@ -318,6 +318,35 @@ export async function renderDailyDigest(workspaceId: string): Promise<string> {
   const jobDone = jobs.find((j) => j.status === 'COMPLETED')?._count._all ?? 0;
   const jobFail = jobs.find((j) => j.status === 'FAILED')?._count._all ?? 0;
 
+  // ★2026-07-30 GÖNDERİM BAŞARISI AYRI SAYILIR — "COMPLETED" YALAN SÖYLÜYORDU.
+  //
+  // CANLI ÖLÇÜM (30 Tem, son 24 sa): 28 WHATSAPP_SEND işinin 27'si `COMPLETED`
+  // görünüyordu ama `result.status` okununca yalnızca **2** tanesi gerçekten SENT'ti:
+  //   COMPLETED + CHAT_NOT_OPENED    17
+  //   COMPLETED + ACCOUNT_RESTRICTED  7
+  //   COMPLETED + ACCOUNT_LOGGED_OUT  1
+  //   COMPLETED + SENT                2   ← gerçek başarı
+  // Yani özet "✅ 2245" derken gerçek gönderim oranı ~%7'ydi. `COMPLETED` sadece
+  // "iş çalıştı ve rapor döndü" demek; mesajın gidip gitmediği `result.status`ta.
+  // Operatör bu rakama bakıp "her şey yolunda" sanıyordu — en tehlikeli hata türü.
+  const sendJobs = await prisma.job
+    .findMany({
+      where: { workspaceId, createdAt: { gte: since }, type: 'WHATSAPP_SEND' },
+      select: { status: true, result: true }
+    })
+    .catch(() => [] as Array<{ status: string; result: unknown }>);
+  let sentOk = 0;
+  const sendReasons = new Map<string, number>();
+  for (const j of sendJobs) {
+    const rs = String(((j.result ?? {}) as Record<string, unknown>).status ?? '');
+    if (rs === 'SENT' || rs === 'OK' || rs === 'DELIVERED') sentOk++;
+    else {
+      const key = rs || (j.status === 'FAILED' ? 'FAILED' : 'BİLİNMEYEN');
+      sendReasons.set(key, (sendReasons.get(key) ?? 0) + 1);
+    }
+  }
+  const sendTotal = sendJobs.length;
+
   const lines: string[] = ['<b>☀️ Günlük Özet</b> <i>(son 24 saat)</i>', ''];
 
   if (d) {
@@ -331,7 +360,27 @@ export async function renderDailyDigest(workspaceId: string): Promise<string> {
     if (w.banned) parts.push(`🔴 ${w.banned}`);
     if (parts.length) lines.push(`💬 <b>WhatsApp</b>: ${parts.join(' · ')}`);
   }
-  lines.push(`⚙️ <b>İşler</b>: ✅ ${jobDone} · ❌ ${jobFail}`);
+  lines.push(`⚙️ <b>İşler</b>: ✅ ${jobDone} · ❌ ${jobFail} <i>(iş çalıştı mı)</i>`);
+
+  // Gönderim başarısı AYRI satır: "iş çalıştı" ile "mesaj gitti" farklı şeyler.
+  if (sendTotal > 0) {
+    const pct = Math.round((sentOk / sendTotal) * 100);
+    const icon = pct >= 80 ? '🟢' : pct >= 40 ? '🟡' : '🔴';
+    lines.push(`${icon} <b>Mesaj GİTTİ</b>: ${sentOk}/${sendTotal} <b>(%${pct})</b>`);
+    if (sentOk < sendTotal) {
+      // En sık 3 sebebi yaz — operatör "neden gitmiyor" sorusunu tek bakışta görsün.
+      const top = [...sendReasons.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+      const label: Record<string, string> = {
+        CHAT_NOT_OPENED: 'sohbet açılamadı',
+        ACCOUNT_RESTRICTED: 'hesap KISITLI',
+        ACCOUNT_LOGGED_OUT: 'hesap ÇIKIŞ yapmış',
+        ACCOUNT_BANNED: 'hesap YASAKLI',
+        FAILED: 'iş başarısız'
+      };
+      lines.push(`   ↳ ${top.map(([k, n]) => `${label[k] ?? k}: ${n}`).join(' · ')}`);
+    }
+  }
+
   lines.push(`🔔 <b>Alarm</b>: ${alerts} · <b>Hata bildirimi</b>: ${notifs}`);
 
   // İzleme canlılığı — bu satır "raporun kendisine güvenilir mi" sorusunu yanıtlar.

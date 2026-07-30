@@ -111,6 +111,10 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // Operatör geri bildirimi: "butonu süreci logları görelim" — buton bir şey yapıp
   // yapmadığını göstermeli, sessizce "başladı" demekle kalmamalı.
   const [recoverySteps, setRecoverySteps] = useState<Array<{ key: string; label: string; ok: boolean }> | null>(null);
+  // ★2026-07-30 Art arda deneme uyarısı. API "bu numara son N dakikada K kez denendi"
+  // diyorsa gösterilir — WhatsApp cezayı KATLIYOR (canlı: 14 dk'da 3 deneme → 1 saatlik
+  // ceza 24 SAATE çıktı). Operatör kararı gereği ENGELLEMEZ, yalnızca uyarır.
+  const [retryWarning, setRetryWarning] = useState<string | null>(null);
   // Panel onay modalı (tarayıcı confirm() yerine). `dialog` ağaca eklenmeli — en altta.
   const { confirm, dialog: confirmDialog } = useConfirm();
   const termRef = useRef<HTMLDivElement>(null);
@@ -388,6 +392,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
       // Kurtarma adımlarının GERÇEKTEN koşup koşmadığını göster (API bildiriyor).
       const steps = Array.isArray(body?.data?.recoverySteps) ? body.data.recoverySteps : null;
       setRecoverySteps(steps);
+      setRetryWarning(typeof body?.data?.recentAttemptWarning === 'string' ? body.data.recentAttemptWarning : null);
       const failed = steps ? steps.filter((s: { ok: boolean }) => !s.ok).length : 0;
       setOtpMsg(
         failed > 0
@@ -576,6 +581,30 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           </div>
         )}
 
+        {/* ★2026-07-30 ART ARDA DENEME UYARISI. WhatsApp aynı numaraya kısa aralıkla
+            yapılan denemelerde bekleme cezasını KATLIYOR — canlıda 14 dakikada 3 deneme
+            1 saatlik cezayı 24 SAATE çıkardı. Kaydı ENGELLEMEZ (operatör kararı), ama
+            görünür uyarır ki ceza katlanması farkında olmadan tetiklenmesin. */}
+        {retryWarning && (
+          <div
+            style={{
+              border: '1px solid rgba(251,191,36,0.4)',
+              borderLeft: '3px solid #fbbf24',
+              background: 'rgba(251,191,36,0.08)',
+              borderRadius: 10,
+              padding: '10px 14px',
+              marginBottom: 14,
+              fontSize: 12,
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+              lineHeight: 1.65
+            }}
+          >
+            <AlertTriangle size={14} color="#fbbf24" style={{ flexShrink: 0, marginTop: 2 }} />
+            <span style={{ opacity: 0.92 }}>{retryWarning}</span>
+          </div>
+        )}
         {/* ★2026-07-30 Kurtarma adımı logları. "Sıfırla ve Tekrar Dene"ye basıldığında
             hangi adımın GERÇEKTEN koştuğu görünür — buton sessizce "başladı" demekle
             kalmaz. Bir adım atlandıysa (ör. proxy yoksa IP yenilenemez) operatör bunu

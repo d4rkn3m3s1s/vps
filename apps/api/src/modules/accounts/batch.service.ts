@@ -467,12 +467,49 @@ export class BatchService {
         ...(otpCode ? { otpCode } : {}),
         ...(acc.countryCode ? { countryCode: acc.countryCode } : {})
       } as unknown as JobPayload;
+      // ★★2026-07-30 ART ARDA DENEME UYARISI (operatör kararı: UYAR, ENGELLEME).
+      //
+      // CANLI KANIT (+905340420653): 14 dakikada 3 kayıt denemesi yapıldı ve WhatsApp'ın
+      // cezası 1 SAAT → 24 SAATE çıktı. Ceza katlanması ban'ın en büyük sürücüsü, ama
+      // engellemek operatörün elini bağlar (kasıtlı hızlı retry gereken durumlar var).
+      // Bu yüzden job AÇILIR, yanına `recentAttempt` bilgisi konur; panel bunu uyarı
+      // olarak gösterir. Sayım bu NUMARAYA ait tüm REGISTER_WHATSAPP job'ları üzerinden
+      // yapılır (cihaz değişse bile numara aynıysa ceza aynı numaraya yazılıyor).
+      const recentWindowMin = Number(process.env.FLEET_WA_RETRY_WARN_MIN || 15);
+      const recentSince = new Date(Date.now() - recentWindowMin * 60_000);
+      const priorAttempts = await prisma.job.findMany({
+        where: {
+          type: 'REGISTER_WHATSAPP',
+          createdAt: { gte: recentSince },
+          ...(workspaceId ? { workspaceId } : {})
+        },
+        select: { createdAt: true, payload: true },
+        orderBy: { createdAt: 'desc' },
+        take: 20
+      }).catch(() => [] as { createdAt: Date; payload: unknown }[]);
+      const samePhone = priorAttempts.filter((j) => {
+        const p = (j.payload ?? {}) as Record<string, unknown>;
+        return typeof p.phoneNumber === 'string' && p.phoneNumber === acc.phoneNumber;
+      });
+      const recentAttempt = samePhone.length
+        ? {
+            count: samePhone.length,
+            windowMinutes: recentWindowMin,
+            lastAttemptAt: samePhone[0]!.createdAt.toISOString(),
+            minutesAgo: Math.max(0, Math.round((Date.now() - samePhone[0]!.createdAt.getTime()) / 60_000)),
+            warning:
+              `⚠️ Bu numara son ${recentWindowMin} dakikada ${samePhone.length} kez denendi ` +
+              `(en son ${Math.max(0, Math.round((Date.now() - samePhone[0]!.createdAt.getTime()) / 60_000))} dk önce). ` +
+              `WhatsApp art arda denemede bekleme cezasını KATLIYOR (1 saat → 24 saat). ` +
+              `Kayıt yine başlatıldı, ama mümkünse numarayı dinlendirin.`
+          }
+        : null;
       const job = await createJobRecord('REGISTER_WHATSAPP', payload, deviceId, workspaceId, proxyQueued ? { skipBusyCheck: true } : undefined);
       const updated = await prisma.generatedAccount.update({
         where: { id },
         data: { status: 'REGISTERING', deviceId }
       });
-      return { job, account: toPublic(updated) };
+      return { job, account: toPublic(updated), ...(recentAttempt ? { recentAttempt } : {}) };
     }
 
     throw new AppError('Otomatik kayıt şu an sadece Instagram ve WhatsApp için', 400, 'PLATFORM_UNSUPPORTED');
@@ -1404,12 +1441,38 @@ export class BatchService {
       kimlikYenilendi: identityRerolled
     });
 
+    // ★2026-07-30 Art arda deneme uyarısı burada da verilir: "Sıfırla ve Tekrar Dene"
+    // TAM OLARAK art arda deneme yapan düğme, ve WhatsApp'ın cezası katlanıyor
+    // (canlı: +905340420653'te 14 dk'da 3 deneme → 1 saat cezası 24 SAATE çıktı).
+    // Operatör kararı gereği ENGELLEMİYORUZ; yalnızca görünür uyarı koyuyoruz.
+    const retryWarnMin = Number(process.env.FLEET_WA_RETRY_WARN_MIN || 15);
+    const retryPrior = await prisma.job.findMany({
+      where: {
+        type: 'REGISTER_WHATSAPP',
+        createdAt: { gte: new Date(Date.now() - retryWarnMin * 60_000) },
+        ...(workspaceId ? { workspaceId } : {})
+      },
+      select: { createdAt: true, payload: true },
+      orderBy: { createdAt: 'desc' },
+      take: 20
+    }).catch(() => [] as { createdAt: Date; payload: unknown }[]);
+    const retrySame = retryPrior.filter((j) => {
+      const p = (j.payload ?? {}) as Record<string, unknown>;
+      return typeof p.phoneNumber === 'string' && p.phoneNumber === acc.phoneNumber;
+    });
+    const retryWarning = retrySame.length
+      ? `⚠️ Bu numara son ${retryWarnMin} dakikada ${retrySame.length} kez denendi ` +
+        `(en son ${Math.max(0, Math.round((Date.now() - retrySame[0]!.createdAt.getTime()) / 60_000))} dk önce). ` +
+        `WhatsApp art arda denemede bekleme cezasını KATLIYOR (1 saat → 24 saat). Mümkünse numarayı dinlendirin.`
+      : null;
+
     return {
       accountId: acc.id,
       deviceId: acc.deviceId,
       steps: WA_REGISTER_STEPS,
       ipRotated: Boolean(rotated),
       identityRerolled,
+      ...(retryWarning ? { recentAttemptWarning: retryWarning, recentAttemptCount: retrySame.length } : {}),
       // Modalda gösterilecek adım listesi — operatör hangi kurtarma adımlarının
       // GERÇEKTEN koştuğunu görsün ("uyarılar bazen yarım kalıyor" geri bildirimi).
       recoverySteps: [

@@ -2991,6 +2991,11 @@ async function registerWhatsApp(job, legacyPayload) {
   // (because seen()'s inner sleep(400) clears the 700ms dump cache), so a round did
   // ~8-15s of dumping; now it's one curFocus (~0.3s) + one screenText (~1-2s). The retry
   // that seen() gave is preserved by the loop itself re-observing each round.
+  // OTP ekranı "kesinleşti" demeden önce beklenen gözlem turu (bkz. break bloğundaki
+  // GECİKMELİ DİYALOG açıklaması). Toplam ~6 sn — WhatsApp'ın hata diyaloğunu OTP
+  // ekranının üstüne açması canlıda 2-4 sn sürdü. Env ile ayarlanabilir.
+  const OTP_SETTLE_ROUNDS = Math.max(0, Number(process.env.FLEET_WA_OTP_SETTLE_ROUNDS || 4));
+  const OTP_SETTLE_STEP_MS = Math.max(300, Number(process.env.FLEET_WA_OTP_SETTLE_STEP_MS || 1500));
   const onOtp = async (foc, txt) => {
     const f = foc ?? await curFocus();
     if (/verifyphone|VerifyPhoneNumber/i.test(f)) return true;
@@ -3092,8 +3097,20 @@ async function registerWhatsApp(job, legacyPayload) {
     // "Can't send an SMS … you've tried to register … recently. Request a call or wait
     // before requesting an SMS." diyor — bu bir BEKLETME, kalıcı engel DEĞİL. Eskiden
     // bu metin onRateLimit'e YAKALANMIYOR, onSmsSendFailed'a düşüp kaydı ÖLDÜRÜYORDU.
-    if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|before trying again|tried to register .* recently|wait before requesting/i.test(t)) return null;
-    const m = t.match(/wait\s+(\d+)\s+(minute|hour|dakika|saat)/i);
+    // ★★2026-07-30 "try again in 1 hour" BİÇİMİ DE EKLENDİ. Ekran görüntüsüyle kanıtlandı
+    // (+905340420653, mi34): WhatsApp "Couldn't send an SMS to your number. Please check
+    // your number. If it's correct, you can try again in 1 hour, or try to verify another
+    // way." diyor. Eski desen `wait\s+\d+` arıyordu — burada "wait" KELİMESİ HİÇ YOK,
+    // "try again in 1 hour" var → RATE-LIMIT KAÇIRILIYOR, onSmsSendFailed'a düşüyor ve
+    // sağlam numara "SMS alamıyor" diye terminal sayılıyordu. Süre çıkarımı da aynı
+    // biçimi tanıyacak şekilde genişletildi (aksi halde 1 saat okunamayıp varsayılana
+    // düşerdi — bu örnekte tesadüfen aynı, ama "try again in 30 minutes"te yanlış olurdu).
+    // TR biçimi ("1 saat sonra tekrar deneyin" / "31 dakika bekleyin") de tanınır —
+    // Türkçe'de sayı BİRİMDEN ÖNCE gelir ve "sonra/bekleyin" arkadan gelir, bu yüzden
+    // ayrı bir desen şart (İngilizce desen bunu yakalamaz).
+    if (!/recently connected|wait\s+\d+\s+(minute|hour|dakika|saat)|try again in\s+\d+\s+(minute|hour|dakika|saat)|\d+\s+(dakika|saat)\s+(sonra|bekle)|before trying again|tried to register .* recently|wait before requesting/i.test(t)) return null;
+    const m = t.match(/(?:wait|try again in)\s+(\d+)\s+(minute|hour|dakika|saat)/i)
+      || t.match(/(\d+)\s+(dakika|saat)\s+(?:sonra|bekle)/i);
     const n = m ? parseInt(m[1], 10) : 0;
     const isHour = m ? /hour|saat/i.test(m[2]) : false;
     const waitStr = m ? `${n} ${isHour ? 'saat' : 'dakika'}` : 'bir süre';
@@ -3103,10 +3120,14 @@ async function registerWhatsApp(job, legacyPayload) {
     // ★WhatsApp ekranda "Request a call" sunuyorsa bunu SÖYLE: operatör beklemek
     // zorunda değil, sesli aramayla HEMEN devam edebilir. (Ekran görüntüsüyle
     // kanıtlandı — eskiden bu seçenek hiç bildirilmiyordu.)
-    const callOffered = /request a call|sesli arama/i.test(t);
+    // ★2026-07-30 "Try another way" / "verify another way" DA sayılır: ekran görüntüsünde
+    // (+905340420653) düğme birebir "Try another way" ve gövde "or try to verify another
+    // way" diyor — "Request a call" hiç yazmıyor. Ama bu düğme yine YÖNTEM SAYFASINA
+    // (SMS/sesli arama/cevapsız arama) götürüyor, yani beklemeden alternatif yol VAR.
+    const callOffered = /request a call|sesli arama|try another way|try other ways|verify another way|başka bir yol dene/i.test(t);
     return {
       note: callOffered
-        ? `⏳ WhatsApp SMS'i şimdi göndermiyor (numara çok yakın zamanda denendi — geçici kısıt, ban DEĞİL). WhatsApp "Request a call" (sesli arama) sunuyor: beklemeden SESLİ ARAMA ile devam edilebilir.`
+        ? `⏳ WhatsApp SMS'i şimdi göndermiyor (numara çok yakın zamanda denendi — geçici kısıt, ban DEĞİL). Ekran ${waitStr} bekleme diyor AMA alternatif doğrulama yolu sunuyor: beklemeden SESLİ ARAMA ile devam edilebilir.`
         : `⏳ WhatsApp bekletme: ${waitStr} bekle diyor (numara çok yakın zamanda denendi — geçici kısıt, ban değil)`,
       waitSeconds,
       waitLabel: waitStr,
@@ -3163,10 +3184,20 @@ async function registerWhatsApp(job, legacyPayload) {
   // can't be selected — VERIFIED LIVE on mi7 (+90): after one attempt "Receive SMS"
   // became "Try again in 24 hours" while "Voice call" stayed enabled. Returns the
   // chosen kind ('sms'|'voice') or null if BOTH are locked.
+  // Bir seçeneğin KENDİ açıklama satırını döndürür (etiketten sonraki ilk anlamlı satır).
+  // ★2026-07-30: eskiden 60 KARAKTER okunuyordu ve bu SONRAKİ SEÇENEĞE TAŞIYORDU —
+  // "Receive SMS / Try again in 24 hours"un kilidi bir alttaki "Voice call"a bulaşıp
+  // AÇIK olan sesli aramayı da kilitli gösteriyordu (canlı: +905340420653 ekranında
+  // missed_call + voice açıkken kayıt "24 saat bekle" diye durdurulmuştu).
+  const optionRow = (sheet, re) => {
+    const rest = sheet.split(re)[1] || '';
+    const rows = rest.split('\n').map((s) => s.trim()).filter(Boolean);
+    return rows[0] || '';
+  };
   const pickVerifyMethod = async () => {
     const sheet = await h.screenText();
-    const afterSms = (sheet.split(/Receive SMS/i)[1] || '').slice(0, 60);
-    const afterVoice = (sheet.split(/Voice call/i)[1] || '').slice(0, 60);
+    const afterSms = optionRow(sheet, /Receive SMS/i);
+    const afterVoice = optionRow(sheet, /Voice call/i);
     const smsLocked = /Try again/i.test(afterSms);
     const voicePresent = /Voice call/i.test(sheet);
     const voiceLocked = /Try again/i.test(afterVoice);
@@ -3223,7 +3254,14 @@ async function registerWhatsApp(job, legacyPayload) {
   // Missed call / Receive SMS / Voice call; a locked row shows "Try again in <n>".
   const listVerifyOptions = async () => {
     const sheet = await h.screenText();
-    const seg = (re) => (sheet.split(re)[1] || '').slice(0, 60);
+    // ★2026-07-30 KİLİT TESPİTİ SATIRLA SINIRLANDI. Eskiden satırdan sonraki 60 KARAKTER
+    // okunuyordu — bu SONRAKİ SEÇENEĞE TAŞIYOR: "Other device / Confirm on your other
+    // phone" (28 krk) + araya giren satır sonu → 60 karakterlik pencere bir alttaki
+    // "Receive SMS / Try again in 24 hours"a uzanıyor ve AÇIK olan seçenek KİLİTLİ
+    // sayılıyordu. Sonuç: panelde kullanılabilir yöntem gizleniyor, applyVerifyMethod
+    // `null` dönüyor (o satır "kilitli" sanıldığı için). Artık yalnızca SEÇENEĞİN KENDİ
+    // AÇIKLAMA SATIRI okunuyor: etiketten sonraki İLK anlamlı satır.
+    const seg = (re) => optionRow(sheet, re);
     const mk = (label, kind, re) => {
       if (!re.test(sheet)) return null;
       const after = seg(re);
@@ -3315,6 +3353,36 @@ async function registerWhatsApp(job, legacyPayload) {
     // "wait N minutes" state, not "SMS bekleniyor".
     rateLimitInfo = await onRateLimit(foc, txt);
     if (rateLimitInfo) {
+      // ★★★2026-07-30 "Choose how to verify" SAYFASINDAKİ rate-limit metni TÜM DOĞRULAMAYI
+      // KİLİTLEMEZ — SADECE O SATIRIN seçeneğini kilitler.
+      //
+      // CANLI OLARAK YAŞANDI (+905340420653, mi34, 04:49 — operatörün ekran görüntüsü):
+      //   Choose how to verify
+      //     ◉ Missed call    Auto-verify on +90 534 042 06 53      ← KULLANILABİLİR
+      //     ○ Receive SMS    Try again in 24 hours                 ← kilitli (soluk)
+      //     ○ Voice call     Get code at +90 534 042 06 53         ← KULLANILABİLİR
+      //     [ Continue ]
+      // "Try again in 24 hours" onRateLimit'e yakalanıyor ve akış BURADA break ediyordu →
+      // kayıt "24 saat bekle" diye durduruluyordu. OYSA cevapsız arama ve sesli arama
+      // O ANDA kullanılabilirdi: 24 saat SADECE SMS için.
+      //
+      // Doğrusu: sayfa açıksa break ETME — aşağıdaki onChooseVerify dalına düşsün.
+      // `listVerifyOptions`/`pickVerifyMethod` kilitli satırları ZATEN ayırt ediyor
+      // (smsLocked/voiceLocked), yani doğru seçenek oradan seçilir. Rate-limit'i ancak
+      // sayfada KULLANILABİLİR HİÇBİR seçenek yoksa terminal sayıyoruz.
+      const sheetUp = await onChooseVerify(foc, txt);
+      if (sheetUp) {
+        const openOpts = await listVerifyOptions().catch(() => []);
+        const usable = (openOpts || []).filter((o) => !o.locked);
+        if (usable.length) {
+          wlog(`verify: rate-limit metni var AMA ChooseVerify sayfasinda ${usable.length} KULLANILABILIR secenek (${usable.map((o) => o.kind).join(',')}) — akis SURUYOR`);
+          rateLimitInfo = null;   // terminal sayma; onChooseVerify dali devralacak
+        } else {
+          wlog('verify: ChooseVerify sayfasinda kullanilabilir secenek YOK — rate-limit terminal');
+        }
+      }
+    }
+    if (rateLimitInfo) {
       rateLimitText = rateLimitInfo.note;
       wlog(`verify: RATE-LIMIT (pre-OTP) — ${rateLimitText.slice(0, 80)} [${rateLimitInfo.waitSeconds}s]`);
       break;
@@ -3337,6 +3405,42 @@ async function registerWhatsApp(job, legacyPayload) {
         wlog('verify: OTP ekranina donuldu — eski "SMS gonderilemedi" notu TEMIZLENDI');
         bothLockedNote = null;
       }
+      // ★★★2026-07-30 GECİKMELİ DİYALOG TEYİT TURU — OTP'ye "ulaştık" demeden önce bekle.
+      //
+      // CANLI OLARAK YAŞANDI (+905340420653, mi34, 04:36): ChooseVerify'da SMS seçildi →
+      // WhatsApp ÖNCE OTP ekranını çizdi ("Verifying your number" + 6 haneli kutu) →
+      // onOtp true döndü → break → job OTP_WAIT yazdı ve panel OTP kutusunu açtı.
+      // AMA WhatsApp hata diyaloğunu SANİYELER SONRA o ekranın ÜSTÜNE açtı:
+      //   "Couldn't send an SMS to your number … try again in 1 hour, or try to
+      //    verify another way."  [OK] [Try another way]
+      // Döngüden çıkılmış olduğu için onSmsSendFailed/onRateLimit HİÇ ÇALIŞMADI →
+      // operatör asla gelmeyecek bir kod için bekletildi (yanlış "OTP bekleniyor").
+      //
+      // ÖNEMLİ: diyalog açıkken "Verifying your number" metni ARKADA HÂLÂ DURUYOR,
+      // yani onOtp'yi metinle sıkılaştırmak yetmez — ZAMAN gerekiyor. Bu yüzden
+      // break'ten önce kısa bir gözlem turu atıp diyalog belirirse döngüye DÖNÜYORUZ
+      // (continue) — orada mevcut sesli-arama / rate-limit dalları devralır.
+      let lateDialog = null;   // null | 'rate' | 'sms'
+      for (let dw = 0; dw < OTP_SETTLE_ROUNDS; dw++) {
+        await h.sleep(OTP_SETTLE_STEP_MS);
+        const dTxt = await h.screenTextRich().catch(() => '');
+        if (!dTxt) continue;
+        const dRate = await onRateLimit(undefined, dTxt);
+        if (dRate) {
+          rateLimitInfo = dRate;
+          rateLimitText = dRate.note;
+          wlog(`verify: OTP sonrasi GECIKMELI RATE-LIMIT diyalogu — ${dRate.note.slice(0, 70)} [${dRate.waitSeconds}s]`);
+          lateDialog = 'rate';
+          break;
+        }
+        if (await onSmsSendFailed(undefined, dTxt)) {
+          wlog('verify: OTP sonrasi GECIKMELI "SMS gonderilemedi" diyalogu — sesli arama dalina donuluyor');
+          lateDialog = 'sms';
+          break;
+        }
+      }
+      if (lateDialog === 'rate') break;      // rateLimitInfo dolu — aşağıdaki bekleme dalı devralır
+      if (lateDialog === 'sms') continue;    // döngü onSmsSendFailed dalına düşer (Try another way)
       wlog(`verify: reached OTP screen (round ${round})`);
       break;
     }
@@ -3713,6 +3817,37 @@ async function registerWhatsApp(job, legacyPayload) {
   // for an SMS that will NEVER arrive. Detect the dialog here (before parking at OTP_WAIT)
   // and FAIL honestly. (VERIFIED LIVE mi16 +90 531 437…: sat at AWAITING_OTP "SMS bekle"
   // while the screen showed "Couldn't send an SMS".)
+  // ★★★2026-07-30 GECİKMELİ RATE-LIMIT — burada MUTLAKA onSmsSendFailed'DAN ÖNCE bakılır.
+  //
+  // CANLI OLARAK YAŞANDI (+905340420653, mi34, 04:36 — operatörün ekran görüntüsü):
+  //   "Couldn't send an SMS to your number / … you can try again in 1 hour, or try to
+  //    verify another way."  [OK] [Try another way]
+  // Bu ekran onSmsSendFailed'a DÜŞMÜYOR (haklı olarak: rate-limit'i "kalıcı hata"
+  // saymamak için onSmsRateLimited ile dışlanıyor) — AMA burada onRateLimit kontrolü
+  // HİÇ YOKTU, dolayısıyla diyalog SESSİZCE GEÇİLİP `OTP_WAIT` yazılıyordu: panel OTP
+  // kutusunu açıyor, operatör ASLA GELMEYECEK bir kodu bekliyordu.
+  // Doğrusu: geçici kısıtı BEKLETME olarak bildir (waitSeconds + sesli arama seçeneği),
+  // numarayı "yandı" saymadan.
+  const otpLateRate = await onRateLimit();
+  if (otpLateRate) {
+    await snap('rate_limited_at_otp');
+    curStep = 'verify'; curPct = stepPct.verify;
+    // Şekli yukarıdaki `rateLimitText` dalıyla BİREBİR aynı tutuluyor — panel ve
+    // Telegram aynı alanları (waitSeconds/waitLabel/action/resumable) okuyor.
+    return done('rate_limited', {
+      status: 'RATE_LIMITED',
+      note: otpLateRate.note,
+      waitSeconds: otpLateRate.waitSeconds,
+      waitLabel: otpLateRate.waitLabel,
+      resumable: true,
+      action: otpLateRate.callOffered
+        ? 'BEKLEMENE GEREK YOK: panelden "Doğrulama yöntemi" olarak SESLİ ARAMA seçin — WhatsApp bu numaraya arama yapıp kodu söyler. Beklemek isterseniz ' + otpLateRate.waitLabel + ' sonra "Sıfırla ve Tekrar Dene".'
+        : `${otpLateRate.waitLabel} bekleyin, sonra "Sıfırla ve Tekrar Dene" ile aynı numarayla devam edin. Numara yanmadı — hemen tekrar denemek yakar.`,
+      ...(otpLateRate.callOffered ? { callOffered: true } : {}),
+      phoneNumber,
+      screenTexts: otpLateRate.note.slice(0, 400)
+    });
+  }
   if (await onSmsSendFailed()) {
     await snap('sms_send_failed_terminal');
     const note = 'WhatsApp bu numaraya SMS gönderemedi ("Couldn\'t send an SMS"). Numara WhatsApp doğrulaması alamıyor (itibar/operatör engeli). 1 saat sonra tekrar deneyin veya WhatsApp-uyumlu (SMS alabilen) başka bir numara kullanın.';

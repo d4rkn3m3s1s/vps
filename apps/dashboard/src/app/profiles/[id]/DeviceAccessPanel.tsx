@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { UserPlus, ShieldOff, ArrowRightLeft, Eye, MousePointerClick } from 'lucide-react';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type Grant = {
   id: string;
@@ -15,6 +16,8 @@ type Grant = {
 // Time-boxed device sharing + permanent transfer. Distinct from workspace ACLs:
 // a grant lends one device to one teammate for a window, then auto-expires.
 export function DeviceAccessPanel({ deviceId }: { deviceId: string }) {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [grants, setGrants] = useState<Grant[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -71,7 +74,15 @@ export function DeviceAccessPanel({ deviceId }: { deviceId: string }) {
 
   async function transfer() {
     if (!transferWs.trim()) return flash('Hedef çalışma alanı gerekli.');
-    if (!confirm('Cihaz kalıcı olarak başka bir çalışma alanına aktarılsın mı? Mevcut erişimler iptal edilecek.')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const okTransfer = await confirm({
+      title: 'Cihaz devredilsin mi?',
+      body: 'Cihaz KALICI olarak başka bir çalışma alanına aktarılacak.',
+      warning: 'Bu alandaki tüm erişimler (paylaşımlar) iptal edilir ve cihaz sizin listenizden çıkar. Geri almak için karşı tarafın devretmesi gerekir.',
+      confirmLabel: 'Devret',
+      danger: true
+    });
+    if (!okTransfer) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/grants/device/${deviceId}/transfer`, {
@@ -129,6 +140,7 @@ export function DeviceAccessPanel({ deviceId }: { deviceId: string }) {
           <button type="button" className="btn-ghost danger-btn" disabled={busy} onClick={transfer}>Devret</button>
         </div>
       </div>
+      {confirmDialog}
     </div>
   );
 }

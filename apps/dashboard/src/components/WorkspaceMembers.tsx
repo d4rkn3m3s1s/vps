@@ -2,11 +2,14 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { UserPlus, Shield, Trash2 } from 'lucide-react';
+import { useConfirm } from './ConfirmDialog';
 
 type Member = { id: string; userId: string; email: string; role: string };
 type Workspace = { id: string; name: string; role: string };
 
 export function WorkspaceMembers() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [email, setEmail] = useState('');
@@ -62,7 +65,15 @@ export function WorkspaceMembers() {
 
   async function removeMember(memberId: string, memberEmail: string) {
     if (!workspace) return;
-    if (!confirm(`${memberEmail} kullanıcısı ${workspace.name} çalışma alanından çıkarılsın mı?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Üye çıkarılsın mı?',
+      body: `${memberEmail}, "${workspace.name}" çalışma alanından çıkarılacak.`,
+      warning: 'Bu alandaki cihazlara ve panele erişimi anında sona erer.',
+      confirmLabel: 'Çıkar',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/workspaces/${workspace.id}/members/${memberId}`, { method: 'DELETE' });
@@ -137,6 +148,7 @@ export function WorkspaceMembers() {
       )}
 
       {msg ? <p className="helper">{msg}</p> : null}
+      {confirmDialog}
     </div>
   );
 }

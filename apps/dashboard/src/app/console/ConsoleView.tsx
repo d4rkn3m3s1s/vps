@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Terminal, RotateCcw, Play, Square, Package, Trash2, ChevronRight, Cpu, Activity, Zap, ListTree } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 type Device = { id: string; name: string; status?: string };
 type Line = { kind: 'cmd' | 'out' | 'err' | 'info'; text: string };
@@ -21,6 +22,8 @@ const QUICK_CMDS: { label: string; cmd: string }[] = [
 ];
 
 export function ConsoleView() {
+  // Panel onay/giriş modalı (tarayıcı confirm() + prompt() yerine).
+  const { confirm, ask, dialog: confirmDialog } = useConfirm();
   const [devices, setDevices] = useState<Device[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
@@ -139,13 +142,28 @@ export function ConsoleView() {
 
   async function reboot() {
     if (!selected) return;
-    if (!confirm('Bu bulut telefon yeniden başlatılsın mı?')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Cihaz yeniden başlatılsın mı?',
+      body: 'Bu bulut telefon yeniden başlatılacak (~60-90 sn erişilemez olur).',
+      warning: 'Süren bir kayıt/işlem varsa yarıda kalır. Canlı yayın ve ADB bağlantısı kopar, kendi kendine geri gelir.',
+      confirmLabel: 'Yeniden başlat',
+      danger: true
+    });
+    if (!ok) return;
     // Reboot is issued directly over the live ADB bridge (synchronous).
     await runShell('reboot');
   }
 
-  function installApk() {
-    const apkPath = prompt('Sunucudaki APK yolu (örn. /data/apks/app.apk):');
+  // ★2026-07-30 prompt() yerine panel giriş modalı (`ask`). Fonksiyon bu yüzden
+  // async oldu — çağrıldığı yerde `void installApk()` deseni korunuyor.
+  async function installApk() {
+    const apkPath = await ask({
+      title: 'APK yükle',
+      body: 'Sunucuda duran bir APK dosyasının yolunu girin.',
+      input: { label: 'APK yolu', placeholder: '/data/apks/app.apk', required: true },
+      confirmLabel: 'Yükle'
+    });
     if (!apkPath || !apkPath.trim()) return;
     void quickAction('EMULATOR_INSTALL_APK', 'APK yükleme', { apkPath: apkPath.trim() });
   }
@@ -310,6 +328,7 @@ export function ConsoleView() {
           </div>
         </HoloPanel>
       </div>
+      {confirmDialog}
     </PageMotion>
   );
 }

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, Plus, Trash2, Copy, Check, Loader2, ShieldCheck, Activity, Ban, Sparkles, X, MessageCircle, Terminal, Play } from 'lucide-react';
 import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type ApiKey = {
   id: string;
@@ -47,6 +48,8 @@ function CodeBlock({ code }: { code: string }) {
 }
 
 export default function ApiKeysPage() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState('');
@@ -242,7 +245,15 @@ export default function ApiKeysPage() {
 
   async function revoke(key: ApiKey) {
     if (revokingId) return; // guard against concurrent revokes
-    if (!confirm(`"${key.name}" iptal edilsin mi? Bu anahtarı kullanan tüm çağrılar anında çalışmayı durduracaktır.`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'API anahtarı iptal edilsin mi?',
+      body: `"${key.name}" anahtarı kalıcı olarak iptal edilecek.`,
+      warning: 'Bu anahtarı kullanan TÜM çağrılar anında 401 almaya başlar. Dış entegrasyonlarınız durur — yerine yeni anahtar üretip dağıtmanız gerekir.',
+      confirmLabel: 'Anahtarı iptal et',
+      danger: true
+    });
+    if (!ok) return;
     setRevokingId(key.id);
     try {
       const res = await fetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
@@ -1028,6 +1039,7 @@ export default function ApiKeysPage() {
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </section>
   );
 }

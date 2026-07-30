@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Cpu, Search, Plus, Trash2, Power, PlugZap, RefreshCw, Server, Activity, DollarSign, KeyRound } from 'lucide-react';
 import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type Offer = {
   id: number;
@@ -30,6 +31,8 @@ type Instance = {
 };
 
 export default function ServersPage() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [offers, setOffers] = useState<Offer[]>([]);
@@ -117,7 +120,15 @@ export default function ServersPage() {
   }
 
   async function disconnect() {
-    if (!confirm('Vast.ai hesabınızın bağlantısı kesilsin mi? Saklanan API anahtarı kaldırılacaktır.')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Vast.ai bağlantısı kesilsin mi?',
+      body: 'Saklanan API anahtarı kaldırılacak.',
+      warning: 'Bu hesap üzerinden yeni sunucu kiralanamaz. ÇALIŞAN örnekler durmaz — onları Vast.ai panelinden ayrıca yönetmeniz gerekir (faturalandırma devam eder).',
+      confirmLabel: 'Bağlantıyı kes',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch('/api/vast/key', { method: 'DELETE' });
@@ -186,7 +197,15 @@ export default function ServersPage() {
   }
 
   async function destroy(inst: Instance) {
-    if (!confirm(`#${inst.id} örneği yok edilsin mi? Bu işlem geri alınamaz ve faturalandırmayı durdurur.`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const okDestroy = await confirm({
+      title: 'Sunucu örneği yok edilsin mi?',
+      body: `#${inst.id} örneği kalıcı olarak yok edilecek ve faturalandırma durur.`,
+      warning: '⚠️ GERİ ALINAMAZ. Bu sunucuda çalışan TÜM cihazlar (ve üzerlerindeki WhatsApp hesapları) yok olur. Devam etmeden önce cihazları başka bir sunucuya taşıdığınızdan emin olun.',
+      confirmLabel: 'Örneği yok et',
+      danger: true
+    });
+    if (!okDestroy) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/vast/instances/${inst.id}`, { method: 'DELETE' });
@@ -507,6 +526,7 @@ export default function ServersPage() {
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </section>
   );
 }

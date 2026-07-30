@@ -3,11 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ShieldCheck, ShieldAlert, Copy, Check } from 'lucide-react';
+import { useConfirm } from './ConfirmDialog';
 
 type SetupData = { otpauthUrl: string; qrDataUrl: string; secret: string };
 
 export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
   const router = useRouter();
+  // Panel giriş modalı (tarayıcı prompt() yerine); `dialog` en altta ağaca eklenir.
+  const { ask, dialog: confirmDialog } = useConfirm();
   const [step, setStep] = useState<'idle' | 'setup' | 'backup'>('idle');
   const [setup, setSetup] = useState<SetupData | null>(null);
   const [code, setCode] = useState('');
@@ -55,7 +58,17 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
   }
 
   async function disable() {
-    const token = prompt('2FA özelliğini devre dışı bırakmak için geçerli bir 2FA kodu (veya yedek kod) girin:');
+    // ★2026-07-30 prompt() yerine panel giriş modalı. Kod alanı `password` DEĞİL:
+    // operatör girdiğini görebilmeli (yanlış kod girince hesabı kilitlemek yok, ama
+    // 6 haneyi maskelemek gereksiz sürtünme yaratıyor).
+    const token = await ask({
+      title: '2FA kapatılsın mı?',
+      body: 'Doğrulamak için geçerli bir 2FA kodu (veya yedek kod) girin.',
+      warning: '2FA kapandığında hesabınız yalnızca şifreyle korunur.',
+      input: { label: 'Doğrulama kodu', placeholder: '123456 veya yedek kod', required: true },
+      confirmLabel: "2FA'yı kapat",
+      danger: true
+    });
     if (!token) return;
     setBusy(true);
     setError(null);
@@ -167,6 +180,7 @@ export function TwoFactorPanel({ enabled }: { enabled: boolean }) {
         {busy ? 'Yükleniyor…' : '2FA kur'}
       </button>
       {error ? <p className="field-error">{error}</p> : null}
+      {confirmDialog}
     </div>
   );
 }

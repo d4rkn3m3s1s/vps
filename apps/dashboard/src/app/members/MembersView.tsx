@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Users, ShieldCheck, Eye, UserPlus, UserCog, Trash2, X, KeyRound } from 'lucide-react';
+import { useConfirm } from '../../components/ConfirmDialog';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
 
@@ -28,6 +29,8 @@ function roleBadge(role: string) {
 
 export function MembersView({ members }: { members: Member[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -67,7 +70,15 @@ export function MembersView({ members }: { members: Member[] }) {
   }
 
   async function remove(id: string, email: string) {
-    if (!confirm(`${email} kaldırılsın mı?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Üye kaldırılsın mı?',
+      body: `${email} bu çalışma alanından çıkarılacak.`,
+      warning: 'Panele ve cihazlara erişimi anında sona erer. Yeniden davet ederek geri ekleyebilirsiniz.',
+      confirmLabel: 'Üyeyi kaldır',
+      danger: true
+    });
+    if (!ok) return;
     setBusyId(id);
     try {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
@@ -196,6 +207,7 @@ export function MembersView({ members }: { members: Member[] }) {
       ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

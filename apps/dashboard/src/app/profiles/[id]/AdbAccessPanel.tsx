@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Terminal, Copy, Check, Wifi, WifiOff, ShieldAlert } from 'lucide-react';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type ConnectInfo = {
   deviceId: string;
@@ -37,6 +38,8 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 }
 
 export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [info, setInfo] = useState<ConnectInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -122,7 +125,15 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
   }
 
   async function unexpose() {
-    if (!confirm('Bu cihazın ADB portunun dışarıya yayınlanması durdurulsun mu?')) return;
+    // 2026-07-30 Tarayici confirm() yerine panel modali.
+    const ok = await confirm({
+      title: 'ADB yayını durdurulsun mu?',
+      body: 'Bu cihazın ADB portu artık dışarıya açık olmayacak.',
+      warning: 'Uzaktan bağlı araçlarınız (scrcpy, Android Studio, kendi betikleriniz) bağlantıyı kaybeder.',
+      confirmLabel: 'Yayını durdur',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/devices/${deviceId}/adb/expose`, { method: 'DELETE' });
@@ -213,6 +224,7 @@ export function AdbAccessPanel({ deviceId }: { deviceId: string }) {
       ) : (
         <p className="helper">{msg ?? 'ADB bilgisi yükleniyor…'}</p>
       )}
+      {confirmDialog}
     </div>
   );
 }

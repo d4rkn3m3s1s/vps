@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ShieldCheck, Plus, Trash2, Users, KeyRound, Eye, Gamepad2, Trash } from 'lucide-react';
 import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type User = { id: string; email: string; role: string };
 type Group = { id: string; name: string };
@@ -19,6 +20,8 @@ type Permission = {
 };
 
 export default function PermissionsPage() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [users, setUsers] = useState<User[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -139,7 +142,15 @@ export default function PermissionsPage() {
       : p.deviceId
         ? `Cihaz: ${deviceName(p.deviceId)}`
         : 'bu yetki';
-    if (!confirm(`${label} için erişim geri alınsın mı?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Erişim geri alınsın mı?',
+      body: `${label} için verilen erişim iptal edilecek.`,
+      warning: 'İlgili kullanıcı bu cihaz/grubu artık göremez ve kontrol edemez.',
+      confirmLabel: 'Erişimi geri al',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/permissions/${p.id}`, { method: 'DELETE' });
@@ -349,6 +360,7 @@ export default function PermissionsPage() {
           )}
         </HoloPanel>
       </Reveal>
+      {confirmDialog}
     </section>
   );
 }

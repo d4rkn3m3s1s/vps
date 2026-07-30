@@ -5,6 +5,7 @@ import { Sprout, Plus, Play, Pause, Trash2, Zap, Clock, Activity, Upload, Shield
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 import { AnimatedNumber } from '../../components/Motion';
 import { useFleetEvents } from '../../lib/live';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 type Flow = { id: string; name: string };
 type Group = { id: string; name: string };
@@ -173,6 +174,8 @@ function HealthGauge({ value, size = 92 }: { value: number; size?: number }) {
 }
 
 export function FarmView() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [tab, setTab] = useState<'overview' | 'campaigns' | 'accounts'>('overview');
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -485,7 +488,15 @@ export function FarmView() {
   }
 
   async function remove(c: Campaign) {
-    if (!confirm(`"${c.name}" kampanyası silinsin mi?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Kampanya silinsin mi?',
+      body: `"${c.name}" ısıtma kampanyası kalıcı olarak silinecek.`,
+      warning: 'Kampanyaya bağlı cihazların ısıtma ilerlemesi (aşama, sağlık skoru) korunur ama otomatik eylemler DURUR.',
+      confirmLabel: 'Kampanyayı sil',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/farm/campaigns/${c.id}`, { method: 'DELETE' });
@@ -1044,6 +1055,7 @@ export function FarmView() {
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </div>
   );
 }

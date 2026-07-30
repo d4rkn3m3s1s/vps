@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, Zap, ExternalLink, XCircle, RotateCcw, CreditCard, Gauge, Smartphone, Users, AlertTriangle, Layers } from 'lucide-react';
 import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type PlanCard = {
   key: string;
@@ -41,6 +42,8 @@ function UsageBar({ label, used, limit }: { label: string; used: number; limit: 
 }
 
 export default function AdminBillingPage() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [billing, setBilling] = useState<Billing | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +98,15 @@ export default function AdminBillingPage() {
   }
 
   async function cancelSubscription() {
-    if (!window.confirm('Aboneliğiniz iptal edilsin mi? Mevcut dönemin sonuna kadar erişiminiz devam eder.')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Abonelik iptal edilsin mi?',
+      body: 'Mevcut ödeme döneminin SONUNA kadar erişiminiz devam eder; sonra kapanır.',
+      warning: 'Dönem sonunda cihazlarınız durur ve yeni kurulum yapılamaz. Dilediğiniz zaman tekrar abone olabilirsiniz.',
+      confirmLabel: 'Aboneliği iptal et',
+      danger: true
+    });
+    if (!ok) return;
     setBusy('cancel');
     setError(null);
     setFlash(null);
@@ -298,6 +309,7 @@ export default function AdminBillingPage() {
           </HoloPanel>
         </Reveal>
       )}
+      {confirmDialog}
     </section>
   );
 }

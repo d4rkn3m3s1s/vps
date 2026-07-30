@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { CalendarDays, Plus, Trash2, Clock, Send, XCircle, Image as ImageIcon, CalendarClock, ListChecks, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 export type Post = {
   id: string;
@@ -49,6 +50,8 @@ const STATUS_DOT: Record<string, string> = {
 
 export function CalendarView({ posts, groups, flows }: { posts: Post[]; groups: CalGroup[]; flows: CalFlow[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
   const [open, setOpen] = useState(false);
@@ -103,7 +106,15 @@ export function CalendarView({ posts, groups, flows }: { posts: Post[]; groups: 
   }
 
   async function remove(p: Post) {
-    if (!confirm('Gönderi silinsin mi?')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Gönderi silinsin mi?',
+      body: 'Planlanmış bu gönderi takvimden kaldırılacak.',
+      warning: 'Henüz yayınlanmadıysa hiç yayınlanmaz.',
+      confirmLabel: 'Gönderiyi sil',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/calendar/posts/${p.id}`, { method: 'DELETE' });
@@ -243,6 +254,7 @@ export function CalendarView({ posts, groups, flows }: { posts: Post[]; groups: 
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

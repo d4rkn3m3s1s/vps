@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { useFleetEvents, useLive } from '../../lib/live';
+import { useConfirm } from '../../components/ConfirmDialog';
 import Link from 'next/link';
 import {
   Smartphone,
@@ -277,6 +278,8 @@ export function ProfilesView({
   const { status: liveStatus, reconnect } = useLive();
   // Silme onay modalı: tarayıcının confirm() diyaloğunun yerini alır (bkz. askDeleteSelected).
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; protectedNames: string[]; names: string[] } | null>(null);
+  // Metin girişi modalı (etiket düzenleme) — tarayıcı prompt() yerine.
+  const { ask, dialog: askDialog } = useConfirm();
 
   // ★2026-07-28 CANLI LISTE: cihaz listesi SADECE 20s'lik yoklamayla guncelleniyordu —
   // yeni kurulan cihaz listeye ANINDA dusmuyordu (operator: "sayfayi yenileyince
@@ -600,7 +603,15 @@ export function ProfilesView({
   // local list immediately (optimistic) so the chips reflect the change at once.
   async function editTags(device: DeviceProfile) {
     const current = (device.tags ?? []).join(', ');
-    const next = typeof window !== 'undefined' ? window.prompt('Etiketler (virgülle ayırın):', current) : null;
+    // ★2026-07-30 prompt() yerine panel giriş modalı. Boş bırakmak GEÇERLİ bir
+    // işlemdir (tüm etiketleri temizler), bu yüzden `required` YOK — vazgeçme null
+    // döner, boş metin '' döner ve ikisi ayrı anlam taşır.
+    const next = await ask({
+      title: `Etiketler — ${device.name}`,
+      body: 'Virgülle ayırın. Boş bırakıp onaylarsanız tüm etiketler silinir.',
+      input: { label: 'Etiketler', placeholder: 'ör. tr, satis, yedek', defaultValue: current },
+      confirmLabel: 'Kaydet'
+    });
     if (next === null) return;
     const tags = [...new Set(next.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 20);
     try {
@@ -2362,6 +2373,8 @@ export function ProfilesView({
           <span>{toast.text}</span>
         </div>
       ) : null}
+      {/* Etiket düzenleme giriş modalı (prompt() yerine) — ağaca BİR KEZ eklenir. */}
+      {askDialog}
     </div>
   );
 }

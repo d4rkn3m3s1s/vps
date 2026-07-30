@@ -32,34 +32,72 @@ export type ConfirmOptions = {
   cancelLabel?: string;
   /** true → onay düğmesi kırmızı (yıkıcı işlem). */
   danger?: boolean;
+  /**
+   * Metin girişi istenen durumlar için (tarayıcının `prompt()` yerine).
+   * Doldurulursa modalde bir giriş alanı çıkar ve `ask()` girilen metni döndürür.
+   */
+  input?: {
+    label?: string;
+    placeholder?: string;
+    /** Başlangıç değeri (prompt'un ikinci argümanının karşılığı). */
+    defaultValue?: string;
+    /** true → boş bırakılamaz; onay düğmesi kilitli kalır. */
+    required?: boolean;
+    /** Şifre/kod alanı gibi maskelemek için. */
+    password?: boolean;
+  };
 };
 
-type Pending = ConfirmOptions & { resolve: (ok: boolean) => void };
+type Pending = ConfirmOptions & { resolve: (v: boolean | string | null) => void };
 
-export function useConfirm(): { confirm: (o: ConfirmOptions) => Promise<boolean>; dialog: React.ReactNode } {
+export function useConfirm(): {
+  confirm: (o: ConfirmOptions) => Promise<boolean>;
+  /** prompt() karşılığı: girilen metni, vazgeçilirse null döndürür. */
+  ask: (o: ConfirmOptions) => Promise<string | null>;
+  dialog: React.ReactNode;
+} {
   const [pending, setPending] = useState<Pending | null>(null);
+  const [text, setText] = useState('');
   // Bekleyen söz, bileşen sökülürse (unmount) asla çözülmezse çağıran sonsuza kadar
   // bekler; ref ile tutup temizlikte false çözüyoruz.
   const pendingRef = useRef<Pending | null>(null);
   pendingRef.current = pending;
 
   const confirm = useCallback((o: ConfirmOptions) => {
-    return new Promise<boolean>((resolve) => setPending({ ...o, resolve }));
-  }, []);
-
-  const close = useCallback((ok: boolean) => {
-    setPending((p) => {
-      p?.resolve(ok);
-      return null;
+    return new Promise<boolean>((resolve) => {
+      setText('');
+      setPending({ ...o, resolve: resolve as (v: boolean | string | null) => void });
     });
   }, []);
+
+  // prompt() karşılığı — girilen metni döndürür, vazgeçilirse null.
+  const ask = useCallback((o: ConfirmOptions) => {
+    return new Promise<string | null>((resolve) => {
+      setText(o.input?.defaultValue ?? '');
+      setPending({ ...o, input: o.input ?? {}, resolve: resolve as (v: boolean | string | null) => void });
+    });
+  }, []);
+
+  // Metin isteyen modalde onay → GİRİLEN METİN döner; sade onayda → true/false.
+  // İki mod tek `close` ile yürüyor; `input` alanının varlığı hangisi olduğunu belirler.
+  const close = useCallback((ok: boolean) => {
+    setPending((p) => {
+      if (p) p.resolve(p.input ? (ok ? text : null) : ok);
+      return null;
+    });
+  }, [text]);
 
   // Esc ile vazgeç, Enter ile onayla — klavye kullanıcısı fareye uzanmasın.
   useEffect(() => {
     if (!pending) return undefined;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); close(false); }
-      if (e.key === 'Enter') { e.preventDefault(); close(true); }
+      if (e.key === 'Enter') {
+        // Zorunlu bir metin alanı boşken Enter onaylamamalı — düğme de kilitli.
+        if (pending.input?.required && !text.trim()) return;
+        e.preventDefault();
+        close(true);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -97,6 +135,22 @@ export function useConfirm(): { confirm: (o: ConfirmOptions) => Promise<boolean>
           </div>
         ) : null}
 
+        {/* Metin girişi (prompt() karşılığı). Enter zaten onaylıyor — üstteki
+            klavye dinleyicisi bunu hallediyor, ayrı form gerekmiyor. */}
+        {pending.input ? (
+          <label className="field" style={{ marginBottom: 12 }}>
+            {pending.input.label ? <span>{pending.input.label}</span> : null}
+            <input
+              className="field-input"
+              type={pending.input.password ? 'password' : 'text'}
+              placeholder={pending.input.placeholder ?? ''}
+              value={text}
+              autoFocus
+              onChange={(e) => setText(e.target.value)}
+            />
+          </label>
+        ) : null}
+
         <footer className="modal-foot">
           <button type="button" className="btn-ghost" onClick={() => close(false)}>
             {pending.cancelLabel ?? 'Vazgeç'}
@@ -104,7 +158,8 @@ export function useConfirm(): { confirm: (o: ConfirmOptions) => Promise<boolean>
           <button
             type="button"
             className="btn-ghost"
-            autoFocus
+            autoFocus={!pending.input}
+            disabled={Boolean(pending.input?.required) && !text.trim()}
             style={pending.danger ? { color: '#f87171', borderColor: 'rgba(248,113,113,0.45)' } : undefined}
             onClick={() => close(true)}
           >
@@ -115,5 +170,5 @@ export function useConfirm(): { confirm: (o: ConfirmOptions) => Promise<boolean>
     </div>
   ) : null;
 
-  return { confirm, dialog };
+  return { confirm, ask, dialog };
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Shield, Trash2, UserPlus, Users, Crown, Building2, Mail } from 'lucide-react';
 import { HoloPanel, HoloStat, Reveal } from '../../../components/hud';
+import { useConfirm } from '../../../components/ConfirmDialog';
 
 type Member = { id: string; userId: string; email: string; role: string };
 type Workspace = {
@@ -17,6 +18,8 @@ type Workspace = {
 const ROLES = ['admin', 'operator', 'viewer'] as const;
 
 export default function MembersPage() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [email, setEmail] = useState('');
@@ -89,7 +92,15 @@ export default function MembersPage() {
 
   async function removeMember(memberId: string, memberEmail: string) {
     if (!workspace) return;
-    if (!confirm(`${memberEmail} kullanıcısı ${workspace.name} alanından çıkarılsın mı?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Üye çıkarılsın mı?',
+      body: `${memberEmail}, "${workspace.name}" alanından çıkarılacak.`,
+      warning: 'Bu alandaki cihazlara ve panele erişimi anında sona erer.',
+      confirmLabel: 'Çıkar',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/workspaces/${workspace.id}/members/${memberId}`, {
@@ -307,6 +318,7 @@ export default function MembersPage() {
           {msg}
         </p>
       ) : null}
+      {confirmDialog}
     </section>
   );
 }

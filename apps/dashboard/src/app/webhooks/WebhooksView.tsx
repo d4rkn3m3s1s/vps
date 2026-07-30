@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Webhook as WebhookIcon, Plus, Radio, Lock, Activity, AlertTriangle, History, Send, Pause, Play, Trash2, RefreshCw, X } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 export type Webhook = {
   id: string;
@@ -43,6 +44,8 @@ const EVENT_OPTIONS: { value: string; label: string }[] = [
 
 export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
@@ -142,7 +145,15 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
   }
 
   async function remove(hook: Webhook) {
-    if (!confirm(`"${hook.label}" webhook'u silinsin mi?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Webhook silinsin mi?',
+      body: `"${hook.label}" webhook'u kalıcı olarak silinecek.`,
+      warning: 'Bu adrese artık olay gönderilmez. Dış entegrasyonunuz sessizce veri almayı durdurur.',
+      confirmLabel: 'Webhook sil',
+      danger: true
+    });
+    if (!ok) return;
     await fetch(`/api/webhooks/${hook.id}`, { method: 'DELETE' });
     router.refresh();
   }
@@ -337,6 +348,7 @@ export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

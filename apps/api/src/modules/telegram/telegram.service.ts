@@ -180,7 +180,9 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   // Mesajlaşma
   { command: 'gonder', description: '✉️ Tek cihazdan mesaj gönder (cihaz seç)' },
   { command: 'testmesaj', description: '📢 Bir numaraya TÜM cihazlardan test — /testmesaj 90555… mesaj' },
-  { command: 'profilisim', description: '📝 WA profil ismini değiştir — /profilisim watest48 Zara' },
+  // ★2026-07-30 Açıklamalar artık "adım adım sorar" diyor: operatör parametreyi
+  // ezberlemek/yazmak zorunda değil, çıplak komut yeter (cihazı butonla seçer).
+  { command: 'profilisim', description: '📝 WA profil ismini değiştir (adım adım sorar)' },
   { command: 'profilresim', description: '🖼 WA profil resmini değiştir — /profilresim <cihaz> + foto' },
   { command: 'sohbetler', description: '💬 Sohbetleri gör (kategori + sayfalama)' },
   { command: 'ara', description: '🔎 Sohbet ara — /ara Ahmet veya /ara 90555…' },
@@ -204,9 +206,9 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'reboot', description: '♻️ Cihazı yeniden başlat — /reboot <cihaz>' },
   { command: 'reconnect', description: '🔧 ADB kopan offline cihazları toplu kurtar' },
   // 🛠 Cihaz yönetimi
-  { command: 'kur', description: '🚀 Toplu cihaz kur — /kur 3 TR (adet + ülke)' },
-  { command: 'etiket', description: '🏷 Cihaz etiketle — /etiket <cihaz> #test' },
-  { command: 'adver', description: '✏️ Cihaz adını değiştir — /adver <cihaz> <ad>' },
+  { command: 'kur', description: '🚀 Toplu cihaz kur (ülke + adet sorar)' },
+  { command: 'etiket', description: '🏷 Cihaz etiketle (adım adım sorar)' },
+  { command: 'adver', description: '✏️ Cihaz adını değiştir (adım adım sorar)' },
   { command: 'sil', description: '🗑 Cihaz sil (korumalıysa reddedilir) — /sil <cihaz>' },
   // 💬 WA hesap-sağlık
   // ★2026-07-29: /kayit dispatcher'da vardı ama palette/menüde YOKTU → operatör
@@ -249,9 +251,26 @@ async function ensureCommands(token: string): Promise<void> {
 // "compose" state so a "Mesaj gönder" button flow can collect deviceId → number
 // → text across messages.
 type ChatState = {
-  mode: 'idle' | 'awaiting_number' | 'awaiting_text' | 'awaiting_reply' | 'awaiting_search' | 'awaiting_media' | 'awaiting_broadcast_number' | 'awaiting_broadcast_text' | 'awaiting_profile_photo';
+  // ★2026-07-30 ADIM ADIM AKIŞLAR (operatör isteği: "bütün komutlarda adım adım
+  // komutu çalıştırsın, no girsin vs — /xxx komut xxx noya xx mesaj gibi değil").
+  // Yeni modlar: profil-ismi, etiket, cihaz-adı ve toplu kurulum artık parametreyi
+  // TEK SATIRDA yazdırmak yerine sırayla soruyor.
+  mode:
+    | 'idle' | 'awaiting_number' | 'awaiting_text' | 'awaiting_reply' | 'awaiting_search'
+    | 'awaiting_media' | 'awaiting_broadcast_number' | 'awaiting_broadcast_text'
+    | 'awaiting_profile_photo'
+    | 'awaiting_profile_name'   // /profilisim → cihaz seçildi, YENİ AD bekleniyor
+    | 'awaiting_tag'            // /etiket    → cihaz seçildi, ETİKET bekleniyor
+    | 'awaiting_rename'         // /adver     → cihaz seçildi, YENİ CİHAZ ADI bekleniyor
+    | 'awaiting_provision_count'; // /kur     → ülke seçildi, ADET bekleniyor
   deviceId?: string | undefined;
   to?: string | undefined;
+  // Adım adım akışların taşıdığı hedef cihaz (ad göstermek için ismi de tutuyoruz;
+  // aksi halde her adımda tekrar DB'ye gitmek gerekir).
+  targetDeviceId?: string | undefined;
+  targetDeviceName?: string | undefined;
+  // /kur akışında seçilen ülke (adet sorulurken hatırlanır).
+  provisionCountry?: string | undefined;
   // Toplu test-mesajı akışı: numara → mesaj → tüm cihazlardan gönder.
   broadcastTo?: string | undefined;
   // Profil-resmi akışı: /profilresim <cihaz> → sonraki fotoğrafı bu cihaza uygula.
@@ -377,8 +396,8 @@ function menuText(): string {
     '• <b>/ara</b> — sohbet ara — <code>/ara Ahmet</code> ya da <code>/ara 90555…</code>',
     '',
     '<b>👤 Profil</b>',
-    '• <b>/profilisim</b> &lt;cihaz&gt; &lt;ad&gt; — WA profil ismini değiştir',
-    '   örn: <code>/profilisim watest48 Zara</code>',
+    '• <b>/profilisim</b> — WA profil ismini değiştir <i>(cihazı seçtirir, sonra ismi sorar)</i>',
+    '   hızlı yol: <code>/profilisim watest48 Zara</code>',
     '• <b>/profilresim</b> &lt;cihaz&gt; — sonra bir foto gönderin (profil resmi olur)',
     '• <b>/okunmamis</b> · <b>/favoriler</b> · <b>/etiketler</b>',
     '• <b>/engellenenler</b> · <b>/numaram</b>',
@@ -399,10 +418,12 @@ function menuText(): string {
     '   <i>(cihaz = isim, numara veya kimlik — örn. /uyandir 90555…)</i>',
     '',
     '<b>🛠 Cihaz yönetimi</b>',
-    '• <b>/kur</b> &lt;adet&gt; [ülke] — toplu cihaz kur — <code>/kur 3 TR</code>',
-    '• <b>/etiket</b> &lt;cihaz&gt; #etiket — <code>/etiket watest52 #test</code>',
-    '• <b>/adver</b> &lt;cihaz&gt; &lt;yeni-ad&gt; — cihaz adını değiştir',
+    '<i>Bu komutlar ADIM ADIM sorar — parametre yazmak zorunda değilsiniz.</i>',
+    '• <b>/kur</b> — toplu cihaz kur <i>(ülke seçtirir, sonra adet sorar)</i>',
+    '• <b>/etiket</b> — cihaz etiketle <i>(cihazı seçtirir, sonra etiketi sorar)</i>',
+    '• <b>/adver</b> — cihaz adını değiştir <i>(cihazı seçtirir, sonra adı sorar)</i>',
     '• <b>/sil</b> &lt;cihaz&gt; — cihaz sil (korumalıysa reddedilir)',
+    '   <i>hızlı yol: <code>/kur 3 TR</code> · <code>/etiket watest52 #test</code></i>',
     '',
     '<b>💬 WA hesap-sağlık</b>',
     '• <b>/hesaplar</b> — WhatsApp hesapları + sağlık rozeti',
@@ -587,7 +608,8 @@ async function listDevicesText(workspaceId: string): Promise<{ text: string; but
 // operator knows WHICH WhatsApp identity they're sending from.
 async function devicePickerButtons(
   workspaceId: string,
-  action: 'sendpick' | 'readpick' | 'chatpick',
+  // ★2026-07-30 adım-adım akışlar için yeni eylemler: profil-ismi, etiket, yeniden-adlandır.
+  action: 'sendpick' | 'readpick' | 'chatpick' | 'namepick' | 'tagpick' | 'renamepick',
   filter?: ConversationFilter,
   whatsappOnly = false
 ): Promise<InlineButton[][]> {
@@ -1104,6 +1126,90 @@ async function handleCommand(
     }
     return;
   }
+  // ★2026-07-30 ADIM ADIM AKIŞ İŞLEYİCİLERİ. Operatör isteği: komutlar parametreyi
+  // tek satırda yazdırmak yerine sırayla sorsun. Her biri modu HEMEN 'idle'a çeker
+  // (yarım kalan bir akış sonraki mesajı yanlış yorumlamasın) ve bittiğinde menüyü
+  // gösterir. Tek satırlık hızlı biçim de çalışmaya devam eder.
+  if (state.mode === 'awaiting_profile_name') {
+    state.mode = 'idle';
+    const newName = cmd.trim().slice(0, 25);
+    const devId = state.targetDeviceId;
+    const devName = state.targetDeviceName ?? 'cihaz';
+    state.targetDeviceId = undefined; state.targetDeviceName = undefined;
+    if (!newName) { await sendMessage(token, chatId, '❌ Boş isim — işlem iptal edildi.', MAIN_MENU); return; }
+    if (!devId) { await sendMessage(token, chatId, '❌ Cihaz kaybolmuş, komutu yeniden başlatın.', MAIN_MENU); return; }
+    try {
+      await batchService.setProfileName(workspaceId, { deviceId: devId, name: newName });
+      await sendMessage(token, chatId, `📝 <b>${esc(devName)}</b> profil ismi <b>${esc(newName)}</b> olarak değiştiriliyor…\n<i>(Cihaz WhatsApp ayarlarını açar, ~30 sn.)</i>`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Değiştirilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+    return;
+  }
+  if (state.mode === 'awaiting_tag') {
+    state.mode = 'idle';
+    const raw = cmd.trim();
+    const devId = state.targetDeviceId;
+    const devName = state.targetDeviceName ?? 'cihaz';
+    state.targetDeviceId = undefined; state.targetDeviceName = undefined;
+    if (!raw) { await sendMessage(token, chatId, '❌ Boş etiket — işlem iptal edildi.', MAIN_MENU); return; }
+    if (!devId) { await sendMessage(token, chatId, '❌ Cihaz kaybolmuş, komutu yeniden başlatın.', MAIN_MENU); return; }
+    // Virgül/boşlukla birden çok etiket kabul et; baştaki # işaretini at.
+    const tags = [...new Set(raw.split(/[,\s]+/).map((t) => t.replace(/^#/, '').trim().toLowerCase()).filter(Boolean))].slice(0, 20);
+    try {
+      const dev = await deviceService.getDevice(devId, workspaceId);
+      const existing = Array.isArray((dev as Record<string, unknown>).tags) ? ((dev as Record<string, unknown>).tags as string[]) : [];
+      const merged = [...new Set([...existing, ...tags])].slice(0, 20);
+      await deviceService.updateDevice(devId, { tags: merged }, workspaceId);
+      await sendMessage(token, chatId, `🏷 <b>${esc(devName)}</b> etiketleri: ${merged.map((t) => `<code>${esc(t)}</code>`).join(' ')}`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Etiket eklenemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+    return;
+  }
+  if (state.mode === 'awaiting_rename') {
+    state.mode = 'idle';
+    const newName = cmd.trim().slice(0, 40);
+    const devId = state.targetDeviceId;
+    const oldName = state.targetDeviceName ?? 'cihaz';
+    state.targetDeviceId = undefined; state.targetDeviceName = undefined;
+    if (!newName) { await sendMessage(token, chatId, '❌ Boş ad — işlem iptal edildi.', MAIN_MENU); return; }
+    if (!devId) { await sendMessage(token, chatId, '❌ Cihaz kaybolmuş, komutu yeniden başlatın.', MAIN_MENU); return; }
+    try {
+      await deviceService.updateDevice(devId, { name: newName }, workspaceId);
+      await sendMessage(token, chatId, `✏️ Cihaz adı değişti: <b>${esc(oldName)}</b> → <b>${esc(newName)}</b>`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Ad değiştirilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+    return;
+  }
+  if (state.mode === 'awaiting_provision_count') {
+    state.mode = 'idle';
+    const cc = state.provisionCountry ?? 'TR';
+    state.provisionCountry = undefined;
+    const n = parseInt(cmd.replace(/[^\d]/g, ''), 10);
+    if (!n || n < 1 || n > 20) {
+      await sendMessage(token, chatId, '❌ 1 ile 20 arasında bir adet yazın (örn. <code>3</code>).', MAIN_MENU);
+      return;
+    }
+    try {
+      // ⚠️ Metot adı `createBatch(input, workspaceId)` — /kur komutunun kendisi de
+      // aynı çağrıyı kullanıyor; iki yol AYRIŞMASIN diye birebir aynı imza.
+      const res = await provisionService.createBatch({ count: n, proxyCountry: cc }, workspaceId);
+      const ok = res.started.length;
+      const fail = res.failed.length;
+      await sendMessage(
+        token,
+        chatId,
+        `🛠 <b>${ok} cihaz</b> kuruluyor (${esc(cc)} proxy)${fail ? ` · ❌ ${fail} başlatılamadı` : ''}…\n<i>Her biri ~90-120 sn. Durum için /cihazlar</i>`,
+        MAIN_MENU
+      );
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Kurulum başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+    return;
+  }
+
   // Search flow: the awaited text is a search term applied to the chat list.
   if (state.mode === 'awaiting_search') {
     state.mode = 'idle';
@@ -1220,7 +1326,25 @@ async function handleCommand(
     // "/profilisim <cihaz> <yeni-ad>" — WhatsApp profil ismini değiştir.
     const rest = cmd.replace(/^\/?profil[iİ]sim\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
-    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/profilisim &lt;cihaz&gt; &lt;yeni-ad&gt;</code>\nörn: /profilisim watest48 Zara', MAIN_MENU); return; }
+    // ★2026-07-30 ADIM ADIM: argüman YOKSA cihaz listesi gösterilir, sonra ad sorulur.
+    // Eskiden yalnızca kullanım metni ("/profilisim <cihaz> <ad>") basılıyordu ve
+    // operatörün cihaz adını/kimliğini elle yazması gerekiyordu. Tek satırlık biçim
+    // ÇALIŞMAYA DEVAM EDER (hızlı yol) — yalnızca eksik argümanda akış devralır.
+    if (parts.length === 0) {
+      const buttons = await devicePickerButtons(workspaceId, 'namepick', undefined, true);
+      await sendMessage(token, chatId, '📝 <b>WA Profil İsmi</b>\nHangi cihazın WhatsApp profil ismini değiştirmek istiyorsunuz?', buttons);
+      return;
+    }
+    if (parts.length === 1) {
+      // Cihaz verilmiş ama ad yok → cihazı doğrula, sonra adı SOR.
+      const only = await findDeviceByRef(workspaceId, parts[0]!);
+      if (!only) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(parts[0]!)}</b>`, MAIN_MENU); return; }
+      state.mode = 'awaiting_profile_name';
+      state.targetDeviceId = only.id;
+      state.targetDeviceName = only.name;
+      await sendMessage(token, chatId, `📝 <b>${esc(only.name)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):`);
+      return;
+    }
     const ref = parts[0]!;
     const newName = parts.slice(1).join(' ').slice(0, 25);
     const dev = await findDeviceByRef(workspaceId, ref);
@@ -1385,7 +1509,21 @@ async function handleCommand(
     // (Çıplak "/etiket" de buraya düşer → aşağıdaki kontrol kullanımı gösterir.)
     const rest = cmd.replace(/^\/?etiket\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
-    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/etiket &lt;cihaz&gt; #etiket</code> (örn. /etiket watest52 #test).', MAIN_MENU); return; }
+    // ★2026-07-30 ADIM ADIM: argüman yoksa cihaz seçtir, sonra etiketi sor.
+    if (parts.length === 0) {
+      const buttons = await devicePickerButtons(workspaceId, 'tagpick');
+      await sendMessage(token, chatId, '🏷 <b>Etiket Ekle</b>\nHangi cihaza etiket eklemek istiyorsunuz?', buttons);
+      return;
+    }
+    if (parts.length === 1) {
+      const only = await findDeviceByRef(workspaceId, parts[0]!);
+      if (!only) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(parts[0]!)}</b>`, MAIN_MENU); return; }
+      state.mode = 'awaiting_tag';
+      state.targetDeviceId = only.id;
+      state.targetDeviceName = only.name;
+      await sendMessage(token, chatId, `🏷 <b>${esc(only.name)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code></i>`);
+      return;
+    }
     const ref = parts[0]!;
     const tags = parts.slice(1).map((t) => t.replace(/^#/, '').trim().toLowerCase()).filter(Boolean);
     const dev = await findDeviceByRef(workspaceId, ref);
@@ -1422,8 +1560,28 @@ async function handleCommand(
     //   • "/kur 100" → regex yalnızca "10"u yakalar, 20'ye kırpar ve HİÇBİR uyarı
     //     vermeden 20 cihaz kurardı.
     // Artık: argümansızsa kullanım metni, geçersiz/aşan sayıda açık uyarı.
+    // ★2026-07-30 ADIM ADIM: argümansız /kur artık ÜLKE SEÇTİRİYOR, sonra adet soruyor.
+    // Eskiden yalnızca kullanım metni basıyordu (operatör "3 TR" yazmak zorundaydı).
+    // ⚠️ Argümansız çağrı HÂLÂ kurulum BAŞLATMIYOR — iki adım da onay niteliğinde;
+    // 29 Tem'deki "komuta basmak sessizce cihaz kurdu" hatası tekrarlamaz.
     if (!rest) {
-      await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/kur &lt;adet&gt; [ülke]</code>\nörn: <code>/kur 3 TR</code> (1–20 arası)', MAIN_MENU);
+      await sendMessage(
+        token,
+        chatId,
+        '🛠 <b>Cihaz Kur</b>\nHangi <b>ülke</b> proxy\'si ile kurulsun?\n<i>Her cihaz o ülkeden benzersiz bir çıkış IP alır.</i>',
+        [
+          [
+            { text: '🇹🇷 TR', callback_data: 'kurcc:TR' },
+            { text: '🇦🇱 AL', callback_data: 'kurcc:AL' },
+            { text: '🇺🇸 US', callback_data: 'kurcc:US' }
+          ],
+          [
+            { text: '🇩🇪 DE', callback_data: 'kurcc:DE' },
+            { text: '🇬🇧 GB', callback_data: 'kurcc:GB' },
+            { text: '🇳🇱 NL', callback_data: 'kurcc:NL' }
+          ]
+        ]
+      );
       return;
     }
     const m = /^(\d{1,3})(?:\s+([a-zA-Z]{2}))?\s*$/.exec(rest);
@@ -1449,6 +1607,33 @@ async function handleCommand(
       await sendMessage(token, chatId, `🚀 <b>Toplu Kurulum başladı</b> (${ok}/${res.total})${country ? ` · proxy ${esc(country)}` : ''}\n${names}${tail}\n\n<i>Durum için /cihazlar veya /saglik.</i>`, MAIN_MENU);
     } catch (e) {
       await sendMessage(token, chatId, `❌ Kurulum başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
+  } else if (isCmd(lower, 'adver')) {
+    // ★2026-07-30 /adver KOMUTU HİÇ YOKTU — menüde ve yardımda listeleniyordu ama
+    // dispatcher'da bir dalı olmadığı için "Anlamadım." diyordu (sessiz kırık komut).
+    // Şimdi hem tek satırlık biçim ("/adver <cihaz> <yeni-ad>") hem ADIM ADIM çalışır.
+    const rest = cmd.replace(/^\/?adver\s*/i, '').trim();
+    const parts = rest.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) {
+      const buttons = await devicePickerButtons(workspaceId, 'renamepick');
+      await sendMessage(token, chatId, '✏️ <b>Cihaz Adını Değiştir</b>\nHangi cihazın adını değiştirmek istiyorsunuz?', buttons);
+      return;
+    }
+    const dev0 = await findDeviceByRef(workspaceId, parts[0]!);
+    if (!dev0) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(parts[0]!)}</b>`, MAIN_MENU); return; }
+    if (parts.length === 1) {
+      state.mode = 'awaiting_rename';
+      state.targetDeviceId = dev0.id;
+      state.targetDeviceName = dev0.name;
+      await sendMessage(token, chatId, `✏️ <b>${esc(dev0.name)}</b> için yeni <b>cihaz adını</b> yazın:`);
+      return;
+    }
+    const newDevName = parts.slice(1).join(' ').slice(0, 40);
+    try {
+      await deviceService.updateDevice(dev0.id, { name: newDevName }, workspaceId);
+      await sendMessage(token, chatId, `✏️ Cihaz adı değişti: <b>${esc(dev0.name)}</b> → <b>${esc(newDevName)}</b>`, MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Ad değiştirilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
   } else if (isCmd(lower, 'sil')) {
     // "/sil <cihaz>" — cihazı sil (host instance'ı da durdurulur). Korumalıysa reddedilir.
@@ -1580,6 +1765,35 @@ async function handleCallback(
     const deviceId = data.slice('sendpick:'.length);
     state.mode = 'awaiting_number'; state.deviceId = deviceId; state.to = undefined;
     await sendMessage(token, chatId, '📞 Alıcı <b>numarasını</b> yazın (ülke kodu ile, örn. 905551112233):');
+  // ★2026-07-30 ADIM ADIM cihaz seçicileri. Cihaz butona basılarak seçilir, sonra
+  // ilgili değer SORULUR — operatör cihaz adını/kimliğini elle yazmak zorunda kalmaz.
+  } else if (data.startsWith('namepick:')) {
+    const deviceId = data.slice('namepick:'.length);
+    const dev = await deviceService.getDevice(deviceId, workspaceId).catch(() => null);
+    state.mode = 'awaiting_profile_name';
+    state.targetDeviceId = deviceId;
+    state.targetDeviceName = dev?.name ?? deviceId;
+    await sendMessage(token, chatId, `📝 <b>${esc(state.targetDeviceName)}</b> için yeni <b>WhatsApp profil ismini</b> yazın (en fazla 25 karakter):`);
+  } else if (data.startsWith('tagpick:')) {
+    const deviceId = data.slice('tagpick:'.length);
+    const dev = await deviceService.getDevice(deviceId, workspaceId).catch(() => null);
+    state.mode = 'awaiting_tag';
+    state.targetDeviceId = deviceId;
+    state.targetDeviceName = dev?.name ?? deviceId;
+    await sendMessage(token, chatId, `🏷 <b>${esc(state.targetDeviceName)}</b> için etiket(ler) yazın.\n<i>Birden fazlaysa virgülle ayırın — örn. <code>satis, tr, yedek</code></i>`);
+  } else if (data.startsWith('renamepick:')) {
+    const deviceId = data.slice('renamepick:'.length);
+    const dev = await deviceService.getDevice(deviceId, workspaceId).catch(() => null);
+    state.mode = 'awaiting_rename';
+    state.targetDeviceId = deviceId;
+    state.targetDeviceName = dev?.name ?? deviceId;
+    await sendMessage(token, chatId, `✏️ <b>${esc(state.targetDeviceName)}</b> için yeni <b>cihaz adını</b> yazın:`);
+  } else if (data.startsWith('kurcc:')) {
+    // /kur akışı: ülke seçildi → adet sorulur.
+    const cc = data.slice('kurcc:'.length).toUpperCase().slice(0, 2);
+    state.mode = 'awaiting_provision_count';
+    state.provisionCountry = cc;
+    await sendMessage(token, chatId, `🛠 <b>${esc(cc)}</b> için <b>kaç cihaz</b> kurulsun? (1-20)\n<i>Her cihaz kendi benzersiz kimliği ve ${esc(cc)} çıkış IP'siyle kurulur.</i>`);
   } else if (data.startsWith('readpick:')) {
     const deviceId = data.slice('readpick:'.length);
     try {

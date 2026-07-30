@@ -10161,6 +10161,11 @@ async function heartbeat() {
 
 const FRAME_PREFIX = Buffer.from('FRM:');
 const captures = new Map(); // deviceId -> { serial, timer, busy, fps }
+// ★2026-07-30 Yayın döngüsünün "cihaz meşgul" beklemesi için ÜST SINIR. busyDevices
+// bellek-içi bir kümedir ve yarı yolda ölen bir iş serial'i orada asılı bırakabilir;
+// sınır olmadan yayın sonsuza kadar sessizce bekliyordu (panelde "Bağlanıyor…").
+// 20 sn: gerçek işler bundan kısa (en uzun WA adımları bile ~10 sn ADB tutar).
+const BUSY_WAIT_MAX_MS = Number(process.env.FLEET_STREAM_BUSY_WAIT_MS || 20_000);
 
 function frameDeviceId(id) {
   // Device ids are cuids (~25 chars); pad/truncate to a fixed 36 so the control
@@ -10230,29 +10235,48 @@ function parseRawScreencap(buf) {
   return { w, h, pixels: buf.subarray(hdr) };
 }
 
+// ★2026-07-30 SÜRE SINIRI ŞART. Eskiden aşağıdaki iki `execFileAsync` çağrısının
+// HİÇBİRİNDE timeout yoktu. Canlı ölçüm (wa-b0uq/mi46): ham `exec-out screencap`
+// (JPEG yolunun kullandığı çağrı) o cihazda SONSUZA KADAR takılıyor — 25 sn'de
+// 0 bayt — oysa AYNI cihazda `screencap -p` (PNG yolu) sorunsuz 554 KB döndürüyor.
+// Timeout olmadığı için yakalama döngüsü orada asılı kalıyordu: ne kare gönderiyor
+// ne hata basıyor → panel sonsuza kadar "Bağlanıyor…" gösteriyordu.
+// Artık JPEG yolu süre sınırlı; takılır/başarısız olursa AYNI KARE içinde PNG yoluna
+// düşülür (o da süre sınırlı). Böylece tek bir bozuk yol yayını öldürmez.
+const CAPTURE_TIMEOUT_MS = Number(process.env.FLEET_STREAM_CAPTURE_TIMEOUT_MS || 8_000);
+
 async function captureFrame(serial) {
   // Fast JPEG path: raw grab + host-side sharp encode.
   if (STREAM_JPEG) {
     const sharp = await loadSharp();
     if (sharp) {
-      const { stdout } = await execFileAsync(ADB, ['-s', serial, 'exec-out', 'screencap'], {
-        encoding: 'buffer',
-        maxBuffer: 64 * 1024 * 1024
-      });
-      const raw = parseRawScreencap(stdout);
-      if (raw) {
-        let img = sharp(raw.pixels, { raw: { width: raw.w, height: raw.h, channels: 4 } });
-        // Downscale ONLY if explicitly opted in (>0). Default keeps native res so
-        // dashboard tap coordinates stay correct — see STREAM_JPEG_W note above.
-        if (STREAM_JPEG_W > 0) img = img.resize({ width: STREAM_JPEG_W });
-        return await img.jpeg({ quality: STREAM_JPEG_Q }).toBuffer();
+      try {
+        const { stdout } = await execFileAsync(ADB, ['-s', serial, 'exec-out', 'screencap'], {
+          encoding: 'buffer',
+          maxBuffer: 64 * 1024 * 1024,
+          timeout: CAPTURE_TIMEOUT_MS,
+          killSignal: 'SIGKILL'
+        });
+        const raw = parseRawScreencap(stdout);
+        if (raw) {
+          let img = sharp(raw.pixels, { raw: { width: raw.w, height: raw.h, channels: 4 } });
+          // Downscale ONLY if explicitly opted in (>0). Default keeps native res so
+          // dashboard tap coordinates stay correct — see STREAM_JPEG_W note above.
+          if (STREAM_JPEG_W > 0) img = img.resize({ width: STREAM_JPEG_W });
+          return await img.jpeg({ quality: STREAM_JPEG_Q }).toBuffer();
+        }
+        // Unparseable header → fall through to the PNG path this frame.
+      } catch {
+        // Ham yakalama takıldı/başarısız → PNG yoluna düş. Bu cihazda ham yol KALICI
+        // olarak bozuk olabilir (canlı örnek: mi46); PNG yolu yayını ayakta tutar.
       }
-      // Unparseable header → fall through to the PNG path this frame.
     }
   }
   const { stdout } = await execFileAsync(ADB, ['-s', serial, 'exec-out', 'screencap', '-p'], {
     encoding: 'buffer',
-    maxBuffer: 32 * 1024 * 1024
+    maxBuffer: 32 * 1024 * 1024,
+    timeout: CAPTURE_TIMEOUT_MS,
+    killSignal: 'SIGKILL'
   });
   return stdout;
 }
@@ -10427,16 +10451,51 @@ function startCapture(ws, deviceId, serial, fps) {
       // uncontended; resume the instant it finishes. Per-device now (busyDevices) so
       // one device's job doesn't freeze every other device's stream. Jobs are short,
       // so the viewer only sees a brief freeze, and control stays responsive.
-      if (busyDevices.has(serial)) { await new Promise((r) => setTimeout(r, 200)); continue; }
+      // ★2026-07-30 SESSİZ TAKILMA DÜZELTMESİ. Bu bekleme SINIRSIZDI: `busyDevices`
+      // bellek-içi bir küme ve bir iş yarı yolda ölürse (timeout, atılan hata, agent
+      // yeniden başlatılmadan kalan kalıntı) serial kümede ASILI kalıyor. O zaman bu
+      // döngü sonsuza kadar 200 ms bekliyor, TEK BİR KARE göndermiyor ve HİÇ hata
+      // basmıyor → panelde "Bağlanıyor…" yazıp öyle kalıyor (CANLI ÖLÇÜM: wa-b0uq'da
+      // `stream start` var, `first frame` YOK, hata YOK — tam bu durum).
+      // Artık: en fazla BUSY_WAIT_MAX_MS bekleriz; aşarsa (a) durumu LOGLARIZ, (b)
+      // kilidin bayat olduğunu varsayıp yakalamayı ZORLARIZ. En kötü durumda kısa bir
+      // ADB çekişmesi olur; alternatifi kalıcı olarak siyah bir ekran.
+      if (busyDevices.has(serial)) {
+        // ⚠️ Paralel şeritler bu sayacı PAYLAŞIR, bu yüzden geçen süreyi saat ile
+        // ölçüyoruz (şerit başına +200 ms toplamak, N şeritte eşiği N kat hızlı
+        // tetikler ve gerçek bir işi bayat kilit sanardı).
+        if (!state.busySince) state.busySince = Date.now();
+        state.busyWaitMs = Date.now() - state.busySince;
+        if (state.busyWaitMs < BUSY_WAIT_MAX_MS) {
+          await new Promise((r) => setTimeout(r, 200));
+          continue;
+        }
+        if (!state.loggedBusyStuck) {
+          state.loggedBusyStuck = true;
+          log(`stream: ${deviceId} ${Math.round(state.busyWaitMs / 1000)}s boyunca MESGUL isaretli — bayat kilit varsayilip yakalama zorlaniyor`);
+        }
+        // Bayat kilidi temizle: gerçek bir iş varsa kendi bitişinde yine ekler.
+        busyDevices.delete(serial);
+      }
       try {
         const img = await captureFrame(serial);
         if (state.stopped) break;
+        // Başarılı kare → meşgul-bekleme saatini sıfırla (bir sonraki gerçek iş
+        // için pencere yeniden baştan ölçülsün).
+        state.busySince = 0;
+        state.busyWaitMs = 0;
+        state.loggedBusyStuck = false;
         if (ws.readyState === 1 && ws.bufferedAmount <= MAX_BUFFERED) {
           ws.send(Buffer.concat([prefix, img]));
           if (!state.loggedFirst) { state.loggedFirst = true; log(`stream first frame ${deviceId} (${img.length}B)`); }
         }
       } catch (e) {
-        if (!state.loggedErr) { state.loggedErr = true; log(`stream capture error ${deviceId}: ${e.message}`); }
+        // ★Hata artık YALNIZCA BİR KEZ değil, periyodik olarak loglanır: tek-seferlik
+        // log yüzünden sürekli başarısız bir yayın sessiz görünüyordu.
+        state.errCount = (state.errCount || 0) + 1;
+        if (state.errCount === 1 || state.errCount % 50 === 0) {
+          log(`stream capture error ${deviceId} (#${state.errCount}): ${e.message}`);
+        }
         await new Promise((r) => setTimeout(r, 50)); // brief backoff on error
       }
       // Yield so we honor at most the requested fps (but never idle-throttle
@@ -10446,8 +10505,23 @@ function startCapture(ws, deviceId, serial, fps) {
     }
   };
   captures.set(deviceId, state);
-  void loop();
-  log(`stream start ${deviceId} @ ~${Math.round(1000 / interval)}fps target (pipelined)`);
+  // ★2026-07-30 PARALEL BORU HATTI — fps'i ~2 katına çıkarır.
+  //
+  // ÖLÇÜM (canlı, mi15): ham `exec-out screencap` TEK başına 185 ms sürüyor
+  // (10.4 MB ham piksel ADB üzerinden) → tek döngüyle teorik tavan 5.4 fps, ve
+  // operatörün gördüğü de tam olarak 5 fps'ti. Aynı cihazda 2 yakalama PARALEL
+  // koşturulduğunda 4 kare 709 ms yerine 422 ms'de tamamlandı (5.6 → 9.4 fps):
+  // sürenin çoğu CPU değil ADB transfer beklemesi, yani üst üste bindirilebiliyor.
+  //
+  // ⚠️ Waydroid'de `screenrecord` (H.264 hızlı yol) ÇALIŞMIYOR — donanım kodlayıcı
+  // yok, 5 sn'lik deneme 73 bayt üretti. Panelde WebCodecs kodu hazır olsa da bu
+  // ortamda kullanılamaz; bu yüzden JPEG yolunu paralelleştiriyoruz.
+  //
+  // Şerit sayısı ölçülü tutuldu (2): daha fazlası aynı ADB taşıyıcısında çekişme
+  // yaratıp iş (job) ADB çağrılarını açlığa düşürür — "adb kararsızlığı"nın kökü.
+  const LANES = Math.max(1, Math.min(4, Number(process.env.FLEET_STREAM_LANES || 2)));
+  for (let i = 0; i < LANES; i++) void loop();
+  log(`stream start ${deviceId} @ ~${Math.round(1000 / interval)}fps target (${LANES} paralel serit)`);
 }
 
 function stopCapture(deviceId) {

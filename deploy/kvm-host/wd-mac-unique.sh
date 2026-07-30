@@ -133,7 +133,27 @@ case "${1:-show}" in
     ;;
   set)
     inst="${2:?kullanim: wd-mac-unique.sh set <instance>}"
-    set_mac "$inst" "$(rand_mac)"
+    # ★2026-07-30 ÇAKIŞMA KONTROLÜ. `fix-all` bunu yapıyordu ama `set` yapmıyordu —
+    # oysa YENİ CİHAZ kurulumu (wd-provision.sh) tam olarak `set`i çağırıyor, yani
+    # çakışma riskinin en yüksek olduğu yol korumasızdı. Havuz 167 milyon (10 OUI ×
+    # 3 rastgele oktet) olduğu için olasılık zaten ~%0 ama iki instance'ın aynı MAC'i
+    # almasının bedeli ağır (DHCP lease çakışması → yanlış IP → cihaz kayıp görünür).
+    used_macs=$(for d in $CFG_DIRS_GLOB; do
+      [ -d "$d" ] || continue
+      i="${d##*waydroid.}"
+      [ "$i" = "$inst" ] && continue   # kendi eski MAC'i engel değil
+      mac_of "$i"
+    done)
+    newmac=""
+    for _ in $(seq 20); do
+      cand=$(rand_mac)
+      echo "$used_macs" | grep -qxF "$cand" || { newmac="$cand"; break; }
+    done
+    if [ -z "$newmac" ]; then
+      echo "  ✗ $inst: 20 denemede benzersiz MAC bulunamadı (havuz tükenmiş olamaz — betiği kontrol edin)"
+      exit 1
+    fi
+    set_mac "$inst" "$newmac"
     ;;
   show)
     printf '%-10s %-20s %s\n' 'INSTANCE' 'CONFIG-MAC' 'DURUM'

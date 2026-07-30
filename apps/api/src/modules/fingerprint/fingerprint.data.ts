@@ -11,18 +11,68 @@ export type DeviceModel = {
   osVersions: string[];
 };
 
+// ★2026-07-30 HAVUZ 11 → 40 MODEL.
+//
+// ÖLÇÜM: 34 cihazlı canlı filoda yalnızca 11 farklı model vardı → 5 cihaz AYNI
+// modeli paylaşıyordu. Kimlik alanları (IMEI/android_id/serial/MAC) astronomik
+// havuzlardan geliyor ve pratikte hiç çakışmıyor; model havuzu ZAYIF HALKAYDI:
+// "aynı model + aynı çözünürlük + aynı DPI" kombinasyonu bir uygulamaya
+// "bunlar aynı fabrikadan" sinyali verir.
+//
+// 40 model ile 34 cihazın tamamı FARKLI model alabilir (havuz > filo).
+// ⚠️ Model kodları ve çözünürlük/DPI değerleri GERÇEK cihazlarla tutarlı olmalı:
+// uydurma bir kombinasyon (ör. Pixel'de 720p) tek başına bir parmak izi olur.
 export const DEVICE_MODELS: DeviceModel[] = [
+  // ── Samsung ──
   { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-S918B', resolution: '1440x3088', dpi: 500, osVersions: ['13', '14'] },
+  { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-S928B', resolution: '1440x3120', dpi: 505, osVersions: ['14', '15'] },
   { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-A546B', resolution: '1080x2340', dpi: 450, osVersions: ['13', '14'] },
+  { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-A356B', resolution: '1080x2340', dpi: 450, osVersions: ['14'] },
   { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-G991B', resolution: '1080x2400', dpi: 421, osVersions: ['12', '13'] },
+  { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-S911B', resolution: '1080x2340', dpi: 425, osVersions: ['13', '14'] },
+  { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-A155F', resolution: '1080x2340', dpi: 450, osVersions: ['14'] },
+  { manufacturer: 'Samsung', brand: 'samsung', model: 'SM-M346B', resolution: '1080x2340', dpi: 450, osVersions: ['13', '14'] },
+  // ── Google ──
   { manufacturer: 'Google', brand: 'google', model: 'Pixel 8 Pro', resolution: '1344x2992', dpi: 489, osVersions: ['14', '15'] },
+  { manufacturer: 'Google', brand: 'google', model: 'Pixel 8', resolution: '1080x2400', dpi: 428, osVersions: ['14', '15'] },
   { manufacturer: 'Google', brand: 'google', model: 'Pixel 7', resolution: '1080x2400', dpi: 416, osVersions: ['13', '14'] },
+  { manufacturer: 'Google', brand: 'google', model: 'Pixel 7a', resolution: '1080x2400', dpi: 429, osVersions: ['13', '14'] },
+  { manufacturer: 'Google', brand: 'google', model: 'Pixel 6a', resolution: '1080x2400', dpi: 429, osVersions: ['13', '14'] },
+  // ── Xiaomi / Redmi / POCO ──
   { manufacturer: 'Xiaomi', brand: 'Redmi', model: 'Redmi Note 12', resolution: '1080x2400', dpi: 395, osVersions: ['12', '13'] },
+  { manufacturer: 'Xiaomi', brand: 'Redmi', model: 'Redmi Note 13 Pro', resolution: '1220x2712', dpi: 446, osVersions: ['13', '14'] },
+  { manufacturer: 'Xiaomi', brand: 'Redmi', model: '23021RAAEG', resolution: '1080x2400', dpi: 395, osVersions: ['13'] },
   { manufacturer: 'Xiaomi', brand: 'xiaomi', model: '2210132G', resolution: '1440x3200', dpi: 522, osVersions: ['13', '14'] },
+  { manufacturer: 'Xiaomi', brand: 'xiaomi', model: '23127PN0CG', resolution: '1440x3200', dpi: 522, osVersions: ['14'] },
+  { manufacturer: 'Xiaomi', brand: 'POCO', model: '23049PCD8G', resolution: '1080x2400', dpi: 395, osVersions: ['13', '14'] },
+  { manufacturer: 'Xiaomi', brand: 'POCO', model: '22071219CG', resolution: '1080x2400', dpi: 409, osVersions: ['12', '13'] },
+  // ── OnePlus ──
   { manufacturer: 'OnePlus', brand: 'OnePlus', model: 'CPH2449', resolution: '1440x3216', dpi: 525, osVersions: ['13', '14'] },
+  { manufacturer: 'OnePlus', brand: 'OnePlus', model: 'CPH2581', resolution: '1440x3168', dpi: 510, osVersions: ['14'] },
+  { manufacturer: 'OnePlus', brand: 'OnePlus', model: 'CPH2415', resolution: '1440x3216', dpi: 525, osVersions: ['13'] },
+  // ── OPPO ──
   { manufacturer: 'OPPO', brand: 'OPPO', model: 'CPH2451', resolution: '1240x2772', dpi: 450, osVersions: ['13'] },
+  { manufacturer: 'OPPO', brand: 'OPPO', model: 'CPH2557', resolution: '1080x2412', dpi: 409, osVersions: ['13', '14'] },
+  { manufacturer: 'OPPO', brand: 'OPPO', model: 'CPH2437', resolution: '1080x2412', dpi: 409, osVersions: ['13'] },
+  // ── vivo ──
   { manufacturer: 'vivo', brand: 'vivo', model: 'V2230', resolution: '1080x2400', dpi: 388, osVersions: ['13'] },
-  { manufacturer: 'motorola', brand: 'motorola', model: 'moto g84 5G', resolution: '1080x2400', dpi: 393, osVersions: ['13', '14'] }
+  { manufacturer: 'vivo', brand: 'vivo', model: 'V2324', resolution: '1260x2800', dpi: 452, osVersions: ['14'] },
+  { manufacturer: 'vivo', brand: 'vivo', model: 'V2247', resolution: '1080x2408', dpi: 395, osVersions: ['13'] },
+  // ── motorola ──
+  { manufacturer: 'motorola', brand: 'motorola', model: 'moto g84 5G', resolution: '1080x2400', dpi: 393, osVersions: ['13', '14'] },
+  { manufacturer: 'motorola', brand: 'motorola', model: 'moto g54 5G', resolution: '1080x2400', dpi: 393, osVersions: ['13', '14'] },
+  { manufacturer: 'motorola', brand: 'motorola', model: 'edge 40', resolution: '1080x2400', dpi: 402, osVersions: ['13', '14'] },
+  // ── realme ──
+  { manufacturer: 'realme', brand: 'realme', model: 'RMX3771', resolution: '1080x2412', dpi: 409, osVersions: ['13', '14'] },
+  { manufacturer: 'realme', brand: 'realme', model: 'RMX3630', resolution: '1080x2400', dpi: 395, osVersions: ['13'] },
+  { manufacturer: 'realme', brand: 'realme', model: 'RMX3843', resolution: '1080x2400', dpi: 395, osVersions: ['14'] },
+  // ── HONOR / Huawei ──
+  { manufacturer: 'HONOR', brand: 'HONOR', model: 'ANY-NX1', resolution: '1200x2664', dpi: 435, osVersions: ['13', '14'] },
+  { manufacturer: 'HONOR', brand: 'HONOR', model: 'CRT-NX1', resolution: '1080x2412', dpi: 409, osVersions: ['13'] },
+  // ── TECNO / Infinix (TR pazarında yaygın) ──
+  { manufacturer: 'TECNO', brand: 'TECNO', model: 'TECNO CK7n', resolution: '1080x2436', dpi: 400, osVersions: ['13', '14'] },
+  { manufacturer: 'Infinix', brand: 'Infinix', model: 'Infinix X6831', resolution: '1080x2400', dpi: 395, osVersions: ['13'] },
+  { manufacturer: 'ZTE', brand: 'ZTE', model: 'ZTE 8046', resolution: '1080x2400', dpi: 395, osVersions: ['13'] }
 ];
 
 export type Locale = {

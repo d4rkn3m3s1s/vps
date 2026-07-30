@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { useFleetEvents } from '../../lib/live';
+import { useFleetEvents, useLive } from '../../lib/live';
 import Link from 'next/link';
 import {
   Smartphone,
@@ -273,6 +273,8 @@ export function ProfilesView({
   // safety-net reconcile at 20s (was 5s — 4× less server load + traffic on big fleets).
   const [devices, setDevices] = useState<DeviceProfile[]>(initialDevices);
   useEffect(() => { setDevices(initialDevices); }, [initialDevices]);
+  // Canlı bağlantı durumu — üst kartların altında gösterilir (bkz. göstergedeki yorum).
+  const { status: liveStatus, reconnect } = useLive();
 
   // ★2026-07-28 CANLI LISTE: cihaz listesi SADECE 20s'lik yoklamayla guncelleniyordu —
   // yeni kurulan cihaz listeye ANINDA dusmuyordu (operator: "sayfayi yenileyince
@@ -352,7 +354,7 @@ export function ProfilesView({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
+  const [form, setForm] = useState({ name: '', androidVersion: '12', countryCode: 'TR', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
   // Optional pre-provision dialog to capture a WhatsApp number (semi-autonomous
   // register on the fresh device). Blank number → device-only provision.
   const [provisionFormOpen, setProvisionFormOpen] = useState(false);
@@ -533,7 +535,7 @@ export function ProfilesView({
       });
       if (!res.ok) throw new Error(`Oluşturma başarısız (${res.status})`);
       setCreateOpen(false);
-      setForm({ name: '', androidVersion: '12', countryCode: 'US', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
+      setForm({ name: '', androidVersion: '12', countryCode: 'TR', deviceModel: '', ramGb: '6', cpuCores: '8', count: '1' });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Oluşturma başarısız');
@@ -1138,6 +1140,45 @@ export function ProfilesView({
           <HoloStat label="ÇEVRİMİÇİ" value={<span className="mono">{onlineCount}</span>} sub="Aktif çalışan" tone="success" icon={<Activity size={15} />} />
           <HoloStat label="İŞLEMDE" value={<span className="mono">{busyCount}</span>} sub="Geçiş durumunda" tone="warning" icon={<RefreshCw size={15} />} />
           <HoloStat label="HATA" value={<span className="mono">{errorCount}</span>} sub="Müdahale gerekli" tone="error" icon={<Power size={15} />} />
+        </div>
+        {/* ★2026-07-30 CANLI BAĞLANTI GÖSTERGESİ. Yukarıdaki kartlar WebSocket
+            olaylarıyla anlık güncelleniyor; bağlantı koparsa rakamlar sessizce
+            BAYATLIYOR ve operatör bunu göremiyordu ("yayınlar gelmiyor" şikâyeti
+            böyle bir durumda mı yoksa gerçek bir hata mı ayırt edilemiyordu).
+            Artık durum açıkça yazılı: canlı / bağlanıyor / kopuk / oturum bitti. */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+          {(() => {
+            const map = {
+              open: { t: 'Canlı — anlık güncelleniyor', c: '#22c55e', pulse: true },
+              connecting: { t: 'Bağlanıyor…', c: '#fbbf24', pulse: true },
+              offline: { t: 'Canlı bağlantı KOPUK — rakamlar bayat olabilir', c: '#f87171', pulse: false },
+              unauthorized: { t: 'Oturum bitti — yeniden giriş yapın', c: '#f87171', pulse: false }
+            } as const;
+            const s = map[liveStatus] ?? map.offline;
+            return (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: s.c, opacity: 0.85 }}>
+                <span
+                  style={{
+                    width: 7, height: 7, borderRadius: '50%', background: s.c,
+                    // `dotPulse` globals.css'te ZATEN tanımlı (yeni bir keyframe eklemek
+                    // yerine mevcut olanı kullanıyoruz — tanımsız bir animasyon adı
+                    // sessizce hiçbir şey yapmaz ve gösterge ölü görünürdü).
+                    ...(s.pulse ? { animation: 'dotPulse 1.8s ease-in-out infinite' } : {})
+                  }}
+                />
+                {s.t}
+                {liveStatus !== 'open' ? (
+                  <button
+                    type="button"
+                    onClick={() => { reconnect(); void fetchDevices(); }}
+                    style={{ marginLeft: 6, background: 'none', border: 'none', color: s.c, textDecoration: 'underline', cursor: 'pointer', fontSize: 11, padding: 0 }}
+                  >
+                    yeniden bağlan
+                  </button>
+                ) : null}
+              </span>
+            );
+          })()}
         </div>
       </Reveal>
 
@@ -1912,28 +1953,64 @@ export function ProfilesView({
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                 />
               </label>
+              {/* ★2026-07-30 ARTI/EKSİ BUTONLU ADET. Ham `type="number"` alanında
+                  operatör "1"i silemiyordu (`|| '1'` boş girdiyi anında 1'e çeviriyor,
+                  imleç sonda kalıyor) → "2" yazınca "12" oluyordu. Artık sayı ELLE
+                  yazılmıyor: −/+ butonlarıyla değişiyor, alan salt-okunur. */}
               <label className="field">
                 <span>Adet</span>
-                <input
-                  className="field-input"
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={form.count}
-                  onChange={(e) => setForm((f) => ({ ...f, count: e.target.value.replace(/[^\d]/g, '') || '1' }))}
-                />
+                {(() => {
+                  const n = Math.max(1, Math.min(20, parseInt(form.count, 10) || 1));
+                  const set = (v: number) => setForm((f) => ({ ...f, count: String(Math.max(1, Math.min(20, v))) }));
+                  const btn: React.CSSProperties = {
+                    width: 30, height: 34, flex: '0 0 auto', display: 'inline-flex',
+                    alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+                    background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.14)',
+                    borderRadius: 7, color: 'inherit', fontSize: 16, lineHeight: 1, userSelect: 'none'
+                  };
+                  return (
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <button type="button" style={{ ...btn, opacity: n <= 1 ? 0.4 : 1 }} disabled={n <= 1}
+                        onClick={() => set(n - 1)} title="Bir azalt" aria-label="Bir azalt">−</button>
+                      <input
+                        className="field-input"
+                        type="text"
+                        inputMode="numeric"
+                        readOnly
+                        value={n}
+                        style={{ textAlign: 'center', minWidth: 0, flex: 1, fontVariantNumeric: 'tabular-nums' }}
+                      />
+                      <button type="button" style={{ ...btn, opacity: n >= 20 ? 0.4 : 1 }} disabled={n >= 20}
+                        onClick={() => set(n + 1)} title="Bir artır" aria-label="Bir artır">+</button>
+                    </span>
+                  );
+                })()}
               </label>
             </div>
+            {/* ★2026-07-30 Ülke artık SERBEST METİN değil, seçim listesi. Elle "US"
+                yazmak zorunda kalmak yanlış/eksik kod riski taşıyordu (geçersiz kod →
+                proxy eşleşmez → datacenter IP → ban). TR varsayılan (operatör isteği:
+                "bu kısımda TR hazır olsun US yerine"). */}
             <label className="field">
               <span>Ülke (her cihaza eşleşen proxy — farklı çıkış IP)</span>
-              <input
+              <select
                 className="field-input"
-                type="text"
-                maxLength={2}
-                placeholder="US / AL / TR"
-                value={form.countryCode}
+                value={form.countryCode || 'TR'}
                 onChange={(e) => setForm((f) => ({ ...f, countryCode: e.target.value.toUpperCase() }))}
-              />
+              >
+                <option value="TR">TR — Türkiye (mobil havuz)</option>
+                <option value="AL">AL — Arnavutluk</option>
+                <option value="US">US — ABD</option>
+                <option value="DE">DE — Almanya</option>
+                <option value="GB">GB — Birleşik Krallık</option>
+                <option value="NL">NL — Hollanda</option>
+                <option value="FR">FR — Fransa</option>
+                <option value="BG">BG — Bulgaristan</option>
+                <option value="RO">RO — Romanya</option>
+                <option value="PL">PL — Polonya</option>
+                <option value="ES">ES — İspanya</option>
+                <option value="IT">IT — İtalya</option>
+              </select>
             </label>
             {(parseInt(form.count, 10) || 1) > 1 ? (
               <p className="helper" style={{ marginTop: -4 }}>

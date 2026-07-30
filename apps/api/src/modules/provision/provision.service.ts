@@ -316,13 +316,24 @@ class ProvisionService {
     // network). Serialize name-pick + device-create per host with a Postgres
     // transaction-level advisory lock (auto-released on commit/rollback) so the
     // second caller sees the first device and picks the next free name.
+    // ★2026-07-30 İSİM BOŞSA RASTGELE (operatör isteği: "cihaz isimlerini rastgele
+    // yapsın hep"). Eskiden burada `Cihaz ${instance}` konuyordu — yani filoda
+    // "Cihaz mi13" gibi ALTYAPI ADINI SIZDIRAN isimler oluşuyordu; batch yolu ise
+    // zaten `uniqueRandomName` kullanıyordu, iki yol AYRIŞMIŞTI. Artık tek cihaz da
+    // aynı üreteçten geçiyor (wa-x7k2 gibi).
+    // Transaction'dan ÖNCE üretiliyor: uniqueRandomName kendi DB sorgusunu yapıyor ve
+    // onu advisory-lock'lu işlemin içine almak kilidi gereksiz uzatırdı.
+    const desiredName = input.name && input.name.trim()
+      ? input.name.trim()
+      : await this.uniqueRandomName('wa', workspaceId);
+
     const { device, instance, subnetId } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(424242, hashtext(${host.id}))`;
       const instance = await this.nextInstanceName(host.id, tx);
       const subnetId = subnetIdFor(instance);
       const device = await deviceService.createDevice(
         {
-          name: input.name && input.name.trim() ? input.name.trim() : `Cihaz ${instance}`,
+          name: desiredName,
           hostId: host.id,
           ...(input.countryCode ? { countryCode: input.countryCode } : {}),
           ...(input.deviceModel ? { deviceModel: input.deviceModel } : {}),

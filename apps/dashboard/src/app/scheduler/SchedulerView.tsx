@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 export type SchedulerDevice = { id: string; name: string };
 
@@ -73,6 +74,8 @@ function defaultNextRun(): string {
 
 export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devices: SchedulerDevice[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
@@ -141,7 +144,15 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
   }
 
   async function remove(task: ScheduledTask) {
-    if (!confirm(`"${task.name}" zamanlaması silinsin mi?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'Zamanlama silinsin mi?',
+      body: `"${task.name}" zamanlaması kalıcı olarak silinecek.`,
+      warning: 'Planlanmış çalıştırmalar bir daha tetiklenmez.',
+      confirmLabel: 'Zamanlamayı sil',
+      danger: true
+    });
+    if (!ok) return;
     try {
       const res = await fetch(`/api/schedules/${task.id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`Silme başarısız (${res.status})`);
@@ -372,6 +383,7 @@ export function SchedulerView({ tasks, devices }: { tasks: ScheduledTask[]; devi
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

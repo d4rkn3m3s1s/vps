@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Layers, Copy, RotateCcw, Trash2, Globe, Lock, Users, Download, HardDrive, Clock, Boxes, CheckCircle2, Store } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 export type Snapshot = {
   id: string;
@@ -37,6 +38,8 @@ function fmtSize(bytes: number): string {
 
 export function ImagesView({ snapshots, market, devices, groups }: { snapshots: Snapshot[]; market: Snapshot[]; devices: ImgDevice[]; groups: ImgGroup[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [tab, setTab] = useState<'library' | 'market'>('library');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null);
@@ -115,7 +118,15 @@ export function ImagesView({ snapshots, market, devices, groups }: { snapshots: 
   }
 
   async function remove(s: Snapshot) {
-    if (!confirm(`"${s.name}" imajı silinsin mi?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'İmaj silinsin mi?',
+      body: `"${s.name}" imajı kalıcı olarak silinecek.`,
+      warning: 'Bu imajdan artık geri yükleme yapılamaz. Bir cihazı bu imajdan kurmayı planlıyorsanız önce onu kurun.',
+      confirmLabel: 'İmajı sil',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/snapshots/${s.id}`, { method: 'DELETE' });
@@ -287,6 +298,7 @@ export function ImagesView({ snapshots, market, devices, groups }: { snapshots: 
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Check, Loader2, X, AlertTriangle, MessageCircle, Copy, Terminal, Image as ImageIcon } from 'lucide-react';
 import { useFleetEvents } from '../../lib/live';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 export type WaStep = { key: string; label: string; percent: number };
 
@@ -110,6 +111,8 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // Operatör geri bildirimi: "butonu süreci logları görelim" — buton bir şey yapıp
   // yapmadığını göstermeli, sessizce "başladı" demekle kalmamalı.
   const [recoverySteps, setRecoverySteps] = useState<Array<{ key: string; label: string; ok: boolean }> | null>(null);
+  // Panel onay modalı (tarayıcı confirm() yerine). `dialog` ağaca eklenmeli — en altta.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const termRef = useRef<HTMLDivElement>(null);
 
   // Restore persisted history on open (covers "arka plana al" → reopen).
@@ -324,7 +327,16 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // to enter.
   async function cancelRegistration() {
     if (cancelBusy) return;
-    if (!window.confirm(`${phoneNumber} için WhatsApp kaydını iptal etmek istediğinize emin misiniz?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı (sunucu adresini gösteren
+    // "125.253.73.45 web sitesinin mesajı" kutusu yerine).
+    const ok = await confirm({
+      title: 'Kayıt iptal edilsin mi?',
+      body: `${phoneNumber} için WhatsApp kaydı iptal edilecek.`,
+      warning: 'Hesap BAŞARISIZ işaretlenir ve cihazın kilidi açılır. Numara yanmaz ama bu kayıt kapanır — aynı numarayla devam etmek istiyorsanız "Sıfırla ve Tekrar Dene" daha iyidir.',
+      confirmLabel: 'Kaydı iptal et',
+      danger: true
+    });
+    if (!ok) return;
     setCancelBusy(true);
     try {
       const res = await fetch(`/api/accounts/batch/accounts/${accountId}/cancel`, { method: 'POST' });
@@ -352,7 +364,18 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
       setOtpMsg(`Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı. Erken denemek cezayı UZATIR.`);
       return;
     }
-    if (!window.confirm(`${phoneNumber} için kayıt sıfırlanıp tekrar denenecek.\n\n• Cihazın WhatsApp verisi silinir\n• Çıkış IP'si (proxy oturumu) yenilenir\n• AYNI numarayla kaldığı yerden yeni bir deneme başlar\n\nDevam edilsin mi?`)) return;
+    const okRetry = await confirm({
+      title: 'Sıfırla ve tekrar dene',
+      body:
+        `${phoneNumber} için kayıt sıfırlanıp tekrar denenecek:\n` +
+        '• Cihazın WhatsApp verisi silinir\n' +
+        "• Çıkış IP'si (proxy oturumu) yenilenir\n" +
+        '• Cihaz kimliği yenilenir (IMEI / android_id / seri / MAC)\n' +
+        '• AYNI numarayla yeni bir deneme başlar',
+      warning: 'Numara yanmaz — yeni kayıt AÇILMAZ, aynı kayıt devam eder. Bekleme cezası sürüyorsa süre dolmadan denemeyin.',
+      confirmLabel: 'Sıfırla ve dene'
+    });
+    if (!okRetry) return;
     setRetryBusy(true);
     setOtpMsg(null);
     try {
@@ -860,6 +883,9 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
           )}
         </footer>
       </div>
+      {/* Onay modalı — bu ağaca BİR KEZ eklenmeli, yoksa confirm() hiç görünmez.
+          zIndex'i yüksek (70) olduğu için bu modalın ÜSTÜNDE çıkar. */}
+      {confirmDialog}
     </div>
   );
 }

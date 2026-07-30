@@ -4,11 +4,14 @@ import { useEffect, useState } from 'react';
 import { Boxes, Plus, Trash2, Play, Square, RotateCcw, Pencil, Check, X, Layers, Smartphone, Activity } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 
 type Device = { id: string; name: string; status?: string; groupId?: string | null };
 type Group = { id: string; name: string; description?: string | null; devices?: Device[] };
 
 export function GroupsView() {
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [groups, setGroups] = useState<Group[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -88,7 +91,15 @@ export function GroupsView() {
   }
 
   async function deleteGroup(id: string) {
-    if (!confirm('Bu grup silinsin mi? Cihazlar silinmez, gruptan çıkarılır.')) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı ("…web sitesinin mesajı"
+    // kutusu sunucu adresini gösteriyor ve biçimlendirme taşımıyordu).
+    const ok = await confirm({
+      title: 'Grup silinsin mi?',
+      body: 'Gruptaki CİHAZLAR SİLİNMEZ — yalnızca gruptan çıkarılır ve "Grupsuz" olur.',
+      confirmLabel: 'Grubu sil',
+      danger: true
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/groups/${id}`, { method: 'DELETE' });
@@ -311,6 +322,7 @@ export function GroupsView() {
           {msg ? <p className="helper" style={{ marginTop: '0.75rem' }}>{msg}</p> : null}
         </HoloPanel>
       </div>
+      {confirmDialog}
     </PageMotion>
   );
 }

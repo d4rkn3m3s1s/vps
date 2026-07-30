@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
+import { useConfirm } from '../../components/ConfirmDialog';
 import {
   Sparkles,
   Plus,
@@ -133,6 +134,8 @@ function describeStep(s: RpaStep): string {
 
 export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevice[] }) {
   const router = useRouter();
+  // Panel onay modalı (tarayıcı confirm() yerine); `dialog` en altta ağaca eklenir.
+  const { confirm, dialog: confirmDialog } = useConfirm();
   const [editing, setEditing] = useState<RpaFlow | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -252,7 +255,15 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
   }
 
   async function remove(flow: RpaFlow) {
-    if (!confirm(`"${flow.name}" akışı silinsin mi?`)) return;
+    // ★2026-07-30 Tarayıcı confirm() yerine panel modalı.
+    const ok = await confirm({
+      title: 'RPA akışı silinsin mi?',
+      body: `"${flow.name}" akışı kalıcı olarak silinecek.`,
+      warning: 'Bu akışı kullanan zamanlamalar ve farm kampanyaları çalışmayı durdurur.',
+      confirmLabel: 'Akışı sil',
+      danger: true
+    });
+    if (!ok) return;
     await fetch(`/api/rpa/${flow.id}`, { method: 'DELETE' });
     router.refresh();
   }
@@ -584,6 +595,7 @@ export function RpaView({ flows, devices }: { flows: RpaFlow[]; devices: RpaDevi
           </div>
         </div>
       ) : null}
+      {confirmDialog}
     </PageMotion>
   );
 }

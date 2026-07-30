@@ -275,6 +275,8 @@ export function ProfilesView({
   useEffect(() => { setDevices(initialDevices); }, [initialDevices]);
   // Canlı bağlantı durumu — üst kartların altında gösterilir (bkz. göstergedeki yorum).
   const { status: liveStatus, reconnect } = useLive();
+  // Silme onay modalı: tarayıcının confirm() diyaloğunun yerini alır (bkz. askDeleteSelected).
+  const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; protectedNames: string[]; names: string[] } | null>(null);
 
   // ★2026-07-28 CANLI LISTE: cihaz listesi SADECE 20s'lik yoklamayla guncelleniyordu —
   // yeni kurulan cihaz listeye ANINDA dusmuyordu (operator: "sayfayi yenileyince
@@ -633,18 +635,65 @@ export function ProfilesView({
     }
   }
 
-  async function deleteSelected() {
+  // ★2026-07-30 SİLME AKIŞI YENİLENDİ. İki ayrı hata vardı:
+  //  1) Tarayıcının `confirm()` diyaloğu kullanılıyordu ("125.253.73.45 web sitesinin
+  //     mesajı") — panelin tasarımıyla alakasız, mobilde kötü, IP adresi gösteriyor.
+  //  2) Yanıt HİÇ KONTROL EDİLMİYORDU: API korumalı cihazı 409 DEVICE_PROTECTED ile
+  //     reddediyor ama `Promise.all` sonucu yutuluyordu → operatör "sildim" sanıyor,
+  //     cihaz duruyor, hiçbir uyarı çıkmıyordu (canlı gözlem: korumalı cihaz seçilip
+  //     Sil'e basılınca sessizce hiçbir şey olmuyor).
+  // Şimdi: kendi onay modalımız + her yanıt tek tek değerlendirilip sonuç raporlanıyor.
+  function askDeleteSelected() {
     if (selectionCount === 0) return;
-    if (!confirm(`${selectionCount} profil silinsin mi? Bu işlem geri alınamaz.`)) return;
+    const list = devices.filter((d) => selected.has(d.id));
+    setConfirmDelete({
+      ids: list.map((d) => d.id),
+      protectedNames: list.filter((d) => d.protected).map((d) => d.name),
+      names: list.map((d) => d.name)
+    });
+  }
+
+  async function doDeleteSelected(ids: string[]) {
     setBusy(true);
+    setError(null);
     try {
-      await Promise.all(
-        Array.from(selected).map((id) => fetch(`/api/devices/${id}`, { method: 'DELETE' }))
+      const results = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const res = await fetch(`/api/devices/${id}`, { method: 'DELETE' });
+            if (res.ok) return { id, ok: true as const };
+            const body = await res.json().catch(() => ({}));
+            const msg = String(body?.data?.message || body?.error || `HTTP ${res.status}`);
+            return { id, ok: false as const, msg };
+          } catch {
+            return { id, ok: false as const, msg: 'ağ hatası' };
+          }
+        })
       );
-      setSelected(new Set());
+      const failed = results.filter((r) => !r.ok);
+      const okCount = results.length - failed.length;
+      if (failed.length) {
+        // Başarısızları CİHAZ ADIYLA bildir — "hangi cihaz silinemedi" sorusu
+        // id'lerden yanıtlanamaz. Aynı sebep tekrarlıyorsa bir kez yazılır.
+        const nameOf = (id: string) => devices.find((d) => d.id === id)?.name ?? id;
+        const reasons = [...new Set(failed.map((f) => f.msg))];
+        setError(
+          `${okCount} silindi, ${failed.length} silinemedi: ` +
+            failed.map((f) => nameOf(f.id)).join(', ') +
+            ` — ${reasons.join(' · ')}`
+        );
+      }
+      // Yalnızca gerçekten silinenleri seçimden çıkar; kalanlar seçili kalsın ki
+      // operatör (ör. korumayı kaldırıp) tekrar deneyebilsin.
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const r of results) if (r.ok) next.delete(r.id);
+        return next;
+      });
       router.refresh();
     } finally {
       setBusy(false);
+      setConfirmDelete(null);
     }
   }
 
@@ -1064,7 +1113,7 @@ export function ProfilesView({
 
   function runBulk(action: string) {
     if (selectionCount === 0) return undefined;
-    if (action === 'Sil') return deleteSelected();
+    if (action === 'Sil') return askDeleteSelected();
     if (action === 'Başlat') return bulkLifecycle('wake');
     if (action === 'Kapat') return bulkLifecycle('sleep');
     if (action === 'Yeniden başlat') return bulkLifecycle('reboot');
@@ -2030,6 +2079,89 @@ export function ProfilesView({
                   : (parseInt(form.count, 10) || 1) > 1
                     ? `${Math.max(1, Math.min(20, parseInt(form.count, 10) || 1))} cihaz kur`
                     : 'Cihazı kur'}
+              </button>
+            </footer>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ★2026-07-30 SİLME ONAY MODALI — tarayıcının confirm() diyaloğunun yerine.
+          Eskisi "125.253.73.45 web sitesinin mesajı" başlığıyla çıkıyordu: panelin
+          tasarımıyla alakasız ve hangi cihazların silineceğini göstermiyordu.
+          Bu modal SİLİNECEK CİHAZLARI ADIYLA listeler ve KORUMALI olanları ayrıca
+          uyarır — API onları 409 ile reddedecek, operatör bunu ÖNCEDEN görsün. */}
+      {confirmDelete ? (
+        <div className="modal-overlay" onClick={() => !busy && setConfirmDelete(null)}>
+          <div className="modal" style={{ maxWidth: 'min(94vw, 520px)' }} onClick={(e) => e.stopPropagation()}>
+            <header className="modal-head">
+              <h2><Trash2 size={16} /> {confirmDelete.ids.length} profil silinsin mi?</h2>
+              <button type="button" className="modal-close" disabled={busy} onClick={() => setConfirmDelete(null)}>
+                <X size={16} />
+              </button>
+            </header>
+
+            <p className="helper" style={{ marginTop: 0 }}>
+              Bu işlem <b>geri alınamaz</b>: cihazın Waydroid örneği (WhatsApp verisi dahil) sunucudan
+              tamamen silinir.
+            </p>
+
+            {/* Silinecek cihazlar — 8'e kadar adıyla, fazlası sayı olarak. */}
+            <div style={{
+              border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '8px 12px',
+              marginBottom: 12, maxHeight: 132, overflowY: 'auto', fontSize: 12.5, lineHeight: 1.7
+            }}>
+              {confirmDelete.names.slice(0, 8).map((n) => (
+                <div key={n} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f87171', flex: '0 0 auto' }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n}</span>
+                  {confirmDelete.protectedNames.includes(n) ? (
+                    <span style={{ fontSize: 10.5, color: '#fbbf24', flex: '0 0 auto' }}>🔒 korumalı</span>
+                  ) : null}
+                </div>
+              ))}
+              {confirmDelete.names.length > 8 ? (
+                <div style={{ opacity: 0.6, marginTop: 2 }}>+ {confirmDelete.names.length - 8} cihaz daha…</div>
+              ) : null}
+            </div>
+
+            {confirmDelete.protectedNames.length > 0 ? (
+              <div style={{
+                border: '1px solid rgba(251,191,36,0.45)', borderLeft: '3px solid #fbbf24',
+                background: 'rgba(251,191,36,0.08)', borderRadius: 10, padding: '10px 14px',
+                marginBottom: 12, fontSize: 12.5, lineHeight: 1.55
+              }}>
+                <strong>🔒 {confirmDelete.protectedNames.length} cihaz KORUMALI — silinemez</strong>
+                <div style={{ opacity: 0.85, marginTop: 3 }}>
+                  Korumalı işaret, üzerinde kayıtlı bir WhatsApp hesabı olan cihazları kazara silmeye karşı
+                  korur. Bu cihazlar atlanacak. Gerçekten silmek istiyorsanız önce kartındaki
+                  <b> Korumalı</b> işaretini kaldırın.
+                </div>
+              </div>
+            ) : null}
+
+            {error ? <p className="field-error">{error}</p> : null}
+
+            <footer className="modal-foot">
+              <button type="button" className="btn-ghost" disabled={busy} onClick={() => setConfirmDelete(null)}>
+                Vazgeç
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.45)' }}
+                disabled={busy || confirmDelete.ids.length === confirmDelete.protectedNames.length}
+                onClick={() => void doDeleteSelected(confirmDelete.ids)}
+                title={
+                  confirmDelete.ids.length === confirmDelete.protectedNames.length
+                    ? 'Seçili cihazların hepsi korumalı — önce korumayı kaldırın'
+                    : 'Kalıcı olarak sil'
+                }
+              >
+                <Trash2 size={14} /> {busy
+                  ? 'Siliniyor…'
+                  : confirmDelete.protectedNames.length > 0
+                    ? `${confirmDelete.ids.length - confirmDelete.protectedNames.length} cihazı sil`
+                    : 'Kalıcı olarak sil'}
               </button>
             </footer>
           </div>

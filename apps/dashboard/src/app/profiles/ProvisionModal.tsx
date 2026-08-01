@@ -99,7 +99,16 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
     setStartedAt((prev) => prev ?? (e.timestamp ? Date.parse(e.timestamp) : Date.now()));
     if (p.note) {
       const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: p.note };
-      setLogs((prev) => [...prev, line]);
+      // ★2026-08-01 ÇİFT-SATIR SAVUNMASI: asıl kök live.tsx'teki çift-soketti (düzeltildi),
+      // ama bu terminale İKİ kaynak yazıyor — açılışta kalıcı geçmiş (fetch) ve canlı
+      // olaylar. Geçmiş yüklenirken gelen bir olay aynı satırı tekrar ekleyebilir. Son
+      // satırla aynı (step + note) ise yutuyoruz: ardışık tekrar her zaman çiftlemedir,
+      // çünkü gerçek akışta aynı adım aynı notu peş peşe iki kez yayınlamaz.
+      setLogs((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.note === line.note && last.step === line.step) return prev;
+        return [...prev, line];
+      });
     }
   });
 

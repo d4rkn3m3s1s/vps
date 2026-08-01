@@ -67,6 +67,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<LiveStatus>('connecting');
   const listeners = useRef<Set<Listener>>(new Set());
   const wsRef = useRef<WebSocket | null>(null);
+  // ★2026-08-01: bir connect() `await fetchToken()` aşamasındayken TRUE. Soket henüz
+  // OLUŞTURULMADIĞI için wsRef.readyState ile tespit edilemez — bu bayrak olmadan iki
+  // eşzamanlı çağrı iki soket açar ve hub her olayı 2 kez yollar (çift log satırı).
+  const connectingRef = useRef(false);
   // connect() referansını dışarı (reconnect) taşımak için.
   const connectRef = useRef<() => void>(() => {});
 
@@ -120,11 +124,37 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     async function connect() {
       if (stopped) return;
       clearTimers();
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+      // ★2026-08-01 ÇİFT-SOKET KÖKÜ: burada eskiden SADECE `readyState === OPEN`
+      // bakılıyordu ve o kontrol `await fetchToken()`'dan ÖNCEydi. Yarış şuydu:
+      //   1) connect() → soket CONNECTING (OPEN değil) → korumadan GEÇER
+      //   2) await fetchToken() sürerken (ağ gecikmesi) visibilitychange/focus/online
+      //      veya reconnect zamanlayıcısı ikinci bir connect() tetikler
+      //   3) o da korumadan geçer (ilk soket HÂLÂ CONNECTING)
+      //   4) İKİ soket açılır → hub aynı tarayıcıyı 2 istemci sayar → HER olay 2 kez
+      //      gelir → kurulum modalindeki her log satırı ÇİFT görünür (CANLI: mi13).
+      // FIX-1: CONNECTING de "bağlı sayılır" — kurulumu süren soket varken yenisini açma.
+      if (wsRef.current &&
+          (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
+      // FIX-2: await boyunca süren bir kurulumu işaretle (readyState henüz yok, çünkü
+      // soket daha OLUŞTURULMADI). Bu bayrak olmadan iki eşzamanlı fetchToken() yine
+      // iki sokete yol açardı.
+      if (connectingRef.current) return;
+      connectingRef.current = true;
       setStatus((s) => (s === 'open' ? s : 'connecting'));
 
-      const { token, unauthorized } = await fetchToken();
+      let token: string | null = null;
+      let unauthorized = false;
+      try {
+        ({ token, unauthorized } = await fetchToken());
+      } finally {
+        // Bayrağı HER yolda bırak — aksi hâlde fetchToken bir kez patlarsa
+        // istemci kalıcı olarak yeniden bağlanamaz hâle gelirdi.
+        connectingRef.current = false;
+      }
       if (stopped) return;
+      // await sırasında başka bir çağrı soketi kurmuş olabilir → tekrar doğrula.
+      if (wsRef.current &&
+          (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) return;
 
       if (!token) {
         // Tokensiz bağlanmak anlamsız: hub upgrade'i reddeder ve sonsuz 502 üretiriz.

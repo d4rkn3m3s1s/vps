@@ -93,7 +93,12 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
     if (p.shot) setShot(p.shot);
     if (p.note) {
       const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: p.note };
-      setLogs((prev) => [...prev, line]);
+      // ★2026-08-01: ProvisionModal ile aynı çift-satır savunması (kök: live.tsx çift-soket).
+      setLogs((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.note === line.note && last.step === line.step) return prev;
+        return [...prev, line];
+      });
     }
   });
 

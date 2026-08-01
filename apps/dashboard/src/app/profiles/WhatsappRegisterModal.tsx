@@ -213,7 +213,15 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
     setStartedAt((prev) => prev ?? (e.timestamp ? Date.parse(e.timestamp) : Date.now()));
     if (p.note) {
       const line: LogLine = { ts: e.timestamp ?? new Date().toISOString(), step: p.step, percent: p.percent, status: p.status, note: p.note };
-      setLogs((prev) => [...prev, line]);
+      // ★2026-08-01: ProvisionModal ile aynı çift-satır savunması (kök live.tsx'teki
+      // çift-soketti, düzeltildi). Kalıcı geçmiş + canlı olay aynı satırı yazabilir.
+      // NOT: yukarıdaki '📸' dalı bilerek KAPSAM DIŞI — ardışık aynı etiketli
+      // ekran-görüntüsü kareleri MEŞRU tekrar olabilir, onları yutmak canlı görüntüyü bozar.
+      setLogs((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.note === line.note && last.step === line.step) return prev;
+        return [...prev, line];
+      });
     }
   });
 

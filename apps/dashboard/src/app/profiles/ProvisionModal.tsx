@@ -179,13 +179,18 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
+      {/* ★2026-08-01: sabit iskelet (başlık + scroll gövde + sabit alt bar) — uzun
+          kurulum günlüğü alt butonları görünürün dışına itiyordu. bkz. globals.css
+          .modal-sticky */}
+      <div className="modal modal-sticky" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><Smartphone size={16} /> Cihaz kuruluyor · {name || instance}{name ? <span style={{ opacity: 0.5, fontWeight: 400 }}> ({instance})</span> : null}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
+
+        <div className="modal-scroll">
 
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
           <span>{current.label}</span>
@@ -267,6 +272,7 @@ export default function ProvisionModal({ jobId, deviceId, instance, name, steps,
               );
             })}
         </ol>
+        </div>{/* /modal-scroll — buradan sonrası SABİT alt bar */}
 
         <footer className="modal-foot">
           {done ? (

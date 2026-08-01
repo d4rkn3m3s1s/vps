@@ -139,13 +139,16 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
+      {/* ★2026-08-01: sabit iskelet — bkz. globals.css .modal-sticky */}
+      <div className="modal modal-sticky" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><Camera size={16} /> Instagram kaydı · {email}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
+
+        <div className="modal-scroll">
 
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
           <span>{wall ? 'Doğrulama duvarı (captcha/SMS)' : current.label}</span>
@@ -279,6 +282,7 @@ export default function InstagramRegisterModal({ accountId, deviceId, email, ste
               );
             })}
         </ol>
+        </div>{/* /modal-scroll — buradan sonrası SABİT alt bar */}
 
         <footer className="modal-foot">
           {done ? (

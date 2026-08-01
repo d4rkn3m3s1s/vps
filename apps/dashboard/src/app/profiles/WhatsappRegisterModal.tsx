@@ -476,13 +476,20 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
+      {/* ★2026-08-01 ALT KISIM KESİLİYORDU: .modal'ın KENDİSİ scroll ediyordu, yani
+          günlük uzayınca başlık VE alt butonlar ("Kaydı İptal Et" / "Arka planda devam
+          et") görünürün dışına itiliyordu. modal-sticky ile iskelet 3 parçaya ayrıldı:
+          başlık sabit · SADECE gövde scroll · alt bar sabit. Böylece butonlar her zaman
+          erişilebilir kalıyor (mobilde de, PC'de de). */}
+      <div className="modal modal-sticky" style={{ maxWidth: 'min(96vw, 640px)' }} onClick={(e) => e.stopPropagation()}>
         <header className="modal-head">
           <h2><MessageCircle size={16} /> WhatsApp kaydı · {phoneNumber}</h2>
           <button type="button" className="modal-close" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
+
+        <div className="modal-scroll">
 
         {/* Proxy exit vs number-country check. WhatsApp bans a mismatch ("Login not
             available"), so surface it up front: green when the exit country matches the
@@ -856,6 +863,7 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
             </div>
           );
         })()}
+        </div>{/* /modal-scroll — buradan sonrası SABİT alt bar */}
 
         <footer className="modal-foot">
           {done ? (

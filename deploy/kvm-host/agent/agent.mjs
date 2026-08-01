@@ -2437,8 +2437,13 @@ async function registerWhatsApp(job, legacyPayload) {
     if (!dnsOk) {
       warns.push(`DNS/erişim yok (whatsapp.com→${httpCode || 'cevapsız'})`);
       wlog(`preflight dns=FAIL code=${httpCode || 'none'}`);
+      // ★2026-08-01: DNS sonucu PANELE de bas (operatör isteği: "bu logu da modalde
+      // görsek"). Eskiden sadece agent log dosyasına gidiyordu, panelde görünmüyordu.
+      if (!isContinuation) await waProgress('proxy', 6,
+        `⚠ DNS/isim çözme BAŞARISIZ (whatsapp.com→${httpCode || 'cevapsız'}) — "Couldn't connect" riski`);
     } else {
       wlog(`preflight dns=OK code=${httpCode}`);
+      if (!isContinuation) await waProgress('proxy', 6, `✓ DNS/isim çözme OK (whatsapp.com→${httpCode})`);
     }
 
     // (c) Cihaz kararlılığı: (b) hiç cevap vermediyse bir kez daha yokla. mi25 örneği —
@@ -2449,7 +2454,14 @@ async function registerWhatsApp(job, legacyPayload) {
         '-w', '%{http_code}', '--max-time', '12', 'https://www.whatsapp.com'], 16000)
         .catch(() => '');
       const rc = String(retry || '').trim().match(/\d{3}/)?.[0] || '';
-      if (!rc) { warns.push('cihaz kararsız (ağ 2 denemede de cevapsız)'); wlog('preflight stability=UNSTABLE'); }
+      if (!rc) {
+        warns.push('cihaz kararsız (ağ 2 denemede de cevapsız)');
+        wlog('preflight stability=UNSTABLE');
+        if (!isContinuation) await waProgress('proxy', 6, '⚠ Cihaz kararsız — ağ 2 denemede de cevap vermedi');
+      } else {
+        wlog(`preflight stability=RECOVERED code=${rc}`);
+        if (!isContinuation) await waProgress('proxy', 6, `✓ Ağ 2. denemede toparladı (${rc})`);
+      }
     }
 
     // (d) Çıkış IP çakışması. İki hesabın AYNI çıkış IP'sinden kaydolması WhatsApp'ın
@@ -2459,15 +2471,23 @@ async function registerWhatsApp(job, legacyPayload) {
       const now = Date.now();
       for (const [s, v] of waExitIps) if (now - v.at > WA_EXIT_IP_TTL_MS) waExitIps.delete(s);
       const clash = [...waExitIps].find(([s, v]) => s !== serial && v.ip === exit.ip);
-      if (clash) { warns.push(`IP çakışması: ${exit.ip} ${clash[0].split(':')[0]} ile aynı`); wlog(`preflight ipclash ${exit.ip} ~ ${clash[0]}`); }
+      if (clash) {
+        warns.push(`IP çakışması: ${exit.ip} ${clash[0].split(':')[0]} ile aynı`);
+        wlog(`preflight ipclash ${exit.ip} ~ ${clash[0]}`);
+        if (!isContinuation) await waProgress('proxy', 6,
+          `⚠ IP ÇAKIŞMASI: ${exit.ip} adresi ${clash[0].split(':')[0]} cihazıyla AYNI — toplu ban riski!`);
+      } else {
+        wlog(`preflight ipclash=none ip=${exit.ip}`);
+        if (!isContinuation) await waProgress('proxy', 6, `✓ Çıkış IP benzersiz (${exit.ip}) — başka cihazla çakışmıyor`);
+      }
       waExitIps.set(serial, { ip: exit.ip, at: now });
     }
 
     // Uyarıları TEK satırda panele bas (kayıt DEVAM eder — hiçbiri engelleyici değil).
     if (warns.length && !isContinuation) {
-      await waProgress('proxy', 6, `⚠ Ön-uçuş: ${warns.join(' · ')} — kayıt yine de deneniyor`);
+      await waProgress('proxy', 6, `⚠ ÖN-UÇUŞ ÖZETİ: ${warns.join(' · ')} — kayıt yine de deneniyor`);
     } else if (!warns.length && !isContinuation) {
-      await logLine('✓ Ön-uçuş temiz (ülke ✓ DNS ✓ IP benzersiz)');
+      await waProgress('proxy', 6, '✓ ÖN-UÇUŞ TEMİZ — ülke ✓ · DNS ✓ · IP benzersiz ✓ · cihaz kararlı ✓');
     }
     preflightWarnings = warns;     // sonuçta rapor edilir (teşhis için kalıcılaşır)
   }

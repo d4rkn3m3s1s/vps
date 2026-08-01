@@ -38,6 +38,14 @@ const HEARTBEAT_MS = Number(process.env.FLEET_HEARTBEAT_MS || 30000);
 // thumbnail ticker, DISTINCT from the host HEARTBEAT_MS above). 5s balances a smooth
 // live view against screencap contention; tunable per host.
 const WA_HEARTBEAT_MS = Number(process.env.FLEET_WA_HEARTBEAT_MS || 5000);
+// ★2026-08-01 ÖN-UÇUŞ: kayıt yapan cihazların son doğrulanmış ÇIKIŞ IP'si
+// (serial → {ip, at}). İki hesabın AYNI çıkış IP'sinden kaydolması WhatsApp'ın en net
+// toplu-ban sinyali, o yüzden kayıt öncesi çakışmayı bildiriyoruz. Süreç-içi ve TTL'li:
+// kalıcı state YOK (agent restart'ta temizlenir — sadece eşzamanlı kayıtları yakalar,
+// zaten çakışmanın tehlikeli olduğu pencere de o). TDZ'den kaçınmak için burada,
+// tüm kullanımlardan ÖNCE tanımlı.
+const waExitIps = new Map();
+const WA_EXIT_IP_TTL_MS = Number(process.env.FLEET_WA_EXIT_IP_TTL_MS || 30 * 60 * 1000);
 const ADB = process.env.FLEET_ADB || 'adb';
 // Optional H.264 fast-stream path. When FLEET_FFMPEG points at an ffmpeg binary,
 // streaming uses `screenrecord --output-format=h264 | ffmpeg -> mjpeg` instead of
@@ -2255,6 +2263,11 @@ async function registerWhatsApp(job, legacyPayload) {
   // job result small. base64 PNG + label + ISO timestamp. ALSO pushes a downscaled
   // copy to the live progress panel (best-effort; sharp shrinks it so the WS frame
   // stays small).
+  // ★2026-08-01: ön-uçuş uyarıları (ülke uyuşmazlığı / DNS / IP çakışması / kararsızlık).
+  // done() bunu sonuca ekler; böylece bir kayıt battığında "hangi ağ koşulunda battı"
+  // bilgisi hesabın kaydında KALIR. Eskiden bu bilgi sadece anlık panel notundaydı ve
+  // iş bitince kayboluyordu → 75 FAILED'ın ağ-sebebi sonradan analiz edilemiyordu.
+  let preflightWarnings = [];
   const shots = [];
   // keepNote=true pushes ONLY the screenshot (empty note) so the current parked-state
   // note is NOT overwritten. ★BUG-A ROOT: done() calls snap(label) right AFTER a parked
@@ -2338,7 +2351,10 @@ async function registerWhatsApp(job, legacyPayload) {
     if (st === 'OTP_WAIT' && jobId && accountId) {
       otpWatch.set(serial, { jobId, accountId, deviceId: serial, until: Date.now() + OTP_WATCH_TTL_MS });
     }
-    return { ...obj, shots, timings, elapsedMs };
+    // ★2026-08-01: ön-uçuş uyarılarını sonuca iliştir — bir kayıt battığında ağ koşulu
+    // (ülke uyuşmazlığı / DNS / IP çakışması / kararsızlık) hesabın kaydında KALSIN,
+    // sadece anlık panel notunda kaybolmasın. Boşsa alan hiç eklenmez (temiz sonuç).
+    return { ...obj, shots, timings, elapsedMs, ...(preflightWarnings.length ? { preflightWarnings } : {}) };
   };
 
   // 0) Ensure WhatsApp is installed; optionally side-load from apkUrl.
@@ -2376,22 +2392,84 @@ async function registerWhatsApp(job, legacyPayload) {
     await h.sleep(1200);
   }
 
-  // 0.5) Proxy sanity check BEFORE entering the number. WhatsApp shows "Login not
-  // available" when a +90 number registers from a non-TR IP, so the operator must SEE
-  // the real exit country up front — the modal renders this as the "proxy" step. We
-  // don't hard-abort on a mismatch (the operator may proceed knowingly), but we log a
-  // loud ⚠ so it's not a silent US-exit like the one that burned 905360452827.
+  // 0.5) ÖN-UÇUŞ (pre-flight) — numara girilmeden ÖNCE cihazın ağ katmanını doğrula.
+  // WhatsApp "Login not available" verir when a +90 number registers from a non-TR IP,
+  // so the operator must SEE the real exit country up front — the modal renders this as
+  // the "proxy" step.
+  //
+  // ★2026-08-01: burası ESKİDEN sadece çıkış-ülkeyi bakıyordu. CANLI TEŞHİS (38 cihaz
+  // taraması): 8 cihaz TR numarası beklerken AL IP'sinden çıkıyordu ve bir cihaz (mi25)
+  // 3 denemenin 2'sinde timeout veriyordu — ikisi de panelde "çevrimiçi" görünüyordu.
+  // Bu yüzden kontrol 4 boyuta genişletildi: çıkış-IP/ülke, DNS (isim çözme), IP
+  // çakışması (aynı IP'den 2 hesap = toplu-ban sürücüsü) ve cihaz kararlılığı.
+  //
+  // ★TASARIM KARARI (operatör isteği): HİÇBİRİ kaydı DURDURMAZ — hepsi UYARI. Amaç
+  // mevcut akışı bozmadan teşhis görünürlüğü kazanmak. Tüm çağrılar .catch()'li ve
+  // zaman-sınırlı; ön-uçuş bir hata yüzünden kaydı ASLA düşüremez.
   {
     const numCc = ccToIso(phoneNumber);
+    const warns = [];              // panelde tek satırda toplanacak uyarılar
     const exit = await verifyExitCountry(serial).catch(() => null);
+
+    // (a) Çıkış ülkesi ↔ numara ülkesi eşleşmesi (mevcut davranış korundu).
     if (exit && exit.country) {
       const match = !numCc || exit.country.toUpperCase() === numCc.toUpperCase();
       if (!isContinuation) await waProgress('proxy', 6, // ★MODAL-FIX: suppress on continuation
         `${match ? '✓' : '⚠'} Çıkış IP: ${exit.ip || '?'} (${exit.country}${exit.city ? ', ' + exit.city : ''})` +
         `${match ? ' — numara ülkesiyle eşleşti' : ` — numara ${numCc} ama çıkış ${exit.country}, WhatsApp banlayabilir!`}`);
+      if (!match) warns.push(`ülke ${exit.country}≠${numCc}`);
+      wlog(`preflight exit=${exit.country} ip=${exit.ip || '?'} num=${numCc || '?'} match=${match}`);
     } else {
       if (!isContinuation) await waProgress('proxy', 6, '⚠ Çıkış IP doğrulanamadı (proxy testi başarısız) — devam ediliyor');
+      warns.push('çıkış IP doğrulanamadı');
+      wlog('preflight exit=DOĞRULANAMADI');
     }
+
+    // (b) DNS / isim çözme. ★KÖK-NEDEN GEÇMİŞİ: DNS'siz bir cihaz TCP seviyesinde 301
+    // döndürüp ONLINE görünür ama İSİM çözemez → WhatsApp "Couldn't connect" verir ve
+    // sebep görünmez kalır (31 cihazın 9'u böyleydi). Bu yüzden IP ile değil ADIYLA
+    // istek atıyoruz: 200 dönerse resolver gerçekten çalışıyordur.
+    const waHttp = await adbT(serial, ['shell', 'curl', '-s', '-o', '/dev/null',
+      '-w', '%{http_code}', '--max-time', '12', 'https://www.whatsapp.com'], 16000)
+      .catch(() => '');
+    const httpCode = String(waHttp || '').trim().match(/\d{3}/)?.[0] || '';
+    const dnsOk = httpCode === '200' || httpCode === '301' || httpCode === '302';
+    if (!dnsOk) {
+      warns.push(`DNS/erişim yok (whatsapp.com→${httpCode || 'cevapsız'})`);
+      wlog(`preflight dns=FAIL code=${httpCode || 'none'}`);
+    } else {
+      wlog(`preflight dns=OK code=${httpCode}`);
+    }
+
+    // (c) Cihaz kararlılığı: (b) hiç cevap vermediyse bir kez daha yokla. mi25 örneği —
+    // 3 denemenin 2'sinde timeout, 1'inde normal cevap. Kararsız cihaz kayıt ortasında
+    // düşer ve numara yanar; operatörün bunu ÖNCEDEN bilmesi gerekiyor.
+    if (!dnsOk) {
+      const retry = await adbT(serial, ['shell', 'curl', '-s', '-o', '/dev/null',
+        '-w', '%{http_code}', '--max-time', '12', 'https://www.whatsapp.com'], 16000)
+        .catch(() => '');
+      const rc = String(retry || '').trim().match(/\d{3}/)?.[0] || '';
+      if (!rc) { warns.push('cihaz kararsız (ağ 2 denemede de cevapsız)'); wlog('preflight stability=UNSTABLE'); }
+    }
+
+    // (d) Çıkış IP çakışması. İki hesabın AYNI çıkış IP'sinden kaydolması WhatsApp'ın
+    // en net toplu-ban sinyalidir. Kayıt yapan diğer cihazların son doğrulanmış IP'sini
+    // hafızada tutup çakışmayı bildiriyoruz (süreç-içi, TTL'li — kalıcı state yok).
+    if (exit && exit.ip) {
+      const now = Date.now();
+      for (const [s, v] of waExitIps) if (now - v.at > WA_EXIT_IP_TTL_MS) waExitIps.delete(s);
+      const clash = [...waExitIps].find(([s, v]) => s !== serial && v.ip === exit.ip);
+      if (clash) { warns.push(`IP çakışması: ${exit.ip} ${clash[0].split(':')[0]} ile aynı`); wlog(`preflight ipclash ${exit.ip} ~ ${clash[0]}`); }
+      waExitIps.set(serial, { ip: exit.ip, at: now });
+    }
+
+    // Uyarıları TEK satırda panele bas (kayıt DEVAM eder — hiçbiri engelleyici değil).
+    if (warns.length && !isContinuation) {
+      await waProgress('proxy', 6, `⚠ Ön-uçuş: ${warns.join(' · ')} — kayıt yine de deneniyor`);
+    } else if (!warns.length && !isContinuation) {
+      await logLine('✓ Ön-uçuş temiz (ülke ✓ DNS ✓ IP benzersiz)');
+    }
+    preflightWarnings = warns;     // sonuçta rapor edilir (teşhis için kalıcılaşır)
   }
 
   // The signup screen sequence below was mapped LIVE on a real device (WhatsApp

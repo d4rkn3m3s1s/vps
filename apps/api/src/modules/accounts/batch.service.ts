@@ -1020,10 +1020,23 @@ export class BatchService {
       if (provider === '5sim') await fivesim.cancelNumber(fivesimCfg(), rented!.requestId).catch(() => undefined);
       else await accountsService.smsCancel(rented!.requestId).catch(() => undefined);
     };
+    // ★2026-08-01 ÖN-UÇUŞ İZİ: agent kayıt öncesi ağ katmanını doğruluyor (çıkış ülkesi,
+    // DNS, IP çakışması, kararlılık) ve uyarıları result.preflightWarnings ile döndürüyor.
+    // O uyarılar EN ÇOK bir kayıt battığında değerli — "hangi ağ koşulunda battı" sorusu
+    // aksi hâlde cevapsız kalıyor (CANLI: 75 FAILED kaydı vardı ama hiçbirinde ağ koşulu
+    // yoktu, çünkü uyarı sadece anlık panel notunda kalıp kayboluyordu). Burada hata
+    // metnine iliştiriyoruz ki GeneratedAccount.error'da KALICI olsun.
+    let preflightNote = '';
+    const notePreflight = (result: unknown): void => {
+      const w = (result as Record<string, unknown> | null)?.['preflightWarnings'];
+      if (Array.isArray(w) && w.length) preflightNote = ` [ön-uçuş: ${w.map(String).join(' · ')}]`;
+    };
     const fail = async (status: string, note: string, extra?: unknown) => {
-      await prisma.generatedAccount.update({ where: { id: acc.id }, data: { status: 'FAILED', error: note } });
+      // error 500 karakterle sınırlı (şema); ön-uçuş ekiyle birlikte kırp.
+      const full = `${note}${preflightNote}`.slice(0, 500);
+      await prisma.generatedAccount.update({ where: { id: acc.id }, data: { status: 'FAILED', error: full } });
       await releaseNumber();
-      return { ok: false, status, note, account: toPublic(await prisma.generatedAccount.findUniqueOrThrow({ where: { id: acc.id } })), extra };
+      return { ok: false, status, note: full, account: toPublic(await prisma.generatedAccount.findUniqueOrThrow({ where: { id: acc.id } })), extra };
     };
 
     // 4) First on-device pass: enter number + submit. Agent stops at OTP_WAIT.
@@ -1079,6 +1092,9 @@ export class BatchService {
       }
     }
     if (!r1) return fail('TIMEOUT', 'Numara giriş jobı zaman aşımına uğradı (2 tekrar sonrası)');
+    // Ön-uçuş uyarılarını sonuçtan al — bundan SONRAKİ her fail() bunu hata metnine
+    // ekler (job1 FAILED dönse bile result taşınabiliyor).
+    notePreflight(r1.result);
     if (r1.status === 'FAILED') return fail('FAILED', `Numara girişi başarısız: ${r1.error ?? ''}`);
     const res1 = (r1.result as Record<string, unknown>) ?? {};
     if (res1.status && res1.status !== 'OTP_WAIT') {

@@ -10978,7 +10978,21 @@ function startStreamClient() {
   // (CLOSED ama retry planlanmamış) kalırsa watchdog onu da toparlar.
   const PING_MS = 30_000;
   const PONG_TIMEOUT_MS = 75_000;
+  // ★2026-08-04 (CANLI KANIT): agent 1 Ağu 06:19'da bağlandıktan sonra 2.5 GÜN
+  // boyunca stream soketi ölü kaldı — logda ne "connected" ne "yeniden bağlanılıyor"
+  // vardı, yani watchdog HİÇBİR ŞEY yapmadı. Sebep aşağıdaki CONNECT_TIMEOUT_MS'in
+  // yokluğuydu: soket CONNECTING(0) durumunda asılı kalırsa
+  //   1) watchdog `readyState !== 1` görüp SÜRESİZ return ediyordu,
+  //   2) `connecting` bayrağı true kalıyordu (sıfırlanması yalnızca
+  //      onopen/onclose/onerror'a bağlı; hiçbiri ateşlenmiyordu),
+  //   3) dolayısıyla connect() de baştaki `if (connecting) return` ile
+  //      EBEDİYEN bloklanıyordu → kalıcı ölü kilit, tek çare elle restart.
+  // Artık CONNECTING bir süre sınırına tabi: aşarsa soket zorla kapatılıp
+  // yeniden bağlanılır. Aynı anahtarla elle test 1 sn'de bağlandığı için
+  // 20 sn fazlasıyla cömert bir üst sınır.
+  const CONNECT_TIMEOUT_MS = 20_000;
   let lastPongAt = 0;
+  let connectStartedAt = 0;   // connect() çağrıldığı an (CONNECTING süre denetimi)
   let watchdog;
   let reconnectTimer;
   // Aynı anda birden fazla soket açılmasını engeller (watchdog + onclose yarışı).
@@ -10996,6 +11010,10 @@ function startStreamClient() {
     // close olayı gelmeyebilir (zombie): kaptürleri burada da durdur ve retry kur.
     for (const id of [...captures.keys()]) stopCapture(id);
     stream = undefined;
+    // ★ `connecting`i BURADA da sıfırla: soket CONNECTING'de asılıyken kill
+    // edildiğinde onclose/onerror gelmeyebilir; bayrak true kalırsa connect()
+    // sonsuza dek erken return eder (ölü kilidin ikinci yolu).
+    connecting = false;
     scheduleReconnect(1000);
   };
 
@@ -11004,6 +11022,7 @@ function startStreamClient() {
     // Zaten canlı bir soket varsa ikinci bir tane açma.
     if (stream && (stream.readyState === 0 || stream.readyState === 1)) return;
     connecting = true;
+    connectStartedAt = Date.now();
     try {
       stream = new WebSocket(STREAM_URL);
     } catch {
@@ -11014,6 +11033,8 @@ function startStreamClient() {
     stream.binaryType = 'arraybuffer';
     stream.onopen = () => {
       connecting = false;
+      connectStartedAt = 0;    // ★ ŞART: sıfırlanmazsa CONNECT_TIMEOUT_MS bir
+                               // sonraki turda AÇIK soketi haksız yere kill eder.
       lastPongAt = Date.now(); // ilk pong'a kadar sayaç açılış anından işler
       log('stream channel connected');
     };
@@ -11033,21 +11054,34 @@ function startStreamClient() {
     };
     stream.onclose = () => {
       connecting = false;
+      connectStartedAt = 0;
       for (const id of [...captures.keys()]) stopCapture(id);
       if (!stopping) scheduleReconnect(5000);
     };
-    stream.onerror = () => { connecting = false; try { stream.close(); } catch { /* ignore */ } };
+    stream.onerror = () => { connecting = false; connectStartedAt = 0; try { stream.close(); } catch { /* ignore */ } };
   };
 
   // Watchdog: hem ping atar hem de "soket yok / kapalı ama kimse yeniden bağlamıyor"
   // durumunu yakalar. .unref() ile sürecin kapanmasını engellemez.
   watchdog = setInterval(() => {
     if (stopping) return;
+    // ★ CONNECTING/CLOSING SÜRE SINIRI — bu blok watchdog'un ÖNÜNDE olmalı.
+    // Eskiden CONNECTING süresiz beklenirdi ve `connecting` bayrağı asılı kalırdı;
+    // bağlanma yarıda takılınca kanal 2.5 gün ölü kaldı (canlı olay, 1–4 Ağu).
+    // NOT: koşul `connectStartedAt` truthy'liğine BAKMAZ — yalnızca `connecting`e
+    // bakar. (0 hem "sıfırlandı" hem geçerli bir zaman damgası olabilirdi; truthy
+    // kontrolü zaman aşımını sessizce atlardı.)
+    if (connecting && Date.now() - connectStartedAt > CONNECT_TIMEOUT_MS) {
+      killSocket('bağlanma zaman aşımı (CONNECTING asılı kaldı)');
+      return;
+    }
     if (!stream || stream.readyState === 3 /* CLOSED */) {
+      // `connecting` true ama ortada soket YOKSA bayrak bayattır (yukarıdaki süre
+      // sınırı onu zaten temizler) — burada yalnızca retry planlıysa bekle.
       if (!reconnectTimer && !connecting) connect();
       return;
     }
-    if (stream.readyState !== 1 /* OPEN */) return; // CONNECTING/CLOSING: bekle
+    if (stream.readyState !== 1 /* OPEN */) return; // CONNECTING/CLOSING: süre sınırı yukarıda
     if (lastPongAt && Date.now() - lastPongAt > PONG_TIMEOUT_MS) {
       killSocket('yanıt vermiyor (pong yok)');
       return;

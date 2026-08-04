@@ -1256,6 +1256,25 @@ export class AgentService {
     // in index.ts. The old opportunistic prune here fired only when the epoch-second was
     // divisible by 20 — which almost never lined up with a heartbeat, so the table grew to
     // 232K rows unbounded. The housekeeping timer now trims it reliably every 6h.
+
+    // ★2026-08-04 METRİK TAZELİĞİNİ YAYINLA. Operatör: "bu kısım sürekli anlık mı
+    // canlı mı gerçek veri mi" → veri GERÇEK (agent ADB ile /proc + df okuyor) ve
+    // 30 sn'de bir tazeleniyor, ama panelin altyapı kartları bunu HİÇ öğrenmiyordu:
+    // `device.updated` SADECE ONLINE↔OFFLINE geçişinde yayınlanıyor (bilinçli karar —
+    // her heartbeat'te tüm filoyu yayınlamak boşuna trafik). CPU/bellek/disk değişimi
+    // hiçbir olaya düşmüyordu, dolayısıyla kartlar ancak sayfa yenilenince değişiyordu.
+    //
+    // Çözüm: cihaz BAŞINA değil, host başına TEK bir özet olay. 48 cihaz için
+    // 48 mesaj yerine 1 mesaj — o kararı bozmadan panel tazelenebiliyor.
+    if (updated > 0) {
+      deviceHub.broadcast({
+        type: 'device.metrics',
+        deviceId: host.id,          // olayın kaynağı host (tek cihaz değil)
+        payload: { updated, capturedAt: now.toISOString() },
+        timestamp: now.toISOString(),
+        ...(host.workspaceId ? { workspaceId: host.workspaceId } : {})
+      });
+    }
     return { updated };
   }
 

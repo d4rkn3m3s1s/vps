@@ -115,10 +115,12 @@ export default async function HomePage() {
 
   // ── Live infrastructure (real system metrics) ──────────────────────────────
   const memPct = sys?.memory?.usagePercent ?? 0;
-  const totalJobsAll = sys?.database?.jobs ?? 0;
-  const queueLoad = sys?.queue
-    ? Math.min(100, Math.round(((sys.queue.active + sys.queue.waiting) / Math.max(totalJobsAll, 1)) * 100))
-    : 0;
+  // ★2026-08-04: "Kuyruk Verimi" yüzdesi (aktif+bekleyen) / TÜM ZAMANLARIN iş
+  // sayısı ile hesaplanıyordu. Payda on binlerce olduğu için sonuç PRATİKTE HER
+  // ZAMAN %0 çıkıyordu — ölçü hiçbir bilgi taşımıyordu. Artık doluluk 20 işlik
+  // bir ölçeğe göre; asıl bilgi zaten alttaki mutlak sayılarda.
+  const queueBusy = (sys?.queue?.active ?? 0) + (sys?.queue?.waiting ?? 0);
+  const queueLoad = Math.min(100, Math.round((queueBusy / 20) * 100));
   // Real device CPU/disk: average the per-device metrics the agent reports
   // (Device.cpuUsage/diskUsage), so these reflect actual phones, not a formula.
   const meteredDevices = deviceList.filter((d) => d.status === 'ONLINE');
@@ -141,7 +143,7 @@ export default async function HomePage() {
   const infraMetrics: InfraMetric[] = [
     { key: 'cpu', label: 'Cihaz CPU (ort.)', percent: cpuPct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(cpuPct) },
     { key: 'memory', label: 'Cihaz Bellek (ort.)', percent: deviceMemPct, detail: meteredDevices.length > 0 ? `${meteredDevices.length} cihaz ortalaması` : 'çevrimiçi cihaz yok', tone: tone(deviceMemPct) },
-    { key: 'network', label: 'Kuyruk Verimi', percent: queueLoad, detail: `${sys?.queue?.waiting ?? 0} bekliyor · ${sys?.queue?.active ?? 0} aktif`, tone: tone(queueLoad) },
+    { key: 'network', label: 'İş Kuyruğu', percent: queueLoad, detail: queueBusy === 0 ? 'kuyruk boş' : `${sys?.queue?.waiting ?? 0} bekliyor · ${sys?.queue?.active ?? 0} çalışıyor`, tone: queueBusy === 0 ? 'success' : tone(queueLoad) },
     { key: 'storage', label: 'Cihaz Disk (ort.)', percent: storagePct, detail: `${meteredDevices.length} çevrimiçi cihaz`, tone: tone(storagePct) }
   ];
 

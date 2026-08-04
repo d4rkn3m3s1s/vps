@@ -14,6 +14,9 @@ export type DeviceHubEvent = {
     | 'device.updated'
     | 'device.deleted'
     | 'device.heartbeat'
+    // Host, filosunun CPU/bellek/disk ölçümlerini yazdı. Cihaz BAŞINA değil,
+    // host başına TEK olay — panelin altyapı kartları bununla tazelenir.
+    | 'device.metrics'
     | 'job.created'
     | 'job.updated'
     | 'alert.fired'

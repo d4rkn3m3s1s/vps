@@ -3,14 +3,18 @@
 // ── Command Deck ────────────────────────────────────────────────────────────
 // A "fleet ops" overview: a live telemetry strip, 3D glass KPI tiles, a device
 // status matrix, an animated sparkline rail, and a terminal-style ops log.
-// Pure presentation — all data is passed in from the server component, so no
-// API wiring changes. Motion is GPU-only (transform/opacity); 3D tilt follows
-// the pointer with spring damping and is disabled for coarse pointers.
+// Motion is GPU-only (transform/opacity); 3D tilt follows the pointer with
+// spring damping and is disabled for coarse pointers.
+//
+// Veri akışı: her şey sunucu bileşeninden gelir — TEK İSTİSNA altyapı ölçerleri
+// (`InfraMeters`), ★2026-08-04'te canlıya çevrildi; sunucudan gelen değerleri
+// ilk boyamada kullanır, sonra kendi tazeler.
 
 import { motion, useMotionValue, useSpring, useTransform } from 'framer-motion';
 import { useRef, type ReactNode, type PointerEvent } from 'react';
 import Link from 'next/link';
 import { CountUp } from './CountUp';
+import { useLiveInfraMetrics } from './LiveInfraMetrics';
 import {
   Smartphone, Network, Activity, ShieldCheck, Cpu, HardDrive, Boxes,
   Radio, ArrowUpRight, Zap, Database, Server
@@ -175,24 +179,32 @@ function DeviceMatrix({ devices, online, total }: { devices: DeckDevice[]; onlin
 }
 
 /* ── infra meters (radial-ish bars with glow) ── */
+// ★2026-08-04 CANLI. Operatör: "bu kısım sürekli anlık mı canlı mı gerçek veri mi"
+// → veri GERÇEK (agent her cihazda ADB ile /proc + df okur, 30 sn'de bir gönderir)
+// ama panel onu göremiyordu: ana sayfa bir SUNUCU bileşeni, veriyi yalnızca sayfa
+// açılışında çekiyordu. Artık `useLiveInfraMetrics` WS olayı + 30 sn'lik yedek
+// zamanlayıcıyla tazeliyor; sunucudan gelen değerler ilk boyama için kullanılır.
 function InfraMeters({ metrics }: { metrics: DeckMetric[] }) {
+  const live = useLiveInfraMetrics(metrics);
   const ico = { cpu: <Cpu size={14} />, memory: <HardDrive size={14} />, network: <Network size={14} />, storage: <Database size={14} /> } as Record<string, ReactNode>;
   return (
     <Tilt className="deck-card deck-infra" max={4}>
       <div className="deck-card-head"><h3><Activity size={15} /> Canlı Altyapı</h3></div>
       <div className="deck-meters">
-        {metrics.map((m) => (
+        {live.map((m) => (
           <div className="deck-meter" key={m.key} data-tone={m.tone}>
             <div className="deck-meter-top">
               <span className="deck-meter-label">{ico[m.key] ?? <Cpu size={14} />} {m.label}</span>
               <span className="deck-meter-pct">{m.percent}%</span>
             </div>
             <div className="deck-meter-track">
+              {/* ★ `whileInView` + `viewport={{once:true}}` İDİ → çubuk bir kez dolup
+                  BİR DAHA ASLA güncellenmiyordu; yüzde değişse bile ekranda eski
+                  genişlik kalırdı. `animate` hedefi her değer değişiminde izler. */}
               <motion.div
                 className="deck-meter-fill"
                 initial={{ width: 0 }}
-                whileInView={{ width: `${Math.min(100, m.percent)}%` }}
-                viewport={{ once: true }}
+                animate={{ width: `${Math.min(100, m.percent)}%` }}
                 transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
               />
             </div>

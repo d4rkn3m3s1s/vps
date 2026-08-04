@@ -9,6 +9,8 @@ export type FleetEvent = {
     | 'device.updated'
     | 'device.deleted'
     | 'device.heartbeat'
+    // Host filosunun CPU/bellek/disk ölçümlerini tazeledi (host başına tek olay).
+    | 'device.metrics'
     | 'job.created'
     | 'job.updated'
     | 'alert.fired'

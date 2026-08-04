@@ -11,10 +11,39 @@ MI=/opt/waydroid-mi2
 
 [ "$INSTANCE" = "default" ] && { log "FATAL: instance == default"; exit 1; }
 
-# init (yoksa) — GApps imajını PAYLAŞ (-i), ayrı indirme yok
+# ★2026-08-04 İMAJ İNDİRME KÖKTEN KALDIRILDI (canlı arıza: kurulumlar 5-10 dk sürüp
+# zaman aşımına düşüyordu — mi103/104/106..110 kayboldu).
+#
+# KÖK NEDEN: `-i /var/lib/waydroid/images` verilse bile waydroid.py o yolu "yerel imaj"
+# SAYMIYORDU. initializer.py'nin kararı ŞU listeye bakıyor:
+#     preinstalled_images_paths = ["/etc/waydroid-extra/images",
+#                                  "/usr/share/waydroid-extra/images"]
+#     if args.images_path not in preinstalled_images_paths: helpers.images.get(args)  # ← İNDİR
+# Yolumuz listede olmadığı için HER kurulum system.zip (905MB) + vendor.zip (148MB)
+# indiriyordu. Aylardır böyleydi; ağ hızlıyken (2-11 MB/s) fark edilmedi, hız 64 kB/s'ye
+# düşünce kurulumlar toptan yandı. (`-f` suçlu DEĞİL — o yalnızca "zaten init edilmiş"
+# kontrolünü atlar, indirme kararını etkilemez.)
+#
+# ÇÖZÜM: imajları listedeki yola BAĞLA. `os.path.isfile()` symlink'i takip eder, bu
+# yüzden kopya değil symlink yeter (2.4GB disk tasarrufu). ÖLÇÜM: init 5-10 dk → 1 sn,
+# sıfır indirme, cihaz 65 sn'de boot_completed=1.
+PREINST=/usr/share/waydroid-extra/images
+if [ ! -f "$PREINST/system.img" ] || [ ! -f "$PREINST/vendor.img" ]; then
+  mkdir -p "$PREINST"
+  ln -sf /var/lib/waydroid/images/system.img "$PREINST/system.img" 2>/dev/null || true
+  ln -sf /var/lib/waydroid/images/vendor.img "$PREINST/vendor.img" 2>/dev/null || true
+  log "preinstalled imaj bağlantısı kuruldu ($PREINST) — indirme devre dışı"
+fi
+
+# init (yoksa) — imajlar PREINST'ten paylaşılır, indirme YOK
 if [ ! -f "/var/lib/waydroid.$INSTANCE/waydroid.cfg" ]; then
-  log "init (GApps paylaşımlı)…"
-  PYTHONPATH="$MI" python3 "$MI/waydroid.py" --instance "$INSTANCE" init -f -i /var/lib/waydroid/images >/var/log/wd-$INSTANCE-init.log 2>&1
+  log "init (paylaşımlı imaj, indirme yok)…"
+  PYTHONPATH="$MI" python3 "$MI/waydroid.py" --instance "$INSTANCE" init -f -i "$PREINST" >/var/log/wd-$INSTANCE-init.log 2>&1
+  # İndirme yapıldıysa preinstalled tespiti tutmamış demektir — sessizce yavaşlamak
+  # yerine görünür kıl (bu satır logda çıkarsa PREINST bozulmuştur).
+  if grep -q 'Downloading' "/var/log/wd-$INSTANCE-init.log" 2>/dev/null; then
+    log "UYARI: init imaj İNDİRDİ — $PREINST bozuk olabilir (kurulum yavaşlar)"
+  fi
   [ -f "/var/lib/waydroid.$INSTANCE/waydroid.cfg" ] || { log "FATAL: init failed"; tail -5 /var/log/wd-$INSTANCE-init.log; exit 1; }
 fi
 

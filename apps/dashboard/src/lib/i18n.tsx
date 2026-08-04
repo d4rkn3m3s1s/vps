@@ -44,6 +44,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.jobs': { en: 'Jobs', tr: 'Görevler' },
   'nav.audit': { en: 'Audit', tr: 'Denetim' },
   'nav.logs': { en: 'Logs', tr: 'Kayıtlar' },
+  'nav.backups': { en: 'Backups', tr: 'Yedekler' },
   'nav.admin': { en: 'Admin', tr: 'Yönetim' },
   'nav.settings': { en: 'Settings', tr: 'Ayarlar' },
   // Common

@@ -9,7 +9,7 @@ import {
   LayoutGrid, Fingerprint, TerminalSquare, FolderTree, Upload, ArrowLeftRight,
   AppWindow, Layers, Sparkles, Gauge, LineChart, HeartPulse, FileText,
   Sprout, Settings2, Clock, CalendarDays, Combine, MonitorSmartphone,
-  BookOpen, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck,
+  BookOpen, Server, Bell, CreditCard, Users, Webhook, ScrollText, ShieldCheck, Archive,
   Settings, UserPlus, Bot, MessageCircle, Code2
 } from 'lucide-react';
 import { useI18n, LanguageSwitcher } from '../lib/i18n';
@@ -71,6 +71,7 @@ const NAV: NavGroup[] = [
       { href: '/webhooks', tkey: 'nav.webhooks', icon: Webhook },
       { href: '/api-docs', tkey: 'nav.apiDocs', icon: Code2 },
       { href: '/logs', tkey: 'nav.logs', icon: ScrollText },
+      { href: '/backups', tkey: 'nav.backups', icon: Archive },
       { href: '/admin', tkey: 'nav.admin', icon: ShieldCheck },
       { href: '/settings', tkey: 'nav.settings', icon: Settings }
     ]

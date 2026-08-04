@@ -35,6 +35,7 @@ import { snapshotRouter } from '../modules/snapshots/snapshot.routes';
 import { socialRouter } from '../modules/social/social.routes';
 import { streamRouter } from '../modules/stream/stream.routes';
 import { systemRouter } from '../modules/system/system.routes';
+import { backupDownloadRouter, backupsRouter } from '../modules/backups/backup.routes';
 import { usersRouter } from '../modules/users/users.routes';
 import { resourcesRouter } from '../modules/resources/resources.routes';
 import { vastRouter } from '../modules/vast/vast.routes';
@@ -56,6 +57,10 @@ export function registerRoutes(app: Express): void {
   app.use('/social', socialRouter);
   app.use('/audit', auditRouter);
   app.use('/system', systemRouter);
+  app.use('/backups', backupsRouter);
+  // Tarayıcı indirmesi: ters vekil bu ön eki API'ye iletir ('/backups/*' panele
+  // gider ve orada aynı adlı sayfa olduğu için 404 verirdi).
+  app.use('/api-download', backupDownloadRouter);
   app.use('/users', usersRouter);
   app.use('/fingerprints', fingerprintRouter);
   app.use('/schedules', schedulerRouter);

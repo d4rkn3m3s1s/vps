@@ -170,6 +170,34 @@ model Host {
   @@index([agentKeyHash])
 }
 
+/// ★2026-08-04 İSİM MEZARLIĞI — bir kez kullanılmış Waydroid instance adları.
+///
+/// Operatör: "mi47'yi silersem bir daha kurulmasın, hep farklı olsun".
+/// Eskiden `nextInstanceName` YALNIZCA canlı Device satırlarına bakıyordu; cihaz
+/// silinince adı "boş" görünüp YENİDEN kullanılıyordu. Bu tehlikeli: eski cihazın
+/// izleri (bayat ADB ucu, dnsmasq lease, ARP/route kaydı) yeni cihaza karışır —
+/// 28 Tem'deki "bayat ADB ucu kurulumu öldürür" olayının kaynağı tam olarak budur.
+///
+/// Satır cihaz silinince yazılır ve BİR DAHA SİLİNMEZ. Host tarafında ayrıca
+/// `/var/lib/waydroid-retired.list` tutulur (wd-destroy.sh) — iki kayıt birbirinden
+/// bağımsızdır, biri kaybolsa diğeri adı korur.
+///
+/// ⚠️ SUBNET geri kazanılmaya devam eder (aralık 2..239, dolabilir). Geri
+/// dönmeyen tek şey İSİM.
+model RetiredInstance {
+  id        String   @id @default(cuid())
+  hostId    String
+  /// Waydroid instance adı, ör. "mi47".
+  instance  String
+  /// Emekliye ayrılma sebebi — "deleted" (cihaz silindi) gibi.
+  reason    String?
+  retiredAt DateTime @default(now())
+
+  /// Aynı host'ta aynı ad iki kez emekli edilemez; tahsis kontrolü bu çift üzerinden.
+  @@unique([hostId, instance])
+  @@index([hostId])
+}
+
 enum DeviceStatus {
   ONLINE
   OFFLINE

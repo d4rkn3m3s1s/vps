@@ -100,5 +100,18 @@ if [ -f "$SUBNET_MAP" ]; then
   log "subnet-map entry freed"
 fi
 
+# 6) ★2026-08-04 İSİM MEZARLIĞI — silinen instance ADI bir daha ASLA kullanılmaz.
+#    Operatör: "mi47'yi silersem bir daha kurulmasın, hep farklı olsun".
+#    Sebep: numara geri dönerse eski cihazın izleri (bayat ADB ucu, dnsmasq lease,
+#    ARP/route kaydı, WhatsApp'ın gördüğü cihaz kimliği) yeni cihaza karışır —
+#    28 Tem'de "bayat ADB ucu kurulumu öldürür" olayının tam kaynağı budur.
+#    ⚠️ SUBNET geri kazanılmaya DEVAM EDER (yukarıdaki blok): aralık 2..239 ile
+#    sınırlı ve dolabilir. Geri dönmeyen tek şey İSİM.
+GRAVEYARD="/var/lib/waydroid-retired.list"
+if ! grep -qxF "$INSTANCE" "$GRAVEYARD" 2>/dev/null; then
+  echo "$INSTANCE" >> "$GRAVEYARD" 2>/dev/null || true
+  log "isim emekliye ayrildi (bir daha kullanilmayacak): $INSTANCE"
+fi
+
 log "destroyed"
 echo "DESTROY_RESULT instance=$INSTANCE status=destroyed"

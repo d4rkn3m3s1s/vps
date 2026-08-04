@@ -200,18 +200,27 @@ class ProvisionService {
   // Pick the next free instance name for a host. Deterministic names (mi4, mi5…)
   // can collide on subnet (net-head.sh is md5-based), so we skip any name whose
   // subnet is already taken by another instance on this host or by a reserved one.
+  //
+  // ★2026-08-04 KULLANILMIŞ AD GERİ DÖNMEZ. Operatör: "mi47'yi silersem bir daha
+  // kurulmasın, hep farklı olsun". Eskiden burası YALNIZCA canlı Device satırlarına
+  // bakıyordu → cihaz silinince adı "boş" görünüp YENİDEN kullanılıyordu. Bu
+  // tehlikeli: eski cihazın izleri (bayat ADB ucu, dnsmasq lease, ARP/route kaydı)
+  // yeni cihaza karışır — 28 Tem'deki "bayat ADB ucu kurulumu öldürür" arızasının
+  // kaynağı tam olarak buydu. Artık silinen adlar RetiredInstance'ta kalıcı durur.
   private async nextInstanceName(hostId: string, tx: Prisma.TransactionClient = prisma): Promise<string> {
     const prefix = process.env.FLEET_WD_PREFIX || 'mi';
-    const devices = await tx.device.findMany({
-      where: { hostId },
-      select: { metadata: true }
-    });
+    const [devices, retired] = await Promise.all([
+      tx.device.findMany({ where: { hostId }, select: { metadata: true } }),
+      tx.retiredInstance.findMany({ where: { hostId }, select: { instance: true } })
+    ]);
     const usedNames = new Set<string>();
     for (const d of devices) {
       const meta = (d.metadata ?? {}) as Record<string, unknown>;
       const inst = typeof meta.instance === 'string' ? meta.instance : null;
       if (inst) usedNames.add(inst);
     }
+    // Emekli adlar da "kullanılmış" sayılır — cihazı silinmiş olsa bile.
+    for (const r of retired) usedNames.add(r.instance);
     // Only the NAME needs to be unique. The /24 subnet is assigned by the host agent's
     // net-head.sh, which hands out a FREE sequential subnet (2..239) per instance and
     // records it in /var/lib/waydroid-subnets.map — so subnets never collide there.

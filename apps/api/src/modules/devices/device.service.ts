@@ -325,6 +325,18 @@ export class DeviceService {
         undefined,
         workspaceId
       ).catch(() => undefined); // never block the delete on job-dispatch failure
+
+      // ★2026-08-04 ADI EMEKLİYE AYIR — bir daha ASLA tahsis edilmesin.
+      // Operatör: "mi47'yi silersem bir daha kurulmasın, hep farklı olsun".
+      // Kayıt SİLME İŞLEMİNDEN ÖNCE yazılır: sonraya bırakılsaydı, silme ile
+      // yazma arasında gelen bir provision aynı adı kapabilirdi.
+      // Host tarafında ayrıca wd-destroy.sh `/var/lib/waydroid-retired.list`e
+      // yazar — iki kayıt bağımsız, biri kaybolsa diğeri adı korur.
+      if (dev.hostId) {
+        await prisma.retiredInstance
+          .create({ data: { hostId: dev.hostId, instance, reason: 'deleted' } })
+          .catch(() => undefined); // zaten emekliyse (unique) veya yazılamazsa silmeyi bloklama
+      }
     }
     // ★2026-07-24: Job.deviceId and GeneratedAccount.deviceId are plain String columns
     // (no @relation → no FK cascade), so deleting a device would leave them DANGLING —

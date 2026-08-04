@@ -18,7 +18,8 @@ export class ReportsService {
       proxies,
       members,
       alertEvents,
-      byType
+      byType,
+      sendJobs
     ] = await Promise.all([
       prisma.device.count({ where: ws }),
       prisma.device.count({ where: { ...ws, status: 'ONLINE' } }),
@@ -30,11 +31,29 @@ export class ReportsService {
       prisma.proxy.count({ where: ws }),
       prisma.workspaceMember.count({ where: ws }),
       prisma.alertEvent.count({ where: { ...ws, createdAt: range } }),
-      prisma.job.groupBy({ by: ['type'], where: { ...ws, createdAt: range }, _count: { _all: true } })
+      prisma.job.groupBy({ by: ['type'], where: { ...ws, createdAt: range }, _count: { _all: true } }),
+      // ★2026-08-04 GERÇEK GÖNDERİM ORANI (analytics'te 30 Tem'de düzeltilmişti,
+      // reports'ta EDİLMEMİŞTİ — panel raporları başarıyı ŞİŞİRİYORDU).
+      // `Job.status === 'COMPLETED'` yalnızca "iş koştu, ajan rapor döndü" demek;
+      // mesajın gidip gitmediği `result.status`ta ('SENT' / 'CHAT_NOT_OPENED' /
+      // 'ACCOUNT_RESTRICTED' / 'ACCOUNT_LOGGED_OUT'…). İkisi ayrılmazsa %96 başarı
+      // görünürken gerçek oran %7 olabiliyor (canlı ölçüm, 30 Tem).
+      prisma.job.findMany({
+        where: { ...ws, type: 'WHATSAPP_SEND', createdAt: range },
+        select: { result: true }
+      })
     ]);
 
+    // "İş koştu" oranı — altyapının çalışıp çalışmadığını gösterir.
     const total = jobsCompleted + jobsFailed;
     const successRate = total > 0 ? Math.round((jobsCompleted / total) * 100) : 0;
+
+    // "Mesaj gerçekten gitti" oranı — operatörün asıl önemsediği sayı.
+    const sendDelivered = sendJobs.filter((j) => {
+      const rs = String(((j.result ?? {}) as Record<string, unknown>).status ?? '');
+      return rs === 'SENT' || rs === 'OK' || rs === 'DELIVERED';
+    }).length;
+    const sendRate = sendJobs.length > 0 ? Math.round((sendDelivered / sendJobs.length) * 100) : 0;
 
     return {
       range: { from: from.toISOString(), to: to.toISOString() },
@@ -45,7 +64,14 @@ export class ReportsService {
         failed: jobsFailed,
         pending: jobsPending,
         inRange: jobsInRange,
-        successRate
+        /** İŞ ÇALIŞMA oranı (COMPLETED/COMPLETED+FAILED) — gönderim başarısı DEĞİL. */
+        successRate,
+        /** Aralıktaki WhatsApp gönderim işi sayısı. */
+        sendTotal: sendJobs.length,
+        /** Bunlardan kaçı GERÇEKTEN teslim edildi (result.status). */
+        sendDelivered,
+        /** GERÇEK gönderim oranı — operatörün asıl önemsediği sayı. */
+        sendRate
       },
       proxies,
       members,

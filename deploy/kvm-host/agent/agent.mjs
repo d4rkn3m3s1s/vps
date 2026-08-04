@@ -3404,6 +3404,15 @@ async function registerWhatsApp(job, legacyPayload) {
   };
 
   let voiceTried = false, bothLockedNote = null, wallText = null, rateLimitText = null, rateLimitInfo = null;
+  // ★2026-08-04 DOWNGRADE SPIN SAYACI. CANLI OLAY (+905360459761, wa-t31k): agent
+  // DowngradeFriction ekraninda 27sn'de bir AYNI adimi 5 kez tekrarladi, hic ilerlemedi.
+  // Kok neden: onDowngradeFriction SADECE aktivite adina bakiyor
+  // (`/DowngradeFriction|downgrade\./`), dolayisiyla "USE +" tiklamasi ISE YARAMASA da
+  // ekran hala ayni aktivite oldugu icin dongu her turda "yine downgrade" deyip
+  // BASTAN basliyordu — ilerleme kaydi YOKTU. 14 turun hepsi ayni ekranda yaniyordu.
+  // Bu sayac kacinci kez ayni ekranda oldugumuzu tutar; branch tur sayisina gore
+  // GIDEREK daha guclu yontem dener ve sonunda temiz bir tani ile birakir.
+  let downgradeRounds = 0;
   // Up to ~14 observe→act rounds; the common path reaches OTP in 2-3.
   for (let round = 0; round < 14; round++) {
     // A rebooted device can pop a "System UI isn't responding" ANR over the verify
@@ -3553,12 +3562,36 @@ async function registerWhatsApp(job, legacyPayload) {
     // (2) confirm the "Deactivate and switch" dialog via a11y CLICK_TEXT (its buttons
     // aren't in the dump on this GPU-less build; 690,1410 is the coord fallback).
     if (await onDowngradeFriction(foc, txt)) {
-      markPhase('downgrade'); wlog('verify: DowngradeFriction (Business hesap) — devre dışı bırakılıyor');
+      downgradeRounds++;
+      markPhase('downgrade');
+      wlog(`verify: DowngradeFriction (Business hesap) — devre dışı bırakılıyor (tur ${downgradeRounds})`);
+      // ★SPIN GUARD: 4 turda hala bu ekrandaysak tiklama YOLU CALISMIYOR demektir.
+      // Sonsuza dek ayni seyi denemek 14 turu da yakar ve operatore "takildi" gibi
+      // gorunur (CANLI: 5 tur / 108sn hicbir ilerleme yok). Temiz taniyla birak —
+      // yanlis bir OTP_WAIT'ten cok daha iyi.
+      if (downgradeRounds > 4) {
+        wlog('verify: DowngradeFriction ASILI KALDI — "USE +" tıklaması ekranı değiştirmiyor');
+        wallText = 'Business hesabı devre dışı bırakma ekranı geçilemedi — "USE +<numara>" '
+          + 'düğmesi yanıt vermiyor. Numarada eski bir WhatsApp Business hesabı var; '
+          + 'panelden canlı ekrana bakıp düğmeye elle basın ya da bu numarayı atlayın.';
+        break;
+      }
       await snap('downgrade_business');
       await waProgress(curStep, curPct, '⚠ Numarada WhatsApp Business hesabı vardı — devre dışı bırakılıp bu numarayla devam ediliyor…');
       // Step 1: tap "USE +<number>" (id=primary_button, bottom green button).
+      // ★KADEMELI: her turda bir oncekinden DAHA GUCLU bir yol dene. Eskiden her tur
+      // AYNI iki adim atiliyordu; biri calismiyorsa 14 tur boyunca da calismiyordu.
       await h.a11yClickId('primary_button');
-      if (!(await h.tapSynIf('USE +', 'text'))) await h.tapSyn(540, 2064).catch(() => undefined);
+      // Dump'tan gercek dugumu bul (koordinat sabit degil, cihaz cozunurlugune gore kayar).
+      let clicked = await h.tapSynIf('USE +', 'text');
+      if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
+      if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
+      // 3. turdan itibaren vtouch (gercek dokunma) da dene: bazi WhatsApp diyaloglari
+      // sentetik `input tap`'e yanit vermez (vtouch fiziksel dokunma olayi uretir).
+      if (downgradeRounds >= 3) {
+        const n = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
+        if (n) await h.tapNode(n).catch(() => undefined);
+      }
       // ★DOWNGRADE-LOOP FIX (VERIFIED LIVE, mi8 +90 539…): after "USE +", WhatsApp takes ONE
       // of TWO paths depending on build/number:
       //   (A) a confirm DIALOG "Deactivate your Business account? … Deactivate and switch"
@@ -8488,7 +8521,13 @@ async function provisionDevice(job) {
     // ★ Adim-timeout: bir adim asiri uzun surerse (takilma) FAILED bildir — modal sonsuza
     // "calisiyor" kalmasin. infra agir (userdata klon ~4GB) → 6dk; digerleri → 150s.
     // boot: DHCP'ye gercek sans vermek icin (DNS ancak DHCP ile gelir) 150s -> 240s.
-    const stepTimeoutMs = (key === 'infra') ? 6 * 60 * 1000 : (key === 'boot' ? 240 * 1000 : 150 * 1000);
+    //
+    // ★2026-08-04 boot 240s → 360s. CANLI: eszamanli kurulumda DHCP fazi 114s surdu
+    // (saglikli cihazda 25s) ve geri kalan butce ADB yetkilendirmesine YETMEDEN sinir
+    // doldu → mi78/mi80 FAILED. Cihazlar aslinda saglikliydi, sadece gec basladilar.
+    // Asil duzeltme eszamanliligi 4→2 dusurmek (MAX_CONCURRENT_PROVISIONS); bu ise
+    // ikinci emniyet: DHCP yine gecikirse kurulum HAKSIZ yere kesilmesin.
+    const stepTimeoutMs = (key === 'infra') ? 6 * 60 * 1000 : (key === 'boot' ? 360 * 1000 : 150 * 1000);
     try {
       return await Promise.race([
         fn(),
@@ -9076,7 +9115,13 @@ async function provisionDevice(job) {
     await sh('ime set com.android.adbkeyboard/.AdbIME');
     await sh('wm size 1080x2400');
     await sh('wm density 421');
-    await sh('pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService');
+    // ★2026-08-04: bu OPSIYONEL bir optimizasyon (GMS'in arka plan bildirim servisini
+    // kapatir). Bircok GApps imajinda bu bilesen HIC YOK → `pm disable` "Unknown
+    // component" ile doner ve `sh()` her kurulumda bir uyari basardi (LOGDA 209 KEZ).
+    // Kurulumu etkilemiyor (hatayi alan cihazlarin hepsi COMPLETED) — bu yuzden
+    // yalnizca BU komutun hatasi sessizce yutuluyor; digerlerinin uyarisi KORUNUYOR.
+    await adb(serial, ['shell', 'pm disable com.google.android.gms/.chimera.PersistentDirectBootAwareApiService'])
+      .catch(() => undefined);
     // Verify a11y actually stuck (ADB is required for this write to land).
     // NEVER throw here — a verification read failing must not fail the whole
     // provision (the device is already usable; automation falls back to tap).
@@ -11125,7 +11170,20 @@ const MAX_CONCURRENT_JOBS = Number(process.env.FLEET_MAX_CONCURRENT_JOBS || 24);
 // booted at once). Cap concurrent provisions SEPARATELY from the global job cap so a
 // batch of 10 doesn't boot all at once, while light jobs (send/read) still run up to
 // MAX_CONCURRENT_JOBS. Staggered boot = fast AND stable. Override via env.
-const MAX_CONCURRENT_PROVISIONS = Number(process.env.FLEET_MAX_CONCURRENT_PROVISIONS || 4);
+//
+// ★2026-08-04: 4 → 2. CANLI ÖLÇÜM (operatör 4 cihazı aynı anda kurdu):
+//   tek tek : mi76 108s ✅ · mi77 109s ✅
+//   4'lü    : mi79 273s ✅ · mi81 288s ✅ · mi78 FAILED · mi80 FAILED  → %50 KAYIP
+// Darboğaz CPU DEĞİL (idle %80, load 4-8/80 çekirdek) — DHCP ve disk:
+//   • infra: her cihaz ~4GB userdata klonlar; 4 paralelde mi78'in bu adımı 6 DAKİKA
+//     sürdü (tek başına ~40s).
+//   • boot : 4 cihaz aynı anda DHCP isteyince lease gecikiyor. mi78/mi80 IP'yi
+//     9 re-kick'te alamayıp 91s'de statik fallback'e düştü; DHCP fazı 114s sürdü
+//     (sağlıklı mi79'da 25s) ve kalan bütçe ADB yetkilendirmesine yetmeden
+//     240s'lik boot sınırı doldu.
+// Sınırı büyütmek yerine eşzamanlılığı düşürmek doğrusu: 2'şerli kurulumda hem
+// hiçbiri kaybedilmiyor hem cihaz başına süre ~110s'de kalıyor (4'lüde 273-400s+).
+const MAX_CONCURRENT_PROVISIONS = Number(process.env.FLEET_MAX_CONCURRENT_PROVISIONS || 2);
 const _CPU_COUNT = (() => { try { return osCpus().length || 1; } catch { return 1; } })();
 // ★2026-07-24: CPU-IDLE-AWARE boot gate (replaces the old load-average gate).
 // WHY: a 5-agent deep analysis proved load-average is a LIE on GPU-less Waydroid — 29

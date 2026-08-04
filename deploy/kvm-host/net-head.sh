@@ -12,7 +12,20 @@ i=0; while ! mkdir "$LOCKD" 2>/dev/null; do i=$((i+1)); [ $i -gt 50 ] && break; 
 trap 'rmdir "$LOCKD" 2>/dev/null' EXIT
 
 EXIST=$(awk -v n="$INSTANCE" '$1==n{print $2; exit}' "$MAP")
-if [ -n "$EXIST" ]; then echo "$EXIST"; exit 0; fi
+if [ -n "$EXIST" ]; then
+  # ★2026-08-04 MUKERRER-KORUMASI BURADA DA GEREKLI. 30 Tem'de eklenen koruma
+  # (asagida, satir ~31) YALNIZCA yeni subnet atanan yolda calisiyordu; instance
+  # haritada ZATEN varsa akis burada erken cikiyor ve mukerrer satir HIC
+  # temizlenmiyordu. CANLI OLARAK YASANDI (mi19): haritada "mi19 63" IKI KEZ
+  # vardi, `awk '$2==s'` taramasi subnet 63'u dolu sayiyordu ve `grep -w mi19 |
+  # awk '{print $2}'` okuyan betikler IKI DEGER birden aliyordu.
+  # Bu instance'in FAZLA satirlarini birak-ilkini-tut mantigiyla temizle.
+  if [ "$(grep -cE "^${INSTANCE} " "$MAP" 2>/dev/null)" -gt 1 ]; then
+    awk -v n="$INSTANCE" '$1==n{if(seen++)next} {print}' "$MAP" > "$MAP.tmp" 2>/dev/null \
+      && mv "$MAP.tmp" "$MAP"
+  fi
+  echo "$EXIST"; exit 0
+fi
 
 S=2
 while [ "$S" -le 239 ]; do

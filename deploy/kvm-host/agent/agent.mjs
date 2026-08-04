@@ -3571,10 +3571,23 @@ async function registerWhatsApp(job, legacyPayload) {
       // yanlis bir OTP_WAIT'ten cok daha iyi.
       if (downgradeRounds > 4) {
         wlog('verify: DowngradeFriction ASILI KALDI — "USE +" tıklaması ekranı değiştirmiyor');
-        wallText = 'Business hesabı devre dışı bırakma ekranı geçilemedi — "USE +<numara>" '
-          + 'düğmesi yanıt vermiyor. Numarada eski bir WhatsApp Business hesabı var; '
-          + 'panelden canlı ekrana bakıp düğmeye elle basın ya da bu numarayı atlayın.';
-        break;
+        await snap('downgrade_stuck');
+        // ★`wallText` KULLANILMAZ. Sebep: wallText "WhatsApp bizi reddetti" yolunu
+        // tetikler; metin BAN/APK/COK_DENEME desenlerine uymadigi icin `RED` sinifina
+        // duser ve operatore "WhatsApp kaydi reddetti, 1 SAAT BEKLEYIN" (waitSeconds
+        // 3600) gosterilir. Bu YANLIS YONLENDIRME olurdu: WhatsApp reddetmedi, bizim
+        // tiklamamiz gecmedi — beklemenin hicbir faydasi yok. Kendi terminal sonucumuzla
+        // donuyoruz ki panel dogru aksiyonu gostersin.
+        return done('downgrade_stuck', {
+          status: 'DOWNGRADE_STUCK',
+          note: '⚠️ Numarada eski bir WhatsApp BUSINESS hesabı var. "Business hesabını '
+            + 'devre dışı bırak" ekranındaki "USE +<numara>" düğmesi otomatik tıklamaya '
+            + 'yanıt vermedi (5 deneme). WhatsApp kaydı REDDETMEDİ — numara sağlam.',
+          action: 'Panelden canlı ekranı açıp "USE +<numara>" düğmesine ELLE basın; kayıt '
+            + 'kaldığı yerden devam eder. Ya da bu numarayı atlayıp yenisiyle devam edin.',
+          resumable: true,   // numara YANMADI
+          // waitSeconds YOK — beklemek bu sorunu çözmez.
+        });
       }
       await snap('downgrade_business');
       await waProgress(curStep, curPct, '⚠ Numarada WhatsApp Business hesabı vardı — devre dışı bırakılıp bu numarayla devam ediliyor…');

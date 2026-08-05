@@ -57,13 +57,48 @@ notify() { # kind instance detail fixed
 #   3) alarm            → ikisi de olmazsa; filo eşiği (3+) aşılırsa TEK özet bildirim
 
 # Upstream'i HOST'tan dene: bu ülke, bu hesapla gerçekten çıkabiliyor mu?
-# 301/200 = havuz sağlıklı. 502 = o ülke havuzu ölü.
+#
+# ★2026-08-05 BU TEST YALAN SÖYLÜYORDU (canlı: mi46, 228 restart / 258 ZOMBIE).
+# Eski hâli `http://1.1.1.1` (düz IP, düz HTTP) çekiyordu. Bu istek proxy'nin
+# ÇIKIŞ havuzunu gerçekten kullanmıyor — upstream düz-IP'ye 301 döndürüp testi
+# GEÇİRİYOR, ama aynı kombinasyonla gerçek (HTTPS + isim çözümlemeli) trafik
+# ÖLÜ. ÖLÇÜLDÜ: residential+TR → 1.1.1.1 testi geçer, ipinfo.io HTTPS = 000.
+# (28 Tem'deki "DNS'siz cihaz TCP 301 döner ONLINE görünür" tuzağının aynısı.)
+#
+# Sonuç: script "bu hesap TR veriyor" sanıp config'i EZİYOR, cihaz çıkamıyor,
+# bir sonraki turda yine deniyor → sonsuz döngü + operatörün elle düzeltmesi de
+# 11 saniye içinde geri alınıyordu.
+#
+# Artık HTTPS + isim çözümlemesi gerektiren gerçek bir uç nokta kullanıyoruz:
+# CONNECT tüneli kurulamıyorsa (000/403/502) havuz gerçekten ölüdür.
 upstream_ok() { # user pass port cc sessid
   local u="$1" p="$2" port="$3" cc="$4" sid="$5" code
   code=$(timeout 20 curl -s -o /dev/null -w '%{http_code}' \
     -x "http://${u}-country-${cc}-sessid-${sid}-sesstime-30:${p}@${H}:${port}" \
-    http://1.1.1.1 2>/dev/null)
-  case "$code" in 200|301|302) return 0 ;; *) return 1 ;; esac
+    https://ipinfo.io/json 2>/dev/null)
+  case "$code" in 200) return 0 ;; *) return 1 ;; esac
+}
+
+# ★2026-08-05 ÜLKE↔PORT UYUMU. thordata'da iki ayrı hesap var ve ülke havuzları
+# ÖRTÜŞMÜYOR: TR yalnızca mobile(9999) havuzunda, AL/US/GB residential(5555)'te
+# (29 Tem'de ölçüldü: residential country-TR → 502). Bir ülkeyi YANLIŞ porttan
+# istemek KALICI olarak başarısızdır — sessid rotasyonu da hesap değiştirme de
+# bunu düzeltemez, çünkü sorun oturumda değil havuzda.
+#
+# mi46 tam bu duruma düşmüştü: TR isterken residential(5555)'e bağlıydı.
+# Bu yüzden kurtarma denemeden ÖNCE eşleşmeyi doğruluyoruz.
+cc_port_ok() { # cc port
+  local cc="$1" port="$2"
+  if is_mobile_cc "$cc"; then [ "$port" = "$PORT_MOB" ]; else [ "$port" = "$PORT_RES" ]; fi
+}
+
+# Bir instance'ın redsocks config'inde YAZILI upstream portu (5555/9999).
+# `local_port` de "port" ile eşleştiği için son eşleşmeyi alıyoruz — upstream
+# port satırı config'te local_port'tan SONRA gelir.
+inst_upstream_port() { # inst
+  local f="/etc/redsocks-inst-$1.conf"
+  [ -f "$f" ] || return 1
+  grep -E '^[[:space:]]*port[[:space:]]*=' "$f" 2>/dev/null | grep -oE '[0-9]+' | tail -1
 }
 
 # wd-proxy.sh'ı ÖZEL bir sessid ile çağır. wd-proxy login'de zaten "-sessid-" varsa
@@ -175,7 +210,15 @@ while IFS='|' read -r inst meta_cc phone; do
   # ADB otomatik bağlanmaz (KANITLANDI: recovery sonrası cihazlar 'device' değil ta ki
   # 'adb connect' yapılana dek). Bu, boot-eden cihazın gereksiz zombie-restart'ını önler.
   "$ADB" connect "$addr" >/dev/null 2>&1 || true
-  if ! timeout 12 "$ADB" -s "$addr" shell 'echo ok' </dev/null 2>/dev/null | grep -q ok; then
+  # Tek ADB yoklaması — sonucu hem sağlık kontrolü hem sayaç sıfırlama için kullan
+  # (ikinci bir `adb shell` çağrısı 100 cihaz × her tur = gereksiz yük).
+  if timeout 12 "$ADB" -s "$addr" shell 'echo ok' </dev/null 2>/dev/null | grep -q ok; then
+    _adb_up=1
+    rm -f "/var/lib/wd-health/zfail-$inst" 2>/dev/null || true   # sağlıklı → sayacı temizle
+  else
+    _adb_up=0
+  fi
+  if [ "$_adb_up" = "0" ]; then
     "$ADB" disconnect "$addr" >/dev/null 2>&1 || true
     "$ADB" connect "$addr" >/dev/null 2>&1 || true
     sleep 2
@@ -183,6 +226,9 @@ while IFS='|' read -r inst meta_cc phone; do
       log "🔄 $inst: erişilemiyordu → adb reconnect BAŞARILI"
       notify AUTO_RECONNECT "$inst" "Cihaz ADB'den erişilemiyordu, otomatik yeniden baglandi" true
       RECONN=$((RECONN+1))
+      # ★Cihaz geri geldi → zombie-restart sayacını sıfırla (aşağıdaki DEGRADED
+      # kilidini kalıcı hâle getirmemek için ŞART).
+      rm -f "/var/lib/wd-health/zfail-$inst" 2>/dev/null || true
     else
       # ★ZOMBIE-TESPİT + INSTANCE-RESTART: adb reconnect YETMEDİ. Uzun-çalışan Waydroid
       # instance'ları zamanla İÇERİDEN çöküyor (Android donuyor: ADB-daemon ölü + ping
@@ -217,7 +263,34 @@ while IFS='|' read -r inst meta_cc phone; do
           log "⏸ $inst: zombie ama host yükü yüksek (load=$_load1 ≥ $_load_max) → restart ERTELENDİ (sonraki tur)"
           continue
         fi
-        log "🧟 $inst: ADB reconnect başarısız + host-süreç ayakta = ZOMBIE → runtime temizlenip yeniden başlatılıyor"
+
+        # ★2026-08-05 ARDIŞIK-BAŞARISIZLIK LİMİTİ (mi46: 228 restart / 258 ZOMBIE).
+        # Zombie-restart, ALTTAKİ arıza restart'la düzelebilir cinstense işe yarar.
+        # Kalıcı bir arızada (mi46'da: ülkeye uymayan proxy havuzu) restart hiçbir
+        # şeyi düzeltmez ve script SONSUZA KADAR dener: cihaz online/offline flap
+        # eder, panelde gürültü olur, log tek cihazla şişer (1.1 MB) ve GERÇEKTEN
+        # kurtarılabilir arızalar bu gürültünün içinde kaybolur.
+        # Artık N ardışık başarısız restart'tan sonra pes edip cihazı DEGRADED
+        # işaretliyoruz: TEK bildirim gider, restart durur, operatör bakar.
+        # Sayaç, cihaz ADB'ye geri döndüğünde sıfırlanır (aşağıda, başarı yolunda).
+        ZFAIL_MAX="${WD_ZOMBIE_FAIL_MAX:-6}"
+        ZF_DIR=/var/lib/wd-health; mkdir -p "$ZF_DIR" 2>/dev/null
+        ZF_FILE="$ZF_DIR/zfail-$inst"
+        _zf=$(cat "$ZF_FILE" 2>/dev/null || echo 0)
+        case "$_zf" in ''|*[!0-9]*) _zf=0 ;; esac
+        if [ "$_zf" -ge "$ZFAIL_MAX" ]; then
+          # Zaten pes edilmiş. Gürültü yapmadan geç; bildirim yalnızca EŞİĞE
+          # ULAŞILDIĞI turda bir kez gitti.
+          log "🛑 $inst: $_zf ardışık başarısız zombie-restart → DEGRADED, restart DURDURULDU (elle bakım gerekiyor)"
+          continue
+        fi
+        _zf=$((_zf+1)); echo "$_zf" > "$ZF_FILE" 2>/dev/null
+        if [ "$_zf" -ge "$ZFAIL_MAX" ]; then
+          log "🛑 $inst: $_zf. başarısız zombie-restart → DEGRADED işaretlendi, bundan sonra restart YOK"
+          notify DEVICE_DEGRADED "$inst" "$_zf ardisik zombie-restart sonuc vermedi; otomatik restart durduruldu, elle bakim gerekiyor" false
+        fi
+
+        log "🧟 $inst: ADB reconnect başarısız + host-süreç ayakta = ZOMBIE → runtime temizlenip yeniden başlatılıyor (deneme $_zf/$ZFAIL_MAX)"
         # ★TAM RUNTIME TEMİZLİĞİ ŞART, sonra wd-run. Sadece wd-run.sh çağırmak YETMEZ:
         # bir zombie'de asılı bir lxc-start ve BOZUK DBus soketi kalır; wd-run yeni boot'u
         # başlatsa da container o bozuk runtime'a bağlanamaz ve ~30s sonra kendini durdurur
@@ -314,7 +387,27 @@ while IFS='|' read -r inst meta_cc phone; do
         if is_mobile_cc "$cc"; then CU="$U_MOB"; CP="$P_MOB"; CPORT="$PORT_MOB"; AU="$U_RES"; AP="$P_RES"; APORT="$PORT_RES"
         else                        CU="$U_RES"; CP="$P_RES"; CPORT="$PORT_RES"; AU="$U_MOB"; AP="$P_MOB"; APORT="$PORT_MOB"; fi
         _rec=0
+
+        # ★2026-08-05 ADIM 0 — ÜLKE↔PORT HİZALAMA (mi46'nın 228 restart'ının kökü).
+        # Cihazın config'i ülkesine UYMAYAN porta bağlıysa hiçbir rotasyon işe yaramaz:
+        # o havuzda o ülke YOK. Kurtarma denemeden önce doğru porta çekiyoruz.
+        _curport=$(inst_upstream_port "$inst")
+        if [ -n "$_curport" ] && ! cc_port_ok "$cc" "$_curport"; then
+          log "⚑ $inst: ÜLKE↔PORT UYUMSUZ ($cc ama port=$_curport) → doğru havuza ($CPORT) alınıyor"
+          _sid0="$(echo "$inst$cc" | tr -cd 'A-Za-z0-9')p$(date +%H%M)"
+          if upstream_ok "$CU" "$CP" "$CPORT" "$cc" "$_sid0" \
+             && apply_with_sessid "$inst" "$cc" "$CU" "$CP" "$CPORT" "$_sid0"; then
+            sleep 2
+            if _ip=$(device_exits "$addr"); then
+              log "  ✓ $inst: port hizalamasıyla kurtarıldı (çıkış=$_ip, port=$CPORT)"
+              ACCTFIX=$((ACCTFIX+1)); _rec=1
+              notify PROXY_PORT_REALIGNED "$inst" "$cc yanlis havuzdaydi (port $_curport), $CPORT'a alindi (cikis=$_ip)" true
+            fi
+          fi
+        fi
+
         # ADIM 1: sessid rotasyonu (aynı hesap, yeni oturum).
+        if [ "$_rec" = "0" ]; then
         _sid="$(echo "$inst$cc" | tr -cd 'A-Za-z0-9')r$(date +%H%M)"
         if upstream_ok "$CU" "$CP" "$CPORT" "$cc" "$_sid"; then
           log "↻ $inst: çıkış ölü → sessid döndürülüyor ($cc, $_sid)"
@@ -328,8 +421,14 @@ while IFS='|' read -r inst meta_cc phone; do
         else
           log "  ⚠ $inst: mevcut hesabın $cc havuzu upstream'de de ÖLÜ (502)"
         fi
+        fi
         # ADIM 2: hesap değiştir — o ülkeyi VEREN diğer hesap var mı?
-        if [ "$_rec" = "0" ] && [ -n "$AU" ] && [ "$AU" != "$CU" ]; then
+        # ★2026-08-05 `cc_port_ok` GUARD'I: eskiden bu adım ülkeyi diğer hesabın
+        # portuna taşıyordu. TR için bu residential(5555) demek = kalıcı ölü havuz.
+        # Canlıda tam bunu yapıyordu: "diğer hesap TR veriyor → port 5555" yazıp
+        # config'i BOZUYOR, sonra kurtaramayıp bozuk hâlde BIRAKIYORDU (geri alma yok).
+        # Artık yalnızca ülkeye UYAN porta geçiş denenir.
+        if [ "$_rec" = "0" ] && [ -n "$AU" ] && [ "$AU" != "$CU" ] && cc_port_ok "$cc" "$APORT"; then
           _sid2="$(echo "$inst$cc" | tr -cd 'A-Za-z0-9')a$(date +%H%M)"
           if upstream_ok "$AU" "$AP" "$APORT" "$cc" "$_sid2"; then
             log "⇄ $inst: diğer hesap $cc veriyor → hesap değiştiriliyor (port $APORT)"

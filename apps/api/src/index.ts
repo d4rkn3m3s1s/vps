@@ -484,9 +484,25 @@ async function main(): Promise<void> {
     banWaveRunning = true;
     (async () => {
       const since = new Date(Date.now() - 15 * 60 * 1000);
+      // ★2026-08-05 YANLIŞ ALARM DÜZELTMESİ. Sorgu yalnızca `updatedAt`e bakıyordu:
+      // otonom sağlık taraması ESKİ bir hesabın banını YENİ FARK ettiğinde `updatedAt`
+      // güncelleniyor ve alarm bunu "yeni ban dalgası" sanıyordu.
+      // CANLI (17:22): "15 dakikada 4 hesap banlandı" alarmı düştü — ama 4 hesabın
+      // kayıt tarihleri 21 Tem / 29 Tem / 4 Ağu idi ve O GÜN kaydedilen hesaplardan
+      // banlanan SIFIRDI. Yani sistemik bir sorun yoktu; tarama birikmiş eski hasarı
+      // keşfediyordu. Bu alarm "yeni kayıtları DURDURUN" diyor — yanlış tetiklenmesi
+      // operatörü boş yere durdurur.
+      // Artık yalnızca SON 24 SAATTE OLUŞTURULMUŞ hesaplar sayılıyor: gerçek bir
+      // dalga (havuz kirlenmesi / ülke flag'i) taze hesapları vurur.
+      const freshSince = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const recent = await prisma.generatedAccount.groupBy({
         by: ['workspaceId'],
-        where: { platform: 'whatsapp', status: { in: ['BANNED', 'RESTRICTED'] }, updatedAt: { gte: since } },
+        where: {
+          platform: 'whatsapp',
+          status: { in: ['BANNED', 'RESTRICTED'] },
+          updatedAt: { gte: since },
+          createdAt: { gte: freshSince }
+        },
         _count: { _all: true }
       }).catch(() => [] as Array<{ workspaceId: string | null; _count: { _all: number } }>);
       const THRESHOLD = Number(process.env.FLEET_BAN_WAVE_THRESHOLD || 3);

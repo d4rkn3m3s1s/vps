@@ -298,6 +298,37 @@ export async function abandonHostClaimedJobs(hostId: string): Promise<{ requeued
       data: { status: 'FAILED', error: 'Agent yeniden başladı — yarım kalan işlem tekrar oynatılamaz (abandoned)', finishedAt: new Date(), claimedByHostId: null }
     });
     failed = f.count;
+
+    // ★2026-08-05 ÖKSÜZ KAYIT KURTARMA (canlı: wa-9eum / +905343621548).
+    // Bir REGISTER_WHATSAPP job'ı yarıda düşerse hesap satırı 'REGISTERING'de KALIYORDU
+    // ve onu toparlayan HİÇBİR mekanizma yoktu — hesap sonsuza kadar "kaydediliyor"
+    // görünüyordu. Oysa kayıt CİHAZDA tamamlanmış olabilir: canlı vakada agent restart
+    // job'ı öldürdü ama WhatsApp HomeActivity'deydi ve `registration_jid` numarayı
+    // doğruluyordu — yani hesap ÇALIŞIYORDU, panel sadece bilmiyordu.
+    // Burada hesabı ACTIVE yapMIYORUZ (cihaz kanıtı olmadan hüküm vermek yanlış olur);
+    // bunun yerine otonom sağlık taramasının onu ele almasını sağlamak için durumu
+    // 'AWAITING_OTP'ye çekiyoruz — bu, panelde "OTP bekleniyor + Sıfırla/Tekrar dene"
+    // aksiyonlarını açan ve reaper'ın kapsadığı DURUM. Böylece hesap ne sessizce
+    // kaybolur ne de yanlış damgalanır.
+    const abandonedRegisters = orphans.filter((j) => j.type === 'REGISTER_WHATSAPP').map((j) => j.id);
+    if (abandonedRegisters.length) {
+      const rows = await prisma.job.findMany({
+        where: { id: { in: abandonedRegisters } },
+        select: { deviceId: true }
+      });
+      const deviceIds = rows.map((r) => r.deviceId).filter((d): d is string => Boolean(d));
+      if (deviceIds.length) {
+        const rec = await prisma.generatedAccount.updateMany({
+          where: { deviceId: { in: deviceIds }, platform: 'whatsapp', status: 'REGISTERING' },
+          data: { status: 'AWAITING_OTP' }
+        });
+        if (rec.count) {
+          logger.warn('agent orphan-recovery: yarım kalan kayıt hesapları AWAITING_OTP’ye alındı', {
+            hostId, count: rec.count
+          });
+        }
+      }
+    }
   }
   logger.info('agent orphan-recovery: released claimed RUNNING jobs', { hostId, requeued, failed });
   return { requeued, failed };

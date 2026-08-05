@@ -1085,6 +1085,18 @@ async function vtapReal(serial, ax, ay) {
     await adbSu(serial, `chmod 666 ${VT_FIFO}`);
     await adb(serial, ['shell', 'echo', String(vx), String(vy), '>', VT_FIFO]).catch(() => undefined);
   }
+  // ★★★2026-08-05 FIFO YOLU SESSİZCE ÇALIŞMIYOR — CANLI A/B ÖLÇÜMÜ (mi113).
+  // Aynı cihazda, aynı koordinatta (540,2064), DowngradeFriction ekranında:
+  //   • `su -c "/data/local/tmp/vtouch tap 540 2064"`  → "tap sent", ekran DEĞİŞTİ ✓
+  //   • `echo 540 2064 > /data/local/tmp/vt.fifo`      → exit 0 ama HİÇBİR ŞEY OLMADI ✗
+  // FIFO var ve yazılabilir (prw-rw-rw-), `echo` hata da vermiyor — bu yüzden kod
+  // `return true` deyip başarılı sanıyordu ve tapReal'in sentetik fallback'i BİLE
+  // devreye girmiyordu: her "gerçek dokunma" SESSİZ NO-OP'tu. Business downgrade'in
+  // 5 tur boyunca aşılamamasının (DOWNGRADE_STUCK) asıl sebebi buydu.
+  // Bu yüzden FIFO yazımından SONRA binary'yi de doğrudan çağırıyoruz: binary yoksa
+  // veya su reddederse sessizce geçilir, FIFO zaten denenmiş olur — yani bu ek çağrı
+  // hiçbir şeyi bozmaz, yalnızca FIFO'nun yutulduğu cihazlarda dokunmayı KURTARIR.
+  await adbSu(serial, `/data/local/tmp/vtouch tap ${vx} ${vy}`).catch(() => undefined);
   return true;
 }
 
@@ -3628,32 +3640,49 @@ async function registerWhatsApp(job, legacyPayload) {
       // DowngradeFriction activity, capped ~3s. Only act on the dialog if it actually
       // appeared; if we already left DowngradeFriction, just continue (the loop's onOtp/
       // number branch handles the next screen) — no wasted blind tap, no re-detect spin.
+      // ★★★2026-08-05 CANLI ÇÖZÜLDÜ (mi107, +90 535 224 81 39) — TAM REÇETE.
+      // Operatörle birlikte adım adım ölçüldü:
+      //   1. `input tap 540 2064` (SENTETİK) → ekran DEĞİŞMEDİ. Sentetik tap bu
+      //      düğmeye GEÇMİYOR. Eski kodun tek yaptığı buydu → 5 tur spin.
+      //   2. `vtouch tap 540 2064` (GERÇEK DOKUNMA) → "USE +" BASILDI ve onay
+      //      diyaloğu AÇILDI ("Deactivate your Business account? / Cancel /
+      //      Deactivate and switch").
+      //   3. Ama diyalog düğmeleri uiautomator dump'ında YOK → `h.seen()` göremiyor,
+      //      `sawDialog` false kalıyor, kimse onaylamıyor → ekran 12sn+ SABİT kaldı
+      //      (6 ardışık ss ile doğrulandı) → tur yeniden başlıyor.
+      //   4. `vtouch tap 691 1409` ("Deactivate and switch") → diyalog ONAYLANDI,
+      //      DowngradeFriction AŞILDI.
+      // Yani gerekli olan: HER İKİ tıklama da GERÇEK DOKUNMA + diyaloğu dump yerine
+      // EKRAN METNİNDEN tespit etmek.
       let sawDialog = false, leftDowngrade = false;
       for (let w = 0; w < 6; w++) {
         await h.sleep(500);
-        if (await h.seen('Deactivate and switch', 250)) { sawDialog = true; break; }
+        // Dump'a GÜVENME: diyalog düğmeleri dump'a düşmüyor. Ekran metni (screenText)
+        // diyaloğun BAŞLIĞINI görüyor — tespiti ona bağlıyoruz.
+        const scr = await h.screenText().catch(() => '');
+        if (/deactivate your business account|deactivate and switch/i.test(scr)) { sawDialog = true; break; }
         if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) { leftDowngrade = true; break; }
       }
-      // ★2026-08-05 Operatör ss'inde onay diyaloğu ("Deactivate and switch") GÖRÜNÜYORDU,
-      // ama canlı dump'ta O EKRANDA öyle bir düğüm YOKTU — yani diyalog bazı turlarda
-      // açılıyor, bazılarında hiç açılmıyor (yukarıdaki (A)/(B) yol ayrımı). Dump'ı
-      // göremediğimiz duruma karşı a11y ile körlemesine onaylamayı da deniyoruz:
-      // a11yClickText erişilebilirlik ağacında arar, diyalog yoksa hiçbir şey yapmaz.
-      if (!sawDialog && !leftDowngrade) {
-        await h.a11yClickText('Deactivate and switch').catch(() => undefined);
-        await h.sleep(600);
+      if (sawDialog) {
+        // ★2026-08-05 ONAY: "Deactivate and switch" — GERÇEK DOKUNMA ile.
+        // Düğme dump'ta YOK, dolayısıyla düğüm bulup tıklamak imkânsız; a11y ve sentetik
+        // tap de bu diyalogda çalışmadı (canlıda ölçüldü: ekran 12sn+ sabit kaldı).
+        // ÇALIŞAN: ölçülen koordinata vtouch. 1080×2400'de düğme merkezi (691,1409);
+        // oransal yazıyoruz ki başka çözünürlükte de tutsun.
+        await snap('downgrade_confirm');
+        const { sw: DW, sh: DH } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
+        await h.tapXY(Math.round(DW * 0.640), Math.round(DH * 0.587)).catch(() => undefined);  // vtouch
+        await h.sleep(800);
+        // Tutmadıysa a11y + sentetik yolları da dene (bazı sürümlerde diyalog dump'a düşer).
+        if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
+          await h.a11yClickText('Deactivate and switch').catch(() => undefined);
+          if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
+        }
+        for (let w = 0; w < 8; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
         if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {
           leftDowngrade = true;
-          wlog('verify: onay diyaloğu a11y ile onaylandı → downgrade aşıldı');
+          wlog('verify: "Deactivate and switch" onaylandı → downgrade AŞILDI');
         }
-      }
-      if (sawDialog) {
-        // Path (A): confirm the dialog (its buttons aren't in the GPU-less dump → a11y
-        // CLICK_TEXT is the reliable path; 690,1410 is the measured coord fallback).
-        await snap('downgrade_confirm');
-        await h.a11yClickText('Deactivate and switch');
-        if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
-        for (let w = 0; w < 6; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
       } else if (!leftDowngrade) {
         // Neither the dialog nor a screen change within ~3s — the "USE +" tap may not have
         // landed. Re-tap once more before looping (better than a silent 28s re-detect).

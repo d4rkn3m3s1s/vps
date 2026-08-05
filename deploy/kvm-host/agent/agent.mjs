@@ -3583,7 +3583,17 @@ async function registerWhatsApp(job, legacyPayload) {
       // Sonsuza dek ayni seyi denemek 14 turu da yakar ve operatore "takildi" gibi
       // gorunur (CANLI: 5 tur / 108sn hicbir ilerleme yok). Temiz taniyla birak —
       // yanlis bir OTP_WAIT'ten cok daha iyi.
-      if (downgradeRounds > 4) {
+      // ★2026-08-05 LİMİT 5→9. ÖLÇÜM (bugün, 42 downgrade vakası):
+      //   tur 1: 42 ulaştı, 0 aştı   ← HİÇBİR kayıt ilk turda geçmiyor
+      //   tur 2: 42 ulaştı, 17 aştı
+      //   tur 3: 25 ulaştı, 10 aştı
+      //   tur 4: 15 ulaştı,  4 aştı
+      //   tur 5: 11 ulaştı,  0 aştı  ← eski limit burada kesiyordu → 11'i de yandı
+      // Yani tıklama KARARSIZ (flaky): aynı numara aynı kodla 3 denemede 2 kez geçti,
+      // 1 kez takıldı (canlı: +905352248139 — 17:46 ✅, 17:50 ✅, 17:56 ❌).
+      // Eğri hâlâ düşerek devam ediyordu; 5 tur ERKEN kesiyordu. Her tur ~25sn, 9 tur
+      // ≈ 3.5dk — OTP beklemenin (9dk) yanında ucuz, ve numara YANMIYOR.
+      if (downgradeRounds > 8) {
         wlog('verify: DowngradeFriction ASILI KALDI — "USE +" tıklaması ekranı değiştirmiyor');
         await snap('downgrade_stuck');
         // ★`wallText` KULLANILMAZ. Sebep: wallText "WhatsApp bizi reddetti" yolunu

@@ -158,13 +158,23 @@ class ProvisionService {
     const HOT = Number(process.env.FLEET_CPU_HOT || 1.5);
     const hosts = await prisma.host.findMany({
       where: { ...(workspaceId ? { workspaceId } : {}) },
-      select: { id: true, name: true, status: true, loadAvg1m: true, cpuCores: true, runningPhones: true }
+      select: { id: true, name: true, status: true, loadAvg1m: true, cpuCores: true, cpuBusyPct: true, runningPhones: true }
     });
     let hot = false;
     const list = await Promise.all(hosts.map(async (h) => {
-      const sat = typeof h.loadAvg1m === 'number' && typeof h.cpuCores === 'number' && h.cpuCores > 0
-        ? Math.round((h.loadAvg1m / h.cpuCores) * 100) / 100
-        : null;
+      // ★2026-08-05 LOAD'A DEĞİL GERÇEK CPU'YA BAK. Burası `loadAvg1m/cpuCores`
+      // kullanıyordu — 5 Ağu'da alarm tarafında düzeltilen tuzağın AYNISI, bu ikinci
+      // yere uygulanmamış. Waydroid'de load = UYUYAN thread sayısı; 95 instance
+      // (≈100k thread) load'u 150'ye çıkarıyor ama CPU boşta olabiliyor.
+      // CANLI ÖLÇÜM: load 149.85 → panel "%457 doygunluk" diyordu, GERÇEK CPU %61.5.
+      // Panel operatöre "91 boşta cihazı uyut" diye YANLIŞ aksiyon öneriyordu.
+      // Artık agent'ın /proc/stat'tan ölçtüğü `cpuBusyPct` birincil; yoksa load'a
+      // düşeriz (eski davranış) ama o durumda da eşik 2× güvenlik payıyla uygulanır.
+      const sat = typeof h.cpuBusyPct === 'number'
+        ? Math.round(h.cpuBusyPct) / 100
+        : (typeof h.loadAvg1m === 'number' && typeof h.cpuCores === 'number' && h.cpuCores > 0
+          ? Math.round((h.loadAvg1m / h.cpuCores) * 100) / 200   // load fallback: 2× pay
+          : null);
       const isHot = h.status === 'ONLINE' && sat !== null && sat >= HOT;
       if (isHot) hot = true;
       // Sleepable devices on this host: only fetch them for a hot host (the

@@ -639,6 +639,19 @@ export class BatchService {
     workspaceId: string | undefined,
     input: { deviceId: string; to?: string | undefined; from?: string | undefined }
   ) {
+    // ★2026-08-05 ÖZELLİK KAPATILDI (operatör talebi, canlı gözlem).
+    // Profil çekme dakikada bir, farklı cihaz/numara için tetikleniyordu (kaynak:
+    // dış entegrasyon → POST /public/v1/whatsapp/profile). Her çağrı bir on-device job
+    // açar: WhatsApp'ı açıp sohbete girer, ADB'yi meşgul eder ve aynı anda süren KAYIT
+    // job'larıyla YARIŞIR (asılı job'ın bilinen sebebi) — ayrıca bildirim akışını
+    // dolduruyordu. Varsayılan KAPALI; gerekirse FLEET_WA_PROFILE=1 ile açılır.
+    if (process.env.FLEET_WA_PROFILE !== '1') {
+      throw new AppError(
+        'Profil çekme özelliği kapalı (FLEET_WA_PROFILE=1 ile açılır)',
+        403,
+        'PROFILE_DISABLED'
+      );
+    }
     await assertDeviceReady(input.deviceId, workspaceId);
     const to = (input.to || '').replace(/[^\d]/g, '');
     if (!to && !input.from) throw new AppError('to veya from gerekli', 400, 'MISSING_TARGET');

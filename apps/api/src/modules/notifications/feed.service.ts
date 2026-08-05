@@ -122,6 +122,21 @@ const NOISY_JOB_TYPES = new Set([
   'DEVICE_HEARTBEAT'
 ]);
 
+// ★2026-08-05 SESSİZ-BAŞARI kümesi. Bunlar operatörün ELLE başlatmadığı, arka planda
+// kendiliğinden dönen rutin işler. BAŞARILI sonuçları hiçbir bilgi taşımıyor ama feed'i
+// dolduruyordu — canlı: operatör ekranında "Hesap sağlığı tamamlandı" ve "WHATSAPP_PROFILE
+// tamamlandı" satırları saniyeler arayla art arda akıyor, aralarındaki GERÇEK olaylar
+// (🚫 BANLANDI, ⚠️ KISITLANDI) kayboluyordu.
+// Kural: bu tiplerde YALNIZCA kötü sonuç bildirilir (ban/kısıt/başarısızlık). Böylece
+// sinyal korunur, gürültü gider. NOISY_JOB_TYPES'tan farkı: orada tip TAMAMEN susturulur.
+const QUIET_WHEN_OK_JOB_TYPES = new Set([
+  'WHATSAPP_ACCOUNT_HEALTH',   // otonom sağlık taraması
+  'WHATSAPP_PROFILE',          // profil okuma — canlıda saniyeler arayla akıyordu
+  'WHATSAPP_SET_NAME',         // profil ismi — toplu akışta sürekli tetikleniyor
+  'WHATSAPP_SET_AVATAR',
+  'WHATSAPP_MYNUMBER'          // numara okuma — tamamen otomatik
+]);
+
 export function shouldNotifyForJob(type: string): boolean {
   return !NOISY_JOB_TYPES.has(type);
 }
@@ -155,6 +170,9 @@ export function jobNotification(job: {
     // "tamamlandı" göstermemesi için bunu ayırt ediyoruz.
     const rstatus = (job.result as { status?: string } | null)?.status;
     const bad = rstatus && !['SENT', 'OK', 'DONE'].includes(rstatus);
+    // ★2026-08-05 Rutin arka-plan işlerinin BAŞARILI sonucunu bildirme (bkz.
+    // QUIET_WHEN_OK_JOB_TYPES). Kötü sonuç (ban/kısıt/NO_CHAT…) her zaman geçer.
+    if (!bad && QUIET_WHEN_OK_JOB_TYPES.has(job.type)) return null;
     return {
       kind: bad ? 'err' : 'ok',
       title: bad ? `${label} — sonuç: ${rstatus}` : `${label} tamamlandı`,

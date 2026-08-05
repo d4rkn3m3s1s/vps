@@ -3594,16 +3594,27 @@ async function registerWhatsApp(job, legacyPayload) {
       // Step 1: tap "USE +<number>" (id=primary_button, bottom green button).
       // ★KADEMELI: her turda bir oncekinden DAHA GUCLU bir yol dene. Eskiden her tur
       // AYNI iki adim atiliyordu; biri calismiyorsa 14 tur boyunca da calismiyordu.
-      await h.a11yClickId('primary_button');
-      // Dump'tan gercek dugumu bul (koordinat sabit degil, cihaz cozunurlugune gore kayar).
-      let clicked = await h.tapSynIf('USE +', 'text');
-      if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
-      if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
-      // 3. turdan itibaren vtouch (gercek dokunma) da dene: bazi WhatsApp diyaloglari
-      // sentetik `input tap`'e yanit vermez (vtouch fiziksel dokunma olayi uretir).
-      if (downgradeRounds >= 3) {
-        const n = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
-        if (n) await h.tapNode(n).catch(() => undefined);
+      // ★2026-08-05 CANLI ÖLÇÜM (mi115, +90 535 012 41 85) — teşhis DÜZELTİLDİ.
+      // Önce "onay diyaloğu açılıyor ama dump'ta görünmüyor" sandım; canlı dump bunu
+      // ÇÜRÜTTÜ. Gerçek durum: DowngradeFriction ekranında SADECE iki tıklanabilir
+      // düğüm var — `primary_button` ("USE +90…") ve `secondary_button` — yani onay
+      // diyaloğu HİÇ AÇILMIYOR. Demek ki "USE +" tıklaması ekrana HİÇ GEÇMİYOR.
+      // Düğüm `clickable=true`, bounds=[63,2001][1017,2127] (merkez 540,2064) ve agent
+      // tam oraya `input tap` atıyordu → yani SENTETİK tap bu düğmede çalışmıyor.
+      // (Bilinen tuzak: WhatsApp'ın bazı ekranları sentetik `input tap`'i yok sayar;
+      // vtouch FİZİKSEL dokunma olayı üretir — [[waydroid-uinput-real-touch]].)
+      // Eskiden vtouch YALNIZCA 3. turdan sonra deneniyordu; o zamana kadar 3 tur ve
+      // ~80sn boşa gidiyor, çoğu numara 5 turu doldurup DOWNGRADE_STUCK'a düşüyordu.
+      // Artık İLK turdan itibaren GERÇEK DOKUNMA önce deneniyor.
+      const pbNode = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
+      if (pbNode) await h.tapNode(pbNode).catch(() => undefined);   // vtouch (gerçek dokunma) — ÖNCE
+      await h.sleep(700);
+      // Ekran değiştiyse sentetik yolları hiç deneme (gereksiz tıklama = yanlış ekrana risk).
+      if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
+        await h.a11yClickId('primary_button');
+        let clicked = await h.tapSynIf('USE +', 'text');
+        if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
+        if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
       }
       // ★DOWNGRADE-LOOP FIX (VERIFIED LIVE, mi8 +90 539…): after "USE +", WhatsApp takes ONE
       // of TWO paths depending on build/number:
@@ -3623,6 +3634,19 @@ async function registerWhatsApp(job, legacyPayload) {
         if (await h.seen('Deactivate and switch', 250)) { sawDialog = true; break; }
         if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) { leftDowngrade = true; break; }
       }
+      // ★2026-08-05 Operatör ss'inde onay diyaloğu ("Deactivate and switch") GÖRÜNÜYORDU,
+      // ama canlı dump'ta O EKRANDA öyle bir düğüm YOKTU — yani diyalog bazı turlarda
+      // açılıyor, bazılarında hiç açılmıyor (yukarıdaki (A)/(B) yol ayrımı). Dump'ı
+      // göremediğimiz duruma karşı a11y ile körlemesine onaylamayı da deniyoruz:
+      // a11yClickText erişilebilirlik ağacında arar, diyalog yoksa hiçbir şey yapmaz.
+      if (!sawDialog && !leftDowngrade) {
+        await h.a11yClickText('Deactivate and switch').catch(() => undefined);
+        await h.sleep(600);
+        if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {
+          leftDowngrade = true;
+          wlog('verify: onay diyaloğu a11y ile onaylandı → downgrade aşıldı');
+        }
+      }
       if (sawDialog) {
         // Path (A): confirm the dialog (its buttons aren't in the GPU-less dump → a11y
         // CLICK_TEXT is the reliable path; 690,1410 is the measured coord fallback).
@@ -3636,6 +3660,19 @@ async function registerWhatsApp(job, legacyPayload) {
         await h.a11yClickId('primary_button');
         await h.tapSyn(540, 2064).catch(() => undefined);
         await h.sleep(1500);
+        // ★2026-08-05 SON ÇARE (3. turdan sonra): görünmeyen diyaloğun "Deactivate and
+        // switch" düğmesine ÖLÇÜLEN koordinattan bas. Operatör ss'inde (1080×2400) düğme
+        // sağ-altta, diyalog gövdesinin alt kenarında: ~(770, 1565). Oransal hesaplıyoruz
+        // ki farklı çözünürlükte de tutsun. Yalnızca hâlâ DowngradeFriction'daysak —
+        // ekran değiştiyse bu tıklama yapılmaz.
+        if (downgradeRounds >= 3 && /DowngradeFriction|downgrade\./i.test(await curFocus())) {
+          const { sw: W, sh: H } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
+          await h.tapSyn(Math.round(W * 0.713), Math.round(H * 0.652)).catch(() => undefined);
+          await h.sleep(1200);
+          if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {
+            wlog('verify: onay diyaloğu ÖLÇÜLEN koordinattan onaylandı → downgrade aşıldı');
+          }
+        }
       }
       // Path (B) (leftDowngrade) falls straight through to continue → the loop re-observes
       // and the number/verify branch takes over.
@@ -10421,9 +10458,13 @@ async function whatsappInboxTick() {
 // tüm filoyu taramak host'u boğar. Bu yüzden turda EN FAZLA `WA_HEALTH_BATCH` cihaz
 // taranır ve her cihaz `WA_HEALTH_MIN_GAP_MS`'den önce tekrar taranmaz (round-robin).
 // Meşgul cihazlar atlanır (job ile ADB yarışı = asılı job'ın bilinen sebebi).
-const WA_HEALTH_MS = Number(process.env.FLEET_WA_HEALTH_MS || 300000);        // 5 dk'da bir tur
+// ★2026-08-05 SIKLIK DÜŞÜRÜLDÜ (operatör geri bildirimi): 5 dk × 2 cihaz canlıda çok
+// agresifti — kayıt akışıyla aynı anda çalışınca hem bildirim akışını doldurdu hem de
+// ADB'de kayıt job'larıyla yarıştı. Ban/kısıt ACİL bir sinyal değil (saatler mertebesinde
+// bir durum), o yüzden 20 dk'da bir tur + cihaz başına 3 saat ara yeterli.
+const WA_HEALTH_MS = Number(process.env.FLEET_WA_HEALTH_MS || 1200000);       // 20 dk'da bir tur
 const WA_HEALTH_BATCH = Number(process.env.FLEET_WA_HEALTH_BATCH || 2);       // tur başına cihaz
-const WA_HEALTH_MIN_GAP_MS = Number(process.env.FLEET_WA_HEALTH_GAP_MS || 3600000); // cihaz başına 1 saat
+const WA_HEALTH_MIN_GAP_MS = Number(process.env.FLEET_WA_HEALTH_GAP_MS || 10800000); // cihaz başına 3 saat
 const WA_HEALTH_ENABLED = process.env.FLEET_WA_HEALTH !== '0';
 const _waHealthLastRun = new Map();   // serial -> timestamp
 let _waHealthRunning = false;

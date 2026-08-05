@@ -5,6 +5,7 @@ import { deviceHub } from '../devices/device.hub';
 import { AppError } from '../../lib/errors';
 import { EXCLUSIVE_JOB_TYPES, type JobPayload, type JobType } from './job.types';
 import { waRegisterService } from '../accounts/wa-register.service';
+import { markDeviceRegistered } from '../accounts/batch.service';
 import { encryptString, sha256 } from '../../lib/crypto';
 import { logger } from '../../lib/logger';
 import { webhooksService } from '../webhooks/webhooks.service';
@@ -326,6 +327,26 @@ export async function abandonHostClaimedJobs(hostId: string): Promise<{ requeued
           logger.warn('agent orphan-recovery: yarım kalan kayıt hesapları AWAITING_OTP’ye alındı', {
             hostId, count: rec.count
           });
+        }
+        // ★2026-08-05 CİHAZ DAMGASI DA KURTARILIR (canlı: wa-9eum).
+        // `markDeviceRegistered` (ad=numara + protected + etiket) YALNIZCA job başarıyla
+        // tamamlanınca çalışıyordu. Job yarıda düşünce hesap ACTIVE olsa bile cihaz
+        // `wa-xxxx` adında, protected=false ve etiketsiz kalıyordu — operatör panelde
+        // "numara ve koruma görünmüyor" diyordu. Daha kötüsü: protected=false bir cihaz
+        // KAZAYLA SİLİNEBİLİR ve numara yanar (protected işareti tam da bunu önlüyor).
+        // Burada YALNIZCA hesabı gerçekten ACTIVE olan cihazları damgalıyoruz — yani
+        // kaydın tamamlandığı kanıtlı olanları.
+        const active = await prisma.generatedAccount.findMany({
+          where: { deviceId: { in: deviceIds }, platform: 'whatsapp', status: 'ACTIVE' },
+          select: { deviceId: true, phoneNumber: true, firstName: true, lastName: true }
+        });
+        for (const a of active) {
+          if (!a.deviceId || !a.phoneNumber) continue;
+          await markDeviceRegistered(
+            a.deviceId,
+            a.phoneNumber,
+            [a.firstName, a.lastName].filter(Boolean).join(' ')
+          ).catch(() => undefined);   // best-effort: kurtarma asıl akışı bozmasın
         }
       }
     }

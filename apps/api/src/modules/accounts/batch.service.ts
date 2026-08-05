@@ -84,7 +84,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function markDeviceRegistered(deviceId: string, phone: string, waName?: string): Promise<void> {
   if (!deviceId) return;
   try {
-    const dev = await prisma.device.findUnique({ where: { id: deviceId }, select: { name: true, tags: true } });
+    const dev = await prisma.device.findUnique({
+      where: { id: deviceId },
+      select: { name: true, tags: true, metadata: true }
+    });
     const digits = String(phone || '').replace(/[^\d]/g, '');
     const desired = digits ? `+${digits}` : '';
     const cur = String(dev?.name ?? '').trim();
@@ -117,6 +120,19 @@ export async function markDeviceRegistered(deviceId: string, phone: string, waNa
       if (!existing.includes(tagFromName)) {
         data.tags = [...new Set([...existing, tagFromName])].slice(0, 20);
       }
+    }
+
+    // ★2026-08-05 `waRegisteredPhone` METADATA'SI DA YAZILIR.
+    // Panel kartındaki YEŞİL WhatsApp numarası rozeti (ProfilesView, "wa-phone-badge")
+    // yalnızca `metadata.waRegisteredPhone` doluyken çıkıyor. Bu yardımcı ad/koruma/etiketi
+    // ayarlıyordu ama o metadata'yı YAZMIYORDU — yani rozet başka bir kod yoluna bağlıydı.
+    // Canlı (wa-9eum): job yarıda düşünce ad+koruma elle düzeltildi ama rozet YİNE çıkmadı,
+    // çünkü metadata boştu ("numara ve koruma görünmüyor"). Damgayı tek yerde tamamlıyoruz.
+    if (desired) {
+      const meta = (dev?.metadata && typeof dev.metadata === 'object' && !Array.isArray(dev.metadata))
+        ? (dev.metadata as Record<string, unknown>)
+        : {};
+      data.metadata = { ...meta, waRegisteredPhone: desired };
     }
 
     await prisma.device.update({ where: { id: deviceId }, data });

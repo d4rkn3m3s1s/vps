@@ -3618,15 +3618,27 @@ async function registerWhatsApp(job, legacyPayload) {
       // Eskiden vtouch YALNIZCA 3. turdan sonra deneniyordu; o zamana kadar 3 tur ve
       // ~80sn boşa gidiyor, çoğu numara 5 turu doldurup DOWNGRADE_STUCK'a düşüyordu.
       // Artık İLK turdan itibaren GERÇEK DOKUNMA önce deneniyor.
-      const pbNode = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
-      if (pbNode) await h.tapNode(pbNode).catch(() => undefined);   // vtouch (gerçek dokunma) — ÖNCE
-      await h.sleep(700);
-      // Ekran değiştiyse sentetik yolları hiç deneme (gereksiz tıklama = yanlış ekrana risk).
+      // ★★★2026-08-05 KUSURSUZ REÇETE — operatörle birlikte boş cihazda (mi108,
+      // +90 535 224 81 39) baştan sona ELLE çalıştırılıp doğrulandı. İKİ ADIM DA a11y:
+      //   1) a11y CLICK id=primary_button          → onay diyaloğu AÇILIR (ss ile görüldü)
+      //   2) a11y CLICK text="Deactivate and switch" → diyalog onaylanır, downgrade AŞILIR
+      //      → PrimaryFlashCallEducationScreen
+      // NEDEN a11y: `input tap` (sentetik) bu düğmeye HİÇ geçmiyor. vtouch ise düğmeye
+      // basıyor AMA koordinat tabanlı olduğu için diyalog açıldıktan sonra ikinci tıklama
+      // ıskalayıp diyaloğu İPTAL edebiliyor (canlıda oldu: WhatsApp kapandı).
+      // a11y erişilebilirlik ağacından tıklar — koordinattan bağımsız, ıskalama YOK.
+      await h.a11yClickId('primary_button');
+      await h.sleep(900);
+      // Yedek: a11y tutmadıysa gerçek dokunma + sentetik (eski yollar korunuyor).
       if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-        await h.a11yClickId('primary_button');
-        let clicked = await h.tapSynIf('USE +', 'text');
-        if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
-        if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
+        const pbNode = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
+        if (pbNode) await h.tapNode(pbNode).catch(() => undefined);   // vtouch
+        await h.sleep(600);
+        if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
+          let clicked = await h.tapSynIf('USE +', 'text');
+          if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
+          if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
+        }
       }
       // ★DOWNGRADE-LOOP FIX (VERIFIED LIVE, mi8 +90 539…): after "USE +", WhatsApp takes ONE
       // of TWO paths depending on build/number:
@@ -3670,13 +3682,18 @@ async function registerWhatsApp(job, legacyPayload) {
         // ÇALIŞAN: ölçülen koordinata vtouch. 1080×2400'de düğme merkezi (691,1409);
         // oransal yazıyoruz ki başka çözünürlükte de tutsun.
         await snap('downgrade_confirm');
-        const { sw: DW, sh: DH } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
-        await h.tapXY(Math.round(DW * 0.640), Math.round(DH * 0.587)).catch(() => undefined);  // vtouch
-        await h.sleep(800);
-        // Tutmadıysa a11y + sentetik yolları da dene (bazı sürümlerde diyalog dump'a düşer).
+        // ★KANITLANMIŞ YOL: a11y CLICK metin ile. Diyalog düğmeleri uiautomator dump'ına
+        // DÜŞMÜYOR (canlıda doğrulandı: dump'ta yalnızca `headline` başlığı var), bu yüzden
+        // düğüm bulup tıklamak imkânsız. a11y erişilebilirlik ağacından bulur ve tıklar.
+        // ⚠️ KOORDİNAT TABANLI TIKLAMA BURADA TEHLİKELİ: canlıda (691,1409) ıskalayıp
+        // diyaloğu İPTAL etti ve WhatsApp kapandı. Bu yüzden koordinat SON çare.
+        await h.a11yClickText('Deactivate and switch').catch(() => undefined);
+        await h.sleep(900);
         if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-          await h.a11yClickText('Deactivate and switch').catch(() => undefined);
-          if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
+          if (!(await h.tapSynIf('Deactivate and switch', 'text'))) {
+            const { sw: DW, sh: DH } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
+            await h.tapXY(Math.round(DW * 0.640), Math.round(DH * 0.587)).catch(() => undefined);
+          }
         }
         for (let w = 0; w < 8; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
         if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {

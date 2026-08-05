@@ -1,16 +1,18 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { provisionService } from './provision.service';
 
 const createSchema = z.object({
   name: z.string().min(1).max(80).optional(),
-  countryCode: z.string().length(2).optional(),
+  countryCode: countryCodeSchema.optional(),
   deviceModel: z.string().max(80).optional(),
   androidVersion: z.string().max(20).optional(),
   // ISO country for a country-matched residential proxy (e.g. "AL", "US").
-  proxyCountry: z.string().length(2).optional()
+  // ★2026-08-05 `.length(2)` idi → telefon kodu "90" geçiyordu (bkz. lib/countryCode).
+  proxyCountry: countryCodeSchema.optional()
 });
 
 // Batch: same fields + how many to create. `name` becomes a prefix when count>1.

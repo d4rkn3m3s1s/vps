@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { billingService } from '../billing/billing.service';
@@ -23,7 +24,7 @@ const deviceCreateSchema = z.object({
   adbPort: z.coerce.number().int().positive().optional(),
   androidVersion: z.string().optional(),
   groupId: z.string().optional(),
-  countryCode: z.string().length(2).optional(),
+  countryCode: countryCodeSchema.optional(),
   metadata: z.unknown().optional(),
   // Provisioning catalog selections.
   deviceModel: z.string().max(80).optional(),
@@ -233,7 +234,7 @@ export async function createDeviceHandler(req: Request, res: Response): Promise<
 
 // Quick profile — Multilogin-style one-call disposable cloud phone.
 const quickProfileSchema = z.object({
-  countryCode: z.string().length(2).optional(),
+  countryCode: countryCodeSchema.optional(),
   deviceModel: z.string().optional(),
   androidVersion: z.string().optional(),
   ramGb: z.coerce.number().int().positive().optional(),

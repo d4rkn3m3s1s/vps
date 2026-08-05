@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { normalizePhoneInput, normalizeOtpInput } from '../../lib/phone';
@@ -16,7 +17,7 @@ function id(req: Request): string {
 const createSchema = z.object({
   platform: z.enum(['whatsapp', 'instagram', 'facebook']),
   count: z.coerce.number().int().min(1).max(50),
-  countryCode: z.string().length(2).optional()
+  countryCode: countryCodeSchema.optional()
 });
 
 export async function createBatchHandler(req: Request, res: Response): Promise<void> {

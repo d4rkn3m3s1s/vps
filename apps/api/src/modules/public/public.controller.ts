@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { AppError } from '../../lib/errors';
 import { DeviceService } from '../devices/device.service';
 import { batchService } from '../accounts/batch.service';
@@ -779,12 +780,12 @@ export async function stateHandler(req: Request, res: Response): Promise<void> {
 // the deviceId + jobId; poll GET /v1/devices or the job to watch it come online.
 const provisionSchema = z.object({
   name: z.string().min(1).max(60).optional(),
-  countryCode: z.string().length(2).optional(),
+  countryCode: countryCodeSchema.optional(),
   deviceModel: z.string().max(60).optional(),
   androidVersion: z.string().max(10).optional(),
   // Country-matched residential proxy (ISO-2). WhatsApp needs number-country ==
   // exit-IP country, so set this to the country you'll register numbers from.
-  proxyCountry: z.string().length(2).optional()
+  proxyCountry: countryCodeSchema.optional()
 });
 export async function provisionDeviceHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
@@ -815,7 +816,7 @@ const provisionBatchSchema = z.object({
   namePrefix: z.string().min(1).max(40).optional(),
   // Country-matched residential proxy (ISO-2). WhatsApp needs number-country == exit-IP
   // country, so set this to the country you'll register numbers from (e.g. "tr", "al").
-  proxyCountry: z.string().length(2).optional(),
+  proxyCountry: countryCodeSchema.optional(),
   deviceModel: z.string().max(60).optional(),
   androidVersion: z.string().max(10).optional()
 });

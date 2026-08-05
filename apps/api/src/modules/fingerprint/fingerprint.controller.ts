@@ -1,12 +1,13 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
 import { fingerprintService } from './fingerprint.service';
 
 const generateSchema = z.object({
-  countryCode: z.string().length(2).optional(),
+  countryCode: countryCodeSchema.optional(),
   gpsEnabled: z.boolean().optional()
 });
 
@@ -14,7 +15,7 @@ const gpsSchema = z.object({
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
   gpsEnabled: z.boolean().optional(),
-  countryCode: z.string().length(2).optional()
+  countryCode: countryCodeSchema.optional()
 });
 
 function requireDeviceId(req: Request): string {

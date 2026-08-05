@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countryCode';
 import { AppError } from '../../lib/errors';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { writeAuditLog } from '../audit/audit.service';
@@ -38,7 +39,7 @@ const createSchema = z.object({
   group: z.string().optional(),
   isp: z.string().optional(),
   remarks: z.string().optional(),
-  countryCode: z.string().length(2).optional()
+  countryCode: countryCodeSchema.optional()
 });
 
 const updateSchema = createSchema.partial().extend({
@@ -145,7 +146,7 @@ export async function proxyCountriesHandler(_req: Request, res: Response): Promi
 const countryAssignSchema = z.object({
   deviceId: z.string().min(1),
   providerId: z.string().min(1),
-  countryCode: z.string().length(2)
+  countryCode: countryCodeSchema
 });
 export async function assignCountryProxyHandler(req: Request, res: Response): Promise<void> {
   const input = countryAssignSchema.parse(req.body);

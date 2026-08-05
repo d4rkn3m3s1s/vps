@@ -140,6 +140,11 @@ model Host {
   // gives CPU saturation (load / cores) — the dashboard warns when this is high
   // so an operator can sleep idle devices (software-rendered Waydroid pins CPU).
   loadAvg1m      Float?
+  /// ★2026-08-05 GERÇEK CPU meşguliyeti (0-100), `/proc/stat`'tan iki örnekle.
+  /// `loadAvg1m` bu filoda CPU'yu DEĞİL uyuyan thread sayısını yansıtır (92 cihaz
+  /// ≈ 105.000 thread): ölçüldü — load 90 iken CPU %96.5 BOŞTAYDI. Doygunluk
+  /// alarmı bu yüzden load'a DEĞİL buna bakmalı.
+  cpuBusyPct     Int?
   kvm            Boolean    @default(true)
   agentKeyHash   String?
   lastSeenAt     DateTime?

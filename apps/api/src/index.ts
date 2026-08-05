@@ -269,21 +269,40 @@ async function main(): Promise<void> {
         // (HOST_OFFLINE) before any warning. That's "after", not "before". Now: for each
         // LIVE host, warn when load ≥ cores×0.9 (CPU saturated — the load-100 storms devices
         // fall from) or free disk < 15GB (a full disk silently breaks provision/snapshot).
+        // ★2026-08-05 YANLIŞ ALARM DÜZELTİLDİ. Operatör bir gecede 13 "CPU yükü 90/80
+        // (satürasyon)" bildirimi aldı. CANLI ÖLÇÜM: o anda load 90 iken CPU **%96.5
+        // BOŞTAYDI** ve ağır bir iş YOKTU (yalnızca hafif WHATSAPP_RECEIPTS).
+        // SEBEP: Waydroid'de load average CPU'yu DEĞİL uyuyan thread sayısını yansıtır —
+        // 92 cihaz ≈ 105.000 thread, çalışan yalnızca 1-3 tanesi. `load >= cores*0.9`
+        // eşiği bu yüzden filo büyüdükçe SÜREKLİ ateşliyordu; gerçek bir doygunlukta da
+        // ayırt edilemeyeceği için alarm tamamen değersizleşmişti (kurt masalı).
+        // Agent artık `/proc/stat`'tan GERÇEK meşguliyeti gönderiyor (cpuBusyPct) —
+        // provision zaten bunu kullanıyordu, alarm kullanmıyordu.
         const liveHosts = await prisma.host
           .findMany({
             where: { status: 'ONLINE' },
-            select: { id: true, name: true, workspaceId: true, loadAvg1m: true, cpuCores: true, diskFreeGb: true }
+            select: { id: true, name: true, workspaceId: true, loadAvg1m: true, cpuCores: true, diskFreeGb: true, cpuBusyPct: true }
           })
           .catch(() => []);
         for (const h of liveHosts) {
           const cores = h.cpuCores ?? 0;
           const load = h.loadAvg1m ?? 0;
           const disk = h.diskFreeGb ?? 999;
-          const cpuSat = cores > 0 && load >= cores * 0.9;
+          const busy = h.cpuBusyPct;
+          // GERÇEK meşguliyet varsa ONA bak (≥90% = gerçekten doygun). Yoksa (eski
+          // agent) load'a düş — ama eşiği 0.9×cores'tan 2×cores'a çıkar: bu filoda
+          // load rutin olarak cores'un yarısını aşıyor ve tek başına anlam taşımıyor.
+          const cpuSat = typeof busy === 'number'
+            ? busy >= 90
+            : cores > 0 && load >= cores * 2;
           const diskLow = disk < 15;
           if (!cpuSat && !diskLow) continue;
           const parts: string[] = [];
-          if (cpuSat) parts.push(`CPU yükü ${load.toFixed(0)}/${cores} (satürasyon)`);
+          if (cpuSat) {
+            parts.push(typeof busy === 'number'
+              ? `CPU %${busy} meşgul (gerçek satürasyon, load ${load.toFixed(0)}/${cores})`
+              : `CPU yükü ${load.toFixed(0)}/${cores} (satürasyon)`);
+          }
           if (diskLow) parts.push(`boş disk ${disk}GB (kritik)`);
           void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', {
             title: `⚠️ Sunucu kaynağı kritik: ${h.name}`,

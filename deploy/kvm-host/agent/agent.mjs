@@ -10464,6 +10464,19 @@ async function hostCapacityMetrics() {
     if (Number.isFinite(load1)) out.loadAvg1m = Math.round(load1 * 100) / 100;
     if (Number.isFinite(cpus) && cpus > 0) out.cpuCores = cpus;
   } catch { /* ignore */ }
+  // ★2026-08-05 GERCEK CPU MESGULIYETI. Operator gece boyu "CPU yükü 90/80
+  // (satürasyon)" alarmi aldi; OLCUM: o anda load 90 iken CPU %96.5 BOSTAYDI ve
+  // calisan tek bir is yoktu (sadece hafif WHATSAPP_RECEIPTS).
+  // SEBEP: Waydroid'de load, CPU'yu DEGIL uyuyan thread sayisini yansitir —
+  // 92 cihaz = ~105.000 thread. Load'a bakan alarm bu yuzden SUREKLI yanlis
+  // atesliyordu (bir gecede 13 bildirim).
+  // `cpuBusyPct()` /proc/stat'tan GERCEK mesguliyeti okur (provision zaten bunu
+  // kullaniyordu, ama API'ye HIC gonderilmiyordu). Artik gonderiliyor ki alarm
+  // dogru olcute baksin. loadAvg1m KORUNUYOR (panel/gecmis icin).
+  try {
+    const busy = await cpuBusyPct();
+    if (Number.isFinite(busy)) out.cpuBusyPct = busy;
+  } catch { /* ignore */ }
   return out;
 }
 

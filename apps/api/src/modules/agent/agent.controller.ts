@@ -23,6 +23,9 @@ const heartbeatSchema = z.object({
   ramFreeGb: z.coerce.number().int().nonnegative().optional(),
   // 1-minute load average (may be fractional) + CPU count → CPU saturation gauge.
   loadAvg1m: z.coerce.number().nonnegative().optional(),
+  // ★2026-08-05: /proc/stat'tan GERÇEK CPU meşguliyeti (0-100). Doygunluk alarmı
+  // buna bakar; loadAvg1m bu filoda yanıltıcıdır (bkz. schema.prisma yorumu).
+  cpuBusyPct: z.coerce.number().min(0).max(100).optional(),
   cpuCores: z.coerce.number().int().positive().optional()
 });
 

@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Activity, AlertTriangle, Braces, CheckCircle2, Clock, Download, Image as ImageIcon, ListTree, Loader2, Pause, Radio, X } from 'lucide-react';
+import { useCallback, useState } from 'react';
+import { Activity, AlertTriangle, Braces, CheckCircle2, Clock, Download, Image as ImageIcon, ListTree, Loader2, Pause, Radio, WifiOff, X } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat } from '../../components/hud';
 import { downloadCsv } from '../../lib/csv';
@@ -58,27 +58,39 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
   const [live, setLive] = useState(true);
   const [selected, setSelected] = useState<Job | null>(null);
   const [tab, setTab] = useState<JobTab>('active');
+  // Consecutive refresh failures. The table keeps showing the last good data
+  // (better than blanking it), but a silent failure would leave the "Canlı" pill
+  // green while the rows quietly go stale — so we surface it instead.
+  const [failures, setFailures] = useState(0);
+  const [lastSync, setLastSync] = useState<Date | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await fetch('/api/jobs', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`jobs ${res.status}`);
+      const json = await res.json();
+      if (!Array.isArray(json.data)) throw new Error('jobs payload');
+      setJobs(json.data);
+      setFailures(0);
+      setLastSync(new Date());
+    } catch {
+      // One dropped tick is normal (deploy, blip); only a run of them is news.
+      setFailures((n) => n + 1);
+    }
+  }, []);
 
   // Live polling: refresh the job list every 4s while enabled (skips ticks when
   // the tab is hidden, so background tabs don't keep hitting the API).
-  usePolling(async () => {
-    try {
-      const res = await fetch('/api/jobs', { cache: 'no-store' });
-      const json = await res.json();
-      if (Array.isArray(json.data)) setJobs(json.data);
-    } catch {
-      /* ignore transient errors */
-    }
-  }, 4000, live);
+  usePolling(refresh, 4000, live);
 
   // Real-time: refresh immediately when a job is created or changes status.
   useFleetEvents(['job.created', 'job.updated'], () => {
     if (!live) return;
-    fetch('/api/jobs', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((j) => Array.isArray(j.data) && setJobs(j.data))
-      .catch(() => {});
+    void refresh();
   });
+
+  // Two misses in a row (~8s) means the feed is genuinely down, not just flaky.
+  const stale = failures >= 2;
 
   const isActive = (j: Job) => j.status === 'PENDING' || j.status === 'RUNNING';
   const pending = jobs.filter(isActive).length;
@@ -124,12 +136,27 @@ export function JobsView({ initialJobs }: { initialJobs: Job[] }) {
             <button type="button" className="btn-ghost" onClick={exportCsv}>
               <Download size={15} /> CSV Dışa Aktar
             </button>
-            <button type="button" className={live ? 'btn-primary' : 'btn-ghost'} onClick={() => setLive((v) => !v)}>
-              {live ? <><Radio size={15} /> Canlı</> : <><Pause size={15} /> Duraklatıldı</>}
+            <button
+              type="button"
+              className={!live ? 'btn-ghost' : stale ? 'btn-ghost' : 'btn-primary'}
+              onClick={() => setLive((v) => !v)}
+              title={stale ? 'Bağlantı koptu — gösterilen veriler güncel olmayabilir' : undefined}
+            >
+              {!live ? <><Pause size={15} /> Duraklatıldı</>
+                : stale ? <><WifiOff size={15} /> Bağlantı yok</>
+                : <><Radio size={15} /> Canlı</>}
             </button>
           </>
         }
       />
+
+      {stale && live ? (
+        <div className="form-status form-status--err" role="alert">
+          Görev akışı güncellenemiyor ({failures} deneme başarısız). Aşağıdaki liste
+          {lastSync ? ` ${lastSync.toLocaleTimeString('tr-TR')} itibarıyla` : ''} eski olabilir.
+          <button type="button" className="btn-ghost btn-xs" onClick={() => void refresh()}>Tekrar dene</button>
+        </div>
+      ) : null}
 
       <div className="holo-stats-grid">
         <button type="button" onClick={() => setTab('all')} style={{ all: 'unset', cursor: 'pointer', display: 'block', outline: tab === 'all' ? '2px solid var(--accent, #6366f1)' : 'none', borderRadius: 12 }}>

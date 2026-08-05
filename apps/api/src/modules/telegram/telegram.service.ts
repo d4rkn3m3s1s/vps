@@ -1574,21 +1574,6 @@ async function handleCommand(
     } catch (e) {
       await sendMessage(token, chatId, `❌ Etiket eklenemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
-  } else if (isCmd(lower, 'adver', 'yenidad')) {
-    // "/adver <cihaz> <yeni-ad>" — cihazı yeniden adlandır.
-    const rest = cmd.replace(/^\/?(adver|yenidad)\s*/i, '').trim();
-    const parts = rest.split(/\s+/).filter(Boolean);
-    if (parts.length < 2) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/adver &lt;cihaz&gt; &lt;yeni-ad&gt;</code>.', MAIN_MENU); return; }
-    const ref = parts[0]!;
-    const newName = parts.slice(1).join(' ').slice(0, 60);
-    const dev = await findDeviceByRef(workspaceId, ref);
-    if (!dev) { await sendMessage(token, chatId, `❌ Cihaz bulunamadı: <b>${esc(ref)}</b>`, MAIN_MENU); return; }
-    try {
-      await deviceService.updateDevice(dev.id, { name: newName }, workspaceId);
-      await sendMessage(token, chatId, `✏️ <b>${esc(dev.name)}</b> → <b>${esc(newName)}</b> olarak yeniden adlandırıldı.`, MAIN_MENU);
-    } catch (e) {
-      await sendMessage(token, chatId, `❌ Yeniden adlandırılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
-    }
   } else if (isCmd(lower, 'kur')) {
     // "/kur <adet> [TR]" — toplu tek-tık cihaz kur (opsiyonel proxy ülkesi).
     const rest = cmd.replace(/^\/?kur\s*/i, '').trim();
@@ -1646,11 +1631,15 @@ async function handleCommand(
     } catch (e) {
       await sendMessage(token, chatId, `❌ Kurulum başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
     }
-  } else if (isCmd(lower, 'adver')) {
+  } else if (isCmd(lower, 'adver', 'yenidad')) {
     // ★2026-07-30 /adver KOMUTU HİÇ YOKTU — menüde ve yardımda listeleniyordu ama
     // dispatcher'da bir dalı olmadığı için "Anlamadım." diyordu (sessiz kırık komut).
     // Şimdi hem tek satırlık biçim ("/adver <cihaz> <yeni-ad>") hem ADIM ADIM çalışır.
-    const rest = cmd.replace(/^\/?adver\s*/i, '').trim();
+    // ★2026-08-05 Bu daldan ÖNCE, yalnızca tek-satırlık biçimi kabul eden ESKİ bir
+    // `adver|yenidad` dalı duruyordu; `else if` zinciri oraya takıldığı için burası
+    // ÖLÜ KODDU ve menüden argümansız /adver hâlâ kuru kullanım metni veriyordu.
+    // Eski dal kaldırıldı, `yenidad` diğer adı buraya taşındı.
+    const rest = cmd.replace(/^\/?(adver|yenidad)\s*/i, '').trim();
     const parts = rest.split(/\s+/).filter(Boolean);
     if (parts.length === 0) {
       const buttons = await devicePickerButtons(workspaceId, 'renamepick');

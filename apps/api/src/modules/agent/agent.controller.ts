@@ -60,6 +60,14 @@ const whatsappInboundSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+// ★2026-08-05 Agent'ın otonom WA sağlık taramasının sonucu (ban/kısıt/çıkış).
+const whatsappHealthProbeSchema = z.object({
+  serial: z.string().min(1),
+  status: z.enum(['ACCOUNT_BANNED', 'ACCOUNT_RESTRICTED', 'ACCOUNT_LOGGED_OUT']),
+  state: z.string().optional(),
+  evidence: z.string().max(600).optional()
+});
+
 // Agent reports a NEW media file its capture poll found on-device (metadata only).
 const mediaCapturedSchema = z.object({
   serial: z.string().min(1),
@@ -204,6 +212,14 @@ export async function whatsappInboundHandler(req: Request, res: Response): Promi
   const host = requireHost(req);
   const input = whatsappInboundSchema.parse(req.body);
   res.json({ data: await agentService.inboundWhatsapp(host, input) });
+}
+
+// ★2026-08-05 Agent'ın periyodik WA sağlık taraması bir ban/kısıt buldu — hesabı
+// damgala. Gönderim yolundaki mantığın aynısını kullanır (setAccountHealth, monotonik).
+export async function whatsappHealthProbeHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = whatsappHealthProbeSchema.parse(req.body);
+  res.json({ data: await agentService.whatsappHealthProbe(host, input) });
 }
 
 // Agent's media-capture poll reports a NEW file in the WhatsApp Media folder; we fan

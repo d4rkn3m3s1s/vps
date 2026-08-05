@@ -1279,6 +1279,45 @@ export class AgentService {
     return { updated };
   }
 
+  // ★2026-08-05 OTONOM SAĞLIK TARAMASI SONUCU.
+  // Ban/kısıt eskiden YALNIZCA bir mesaj gönderilirken fark ediliyordu (job sonucu →
+  // HEALTH_MAP). Mesaj göndermeyen bir hesap banlansa panel onu ACTIVE sanmaya devam
+  // ediyordu. CANLI ÖLÇÜM (2026-08-05): DB'de ACTIVE görünen 5 hesabın 4'ü bozuktu
+  // (2 BanAppealActivity + 2 "account is restricted").
+  // Agent artık `waHealthProbe`'u periyodik çalıştırıp sonucu buraya gönderiyor; biz de
+  // gönderim yolunun kullandığı AYNI `setAccountHealth`'e yazıyoruz — damgalama ve alarm
+  // mantığı tek yerde kalsın diye. setAccountHealth MONOTONİK olduğu için daha hafif bir
+  // durum, daha ağırını (ör. BANNED) asla ezemez.
+  async whatsappHealthProbe(
+    host: Host,
+    input: { serial: string; status: string; state?: string | undefined; evidence?: string | undefined }
+  ): Promise<{ stored: boolean; changed?: boolean }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true, name: true }
+    });
+    const device = devices.find(
+      (d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial
+    );
+    if (!device) return { stored: false };
+
+    const HEALTH_MAP: Record<string, 'BANNED' | 'RESTRICTED' | 'LOGGED_OUT'> = {
+      ACCOUNT_BANNED: 'BANNED',
+      ACCOUNT_RESTRICTED: 'RESTRICTED',
+      ACCOUNT_LOGGED_OUT: 'LOGGED_OUT'
+    };
+    const health = HEALTH_MAP[String(input.status)];
+    if (!health) return { stored: false };   // tanınmayan durum → yok say
+
+    const { changed } = await whatsappService.setAccountHealth({
+      deviceId: device.id,
+      workspaceId: device.workspaceId,
+      health,
+      note: `Otonom tarama: ${String(input.evidence ?? '').slice(0, 200)}`
+    });
+    return { stored: true, changed };
+  }
+
   // Record an inbound WhatsApp message the agent captured from a device's
   // notifications. The agent identifies the device by ADB serial; we map it back
   // to the workspace-scoped device id (same as updateDeviceMetrics). Then we

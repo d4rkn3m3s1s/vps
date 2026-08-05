@@ -4247,6 +4247,61 @@ async function dismissBlockingDialogs(serial, h) {
   }
 }
 
+// ★2026-08-05 TASLAK TEMİZLE — bir gönderim CHAT_NOT_OPENED ile biterken mesaj metni
+// compose kutusuna YAZILMIŞ olabilir. Canlı kanıt (16:06, hedef 905367668649): hata
+// anındaki ekran metni "Draft: | tekrar selamm:)" idi — yani metin kutuya girmiş ama
+// gönder tuşuna basılamamıştı. WhatsApp bunu TASLAK olarak SAKLIYOR: kutu bir sonraki
+// açılışta hâlâ dolu geliyor. Sonuç: operatör aynı numaraya tekrar yazdığında eski
+// metnin ÜSTÜNE yazılıyor / iki mesaj birleşiyor ve yanlış içerik gidebiliyor.
+//
+// Bu yüzden başarısız bir gönderimden dönmeden ÖNCE kutuyu boşaltıyoruz. Yalnızca
+// compose kutusu GERÇEKTEN varsa ve İÇİ DOLUYSA çalışır (kutu yoksa yapacak iş yok);
+// böylece "Couldn't connect" gibi kutunun hiç açılmadığı vakalarda boşa iş yapılmaz.
+// Asla throw etmez — temizlik başarısız olsa da asıl hata raporu bozulmamalı.
+async function clearComposeDraft(serial, h, tlog) {
+  try {
+    const box = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+    if (!box) return false;                       // kutu yok → taslak da yok
+    const cur = String(box.text || '').trim();
+    if (!cur) return false;                       // zaten boş
+    await h.tap(box).catch(() => undefined);
+    await h.sleep(200);
+    // ★CANLI TEST (2026-08-05, cihaz 192.168.95.112, 17 karakterlik taslak):
+    // Ctrl+A + DEL bu kurulumda ÇALIŞMADI — metin kutuda aynen kaldı (ADBKeyboard
+    // IME'si seçim tuş kombinasyonunu iletmiyor). Tek tek KEYCODE_DEL ise metni
+    // TAMAMEN sildi (ekran görüntüsüyle doğrulandı: kutu "Message" placeholder'ına,
+    // gönder ikonu mikrofona döndü). Bu yüzden doğrudan backspace kullanıyoruz —
+    // çalışmayan bir "hızlı yol"u önce denemek sadece gecikme ekliyordu.
+    // Üst sınır: kutudaki karakter sayısı + 2 pay, en fazla 220 tuş (uzun metinde
+    // sonsuz döngüye düşmemek için).
+    const n = Math.min(cur.length + 2, 220);
+    for (let i = 0; i < n; i++) {
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_DEL']).catch(() => undefined);
+    }
+    await h.sleep(250);
+    // ★SES-KAYDI EMNİYETİ: kutu boşalınca gönder ikonu MİKROFONA döner. Buradaki
+    // girdiler keyevent (tuş) olduğu için mikrofona basılmaz — ama IME/odak beklenmedik
+    // bir yere kayarsa kayıt başlayabilir ve karşı tarafa BOŞ SES MESAJI gidebilir.
+    // Ucuz sigorta: kayıt arayüzü açıldıysa BACK ile iptal et (canlıda BACK'in kaydı
+    // temizlediği doğrulandı). Not: `voice_note_btn` düğmesinin content-desc'i zaten
+    // "Voice message … recording" içerir — o BUTONUN ETİKETİ, kayıt göstergesi DEĞİL;
+    // bu yüzden düğmeyi değil, yalnızca AKTİF kayıt panelini arıyoruz.
+    const rec = await h.find('com.whatsapp:id/recording_view', 'id').catch(() => null)
+             || await h.find('com.whatsapp:id/slide_to_cancel_label', 'id').catch(() => null);
+    if (rec) {
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      await h.sleep(300);
+      if (tlog) tlog('draft: ses kaydi paneli acilmisti → BACK ile iptal edildi');
+    }
+    const fin = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+    const ok = !String(fin?.text || '').trim();
+    if (tlog) tlog(`draft cleared=${ok} (was ${cur.length} chars, ${n} DEL)`);
+    return ok;
+  } catch {
+    return false;   // temizlik best-effort; asıl hatayı asla gölgelemesin
+  }
+}
+
 // Generic "System UI / <app> isn't responding" ANR dismisser — MODULE-LEVEL twin of
 // registerWhatsApp's in-scope clearAnr (agent.mjs ~1679), extracted so the send/read
 // flows can use it too. On this GPU-less Waydroid an ANR dialog ("<app> isn't
@@ -4384,6 +4439,9 @@ async function whatsappSend(serial, payload) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: notice.slice(0, 300) };
     }
     // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
+    // ★2026-08-05 Ama dönmeden ÖNCE taslağı temizle: metin kutuya girmiş olabilir ve
+    // WhatsApp onu SAKLAR ("Draft: …"), sonraki gönderim eski metinle karışır.
+    await clearComposeDraft(serial, h, tlog);
     return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to, screenTexts: notice.slice(0, 400) };
   }
   // An ANR ("<app> isn't responding") can pop while the deep link cold-opens the
@@ -10346,6 +10404,74 @@ async function whatsappInboxTick() {
   }
 }
 
+// ── ★2026-08-05 OTONOM WA SAĞLIK TARAMASI ────────────────────────────────────────
+// SORUN: ban/kısıt YALNIZCA bir mesaj gönderilirken fark ediliyordu (job sonucundaki
+// ACCOUNT_BANNED/RESTRICTED → agent.service HEALTH_MAP). Mesaj göndermeyen bir hesap
+// banlansa panel onu ACTIVE sanmaya devam ediyordu.
+// CANLI KANIT (2026-08-05): DB'de ACTIVE görünen 5 hesabın 4'ü aslında bozuktu —
+// 2 tanesinde BanAppealActivity ("This account can't use WhatsApp"), 2 tanesinde
+// "Your account is restricted. You can't start new chats right now." Operatör bunu
+// ancak gönderim denediğinde öğreniyordu; o ana kadar panel yanlış bilgi veriyordu.
+//
+// ÇÖZÜM: mevcut `waHealthProbe` periyodik olarak çalıştırılır ve sonucu, gönderim
+// yolunun kullandığı AYNI uca raporlanır — böylece damgalama/alarm mantığı tek yerde
+// kalır (yeni bir API sözleşmesi eklemiyoruz).
+//
+// MALİYET KONTROLÜ: probe WhatsApp'ı açıp bir sohbete giren PAHALI bir işlem; her tur
+// tüm filoyu taramak host'u boğar. Bu yüzden turda EN FAZLA `WA_HEALTH_BATCH` cihaz
+// taranır ve her cihaz `WA_HEALTH_MIN_GAP_MS`'den önce tekrar taranmaz (round-robin).
+// Meşgul cihazlar atlanır (job ile ADB yarışı = asılı job'ın bilinen sebebi).
+const WA_HEALTH_MS = Number(process.env.FLEET_WA_HEALTH_MS || 300000);        // 5 dk'da bir tur
+const WA_HEALTH_BATCH = Number(process.env.FLEET_WA_HEALTH_BATCH || 2);       // tur başına cihaz
+const WA_HEALTH_MIN_GAP_MS = Number(process.env.FLEET_WA_HEALTH_GAP_MS || 3600000); // cihaz başına 1 saat
+const WA_HEALTH_ENABLED = process.env.FLEET_WA_HEALTH !== '0';
+const _waHealthLastRun = new Map();   // serial -> timestamp
+let _waHealthRunning = false;
+
+async function waHealthTick() {
+  if (!WA_HEALTH_ENABLED) return;
+  if (_waHealthRunning) return;       // önceki tur sürüyor
+  _waHealthRunning = true;
+  try {
+    const now = Date.now();
+    const serials = await reachableSerials();
+    // En uzun süredir taranmamış olanlar önce (hiç taranmamış = en eski).
+    const due = serials
+      .filter((s) => !busyDevices.has(s))
+      .filter((s) => now - (_waHealthLastRun.get(s) || 0) >= WA_HEALTH_MIN_GAP_MS)
+      .sort((a, b) => (_waHealthLastRun.get(a) || 0) - (_waHealthLastRun.get(b) || 0))
+      .slice(0, WA_HEALTH_BATCH);
+    for (const serial of due) {
+      _waHealthLastRun.set(serial, Date.now());   // sonuç ne olursa olsun turu tüket
+      try {
+        const probe = await waHealthProbe(serial);
+        const state = String(probe?.state || '');
+        // Yalnızca KÖTÜ ve KESİN durumları bildir. 'UNKNOWN' ve `unverified` bilerek
+        // atlanır: sağlıklı hesabı yanlışlıkla damgalamak, geç fark etmekten daha kötü.
+        if (state !== 'BANNED' && state !== 'RESTRICTED' && state !== 'LOGGED_OUT') continue;
+        if (probe?.unverified) continue;
+        const statusMap = { BANNED: 'ACCOUNT_BANNED', RESTRICTED: 'ACCOUNT_RESTRICTED', LOGGED_OUT: 'ACCOUNT_LOGGED_OUT' };
+        log(`wa-health: ${serial} → ${state} (otonom tarama)`);
+        await api('/agent/whatsapp/health-probe', {
+          method: 'POST',
+          body: JSON.stringify({
+            serial,
+            status: statusMap[state],
+            state,
+            evidence: String(probe?.evidence || '').slice(0, 400)
+          })
+        }).catch(() => undefined);
+      } catch (e) {
+        log(`wa-health probe failed ${serial}: ${e.message}`);
+      }
+    }
+  } catch (err) {
+    log('wa health tick failed:', err.message);
+  } finally {
+    _waHealthRunning = false;
+  }
+}
+
 // Scan ONE device's WhatsApp Media folder (root) for files newer than the last tick
 // and report any not-yet-seen ones. Metadata only (no bytes) so it stays cheap even at
 // a fast poll — the operator pulls the bytes with fetch-media. Returns the count found.
@@ -11836,6 +11962,9 @@ async function loop() {
   // Media auto-capture poll (opt-in via FLEET_WA_CAPTURE=1) — reports new media files
   // the moment they land, before a view-once is opened or a message deleted.
   const waCapture = WA_CAPTURE_ENABLED ? setInterval(() => { mediaCaptureTick().catch(() => undefined); }, WA_CAPTURE_MS) : null;
+  // ★OTONOM WA SAĞLIK TARAMASI: ban/kısıt artık yalnızca gönderim sırasında değil,
+  // kendiliğinden de yakalanır (bkz. waHealthTick). Tur başına birkaç cihaz.
+  const waHealth = WA_HEALTH_ENABLED ? setInterval(() => { waHealthTick().catch(() => undefined); }, WA_HEALTH_MS) : null;
   // ★OTP-WATCH ticker: keeps the panel's live thumbnail fresh for devices parked at OTP_WAIT.
   const otpWatchT = setInterval(() => { otpWatchTick().catch(() => undefined); }, OTP_WATCH_MS);
   // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA

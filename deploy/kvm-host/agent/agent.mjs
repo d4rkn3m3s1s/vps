@@ -1093,10 +1093,12 @@ async function vtapReal(serial, ax, ay) {
   // `return true` deyip başarılı sanıyordu ve tapReal'in sentetik fallback'i BİLE
   // devreye girmiyordu: her "gerçek dokunma" SESSİZ NO-OP'tu. Business downgrade'in
   // 5 tur boyunca aşılamamasının (DOWNGRADE_STUCK) asıl sebebi buydu.
-  // Bu yüzden FIFO yazımından SONRA binary'yi de doğrudan çağırıyoruz: binary yoksa
-  // veya su reddederse sessizce geçilir, FIFO zaten denenmiş olur — yani bu ek çağrı
-  // hiçbir şeyi bozmaz, yalnızca FIFO'nun yutulduğu cihazlarda dokunmayı KURTARIR.
-  await adbSu(serial, `/data/local/tmp/vtouch tap ${vx} ${vy}`).catch(() => undefined);
+  // ⚠️2026-08-05 GERİ ALINDI: bir ara FIFO'dan SONRA binary'yi de çağırıyordum
+  // (`vtouch tap`). Ama bu HER gerçek dokunmayı ÇİFTLİYOR — bir diyalogda ikinci
+  // dokunma modalın DIŞINA düşüp onu İPTAL edebiliyor (canlıda Business onay modalı
+  // her turda kapanıyordu). FIFO yolu dünden beri çalışan yol; ikinci çağrı yalnızca
+  // FIFO'nun yutulduğu kanıtlanmış bir cihazda, TEK SEFERLİK teşhis için elle
+  // yapılmalı — otomatik akışta DEĞİL.
   return true;
 }
 
@@ -3606,39 +3608,16 @@ async function registerWhatsApp(job, legacyPayload) {
       // Step 1: tap "USE +<number>" (id=primary_button, bottom green button).
       // ★KADEMELI: her turda bir oncekinden DAHA GUCLU bir yol dene. Eskiden her tur
       // AYNI iki adim atiliyordu; biri calismiyorsa 14 tur boyunca da calismiyordu.
-      // ★2026-08-05 CANLI ÖLÇÜM (mi115, +90 535 012 41 85) — teşhis DÜZELTİLDİ.
-      // Önce "onay diyaloğu açılıyor ama dump'ta görünmüyor" sandım; canlı dump bunu
-      // ÇÜRÜTTÜ. Gerçek durum: DowngradeFriction ekranında SADECE iki tıklanabilir
-      // düğüm var — `primary_button` ("USE +90…") ve `secondary_button` — yani onay
-      // diyaloğu HİÇ AÇILMIYOR. Demek ki "USE +" tıklaması ekrana HİÇ GEÇMİYOR.
-      // Düğüm `clickable=true`, bounds=[63,2001][1017,2127] (merkez 540,2064) ve agent
-      // tam oraya `input tap` atıyordu → yani SENTETİK tap bu düğmede çalışmıyor.
-      // (Bilinen tuzak: WhatsApp'ın bazı ekranları sentetik `input tap`'i yok sayar;
-      // vtouch FİZİKSEL dokunma olayı üretir — [[waydroid-uinput-real-touch]].)
-      // Eskiden vtouch YALNIZCA 3. turdan sonra deneniyordu; o zamana kadar 3 tur ve
-      // ~80sn boşa gidiyor, çoğu numara 5 turu doldurup DOWNGRADE_STUCK'a düşüyordu.
-      // Artık İLK turdan itibaren GERÇEK DOKUNMA önce deneniyor.
-      // ★★★2026-08-05 KUSURSUZ REÇETE — operatörle birlikte boş cihazda (mi108,
-      // +90 535 224 81 39) baştan sona ELLE çalıştırılıp doğrulandı. İKİ ADIM DA a11y:
-      //   1) a11y CLICK id=primary_button          → onay diyaloğu AÇILIR (ss ile görüldü)
-      //   2) a11y CLICK text="Deactivate and switch" → diyalog onaylanır, downgrade AŞILIR
-      //      → PrimaryFlashCallEducationScreen
-      // NEDEN a11y: `input tap` (sentetik) bu düğmeye HİÇ geçmiyor. vtouch ise düğmeye
-      // basıyor AMA koordinat tabanlı olduğu için diyalog açıldıktan sonra ikinci tıklama
-      // ıskalayıp diyaloğu İPTAL edebiliyor (canlıda oldu: WhatsApp kapandı).
-      // a11y erişilebilirlik ağacından tıklar — koordinattan bağımsız, ıskalama YOK.
       await h.a11yClickId('primary_button');
-      await h.sleep(900);
-      // Yedek: a11y tutmadıysa gerçek dokunma + sentetik (eski yollar korunuyor).
-      if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-        const pbNode = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
-        if (pbNode) await h.tapNode(pbNode).catch(() => undefined);   // vtouch
-        await h.sleep(600);
-        if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-          let clicked = await h.tapSynIf('USE +', 'text');
-          if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
-          if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
-        }
+      // Dump'tan gercek dugumu bul (koordinat sabit degil, cihaz cozunurlugune gore kayar).
+      let clicked = await h.tapSynIf('USE +', 'text');
+      if (!clicked) clicked = await h.tapSynIf('com.whatsapp:id/primary_button', 'id');
+      if (!clicked) await h.tapSyn(540, 2064).catch(() => undefined);
+      // 3. turdan itibaren vtouch (gercek dokunma) da dene: bazi WhatsApp diyaloglari
+      // sentetik `input tap`'e yanit vermez (vtouch fiziksel dokunma olayi uretir).
+      if (downgradeRounds >= 3) {
+        const n = findNode(await h.dump(), 'com.whatsapp:id/primary_button', 'id');
+        if (n) await h.tapNode(n).catch(() => undefined);
       }
       // ★DOWNGRADE-LOOP FIX (VERIFIED LIVE, mi8 +90 539…): after "USE +", WhatsApp takes ONE
       // of TWO paths depending on build/number:
@@ -3652,73 +3631,25 @@ async function registerWhatsApp(job, legacyPayload) {
       // DowngradeFriction activity, capped ~3s. Only act on the dialog if it actually
       // appeared; if we already left DowngradeFriction, just continue (the loop's onOtp/
       // number branch handles the next screen) — no wasted blind tap, no re-detect spin.
-      // ★★★2026-08-05 CANLI ÇÖZÜLDÜ (mi107, +90 535 224 81 39) — TAM REÇETE.
-      // Operatörle birlikte adım adım ölçüldü:
-      //   1. `input tap 540 2064` (SENTETİK) → ekran DEĞİŞMEDİ. Sentetik tap bu
-      //      düğmeye GEÇMİYOR. Eski kodun tek yaptığı buydu → 5 tur spin.
-      //   2. `vtouch tap 540 2064` (GERÇEK DOKUNMA) → "USE +" BASILDI ve onay
-      //      diyaloğu AÇILDI ("Deactivate your Business account? / Cancel /
-      //      Deactivate and switch").
-      //   3. Ama diyalog düğmeleri uiautomator dump'ında YOK → `h.seen()` göremiyor,
-      //      `sawDialog` false kalıyor, kimse onaylamıyor → ekran 12sn+ SABİT kaldı
-      //      (6 ardışık ss ile doğrulandı) → tur yeniden başlıyor.
-      //   4. `vtouch tap 691 1409` ("Deactivate and switch") → diyalog ONAYLANDI,
-      //      DowngradeFriction AŞILDI.
-      // Yani gerekli olan: HER İKİ tıklama da GERÇEK DOKUNMA + diyaloğu dump yerine
-      // EKRAN METNİNDEN tespit etmek.
       let sawDialog = false, leftDowngrade = false;
       for (let w = 0; w < 6; w++) {
         await h.sleep(500);
-        // Dump'a GÜVENME: diyalog düğmeleri dump'a düşmüyor. Ekran metni (screenText)
-        // diyaloğun BAŞLIĞINI görüyor — tespiti ona bağlıyoruz.
-        const scr = await h.screenText().catch(() => '');
-        if (/deactivate your business account|deactivate and switch/i.test(scr)) { sawDialog = true; break; }
+        if (await h.seen('Deactivate and switch', 250)) { sawDialog = true; break; }
         if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) { leftDowngrade = true; break; }
       }
       if (sawDialog) {
-        // ★2026-08-05 ONAY: "Deactivate and switch" — GERÇEK DOKUNMA ile.
-        // Düğme dump'ta YOK, dolayısıyla düğüm bulup tıklamak imkânsız; a11y ve sentetik
-        // tap de bu diyalogda çalışmadı (canlıda ölçüldü: ekran 12sn+ sabit kaldı).
-        // ÇALIŞAN: ölçülen koordinata vtouch. 1080×2400'de düğme merkezi (691,1409);
-        // oransal yazıyoruz ki başka çözünürlükte de tutsun.
+        // Path (A): confirm the dialog (its buttons aren't in the GPU-less dump → a11y
+        // CLICK_TEXT is the reliable path; 690,1410 is the measured coord fallback).
         await snap('downgrade_confirm');
-        // ★KANITLANMIŞ YOL: a11y CLICK metin ile. Diyalog düğmeleri uiautomator dump'ına
-        // DÜŞMÜYOR (canlıda doğrulandı: dump'ta yalnızca `headline` başlığı var), bu yüzden
-        // düğüm bulup tıklamak imkânsız. a11y erişilebilirlik ağacından bulur ve tıklar.
-        // ⚠️ KOORDİNAT TABANLI TIKLAMA BURADA TEHLİKELİ: canlıda (691,1409) ıskalayıp
-        // diyaloğu İPTAL etti ve WhatsApp kapandı. Bu yüzden koordinat SON çare.
-        await h.a11yClickText('Deactivate and switch').catch(() => undefined);
-        await h.sleep(900);
-        if (/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-          if (!(await h.tapSynIf('Deactivate and switch', 'text'))) {
-            const { sw: DW, sh: DH } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
-            await h.tapXY(Math.round(DW * 0.640), Math.round(DH * 0.587)).catch(() => undefined);
-          }
-        }
-        for (let w = 0; w < 8; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
-        if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-          leftDowngrade = true;
-          wlog('verify: "Deactivate and switch" onaylandı → downgrade AŞILDI');
-        }
+        await h.a11yClickText('Deactivate and switch');
+        if (!(await h.tapSynIf('Deactivate and switch', 'text'))) await h.tapSyn(690, 1410).catch(() => undefined);
+        for (let w = 0; w < 6; w++) { await h.sleep(500); if (!/DowngradeFriction/i.test(await curFocus())) break; }
       } else if (!leftDowngrade) {
         // Neither the dialog nor a screen change within ~3s — the "USE +" tap may not have
         // landed. Re-tap once more before looping (better than a silent 28s re-detect).
         await h.a11yClickId('primary_button');
         await h.tapSyn(540, 2064).catch(() => undefined);
         await h.sleep(1500);
-        // ★2026-08-05 SON ÇARE (3. turdan sonra): görünmeyen diyaloğun "Deactivate and
-        // switch" düğmesine ÖLÇÜLEN koordinattan bas. Operatör ss'inde (1080×2400) düğme
-        // sağ-altta, diyalog gövdesinin alt kenarında: ~(770, 1565). Oransal hesaplıyoruz
-        // ki farklı çözünürlükte de tutsun. Yalnızca hâlâ DowngradeFriction'daysak —
-        // ekran değiştiyse bu tıklama yapılmaz.
-        if (downgradeRounds >= 3 && /DowngradeFriction|downgrade\./i.test(await curFocus())) {
-          const { sw: W, sh: H } = await wmSize(serial).catch(() => ({ sw: 1080, sh: 2400 }));
-          await h.tapSyn(Math.round(W * 0.713), Math.round(H * 0.652)).catch(() => undefined);
-          await h.sleep(1200);
-          if (!/DowngradeFriction|downgrade\./i.test(await curFocus())) {
-            wlog('verify: onay diyaloğu ÖLÇÜLEN koordinattan onaylandı → downgrade aşıldı');
-          }
-        }
       }
       // Path (B) (leftDowngrade) falls straight through to continue → the loop re-observes
       // and the number/verify branch takes over.

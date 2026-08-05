@@ -97,7 +97,7 @@ do_devices() {
     fi
   done < "$REC/inst-country-latest.txt"
   log "toplam=$total zaten-çalışan=$skipped başlatılan=$started"
-  log "⏳ Boot ~90sn sürer; sonra `fleet-restore.sh check` ile doğrulayın."
+  log "⏳ Boot ~90sn sürer; sonra 'fleet-restore.sh check' ile doğrulayın."
 }
 
 case "$MODE" in

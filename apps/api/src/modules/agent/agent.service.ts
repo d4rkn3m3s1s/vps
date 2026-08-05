@@ -490,9 +490,15 @@ export class AgentService {
             ? `📵 WhatsApp: numara ulaşılamadı — ${outPeer}`
             : `⚠️ WhatsApp mesajı gönderilemedi — ${pl.deviceId}`;
           const failDetail = `${res.note ? String(res.note) : String(res.status || 'SEND_FAILED')} (hedef ${outPeer}, cihaz ${pl.deviceId}). Kod: ${res.status || outcome.error || 'SEND_FAILED'}`;
-          void notificationsService
-            .dispatch(updated.workspaceId ?? '', { title: failTitle, detail: failDetail.slice(0, 900) })
-            .catch(() => undefined);
+          // ★2026-08-05 ÇİFT BİLDİRİM KALDIRILDI (operatör: "CHAT_NOT_OPENED 3 kez
+          // basılıyor"). Aynı başarısızlık için İKİ ayrı yol Telegram'a yazıyordu:
+          //   1) notificationsService.dispatch  → kanala DOĞRUDAN
+          //   2) alertsService.evaluate('JOB_FAILED') → kural eşleşince AYNI kanala
+          // (üçüncüsü panel akışındaki jobNotification, o ayrı bir hedef.)
+          // Artık yalnızca alerts yolu kullanılıyor: kural motoru operatörün
+          // kapatabildiği/eşikleyebildiği tek yer, ayrıca JOB_FAILED zaten
+          // CRITICAL_FAILOPEN kümesinde — kural TANIMLI OLMASA BİLE Telegram'a düşer.
+          // Yani hiçbir bildirim KAYBOLMUYOR, sadece kopyası gitmiyor.
           void alertsService
             .evaluate(updated.workspaceId ?? undefined, 'JOB_FAILED', { title: failTitle, detail: failDetail.slice(0, 900) })
             .catch(() => undefined);

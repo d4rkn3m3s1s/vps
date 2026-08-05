@@ -1,0 +1,33 @@
+[Unit]
+# ★2026-08-05 REBOOT SONRASI FİLO KURTARMA.
+#
+# NEDEN: bu kurulumda iki şey kalıcı DEĞİL —
+#   1) Waydroid instance'ları systemd ile yönetilmiyor (0 unit); hepsi elle
+#      `wd-run.sh <inst>` ile başlatılmış → reboot'ta HİÇBİRİ geri gelmez.
+#   2) `iptables-persistent` kurulu değil → 136 REDIRECT kuralı KAYBOLUR.
+#      Proxy yönlendirmesi bunlara bağlı; kaybolursa cihazlar DATACENTER IP'sinden
+#      çıkar ve WhatsApp hesapları BANLANIR (21 Tem'de bir kez yaşandı).
+#
+# Bu unit reboot'tan sonra `fleet-restore.sh all` çalıştırarak ikisini de geri getirir.
+# WhatsApp hesapları zaten güvende: /data fiziksel diskte (ext4/LVM).
+Description=Fleet boot restore (proxy/iptables + Waydroid instances)
+Documentation=file:///opt/fleet-recovery/README.md
+# Ağ ve docker (postgres) hazır olmadan başlamasın; dnsmasq/bridge'ler ağa bağlı.
+After=network-online.target docker.service dbus.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# `all` = önce iptables+redsocks, sonra cihazlar (4'erli parti, aralarında 25sn).
+# ~125 cihaz için ≈13dk sürer — bu yüzden timeout bol tutuldu.
+ExecStart=/opt/fleet-recovery/fleet-restore.sh all
+TimeoutStartSec=2400
+# Boot fırtınasında host'u boğmamak için parti boyutu/aralığı burada ayarlanır.
+Environment=FLEET_RESTORE_BATCH=4
+Environment=FLEET_RESTORE_GAP=25
+StandardOutput=append:/var/log/fleet-boot-restore.log
+StandardError=append:/var/log/fleet-boot-restore.log
+
+[Install]
+WantedBy=multi-user.target

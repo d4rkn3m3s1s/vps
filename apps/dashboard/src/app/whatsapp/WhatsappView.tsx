@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { HoloHeader } from '../../components/hud';
 import { useFleetEvents } from '../../lib/live';
+import { usePersistedState } from '../../lib/usePersistedState';
 
 type Device = { id: string; name: string; online: boolean };
 
@@ -141,13 +142,18 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
   const [canned, setCanned] = useState<Canned[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
 
-  const [activePeer, setActivePeer] = useState<string | null>(null);
+  // ★2026-08-05 Yenilemede KAYBOLMASIN: seçili sohbet + yazılan taslak sekme
+  // oturumunda saklanır (bkz. usePersistedState). Operatör uzun bir mesaj yazarken
+  // sayfa yenilenince her şeyi kaybediyordu.
+  const [activePeer, setActivePeer] = usePersistedState<string | null>('wa.activePeer', null);
   const [thread, setThread] = useState<ThreadMessage[]>([]);
   const [threadBefore, setThreadBefore] = useState<string | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
-  const [body, setBody] = useState('');
+  // Taslak SOHBET BAŞINA saklanır: başka bir sohbete geçip dönünce yazdığın metin
+  // yerinde durur ve iki sohbetin taslağı birbirine karışmaz.
+  const [body, setBody] = usePersistedState<string>(`wa.draft.${activePeer ?? 'none'}`, '');
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 

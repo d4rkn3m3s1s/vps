@@ -4418,6 +4418,27 @@ async function whatsappSend(serial, payload) {
   // into that notice and returned a vague COMPOSE_FAILED. Read the screen ONCE and
   // report the ACTUAL reason (account review / ban / rate-limit) instead of hanging.
   if (!chatOpened) {
+    // ★2026-08-07 GEÇİCİ "Searching…" EKRANI YANLIŞ TANI ÜRETİYORDU.
+    // CANLI ÖLÇÜM (mi12 / +905395264232 — CHAT_NOT_OPENED'ların %36'sını tek başına
+    // üretiyordu): DB'deki `screenTexts` alanı "Searching…" idi. WhatsApp bir deep
+    // link'le sohbet açarken ÖNCE numarayı arıyor ("Searching…"), SONRA sonucu
+    // gösteriyor. `notice` TEK KEZ okunduğu için tam o ara ekrana denk gelince
+    // HİÇBİR desen tutmuyor ve belirsiz CHAT_NOT_OPENED'a düşüyordu.
+    // ★KANIT: aynı cihazda elle test — 905305793542 için 1 saniye sonra ekranda
+    // "The phone number … isn't on WhatsApp." YAZIYORDU. Yani sinyal VARDI, sadece
+    // agent onu görmeden karar veriyordu. Doğru sonuç INVALID_RECIPIENT (numara
+    // WhatsApp'ta yok) — operatöre "sohbet açılamadı" demek YANLIŞ YÖNLENDİRME.
+    // FIX: ekran hâlâ "arıyor" durumundaysa kısa süre bekleyip TEKRAR oku.
+    let notice = await h.screenText().catch(() => '');
+    for (let w = 0; w < 6 && /searching|aranıyor/i.test(notice) && !chatOpened; w++) {
+      await h.sleep(700);
+      chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+      if (chatOpened) break;                       // sohbet açıldı → aşağıdaki akış devam etsin
+      notice = await h.screenText().catch(() => '');
+    }
+    if (chatOpened) tlog('chat opened after Searching wait');
+  }
+  if (!chatOpened) {
     const notice = await h.screenText().catch(() => '');
     // ★BAN detection via the ACTIVITY name first — the most reliable signal. WhatsApp's
     // ban screen is BanAppealActivity ("This account can't use WhatsApp" + REQUEST/
@@ -6548,15 +6569,40 @@ async function waOpenProfileScreen(serial) {
   // Ana ekran gelene kadar bekle (eski: kör 800+3500).
   await waitFor(actIs(/whatsapp/i), 6000);
   // ⋮ menü (sağ üst) → Settings.
-  await tap(0.943, 0.063);
-  await sleep(600); // menü animasyonu — activity değişmediği için poll edilemez
+  // ★2026-08-07 NO_PROFILE'ın kaynağı: menü açılışı KÖR `sleep(600)` idi ve activity
+  // değişmediği için poll edilemiyordu. Menü animasyonu geç biterse "Settings"
+  // tıklaması BOŞA gidiyor, Settings hiç açılmıyor ve akış NO_PROFILE ile bitiyordu.
+  // CANLI: 6 saatte 43 NO_PROFILE, 6+ cihaza DAĞILMIŞ (en fazla 3'er) — yani cihaza
+  // özgü arıza DEĞİL, KARARSIZ zamanlama. Elle tekrarladığımda akış SORUNSUZ çalıştı
+  // (HomeActivity → SettingsTabActivity → ProfileInfoActivity), bu da geçiciliği
+  // doğruluyor.
+  // FIX: menüyü dump'tan doğrula (metin göründü mü) ve tutmadıysa TEKRAR dene.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await tap(0.943, 0.063);
+    // Menü gerçekten açıldı mı? Activity değişmiyor, o yüzden ekran metnine bakıyoruz.
+    const menuUp = await waitFor(async () => {
+      const t = await adb(serial, ['shell', 'uiautomator', 'dump', '/sdcard/wa-menu.xml'])
+        .then(() => adb(serial, ['shell', 'cat', '/sdcard/wa-menu.xml']))
+        .catch(() => '');
+      return /Settings|Ayarlar/i.test(String(t));
+    }, 2500);
+    if (menuUp) break;
+    await sleep(400);   // menü açılmadı → kapat/aç döngüsüne girmeden tekrar dene
+  }
   await tap(0.633, 0.395);
   // Settings ekranı gelene kadar bekle (eski: kör 2500).
-  await waitFor(actIs(/Settings|Preferences/i), 4000);
+  if (!(await waitFor(actIs(/Settings|Preferences/i), 4000))) {
+    // Tıklama tutmadı — menü hâlâ açık olabilir. Bir kez daha dene (ucuz).
+    await tap(0.633, 0.395);
+    await waitFor(actIs(/Settings|Preferences/i), 3000);
+  }
   // Settings üst profil kartındaki AVATAR'a tap → ProfileInfoActivity. (İsim metnine
   // tap YANLIŞ: yanındaki ⊕ "hesap ekle" sheet'ini açar — avatar dairesine tap DOĞRU.)
   await tap(0.5, 0.205);
-  await waitFor(actIs(/ProfileInfo/i), 4000);
+  if (!(await waitFor(actIs(/ProfileInfo/i), 4000))) {
+    await tap(0.5, 0.205);
+    await waitFor(actIs(/ProfileInfo/i), 3000);
+  }
   const act = await currentActivity(serial).catch(() => '');
   return /ProfileInfo/i.test(act);
 }

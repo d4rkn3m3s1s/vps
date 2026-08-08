@@ -314,7 +314,20 @@ async function main(): Promise<void> {
         // hasn't reported in >20min = the proactive proxy-leak/zombie layer is silently down.
         // Only check hosts that have EVER reported (lastHealthWatchAt not null) so a brand-new
         // host without the heartbeat wired doesn't false-alarm.
-        const monitorStale = new Date(Date.now() - 20 * 60 * 1000);
+        // ★2026-08-08 EŞİK 20dk → 35dk. YANLIŞ ALARM ÖLÇÜLDÜ: health-watch timer'ı
+        // `OnUnitActiveSec=7min` ile çalışıyor ve heartbeat script'in EN SONUNDA
+        // gönderiliyor — yani turun kendisi uzarsa ping de gecikiyor. 20dk eşiği
+        // yalnızca ~2 turluk pay bırakıyordu.
+        // CANLI KANIT (son 24 saat, 200 tur tarandı): turlar 7 dakikada bir DÜZENLİ
+        // tamamlanmış; TEK bir 21 dakikalık boşluk var (08-08 00:29) — o da operatör
+        // 22 cihaz silerken script yavaşladığı için. Eşiği 1 dakika aşıp alarm verdi.
+        // Yani alarm teknik olarak doğruydu ama PRATİKTE gereksizdi: izleme katmanı
+        // ölmemişti, sadece bir turu geç bitirmişti.
+        // 35dk = ~5 tur payı: gerçek bir çöküşü hâlâ yakalar (izleyici ölürse ping
+        // TAMAMEN durur), ama tek bir yavaş tur artık operatörü boşuna uyandırmaz.
+        // ⚠️ Bu alarm kural olmasa bile Telegram'a düşüyor — yanlış ateşlemesi
+        // gerçek arızaları gölgeliyordu (bugün üçüncü yanlış alarm vakası).
+        const monitorStale = new Date(Date.now() - 35 * 60 * 1000);
         const monitorDown = liveHosts.length
           ? await prisma.host
               .findMany({
@@ -325,7 +338,7 @@ async function main(): Promise<void> {
           : [];
         for (const h of monitorDown) {
           const title = `🛑 Sağlık izleyici durdu: ${h.name}`;
-          const detail = `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 20+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Sunucuyu kontrol edin.`;
+          const detail = `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 35+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Kontrol: \`systemctl status wd-health-watch.timer\` + \`tail /var/log/wd-health-watch.log\`.`;
           void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', { title, detail });
           // ★2026-07-29: bu alarm KURAL TANIMLI OLMASA BİLE gitmeli. İzleme katmanının
           // ölmesi, "her şey yolunda" sanılmasına yol açan en tehlikeli sessizliktir —

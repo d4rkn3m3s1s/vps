@@ -4260,7 +4260,13 @@ async function typeOtp(serial, h, code) {
 async function dismissBlockingDialogs(serial, h) {
   for (let i = 0; i < 3; i++) {
     const nodes = await h.dump();
-    const hasAlert = nodes.some((n) => /custom ROM|unsupported|Alert/i.test(n.text || ''));
+    // ★2026-08-10 "Disappearing messages" BİLGİ EKRANI EKLENDİ.
+    // CANLI: 2 günde 14 CHAT_NOT_OPENED'ın `screenTexts`'i "Disappearing messages are
+    // on in this chat | This increases your privacy and…" idi. Karşı taraf kaybolan
+    // mesajları AÇMIŞSA WhatsApp sohbeti açarken bu bilgi katmanını gösteriyor ve
+    // compose kutusunu ÖRTÜYOR → agent kutuyu bulamayıp CHAT_NOT_OPENED'a düşüyordu.
+    // Oysa sohbet AÇILMIŞTI; tek gereken bilgilendirmeyi kapatmak (OK/GOT IT).
+    const hasAlert = nodes.some((n) => /custom ROM|unsupported|Alert|Disappearing messages|Kaybolan mesajlar/i.test(n.text || ''));
     if (!hasAlert) return;
     // Prefer a clickable OK/CONTINUE button node.
     const btn = nodes.find((n) => n.clickable && /^(OK|CONTINUE|GOT IT)$/i.test((n.text || '').trim()))
@@ -4480,7 +4486,14 @@ async function whatsappSend(serial, payload) {
     if (/banned|suspended|violat|yasakl|askıya|Terms of Service/i.test(notice)) {
       return { status: 'ACCOUNT_BANNED', note: 'Bu WhatsApp hesabı yasaklı/askıda — mesaj gönderilemez', to, screenTexts: notice.slice(0, 400) };
     }
-    if (/not on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(notice)) {
+    // ★2026-08-10 DESEN KAÇIRIYORDU. Gerçek ekran metni: "The phone number +90 537…
+    // **isn't on** WhatsApp." — eski desen `not on whatsapp` arıyordu ama araya
+    // "isn't" giriyor, `isn.?t a valid` ise "valid" bekliyor. Sonuç: numara WhatsApp'ta
+    // olmadığı HÂLDE belirsiz CHAT_NOT_OPENED dönüyordu (canlı: 2 günde 2 vaka, ayrıca
+    // 7 Ağu'daki "Searching…" düzeltmesi sayesinde bu metin artık screenTexts'e DÜŞÜYOR
+    // — yani sinyal görünür oldu ama desen yakalamıyordu).
+    // `isn'?t on whatsapp` eklendi (düz kesme + typographic ' ikisi de).
+    if (/not on whatsapp|isn.?t on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(notice)) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: notice.slice(0, 300) };
     }
     // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
@@ -4513,7 +4526,7 @@ async function whatsappSend(serial, payload) {
       await dismissBlockingDialogs(serial, h); // handle any further dialogs
     }
     // "X is not on WhatsApp" / invalid-number → report, don't hang.
-    if (/not on whatsapp|invalid|isn.?t a valid/i.test(flat)) {
+    if (/not on whatsapp|isn.?t on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(flat)) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: flat.slice(0, 300) };
     }
     // Capture the send button from THIS dump (no extra dump). id/send is the paper-

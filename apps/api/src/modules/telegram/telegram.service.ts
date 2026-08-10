@@ -2187,11 +2187,26 @@ async function pollBot(bot: { workspaceId: string; token: string; chatIds: strin
   // Publish the command palette to Telegram (once per token per process).
   await ensureCommands(bot.token);
 
+  // ★2026-08-10 429'a UYULMUYORDU — kısır döngü. CANLI ÖLÇÜM: 30 dakikada 23 kez
+  // "Too Many Requests: retry after 5". Eski davranış: hata yakalanıp `return`
+  // ediliyordu, dış döngü 5sn sonra TEKRAR deniyordu → Telegram'ın istediği bekleme
+  // hiç uygulanmıyor, sayaç sıfırlanıp yeniden 429 alınıyordu.
+  // Artık `retry after <n>` ayrıştırılıp O KADAR bekleniyor (+1sn pay). Bekleme bu
+  // fonksiyonun içinde yapılıyor çünkü dış döngü `Promise.all` ile TÜM botları
+  // birlikte sürüyor — sadece sınıra takılan bot beklesin, diğerleri akmaya devam etsin.
   let updates: TgUpdate[];
   try {
     updates = await tgCall(bot.token, 'getUpdates', { offset: state.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] }, 30000);
   } catch (e) {
-    logger.warn('tg getUpdates failed', { error: String(e) });
+    const msg = String(e);
+    const retryAfter = /retry after (\d+)/i.exec(msg)?.[1];
+    if (retryAfter) {
+      const waitMs = Math.min(Number(retryAfter) + 1, 60) * 1000;   // üst sınır 60sn
+      logger.warn('tg getUpdates rate-limited', { retryAfterSec: retryAfter });
+      await new Promise((r) => setTimeout(r, waitMs));
+      return;
+    }
+    logger.warn('tg getUpdates failed', { error: msg });
     return;
   }
   if (!Array.isArray(updates) || !updates.length) return;

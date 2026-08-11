@@ -2,6 +2,17 @@
 # wd-run.sh <instance> — phoenixNAP: çözülen 8-adım setsid multi-instance boot.
 # Agent hostShDetached ile çağırır (fire-and-forget). Boot sonrası ADB tcp açar.
 INST="${1:?instance}"
+# ★2026-08-12 GUVENLIK: instance adini KAPIDA dogrula. Bu betikte $INST 23 yerde,
+# cogunlukla TIRNAKSIZ kullaniliyor (ornegin satir ~17: `rm -rf /run/wd-$INST`).
+# Deger API'den geliyor ve orada icerik denetimi YOK (`metadata: z.unknown()`),
+# agent ise `execFile('bash', [script, INST])` ile cagiriyor: argv guvenli gelir
+# ama betigin ICINDE tirnaksiz genisleme yeniden kelime ayristirmasi yapar —
+# `INST="x /"` degeri `rm -rf /run/wd-x /` haline gelir, yani KOK SILME.
+# 23 kullanimi tek tek tirnaklamak yerine (regresyon riski) girdiyi burada
+# reddediyoruz; wd-destroy.sh ayni korumayi zaten uyguluyor, deseni birebir ayni.
+case "$INST" in
+  ''|*[!A-Za-z0-9_-]*) echo "wd-run: REDDEDILDI — gecersiz instance adi: '$INST'" >&2; exit 1;;
+esac
 exec >> /var/log/wd-$INST-run.log 2>&1
 set -x
 XRD=/run/xdg-$INST
@@ -17,29 +28,18 @@ rm -rf /run/wd-$INST /run/xdg-$INST 2>/dev/null; sleep 1
 rm -f /run/waydroid-$INST-lxc/network_up 2>/dev/null  # netfix
 pkill -9 -f "dnsmasq.*waydroid-$INST" 2>/dev/null  # netfix orphan-dnsmasq (subnet cakismasi onler)
 touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-subnets.map 2>/dev/null  # netfix
-# LEASE-TOHUMLAMA (.112 GARANTI) 2026-07-28: sistem her yerde 192.168.<sub>.112 varsayar
-# ama dnsmasq .113 verebilir (CANLI: mi12/13/14/19). dnsmasq acilista mevcut lease'i
-# onurlandirir -> lease BOS/YOK ise .112'yi onceden yaz. Dolu lease'e DOKUNMA.
+# ★2026-07-28 LEASE-TOHUMLAMA (.112 GARANTI): sistemin HER yeri cihaz IP'sini
+# 192.168.<sub>.112 varsayar (serial, heal, teshis komutlari). Ama dnsmasq adresi
+# havuzdan secer ve .113 verebilir (CANLI: mi13/mi12/mi14/mi19 .113 aldi -> ADB .112'yi
+# aradigi icin cihaz "offline" gorundu). dnsmasq ACILISTA mevcut lease'i onurlandirir:
+# lease dosyasi BOS/YOK ise .112'yi onceden yaz -> cihaz GERCEK DHCP ile .112 alir
+# (DHCP sarttir; DNS'i yalnizca DHCP getirir — bkz. wd-firewall-dhcp.sh).
+# Dolu lease'e DOKUNMA (calisan cihazin IP'sini degistirme).
 _SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null)
 _LEASE=/var/lib/misc/dnsmasq.waydroid-$INST.leases
-# 2026-07-30 MAC-AWARE LEASE. Eskiden burada SABIT bir MAC (00:16:3e:f9:d3:03)
-# tohumlaniyordu. Artik her instance'in KENDI MAC'i var (wd-mac-unique.sh) ve lease
-# MAC'e KILITLI oldugu icin sabit MAC ile tohumlamak .112'yi YANLIS MAC'e baglar:
-# yeni MAC lease'i bulamaz, dnsmasq havuzdan RASTGELE adres verir (CANLI: mi27 .50,
-# mi46 .183, mi13 .9) ve sistemin her yerinde varsayilan olan .112 kirilir.
-# Bu yuzden lease config'deki GERCEK MAC ile yazilir. Dolu lease'de de MAC uyusmuyorsa
-# tazelenir (eski davranis 'dolu lease'e dokunma' idi -- ama icinde ESKI MAC varsa
-# o lease zaten ise yaramaz durumdadir).
-_CFGMAC=$(grep -m1 -oE '^lxc\.net\.0\.hwaddr[[:space:]]*=[[:space:]]*\S+' \
-  "/var/lib/waydroid.$INST/lxc/waydroid/config" 2>/dev/null | awk '{print $NF}')
-[ -n "$_CFGMAC" ] || _CFGMAC="00:16:3e:f9:d3:03"
-if [ -n "$_SUB" ]; then
+if [ -n "$_SUB" ] && [ ! -s "$_LEASE" ]; then
   mkdir -p /var/lib/misc 2>/dev/null
-  # .112 satirini KIM tutuyor? Config MAC'i degilse lease tazelenir.
-  _OWNER=$(grep -E "192\.168\.$_SUB\.112 " "$_LEASE" 2>/dev/null | awk '{print $2}' | head -1)
-  if [ ! -s "$_LEASE" ] || [ "$_OWNER" != "$_CFGMAC" ]; then
-    echo "4102444800 $_CFGMAC 192.168.$_SUB.112 Pixel-8-Pro 01:$_CFGMAC" > "$_LEASE"
-  fi
+  echo "4102444800 00:16:3e:f9:d3:03 192.168.$_SUB.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > "$_LEASE"
 fi
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native

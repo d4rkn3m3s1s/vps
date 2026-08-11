@@ -2,6 +2,17 @@
 # wd-run.sh <instance> — phoenixNAP: çözülen 8-adım setsid multi-instance boot.
 # Agent hostShDetached ile çağırır (fire-and-forget). Boot sonrası ADB tcp açar.
 INST="${1:?instance}"
+# ★2026-08-12 GUVENLIK: instance adini KAPIDA dogrula. Bu betikte $INST 23 yerde,
+# cogunlukla TIRNAKSIZ kullaniliyor (ornegin satir ~17: `rm -rf /run/wd-$INST`).
+# Deger API'den geliyor ve orada icerik denetimi YOK (`metadata: z.unknown()`),
+# agent ise `execFile('bash', [script, INST])` ile cagiriyor: argv guvenli gelir
+# ama betigin ICINDE tirnaksiz genisleme yeniden kelime ayristirmasi yapar —
+# `INST="x /"` degeri `rm -rf /run/wd-x /` haline gelir, yani KOK SILME.
+# 23 kullanimi tek tek tirnaklamak yerine (regresyon riski) girdiyi burada
+# reddediyoruz; wd-destroy.sh ayni korumayi zaten uyguluyor, deseni birebir ayni.
+case "$INST" in
+  ''|*[!A-Za-z0-9_-]*) echo "wd-run: REDDEDILDI — gecersiz instance adi: '$INST'" >&2; exit 1;;
+esac
 exec >> /var/log/wd-$INST-run.log 2>&1
 set -x
 XRD=/run/xdg-$INST

@@ -23,12 +23,18 @@ export async function streamTokenHandler(req: Request, res: Response): Promise<v
     throw new AppError('Device not in your workspace', 403, 'FORBIDDEN');
   }
 
+  // ★2026-08-12: ömür 2 saatten 10 DAKİKAYA indirildi. Üstteki yorum "short-lived"
+  // diyordu ama `signAccessToken` env varsayılanını (JWT_ACCESS_EXPIRES_IN=2h)
+  // kullanıyordu — yani oturum token'ıyla AYNI ömür. Bu token `typ:'access'` taşıdığı
+  // için sızması hâlinde 2 saat boyunca TÜM REST yüzeyinde geçerli olurdu.
+  // 10 dakika neden yeterli: token yalnızca WS UPGRADE anında doğrulanıyor; bağlantı
+  // kurulduktan sonra ömrü akışı etkilemiyor, kopmada panel yeni token alıyor.
   const token = signAccessToken({
     sub: req.auth.userId,
     email: req.auth.email ?? '',
     role: req.auth.role ?? 'operator',
     ...(workspaceId ? { workspaceId } : {})
-  });
+  }, '10m');
   res.json({ data: { token, deviceId, online: Boolean(device.hostId) } });
 }
 

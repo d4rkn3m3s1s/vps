@@ -17,9 +17,14 @@ export type RefreshTokenPayload = {
   jti: string;
 };
 
-export function signAccessToken(payload: Omit<AccessTokenPayload, 'typ'>): string {
+// ★2026-08-12: opsiyonel `expiresIn` eklendi (varsayılan: env.jwtAccessExpiresIn = 2h).
+// Gerekçe: yayın (stream) token'ı "short-lived" diye üretiliyordu ama oturum token'ıyla
+// AYNI 2 saatlik ömre sahipti — sızarsa 2 saat boyunca TÜM REST yüzeyinde geçerli bir
+// access token demekti. Çağıranın ömrü daraltabilmesi için parametre; imza geriye dönük
+// uyumlu, mevcut çağrılar aynen 2h alır.
+export function signAccessToken(payload: Omit<AccessTokenPayload, 'typ'>, expiresIn?: string): string {
   return jwt.sign({ ...payload, typ: 'access' }, env.jwtAccessSecret, {
-    expiresIn: env.jwtAccessExpiresIn
+    expiresIn: expiresIn ?? env.jwtAccessExpiresIn
   } as jwt.SignOptions);
 }
 

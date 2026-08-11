@@ -977,6 +977,12 @@ export async function registerWhatsappStatusHandler(req: Request, res: Response)
 // kalan süre bildirilir.
 export async function registerWhatsappRetryHandler(req: Request, res: Response): Promise<void> {
   const workspaceId = requirePublicWorkspace(req);
+  // ★2026-08-11 GÜVENLİK: yazma kapsamı kontrolü BURADA EKSİKTİ (denetim: 28 yazma
+  // ucunun 27'sinde vardı, yalnızca bu birinde yoktu). Retry gerçek bir yazma işlemi —
+  // cihazı sürüyor, iş kaydı açıyor, kayıt akışını yeniden başlatıyor. Eksikliği
+  // teorik değildi: canlıda `{read}` kapsamlı ve AKTİF bir anahtar var
+  // ("API Dokümantasyonu"), yani salt-okunur bir anahtar cihaz sürebiliyordu.
+  requireScope(req, 'write');
   const accountId = typeof req.params.id === 'string' ? req.params.id : '';
   if (!accountId) throw new AppError('accountId gerekli', 400, 'MISSING_ACCOUNT_ID');
   // Bekleme cezası sürüyorsa reddet: erken deneme cezayı uzatıyor. Panel bunu butonu

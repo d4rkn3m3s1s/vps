@@ -21,7 +21,7 @@ import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir, loadavg, cpus as osCpus } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { inflateSync, deflateSync, crc32 } from 'node:zlib';
 import { isIP } from 'node:net';
@@ -1357,7 +1357,11 @@ async function runJobInner(job) {
 
     case 'EMULATOR_PUSH_FILE': {
       const url = String(p(payload, 'url', ''));
-      const fileName = String(p(payload, 'fileName', 'file'));
+      // ★2026-08-11 GÜVENLİK: `fileName` API'de içerik denetimine tabi DEĞİL
+      // (`z.string().optional()`), bu yüzden host'a inmeden ÖNCE temizleniyor.
+      // Aynı değer hem host'taki geçici yola hem cihazdaki hedefe gidiyordu:
+      // "../.." ile host'ta ROOT yazma, cihazda da /sdcard dışına çıkma demekti.
+      const fileName = safeFileName(String(p(payload, 'fileName', 'file')));
       if (!url) throw new Error('url is required');
       const local = await download(url, fileName);
       const dest =
@@ -9674,6 +9678,23 @@ async function assertPublicResolved(u) {
   }
 }
 
+// ★2026-08-11 GÜVENLİK (CRITICAL): dosya adı ASLA hedef dizinin dışına çıkamaz.
+// Önceden `join(dir, name)` ham `name` ile çağrılıyordu; `EMULATOR_PUSH_FILE` işinin
+// `fileName` alanı API'de yalnızca `z.string().optional()` ile doğrulanıyor (içerik
+// denetimi YOK) ve agent'a olduğu gibi ulaşıyordu. Agent bu host'ta ROOT çalıştığı için
+// `fileName: "../../../etc/cron.d/x"` göndermek kök dosya sistemine yazma demekti
+// = tam sistem ele geçirme. Sanitizasyon bilerek `download()` içinde: böylece
+// bugünkü 6 çağrının hepsi ve ileride eklenecekler otomatik korunur.
+function safeFileName(name, fallback = 'file') {
+  // Ters eğik çizgiyi de normalize et — POSIX `basename` onu ayraç saymaz,
+  // dolayısıyla "..\\..\\x" tek parça olarak geçerdi.
+  const base = basename(String(name ?? '').replace(/\\/g, '/')).trim();
+  if (!base || base === '.' || base === '..') return fallback;
+  // Kontrol karakterleri ve kabuk/dosya sistemi için riskli işaretleri sadeleştir.
+  const clean = base.replace(/[\u0000-\u001f<>:"|?*]/g, '_').slice(0, 120);
+  return clean || fallback;
+}
+
 async function download(url, name) {
   let u = assertPublicUrl(url);
   await assertPublicResolved(u);
@@ -9693,7 +9714,7 @@ async function download(url, name) {
   }
   if (!res || !res.ok) throw new Error(`Download failed (${res ? res.status : 'no response'}) for ${url}`);
   const dir = await mkdtemp(join(tmpdir(), 'fleet-'));
-  const local = join(dir, name);
+  const local = join(dir, safeFileName(name));
   await writeFile(local, Buffer.from(await res.arrayBuffer()));
   return local;
 }

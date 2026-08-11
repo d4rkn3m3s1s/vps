@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
+import { signAccessToken } from '../../lib/jwt';
 import { writeAuditLog } from '../audit/audit.service';
 import { isServiceAuth } from '../../lib/serviceAuth';
 import { clearLoginFailures, getLoginLockoutMs, recordLoginFailure } from '../../middleware/rateLimit';
@@ -149,4 +150,30 @@ export async function meHandler(req: Request, res: Response): Promise<void> {
 
   const user = await getCurrentUser(req.auth.userId);
   res.json({ data: user });
+}
+
+// ★2026-08-12 GÜVENLİK: kısa ömürlü WS token'ı.
+//
+// Panelin `/api/ws-token` ucu, tarayıcının `/ws/devices` soketini açabilmesi için
+// `getAccessToken()` çağırıp ADMIN SERVİS KİMLİĞİNİN token'ını olduğu gibi tarayıcıya
+// dönüyordu. Bu iki kuralı birden deliyordu: (1) mimari kural "panel tarayıcıda ASLA
+// JWT tutmaz", (2) dönen token 2 saatlik ve TAM YETKİLİ — `typ:'access'` taşıdığı için
+// `authenticateJwt` kullanan tüm REST yüzeyinde geçerli. Yani panele giren herhangi
+// biri (ileride eklenecek düşük yetkili bir üye dâhil) admin anahtarını eline geçirirdi.
+//
+// Bu uç, çağıranın MEVCUT oturumunu doğrulayıp yalnızca soket açmaya yetecek kadar
+// kısa ömürlü (10 dk) yeni bir token üretir. Rolü OLDUĞU GİBİ taşır — yetki
+// yükseltmez, sadece pencereyi daraltır. Aynı ömür yayın token'ıyla tutarlı.
+export async function wsTokenHandler(req: Request, res: Response): Promise<void> {
+  if (!req.auth) {
+    res.status(401).json({ error: 'UNAUTHORIZED', message: 'Authentication required' });
+    return;
+  }
+  const token = signAccessToken({
+    sub: req.auth.userId,
+    email: req.auth.email ?? '',
+    role: req.auth.role ?? 'operator',
+    ...(req.auth.workspaceId ? { workspaceId: req.auth.workspaceId } : {})
+  }, '10m');
+  res.json({ data: { token, expiresInSeconds: 600 } });
 }

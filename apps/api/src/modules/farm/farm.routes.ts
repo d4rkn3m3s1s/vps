@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
+import { requireAdmin } from '../../middleware/requireAdmin';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import {
   actionLogHandler,
@@ -38,4 +39,11 @@ farmRouter.get('/accounts/:deviceId/totp', requireApiKey, authenticateJwt, async
 farmRouter.get('/accounts/:deviceId/health-trend', requireApiKey, authenticateJwt, asyncHandler(healthTrendHandler));
 farmRouter.post('/accounts/bulk', requireApiKey, authenticateJwt, asyncHandler(bulkHandler));
 farmRouter.post('/import', requireApiKey, authenticateJwt, asyncHandler(importHandler));
-farmRouter.post('/tick', requireApiKey, authenticateJwt, asyncHandler(tickHandler));
+// ★2026-08-12: `requireAdmin` EKLENDİ. Bu uç motoru elle tetikliyor ve `farmService.tick()`
+// PLATFORM GENELİNDE çalışıyor (workspace filtresi YOK — sistem ticker'ı için doğru,
+// çünkü tüm kiracıların kampanyalarını sürmesi gerekir). Ama HTTP ucu yalnızca
+// `authenticateJwt` ile korunuyordu: herhangi bir kiracının EN DÜŞÜK yetkili üyesi
+// bütün kiracıların kampanyalarını tetikleyip iş kaydı ürettirebiliyordu.
+// Handler'ın kendi yorumu zaten "admin run now" diyordu — kod bunu ZORLAMIYORDU.
+// Motoru workspace'e kısıtlamak yerine ucu admin'e kısıtladık: ticker davranışı aynen korunur.
+farmRouter.post('/tick', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(tickHandler));

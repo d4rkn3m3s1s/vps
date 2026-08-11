@@ -3,6 +3,7 @@ import http from 'node:http';
 import { prisma } from '../../db/prisma';
 import { decryptString, encryptString } from '../../lib/crypto';
 import { AppError } from '../../lib/errors';
+import { logger } from '../../lib/logger';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
 import type { ProxyCreateInput, ProxyUpdateInput } from './proxy.types';
@@ -420,26 +421,49 @@ export class ProxyService {
   // about its own pool. Best-effort; never throws into the ticker.
   async alertUnhealthyPool(round: { checked: number; ok: number; failed: number }): Promise<void> {
     try {
+      // ★2026-08-11 YANLIŞ ALARM DÜZELTMESİ — "kaç cihaz ETKİLENİYOR"a bak.
+      // Eski hâli FAILED durumdaki TÜM proxy KAYITLARINI sayıyordu; o kaydı bir cihazın
+      // kullanıp kullanmadığına BAKMIYORDU. Sonuç: kullanılmayan/ölü bir havuz kaydı
+      // yüzünden alarm 30 dakikada bir, SAATLERCE tekrarlıyordu.
+      // CANLI ÖLÇÜM (11 Ağu, alarm 20 saattir tekrarlıyordu): 2 kayıt FAILED idi ama
+      // birini 0, diğerini 1 cihaz kullanıyordu; 94 cihaz zaten SAĞLIKLI kayıttaydı ve
+      // örneklenen 5 cihazın 5'i de TR'den, FARKLI IP'lerle çıkıyordu. Yani gerçek
+      // "datacenter-IP sızıntısı" riski YOKTU — alarm boşuna operatörü uyandırıyordu.
+      // Artık cihazı OLMAYAN FAILED kayıtlar alarma sebep olmuyor (yine de aşağıda
+      // loglanıyor ki ölü kayıt sessizce birikmesin).
       const failedProxies = await prisma.proxy.findMany({
         where: { status: 'FAILED' },
-        select: { workspaceId: true }
+        select: { id: true, workspaceId: true, label: true }
       });
-      const byWs = new Map<string, number>();
+      // Etkilenen cihaz sayısını proxy başına çıkar (yalnızca ONLINE cihazlar sayılır —
+      // kapalı bir cihaz o an trafik üretmiyor, dolayısıyla ban riski de taşımıyor).
+      const affected = failedProxies.length
+        ? await prisma.device.groupBy({
+            by: ['proxyId'],
+            where: { status: 'ONLINE', proxyId: { in: failedProxies.map((p) => p.id) } },
+            _count: { _all: true }
+          }).catch(() => [] as Array<{ proxyId: string | null; _count: { _all: number } }>)
+        : [];
+      const deviceCountByProxy = new Map(affected.map((a) => [a.proxyId ?? '', a._count._all]));
+      const unusedFailed = failedProxies.filter((p) => (deviceCountByProxy.get(p.id) ?? 0) === 0);
+      if (unusedFailed.length) {
+        logger.warn('proxy: FAILED ama HİÇBİR cihaz kullanmıyor (alarm üretilmedi)', {
+          count: unusedFailed.length, labels: unusedFailed.map((p) => p.label).slice(0, 5)
+        });
+      }
+      // Workspace başına ETKİLENEN CİHAZ sayısını topla.
+      const byWs = new Map<string, { proxies: number; devices: number }>();
       for (const p of failedProxies) {
-        if (!p.workspaceId) continue;
-        byWs.set(p.workspaceId, (byWs.get(p.workspaceId) ?? 0) + 1);
+        const devices = deviceCountByProxy.get(p.id) ?? 0;
+        if (!p.workspaceId || devices === 0) continue;   // cihazı yoksa alarm YOK
+        const cur = byWs.get(p.workspaceId) ?? { proxies: 0, devices: 0 };
+        byWs.set(p.workspaceId, { proxies: cur.proxies + 1, devices: cur.devices + devices });
       }
-      const detail = `Proxy sağlık kontrolünde ${round.failed}/${round.checked} proxy BAŞARISIZ. Cihazlar sağlıksız proxy üzerinden çıkıyor olabilir — datacenter-IP sızıntısı = WhatsApp ban riski. Proxy sağlayıcısını (thordata) ve kredi/erişimi kontrol edin.`;
-      for (const [workspaceId, count] of byWs) {
+      for (const [workspaceId, { proxies, devices }] of byWs) {
+        const detail = `${devices} cihaz BAŞARISIZ proxy üzerinden çıkıyor (${proxies} proxy kaydı bozuk; tur: ${round.failed}/${round.checked}). Datacenter-IP sızıntısı = WhatsApp ban riski. Proxy sağlayıcısını (thordata) ve kredi/erişimi kontrol edin.`;
         void alertsService
-          .evaluate(workspaceId, 'PROXY_UNHEALTHY', { title: `⚠️ Proxy havuzu sağlıksız — ${count} proxy başarısız`, detail })
+          .evaluate(workspaceId, 'PROXY_UNHEALTHY', { title: `⚠️ Proxy havuzu sağlıksız — ${devices} cihaz etkileniyor`, detail })
           .catch(() => undefined);
-      }
-      // If no failed proxy carries a workspace (service-owned pool), still alert once
-      // globally through any workspace so the operator isn't left blind.
-      if (byWs.size === 0 && failedProxies.length > 0) {
-        const anyWs = await prisma.workspace.findFirst({ select: { id: true } });
-        if (anyWs) void alertsService.evaluate(anyWs.id, 'PROXY_UNHEALTHY', { title: '⚠️ Proxy havuzu sağlıksız', detail }).catch(() => undefined);
       }
     } catch {
       /* never break the ticker */

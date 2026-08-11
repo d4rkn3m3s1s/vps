@@ -27,10 +27,34 @@ if [ -n "$EXIST" ]; then
   echo "$EXIST"; exit 0
 fi
 
+# ★2026-08-12 CAKISMA KOKU: burasi bos subnet'i YALNIZCA haritaya bakarak seciyordu.
+# Harita ile GERCEK durum kayabiliyor (asagidaki canli ornek), ve kaydigi anda
+# haritada "bos" gorunen bir subnet sahada DOLU olabiliyor:
+#     mi197: harita=74  ama canli=125
+#     mi198: harita=125 ama canli=127
+#     mi201: harita=127 ama canli=130
+#     mi240: haritada YOK,      canli=130  ← mi201 ile CAKISTI
+# Sonuc: yeni instance IP aliyor ama yonlendirme bozuluyor; `adb connect` "No route
+# to host" veriyor ve kurulum "Cihaz acilisi bekleniyor" adiminda sonsuza kadar
+# takiliyor (panel "eth0 IPv4 gecikti — DHCP" der, DHCP SUCSUZDUR).
+# FIX: haritaya ek olarak CANLI bridge'leri de tara. Iki kaynaktan biri bile o
+# subnet'i kullaniyorsa atla. Boylece harita bozulsa/kaysa bile cakisma URETILEMEZ.
+# Not: `ip -br addr` kullanilmiyor — bu betik `sh` ile de calisabiliyor ve bazi
+# ortamlarda `-br` yok; `ip -o -4 addr` her yerde var.
+subnet_live_used() {
+  ip -o -4 addr show 2>/dev/null | grep -qE "[[:space:]]192\.168\.$1\.1/(24|[0-9]+)([[:space:]]|$)"
+}
+
 S=2
 while [ "$S" -le 239 ]; do
-  awk -v s="$S" '$2==s{f=1} END{exit !f}' "$MAP" || break
-  S=$((S+1))
+  if awk -v s="$S" '$2==s{f=1} END{exit !f}' "$MAP"; then S=$((S+1)); continue; fi
+  if subnet_live_used "$S"; then
+    # Haritada bos ama sahada dolu: harita kaymis demektir. Atla ve NOT dus —
+    # sessizce gecmek, kokeni gorunmez kilan seyin ta kendisiydi.
+    echo "net-head: subnet $S haritada bos ama CANLI bridge'de dolu — atlandi" >&2
+    S=$((S+1)); continue
+  fi
+  break
 done
 [ "$S" -gt 239 ] && { echo "240"; exit 0; }
 # 2026-07-30 MUKERRER-KORUMASI. Yazmadan ONCE bu instance'in TUM eski satirlarini sil.

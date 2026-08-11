@@ -156,6 +156,10 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
   const [body, setBody] = usePersistedState<string>(`wa.draft.${activePeer ?? 'none'}`, '');
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // ★2026-08-12: YÜKLEME hatası için ayrı state. `notice` gönderim akışına ait ve
+  // sohbet değişince temizleniyor (aşağıda), yükleme hatasını oraya koymak onu
+  // kaybettirirdi. Ayrı tutmak ikisinin birbirini ezmesini de engelliyor.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [labelEditorOpen, setLabelEditorOpen] = useState(false);
   const [newLabelName, setNewLabelName] = useState('');
@@ -247,10 +251,18 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
       if (labelFilter) qs.set('labelId', labelFilter);
       if (debouncedSearch) qs.set('search', debouncedSearch);
       const res = await fetch(`/api/whatsapp/conversations?${qs.toString()}`);
+      // ★2026-08-12: `res.ok` KONTROL EDİLMİYORDU. Sunucu 500 dönse bile `res.json()`
+      // hata gövdesini ayrıştırıyor, `json?.data?.conversations ?? []` BOŞ LİSTEYE
+      // düşüyor ve catch'e hiç girilmiyordu → operatör hatasız bir "sohbet yok"
+      // ekranı görüyordu. Sessiz catch'ten daha sinsi: ortada hata bile yoktu.
+      if (!res.ok) throw new Error(`conversations ${res.status}`);
       const json = await res.json();
       setConversations((json?.data?.conversations ?? []) as Conversation[]);
       setNextCursor((json?.data?.nextCursor ?? null) as string | null);
-    } catch {} finally { setListLoading(false); }
+      setLoadError(null);
+    } catch {
+      setLoadError('Sohbet listesi yüklenemedi — gösterilen liste eski olabilir.');
+    } finally { setListLoading(false); }
   }, [deviceId, filter, labelFilter, debouncedSearch]);
 
   const loadMore = useCallback(async () => {
@@ -285,10 +297,17 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
     try {
       const qs = new URLSearchParams({ deviceId, peer: activePeer, limit: '50' });
       const res = await fetch(`/api/whatsapp/thread?${qs.toString()}`);
+      // ★2026-08-12: aynı sınıf — `res.ok` yoktu, hata BOŞ MESAJ LİSTESİ oluyordu.
+      // Mesajlaşma ekranında bu, "bu kişiyle hiç yazışma yok" gibi görünür ve
+      // operatörü yanlış yönlendirir; sessiz yenilemede (silent) de aynı şey olurdu.
+      if (!res.ok) throw new Error(`thread ${res.status}`);
       const json = await res.json();
       setThread((json?.data?.messages ?? []) as ThreadMessage[]);
       setThreadBefore((json?.data?.nextBefore ?? null) as string | null);
-    } catch {} finally { if (!opts?.silent) setThreadLoading(false); }
+      setLoadError(null);
+    } catch {
+      setLoadError('Mesajlar yüklenemedi — liste eksik olabilir.');
+    } finally { if (!opts?.silent) setThreadLoading(false); }
   }, [deviceId, activePeer]);
 
   const loadOlder = useCallback(async () => {
@@ -784,6 +803,15 @@ export function WhatsappView({ devices }: { devices: Device[] }) {
           </div>
 
           <div className="wa-conv-list">
+            {/* ★2026-08-12: yükleme hatası ARTIK GÖRÜNÜR. Önceden hata boş listeye
+                dönüştüğü için "Henüz sohbet yok." yazıyordu — operatör gerçekten
+                sohbet olmadığını sanıyordu. Liste korunur, üstte uyarı çıkar. */}
+            {loadError ? (
+              <p className="form-status form-status--err" role="alert" style={{ margin: '0 0 0.5rem' }}>
+                {loadError}
+                <button type="button" className="btn-ghost btn-xs" onClick={() => void loadConversations()}>Tekrar dene</button>
+              </p>
+            ) : null}
             {!deviceId ? <p className="helper wa-empty">Önce bir cihaz seçin.</p>
               : listLoading && conversations.length === 0 ? <p className="helper wa-empty"><Loader2 size={14} className="spin" /> Yükleniyor…</p>
               : conversations.length === 0 ? <p className="helper wa-empty">{debouncedSearch || labelFilter || filter !== 'all' ? 'Bu filtreye uyan sohbet yok.' : 'Henüz sohbet yok.'}</p>

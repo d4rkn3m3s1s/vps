@@ -3,6 +3,7 @@ import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { optionalJwt } from '../../middleware/optionalJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
+import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 import { createInstanceHandler, createBatchHandler, provisionCancelHandler, provisionCapacityHandler, provisionCpuPressureHandler, provisionStatusHandler, provisionStepsHandler } from './provision.controller';
 
 // Tek-tıkla cihaz oluşturma. Sıfırdan yeni izole Waydroid instance kurar; ilerleme
@@ -14,5 +15,5 @@ provisionRouter.get('/capacity', requireApiKey, optionalJwt, asyncHandler(provis
 provisionRouter.get('/cpu-pressure', requireApiKey, optionalJwt, asyncHandler(provisionCpuPressureHandler));
 provisionRouter.get('/status/:jobId', requireApiKey, authenticateJwt, asyncHandler(provisionStatusHandler));
 provisionRouter.post('/cancel/:jobId', requireApiKey, authenticateJwt, asyncHandler(provisionCancelHandler));
-provisionRouter.post('/create', requireApiKey, authenticateJwt, asyncHandler(createInstanceHandler));
-provisionRouter.post('/batch', requireApiKey, authenticateJwt, asyncHandler(createBatchHandler));
+provisionRouter.post('/create', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(createInstanceHandler));
+provisionRouter.post('/batch', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(createBatchHandler));

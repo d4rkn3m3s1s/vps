@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
+import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
 import {
   closeAppHandler,
   createEmulatorHandler,
@@ -18,11 +19,11 @@ import {
 export const emulatorRouter = Router();
 
 emulatorRouter.get('/', requireApiKey, authenticateJwt, asyncHandler(listEmulatorsHandler));
-emulatorRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createEmulatorHandler));
+emulatorRouter.post('/', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(createEmulatorHandler));
 emulatorRouter.post('/:id/start', requireApiKey, authenticateJwt, asyncHandler(startEmulatorHandler));
 emulatorRouter.post('/:id/stop', requireApiKey, authenticateJwt, asyncHandler(stopEmulatorHandler));
 emulatorRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteEmulatorHandler));
-emulatorRouter.post('/:id/install', requireApiKey, authenticateJwt, asyncHandler(installApkHandler));
+emulatorRouter.post('/:id/install', requireApiKey, authenticateJwt, heavyOperationRateLimiter, asyncHandler(installApkHandler));
 emulatorRouter.post('/:id/screenshot', requireApiKey, authenticateJwt, asyncHandler(screenshotHandler));
 emulatorRouter.post('/:id/shell', requireApiKey, authenticateJwt, asyncHandler(shellHandler));
 emulatorRouter.post('/:id/open-app', requireApiKey, authenticateJwt, asyncHandler(openAppHandler));

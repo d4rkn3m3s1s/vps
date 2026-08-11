@@ -26,6 +26,10 @@ export function ReportsView() {
   const [days, setDays] = useState(30);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [busy, setBusy] = useState(false);
+  // ★2026-08-12: dışa aktarma hatası ARTIK GÖRÜNÜR. Önceden sunucu hatası sessizce
+  // BOŞ/BOZUK DOSYAYA dönüşüyordu (aşağıdaki notlara bakın) — operatör indirdiği
+  // dosyaya bakıp "bu dönemde veri yok" sanıyordu. Rapor ekranında bu, yanlış karar demek.
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const rangeQs = useCallback(() => {
     const to = new Date();
@@ -42,8 +46,14 @@ export function ReportsView() {
 
   async function exportCsv() {
     setBusy(true);
+    setExportError(null);
     try {
       const res = await fetch(`/api/reports/jobs?${rangeQs()}`);
+      // ★2026-08-12: `res.ok` kontrolü YOKTU ve catch bile yoktu (sadece finally).
+      // Sunucu 500 dönse `res.json()` hata gövdesini ayrıştırıyor, `Array.isArray(...)`
+      // false çıkıyor ve BOŞ CSV iniyordu ("fleet-report-7d-0.csv") — indirme başarılı
+      // göründüğü için operatör "bu dönemde görev yok" sanıyordu.
+      if (!res.ok) throw new Error(`reports ${res.status}`);
       const json = await res.json();
       const rows = Array.isArray(json.data) ? json.data : [];
       downloadCsv(
@@ -59,14 +69,22 @@ export function ReportsView() {
         ],
         rows
       );
+    } catch {
+      setExportError('CSV dışa aktarılamadı — sunucuya ulaşılamadı. Dosya indirilmedi.');
     } finally {
       setBusy(false);
     }
   }
 
   async function exportJson() {
+    setExportError(null);
     const res = await fetch(`/api/reports?${rangeQs()}`);
+    // ★2026-08-12: burada hata DAHA da sinsiydi — `json.data` undefined olunca
+    // `JSON.stringify(undefined)` üretiyor ve içinde tek kelime "undefined" yazan
+    // bir .json dosyası indiriliyordu. Hatalı dosya indirmektense hiç indirmemek doğru.
+    if (!res.ok) { setExportError('JSON dışa aktarılamadı — sunucuya ulaşılamadı. Dosya indirilmedi.'); return; }
     const json = await res.json();
+    if (json?.data == null) { setExportError('JSON dışa aktarılamadı — sunucu veri döndürmedi.'); return; }
     const blob = new Blob([JSON.stringify(json.data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -153,6 +171,13 @@ export function ReportsView() {
           </>
         }
       />
+
+      {/* ★2026-08-12: dışa aktarma hatası. Sessizce boş/bozuk dosya indirmektense
+          hiç indirmeyip nedenini söylemek doğru — indirilen dosyaya bakıp "veri yok"
+          sanmak, rapor ekranında yanlış karara yol açar. */}
+      {exportError ? (
+        <p className="form-status form-status--err" role="alert">{exportError}</p>
+      ) : null}
 
       <Reveal>
         <div className="holo-stats-grid">

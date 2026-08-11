@@ -1353,7 +1353,8 @@ async function runJobInner(job) {
     }
 
     case 'EMULATOR_CLOSE_APP':
-      return { stdout: await adb(serial, ['shell', 'am', 'force-stop', String(p(payload, 'packageName', ''))]) };
+      // ★2026-08-12: `packageName` iş yükünden ham geliyor → cihaz sh'i için tırnakla.
+      return { stdout: await adb(serial, ['shell', 'am', 'force-stop', shArg(String(p(payload, 'packageName', '')))]) };
 
     case 'EMULATOR_PUSH_FILE': {
       const url = String(p(payload, 'url', ''));
@@ -1370,7 +1371,11 @@ async function runJobInner(job) {
           : `/sdcard/DCIM/${fileName}`;
       try {
         await adb(serial, ['push', local, dest]);
-        await adb(serial, ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', `file://${dest}`]);
+        // ★2026-08-12: `-d` argümanı CİHAZIN sh'ine yeniden ayrıştırılıyor (bkz.
+        // shArg yorumu, ~satır 974). `dest` kullanıcının `fileName`'ini taşıdığı için
+        // `a;reboot` / `a$(id)` cihazda ÇALIŞIRDI. safeFileName() yol ayracını
+        // temizliyor ama kabuk metakarakterlerini DEĞİL — o iş shArg'ın.
+        await adb(serial, ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', shArg(`file://${dest}`)]);
         return { dest };
       } finally {
         await safeRm(local);
@@ -1389,7 +1394,10 @@ async function runJobInner(job) {
         const host0 = String(p(payload, 'host', ''));
         const port0 = p(payload, 'port', null);
         if (host0 && typeof port0 === 'number') {
-          return { stdout: await adb(serial, ['shell', 'settings', 'put', 'global', 'http_proxy', `${host0}:${port0}`]) };
+          // ★2026-08-12: `host0` payload'dan HAM geliyor ve cihazın sh'inde yeniden
+          // ayrıştırılıyor → `evil;reboot` gibi bir değer cihazda komut çalıştırırdı.
+          // (`port0` zaten `typeof === 'number'` ile korunuyor.)
+          return { stdout: await adb(serial, ['shell', 'settings', 'put', 'global', 'http_proxy', shArg(`${host0}:${port0}`)]) };
         }
         throw new Error('instance (Waydroid) or host+port required');
       }
@@ -7138,7 +7146,9 @@ async function whatsappSendMedia(serial, payload) {
   try {
     await adb(serial, ['shell', 'mkdir', '-p', '/sdcard/Pictures']).catch(() => undefined);
     await adb(serial, ['push', local, dest]);
-    await adb(serial, ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', `file://${dest}`]).catch(() => undefined);
+    // ★2026-08-12: cihaz-tarafı sh yeniden ayrıştırması — `dest` medya URL'sinden
+    // türeyen bir ad taşıyor, tırnaklanmadan gitmemeli (bkz. shArg yorumu).
+    await adb(serial, ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', shArg(`file://${dest}`)]).catch(() => undefined);
   } finally {
     await safeRm(local);
   }
@@ -7565,9 +7575,12 @@ async function launchApp(serial, pkg, activity) {
       /* resolver unavailable — handled below */
     }
   }
-  if (comp) return adb(serial, ['shell', 'am', 'start', '-n', comp]);
+  // ★2026-08-12: `comp`/`pkg` iş yükünden (EMULATOR_OPEN_APP → packageName/activity)
+  // gelebiliyor ve cihazın sh'inde yeniden ayrıştırılıyor → tırnaklanmadan
+  // `com.x;id` gibi bir değer cihazda komut çalıştırırdı (bkz. shArg yorumu).
+  if (comp) return adb(serial, ['shell', 'am', 'start', '-n', shArg(comp)]);
   // Last resort: ask am to start the package's default launcher intent.
-  return adb(serial, ['shell', 'monkey', '-p', pkg, '-c', 'android.intent.category.LAUNCHER', '1']);
+  return adb(serial, ['shell', 'monkey', '-p', shArg(pkg), '-c', 'android.intent.category.LAUNCHER', '1']);
 }
 
 // ── UIAutomator: read the on-screen element tree ────────────────────────────

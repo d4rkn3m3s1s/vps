@@ -40,12 +40,21 @@ export function AlertsView() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // ★2026-08-11: CANLI yenileme hataları SESSİZCE yutuluyordu. İlk yükleme hatası
+  // `error` ile görünür, ama `alert.fired` geldiğinde çalışan yenileme
+  // `.catch(() => {})` ile yutuluyordu → liste bayatlar, ekranda hiçbir işaret
+  // olmaz ve operatör eski listeye bakıp "yeni alarm yok" sanardı. Alarm ekranında
+  // bu, gözden kaçan alarm demek. (Aynı desen /jobs'ta düzeltilmişti; burası atlanmış.)
+  const [failures, setFailures] = useState(0);
+  const [lastSync, setLastSync] = useState<Date | null>(null);
 
   const loadEvents = useCallback(async () => {
-    const r = await fetch('/api/alerts/events');
+    const r = await fetch('/api/alerts/events', { cache: 'no-store' });
     if (!r.ok) throw new Error('events');
     const j = await r.json();
     setEvents(j.data ?? []);
+    setFailures(0);
+    setLastSync(new Date());
   }, []);
   const loadRules = useCallback(async () => {
     const r = await fetch('/api/alerts/rules');
@@ -74,8 +83,14 @@ export function AlertsView() {
     void loadAll();
   }, [loadAll]);
 
-  // Live: refresh the event feed the instant an alert fires.
-  useFleetEvents(['alert.fired'], () => { void loadEvents().catch(() => {}); });
+  // Live: refresh the event feed the instant an alert fires. Tek bir kaçan yenileme
+  // normaldir (deploy, anlık kopma); haber olan ARDIŞIK olanıdır — o yüzden yutmak
+  // yerine sayıyoruz ve iki üst üste hatada ekranda uyarı gösteriyoruz.
+  useFleetEvents(['alert.fired'], () => {
+    void loadEvents().catch(() => setFailures((n) => n + 1));
+  });
+
+  const stale = failures >= 2;
 
   const activeTrigger = triggers.find((t) => t.key === trigger);
 
@@ -259,6 +274,13 @@ export function AlertsView() {
         <Reveal delay={0.08}>
           <HoloPanel title="Son uyarı olayları" icon={<Zap size={16} />}>
             <div className="list-grid">
+              {stale && !loading && !error ? (
+                <div className="form-status form-status--err" role="alert">
+                  Uyarı akışı güncellenemiyor ({failures} deneme başarısız). Aşağıdaki liste
+                  {lastSync ? ` ${lastSync.toLocaleTimeString('tr-TR')} itibarıyla` : ''} eski olabilir.
+                  <button type="button" className="btn-ghost btn-xs" onClick={() => void loadAll()}>Tekrar dene</button>
+                </div>
+              ) : null}
               {loading ? (
                 <>
                   <div className="skeleton-row" />

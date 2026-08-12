@@ -89,7 +89,24 @@ export class ReportsService {
     const where = { workspaceId, createdAt: { gte: from, lte: to } };
     const [total, jobs] = await Promise.all([
       prisma.job.count({ where }),
-      prisma.job.findMany({ where, orderBy: { createdAt: 'desc' }, take: CAP })
+      // ★2026-08-12 `select` EKLENDİ — API'yi ÇÖKERTİYORDU (CSV indir butonu).
+      // `select` olmadığı için TÜM kolonlar çekiliyordu, `result` JSON'u dâhil.
+      // Üstteki yorum "capped so a huge range can't OOM" diyor ama sınır SATIR
+      // SAYISI (50.000); sorun satır BOYUTUYDU. CANLI ÖLÇÜM (30 günlük pencere):
+      //   45.500 satır → result 410 MB · payload 12 MB · error 114 kB
+      // Yani 410 MB gereksiz yere belleğe çekiliyordu ve süreç SIGABRT ile ölüyordu.
+      // ★`result` aşağıdaki satır eşlemesinde HİÇ KULLANILMIYOR — bu yüzden select
+      // eklemek davranışı değiştirmez, yalnızca gereksiz veriyi keser.
+      // (Aynı hata analytics.service.ts'te de vardı; 12 Ağu'da orada da düzeltildi.)
+      prisma.job.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: CAP,
+        select: {
+          id: true, type: true, status: true, payload: true,
+          emulatorId: true, createdAt: true, finishedAt: true, error: true
+        }
+      })
     ]);
     const rows = jobs.map((j) => ({
       id: j.id,

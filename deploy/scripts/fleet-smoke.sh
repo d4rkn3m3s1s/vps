@@ -78,6 +78,20 @@ if [ -n "$TOK" ]; then
     bad "/analytics/summary -> $c"
   fi
 
+  # ★ AGIR UC #2: /reports/jobs (panelin "CSV indir" butonu) 12 Agu'da API'yi
+  # cokertiyordu — `select` yoktu, 410 MB'lik `result` kolonu da cekiliyordu.
+  pid0="$(systemctl show fleet-api -p MainPID --value 2>/dev/null)"
+  c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" "$API/reports/jobs")"
+  sleep 2
+  pid1="$(systemctl show fleet-api -p MainPID --value 2>/dev/null)"
+  if [ "$c" = "200" ] && [ "$pid0" = "$pid1" ]; then
+    ok "/reports/jobs -> 200 (API ayakta kaldi)"
+  elif [ "$pid0" != "$pid1" ]; then
+    bad "/reports/jobs API'yi COKERTTI (PID $pid0 -> $pid1) — agir sorgu regresyonu"
+  else
+    bad "/reports/jobs -> $c"
+  fi
+
   # WS token: uretiliyor mu ve KISA omurlu mu (10 dk)
   wt="$(curl -s --max-time 10 -X POST -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" "$API/auth/ws-token" | grep -oE '"token":"[^"]+' | cut -d'"' -f4)"
   if [ -n "$wt" ]; then

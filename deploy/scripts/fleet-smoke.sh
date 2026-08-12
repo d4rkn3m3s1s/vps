@@ -63,6 +63,21 @@ if [ -n "$TOK" ]; then
   # Yetkisiz erisim REDDEDILMELI (guvenlik regresyonu yakalar)
   c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST -H "x-api-key: $AK" "$API/farm/tick")"
   [ "$c" = "401" ] || [ "$c" = "403" ] && ok "POST /farm/tick (tokensiz) -> $c (reddedildi)" || bad "POST /farm/tick tokensiz $c DONDU (korumasiz!)"
+  # ★ AGIR UC: /analytics/summary 12 Agu'da API'yi COKERTIYORDU (298 MB JSON'u
+  # bellege cekiyordu -> SIGABRT). Burada hem yanit hem de SURECIN AYAKTA KALDIGI
+  # kontrol ediliyor: PID degisirse cokme geri gelmis demektir.
+  pid0="$(systemctl show fleet-api -p MainPID --value 2>/dev/null)"
+  c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 45 -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" "$API/analytics/summary")"
+  sleep 2
+  pid1="$(systemctl show fleet-api -p MainPID --value 2>/dev/null)"
+  if [ "$c" = "200" ] && [ "$pid0" = "$pid1" ]; then
+    ok "/analytics/summary -> 200 (API ayakta kaldi)"
+  elif [ "$pid0" != "$pid1" ]; then
+    bad "/analytics/summary API'yi COKERTTI (PID $pid0 -> $pid1) — agir sorgu regresyonu"
+  else
+    bad "/analytics/summary -> $c"
+  fi
+
   # WS token: uretiliyor mu ve KISA omurlu mu (10 dk)
   wt="$(curl -s --max-time 10 -X POST -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" "$API/auth/ws-token" | grep -oE '"token":"[^"]+' | cut -d'"' -f4)"
   if [ -n "$wt" ]; then

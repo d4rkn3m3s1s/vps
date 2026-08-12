@@ -126,6 +126,30 @@ else
   bad "agent MainPID okunamadi"
 fi
 
+
+# ── 3b) Yayin (stream) kanali ───────────────────────────────────────────────
+# ★12 Agu: API her restart edildiginde agent'in stream kanali kopuyor ve
+# KENDILIGINDEN GERI GELMIYOR (canli: 22 dakika boyunca tek deneme bile yok).
+# Panel o sirada "Sunucu aracisi cevrimdisi gorunuyor" diyor ve CANLI EKRAN ACILMIYOR.
+# Cozum bulunana kadar en azindan GORUNUR olsun: deploy sonrasi bu kontrol duserse
+# `sudo systemctl restart fleet-agent` kanali geri getirir.
+head_ "3b) Yayin kanali"
+# Agent'in son "stream channel connected" kaydi, API'nin son basladigi andan SONRA mi?
+api_started="$(systemctl show fleet-api -p ActiveEnterTimestampMonotonic --value 2>/dev/null)"
+last_conn="$(sudo grep -E 'stream channel connected' /var/log/fleet-agent.log 2>/dev/null | tail -1 | grep -oE '20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]+' | head -1)"
+api_iso="$(systemctl show fleet-api -p ActiveEnterTimestamp --value 2>/dev/null | sed 's/^[A-Za-z]* //')"
+if [ -z "$last_conn" ]; then
+  bad "agent stream kanali: HIC baglanmamis (canli ekran calismaz)"
+else
+  lc_epoch="$(date -u -d "$(echo "$last_conn" | tr 'T' ' ')" +%s 2>/dev/null || echo 0)"
+  api_epoch="$(date -d "$api_iso" +%s 2>/dev/null || echo 0)"
+  if [ "$lc_epoch" -ge "$api_epoch" ] 2>/dev/null; then
+    ok "stream kanali API restart'indan SONRA baglanmis ($last_conn)"
+  else
+    bad "stream kanali API restart'indan ONCE baglanmis ($last_conn) — KOPUK, canli ekran ACILMAZ. Duzeltme: systemctl restart fleet-agent"
+  fi
+fi
+
 # ── 4) Panel ────────────────────────────────────────────────────────────────
 head_ "4) Panel"
 c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "$PANEL/login")"

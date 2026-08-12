@@ -11650,11 +11650,51 @@ async function isSerialReachable(serial) {
 // bounce bunu ÇÖZMEZ (sorun adb'de değil, container ağında). ÇÖZÜM: eth0'a statik IP
 // (.112/24) elle ata + link up + adb connect. Bu, canlı-teşhiste (mi19/idilcall) elle
 // bulunan fix'in otomatiği. Instance'ın nokta-path lxc dizinini kullanır (waydroid.<inst>).
+// ★2026-08-12 VAZGEÇME LİMİTİ — kurtarma sonsuza kadar denemez.
+// CANLI VAKA (mi46): route ekleme 14 GÜN boyunca, saatte ~500 kez (son 30 dakikada
+// 723) tekrarlandı ve HİÇ tutmadı. Kök neden route değildi: Android'in netd'si ağı
+// hiç kaydetmemişti (`ip rule`'da `lookup eth0` kuralları yoktu), o yüzden eklenen
+// route hiçbir işe yaramıyordu. Bu döngünün iki zararı vardı: (1) boşuna CPU ve log,
+// (2) daha kötüsü — operatör logda "route ekleniyor" görüp KURTARMA ÇALIŞIYOR sanıyor,
+// gerçekte cihaz 14 gündür ölü. Sessizce sonsuz denemek, arızayı GİZLİYOR.
+// Aynı ders `wd-health-watch.sh`'ta zaten uygulanmıştı (WD_ZOMBIE_FAIL_MAX); burada eksikti.
+const eth0HealFails = new Map();   // instance -> ardışık başarısız heal sayısı
+const eth0HealGaveUp = new Set();  // vazgeçilenler (alarm bir kez gitsin)
+const ETH0_HEAL_MAX_FAILS = Number(process.env.FLEET_ETH0_HEAL_MAX_FAILS || 12); // ~6 dk (30sn tick)
+
+// Başarılı heal (ya da zaten sağlıklı) → sayaç sıfırlanır: geçici arızalar limiti yemez.
+function eth0HealOk(inst) {
+  eth0HealFails.delete(inst);
+  eth0HealGaveUp.delete(inst);
+}
+
+// Başarısız heal → say; limiti aşarsa VAZGEÇ ve operatöre BİR KEZ alarm gönder.
+async function eth0HealFail(inst, reason) {
+  const n = (eth0HealFails.get(inst) ?? 0) + 1;
+  eth0HealFails.set(inst, n);
+  if (n < ETH0_HEAL_MAX_FAILS || eth0HealGaveUp.has(inst)) return;
+  eth0HealGaveUp.add(inst);
+  log(`eth0-heal: ${inst} ${n} denemede DÜZELMEDİ → VAZGEÇİLDİ (sebep: ${reason}). Elle bakılmalı; ` +
+      `container restart netd kaydını yeniler (canlı: mi46 böyle çözüldü).`);
+  await api('/agent/health-alert', {
+    method: 'POST',
+    body: JSON.stringify({
+      kind: 'ETH0_HEAL_GAVE_UP',
+      instance: inst,
+      detail: `eth0 kurtarma ${n} kez denendi, düzelmedi (${reason}). Cihaz büyük ihtimalle ` +
+              `ağa çıkamıyor. Otomatik deneme DURDURULDU — sonsuz döngü arızayı gizliyordu.`,
+      fixed: false
+    })
+  }).catch(() => undefined);
+}
+
 async function healInstanceEth0(inst, knownReachable) {
   try {
     // ★2026-07-25: provision devam ederken DOKUNMA — provisionDevice kendi eth0'ını
     // yönetiyor (DHCP + statik fallback); paralel heal boot-session'ı bozar (canlı: FAILED).
     if (provisioningInstances.has(inst)) return { healed: false, reason: 'provisioning' };
+    // Vazgeçilmiş instance'ı artık deneme — alarm gitti, karar operatörde.
+    if (eth0HealGaveUp.has(inst)) return { healed: false, reason: 'vazgecildi' };
     const { stdout: subOut } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
     const sub = String(subOut || '').trim();
     if (!sub) return { healed: false, reason: 'no-subnet' };
@@ -11692,7 +11732,7 @@ async function healInstanceEth0(inst, knownReachable) {
     // ekle (heal). CANLI: mi20 statik-IP aldı ama route yok → çıkamadı. IP+route ikisi de tamsa geç.
     if (hasIp) {
       const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route show table eth0 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
-      if (Number(String(rtOut || '0').trim()) > 0) return { healed: false, reason: 'already-has-ip-and-route' };
+      if (Number(String(rtOut || '0').trim()) > 0) { eth0HealOk(inst); return { healed: false, reason: 'already-has-ip-and-route' }; }
       // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
       log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);
       await execFileAsync('bash', ['-c',
@@ -11703,8 +11743,9 @@ async function healInstanceEth0(inst, knownReachable) {
       // boot-sonrasi ~2-3dk agresif siler -> "route-added" yanlis-pozitif olurdu. Tutmadiysa
       // healed:false don (sonraki 30s tick tekrar dener; netd sakinleyince kesin tutar).
       const rtOk = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route show table eth0 2>/dev/null | grep -c '^default'`]).then((r) => Number(String(r.stdout || '0').trim()) > 0).catch(() => false);
-      if (!rtOk) return { healed: false, reason: 'route-netd-sildi (tekrar denenecek)' };
+      if (!rtOk) { await eth0HealFail(inst, 'route-netd-sildi'); return { healed: false, reason: 'route-netd-sildi (tekrar denenecek)' }; }
       await ensureInstanceProxy(inst, sub).catch(() => undefined);
+      eth0HealOk(inst);
       return { healed: true, ip, reason: 'route-added' };
     }
     // IP YOK → ata + link up + default-route TÜM tablolara (Android fwmark: main/eth0/

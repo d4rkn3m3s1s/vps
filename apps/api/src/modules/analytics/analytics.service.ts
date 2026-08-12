@@ -50,9 +50,16 @@ export class AnalyticsService {
       // jobs in the window doesn't pull them all into memory just to tally.
       prisma.job.findMany({
         where: { createdAt: { gte: since }, ...wsJob },
-        // ★2026-07-30 `type` + `result` da çekiliyor: gönderim başarısını ölçmek için
-        // gerekli (bkz. sendRate). `result` bir JSON kolonu, ek sorgu maliyeti yok.
-        select: { status: true, createdAt: true, type: true, result: true }
+        // ★2026-08-12 `type` + `result` KALDIRILDI — API'yi ÇÖKERTİYORDU.
+        // Eski yorum "`result` bir JSON kolonu, ek sorgu maliyeti yok" diyordu;
+        // bu, Job tablosu küçükken doğruydu. CANLI ÖLÇÜM (12 Ağu): 14 günlük
+        // pencerede 36.245 iş var ve yalnızca `result` kolonunun toplamı 298 MB
+        // (tek satır 2,3 MB'a kadar çıkıyor — ekran metinleri/dump'lar orada).
+        // Bunu belleğe çekip JS nesnesine dönüştürmek heap'i patlatıyordu:
+        // süreç `SIGABRT` (exit 134) ile ölüyor, systemd yeniden başlatıyordu.
+        // Yani /analytics sayfasını AÇAN HERKES API'yi düşürüyordu (iki kez
+        // birebir tekrarlandı). Gönderim oranı artık DB'de sayılıyor (aşağıda).
+        select: { status: true, createdAt: true }
       }),
       prisma.farmAccount.findMany({
         where: wsFarm,
@@ -67,11 +74,28 @@ export class AnalyticsService {
     // demek; mesajın gidip gitmediği `result.status`ta ('SENT' / 'CHAT_NOT_OPENED' /
     // 'ACCOUNT_RESTRICTED' / 'ACCOUNT_LOGGED_OUT'…). İkisini ayırmadan bakınca
     // %96 başarı görünürken gerçek oran %7 olabiliyor (canlı ölçüm, 30 Tem).
-    const sendJobs = jobs.filter((j) => j.type === 'WHATSAPP_SEND');
-    const sendDelivered = sendJobs.filter((j) => {
-      const rs = String(((j.result ?? {}) as Record<string, unknown>).status ?? '');
-      return rs === 'SENT' || rs === 'OK' || rs === 'DELIVERED';
-    }).length;
+    // ★2026-08-12: bu iki sayım artık DB'de yapılıyor. Önceden tüm `result`
+    // JSON'ları belleğe çekilip JS'te filtreleniyordu (yukarıdaki nota bakın).
+    // Sayım DB tarafında olunca 298 MB'lık veri hiç ağa/belleğe çıkmıyor.
+    const [sendTotalCount, sendDeliveredCount] = await Promise.all([
+      prisma.job.count({ where: { type: 'WHATSAPP_SEND', createdAt: { gte: since }, ...wsJob } }),
+      prisma.job.count({
+        where: {
+          type: 'WHATSAPP_SEND',
+          createdAt: { gte: since },
+          ...wsJob,
+          // `result.status` değerleri: SENT (gerçekten gitti) · OK · DELIVERED.
+          // COMPLETED "iş koştu" demek, mesajın gittiği anlamına GELMEZ — bu ayrım
+          // 30 Tem'de ölçülmüştü: %96 görünen başarı gerçekte %7 çıkabiliyor.
+          OR: [
+            { result: { path: ['status'], equals: 'SENT' } },
+            { result: { path: ['status'], equals: 'OK' } },
+            { result: { path: ['status'], equals: 'DELIVERED' } }
+          ]
+        }
+      })
+    ]);
+    const sendDelivered = sendDeliveredCount;
     // Online-minute metering was removed with the usage module; there is no live
     // per-device online-minute rollup to aggregate, so this is 0 for now.
     const onlineMinutes = 0;
@@ -87,9 +111,9 @@ export class AnalyticsService {
       jobsCompleted,
       jobsFailed,
       successRate: pct(jobsCompleted, jobsCompleted + jobsFailed),
-      sendTotal: sendJobs.length,
+      sendTotal: sendTotalCount,
       sendDelivered,
-      sendRate: pct(sendDelivered, sendJobs.length),
+      sendRate: pct(sendDelivered, sendTotalCount),
       farmAccounts: farmAccounts.length,
       avgHealthScore,
       onlineMinutes

@@ -92,7 +92,11 @@ const envSchema = z.object({
   // Anthropic Claude API — powers natural-language → RPA flow generation. When
   // unset, the AI builder returns a friendly "not configured" error.
   ANTHROPIC_API_KEY: z.string().optional(),
-  ANTHROPIC_MODEL: z.string().default('claude-opus-4-8')
+  // ★2026-08-12: claude-opus-4-8 -> claude-opus-5 (guncel Opus, AYNI fiyat: $5/$25 per MTok).
+  // ⚠️ Opus 5'te DUSUNME VARSAYILAN ACIK ve `max_tokens` dusunme+yanit TOPLAMINI kapsiyor
+  // (Opus 4.8'de omitmek dusunmesiz demekti). Bu yuzden dusuk `max_tokens` tasiyan cagrilar
+  // yanit ortasinda kesilebilir — asagidaki vision cagrisinin siniri bu nedenle yukseltildi.
+  ANTHROPIC_MODEL: z.string().default('claude-opus-5')
 });
 
 const parsed = envSchema.parse(process.env);

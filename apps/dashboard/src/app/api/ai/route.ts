@@ -2,9 +2,12 @@ import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import Anthropic from '@anthropic-ai/sdk';
 
+// ★2026-08-12: guncel kusak. Opus 5 ve Sonnet 5, oncekilerle AYNI fiyat basamaginda
+// ($5/$25 ve $3/$15 per MTok) ama daha guclu. Eski adlar listede BIRAKILMADI —
+// panelde secilebilir kalirlarsa operator farkinda olmadan eski modele duser.
 const MODEL_MAP: Record<string, string> = {
-  'Claude Opus 4.8': 'claude-opus-4-8',
-  'Claude Sonnet 4.6': 'claude-sonnet-4-6',
+  'Claude Opus 5': 'claude-opus-5',
+  'Claude Sonnet 5': 'claude-sonnet-5',
   'Claude Haiku 4.5': 'claude-haiku-4-5'
 };
 
@@ -78,7 +81,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Prompt is required.' }, { status: 400 });
   }
 
-  const model = MODEL_MAP[body.model ?? ''] ?? 'claude-opus-4-8';
+  const model = MODEL_MAP[body.model ?? ''] ?? 'claude-opus-5';
   const client = new Anthropic({ apiKey });
 
   // Carry prior turns so the assistant has conversation context. We sanitize the

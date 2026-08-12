@@ -66,7 +66,7 @@ state-changing actions. Dashboard API routes proxy 1:1 through `apiCall(path, {a
 - **Fingerprints** (anti-detection): `modules/fingerprint`. `generateFingerprintData`
   randomizes IMEI/model/etc.; can pin `model`/`osVersion` (provisioning catalog).
 - **RPA**: `modules/rpa` ↔ `/rpa`. Steps: `tap|type|wait|swipe|openApp|shell|keyevent`.
-- **AI flow builder**: `modules/ai` — Anthropic Messages API (`claude-opus-4-8`,
+- **AI flow builder**: `modules/ai` — Anthropic Messages API (`claude-opus-5`,
   forced-tool structured output) turns NL into RPA steps. Needs `ANTHROPIC_API_KEY`.
   When touching anything Claude/Anthropic, consult the `claude-api` skill — don't
   guess model ids or API shape.

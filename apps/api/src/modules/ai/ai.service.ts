@@ -224,7 +224,12 @@ export async function analyzeScreen(
       },
       body: JSON.stringify({
         model: env.anthropicModel,
-        max_tokens: 512,
+        // ★2026-08-12: 512 -> 2048. Opus 5'te DUSUNME VARSAYILAN ACIK ve `max_tokens`
+        // dusunme + yanit TOPLAMINI kapsiyor; 512 ile model daha arac cagrisina
+        // varmadan kesilebilirdi (`stop_reason: max_tokens`, bos sonuc). Bu cagri
+        // zorunlu arac kullaniyor (`tool_choice`), yani kesilme = ozelligin sessizce
+        // calismamasi demek. 2048, dusunme + tek arac cagrisi icin rahat bir tavan.
+        max_tokens: 2048,
         system: VISION_SYSTEM,
         tools: [LOCATE_TARGET_TOOL],
         tool_choice: { type: 'tool', name: 'locate_target' },

@@ -41,7 +41,9 @@ const AUTOMATION = [
 
 const ASK = ['Faturalandırma nasıl çalışır?', 'RPA nasıl kullanılır?', 'Proxy nasıl yapılandırılır?', 'Nasıl plan seçilir?'];
 
-const MODELS = ['Claude Opus 4.8', 'Claude Sonnet 4.6', 'Claude Haiku 4.5'];
+// ★2026-08-12: bu liste `app/api/ai/route.ts` icindeki MODEL_MAP ile AYNI olmali —
+// eslesmeyen bir ad secilirse istek sessizce varsayilan modele duser.
+const MODELS = ['Claude Opus 5', 'Claude Sonnet 5', 'Claude Haiku 4.5'];
 
 type ChatMessage = { role: 'user' | 'assistant'; text: string };
 

@@ -90,13 +90,39 @@ fi
 [ -d "$DATA_HOME" ] && rm -rf "$DATA_HOME" && log "removed $DATA_HOME (userdata ~2GB)"
 rm -f "$LEASES" 2>/dev/null || true
 
-# 5) Free the subnet-map line so net-head.sh can reuse the subnet (else the 2..239 range
+# 5) Free the subnet-map line so net-head.sh can reuse the subnet (else the range
 #    slowly fills with dead entries from failed provisions and eventually runs out).
+#
+# ★★★2026-08-13 KAYBOLAN GÜNCELLEME YARIŞI — TOPLU SİLMEDE HİÇBİR SATIR SİLİNMİYORDU.
+#
+# Blok "oku → süz → geri yaz" yapıyor ama KİLİTSİZDİ. Operatör panelden birden çok
+# cihazı birden silince agent 11 DEVICE_DESTROY işini AYNI ANDA koşturuyor; 11 süreç
+# haritayı aynı anda okuyup yazınca son yazan diğer 10'un silmesini EZİYOR.
+#
+# CANLI KANIT (13 Ağu 01:33:45–46, 11 destroy işi paralel):
+#   toplu silinen 11 cihaz → 11/11 HARİTADA KALDI
+#   tek tek silinenler (mi287, mi284) → 0/2 kaldı (temizlendi) ✓
+#   wd-destroy kilidi: 0 referans   ·   net-head.sh kilidi: 3 referans
+# Sonuç: 16 hayalet kayıt subnet tutuyordu (boş subnet 93 → 67'ye düşmüştü).
+#
+# FIX: net-head.sh'in KULLANDIĞI AYNI kilidi (mkdir tabanlı, flock'suz — betik `sh`
+# ile de çalışabiliyor) burada da al. Aynı kilit olması ŞART: net-head TAHSİS ederken
+# biz SİLERSEK aynı yarış tahsis tarafında da oluşur.
 if [ -f "$SUBNET_MAP" ]; then
+  _LOCKD=/var/lib/waydroid-subnets.lock
+  _i=0
+  while ! mkdir "$_LOCKD" 2>/dev/null; do
+    _i=$((_i+1))
+    # 50 tur × 0.1s = 5s. Kilit sahibi çökmüşse bekleyip yine de devam et (silme
+    # kaybolabilir ama SİLME İŞİNİ BLOKLAMAK daha kötü — cihaz zaten yok edildi).
+    [ "$_i" -gt 50 ] && { log "subnet-map kilidi alinamadi (5s) — yine de deneniyor"; break; }
+    sleep 0.1
+  done
   # Lines look like "<instance> <subnetId>"; drop the one for THIS instance.
   tmp="$(mktemp 2>/dev/null || echo "$SUBNET_MAP.tmp")"
   grep -vE "^$INSTANCE([[:space:]]|$)" "$SUBNET_MAP" > "$tmp" 2>/dev/null && cat "$tmp" > "$SUBNET_MAP" 2>/dev/null || true
   rm -f "$tmp" 2>/dev/null || true
+  rmdir "$_LOCKD" 2>/dev/null || true
   log "subnet-map entry freed"
 fi
 

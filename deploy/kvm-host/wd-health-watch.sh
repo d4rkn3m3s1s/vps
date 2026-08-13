@@ -179,11 +179,34 @@ if [ "$RC" -ne 0 ]; then log "HATA: DB sorgusu başarısız (rc=$RC) — izleme 
 ROWS=$(echo "$ROWS" | grep -v '^$')
 [ -z "$ROWS" ] && { log "aktif-WA cihazı yok — atlanıyor"; exit 0; }
 
-# Bir instance'ın Android ADB adresini bul (subnet map + .112:5555).
+# Bir instance'ın Android ADB adresini bul.
+#
+# ★★★2026-08-13 ".112 VARSAYIMI" SAĞLAM CİHAZLARI "ZOMBIE" SANIP YENİDEN BAŞLATIYORDU.
+# Burası adresi "192.168.<subnet>.112:5555" diye ÜRETİYORDU. DHCP başka bir adres
+# verdiğinde (canlı ölçüm: 112 cihaz .112, ama 23 cihaz DEĞİL) betik ADB'ye HİÇ
+# ulaşamıyor, "reconnect başarısız + host süreci ayakta" görüp ZOMBIE ilan ediyor ve
+# cihazı YENİDEN BAŞLATIYOR. 6 tur sonra da DEGRADED işaretleyip durduruyordu —
+# operatörün gördüğü "cihazlar kendi kendine duruyor" + DEVICE_DEGRADED bildirimleri.
+#
+# A/B KANIT (canlı, aynı instance, yan yana):
+#   mi270  betik→192.168.172.112:5555 = "error: device not found"
+#          GERÇEK →192.168.172.211:5555 = "device"   ← cihaz SAĞLAMDI
+#
+# FIX: adresi container'ın kendi eth0'ından OKU. Subnet map yalnızca yedek (o da artık
+# son okteti varsaymak yerine lease'ten gelen gerçek IP'yi arar).
+# ★Aynı ders 30 Tem (mi46) ve 12 Ağu (mi244=.53) yazılmıştı — "IP'yi isimden ÇIKARMA".
 adb_addr_for() {
-  local inst="$1" sn
+  local inst="$1" sn ip
+  # 1) GERÇEK IP — container'ın eth0'ı (tek doğru kaynak)
+  ip=$(lxc-attach -n waydroid -P "/var/lib/waydroid.$inst/lxc" -- /system/bin/ip -4 addr show eth0 2>/dev/null \
+       | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1)
+  if echo "$ip" | grep -qE '^192\.168\.[0-9]+\.[0-9]+$'; then echo "$ip:5555"; return; fi
+  # 2) Yedek: DHCP lease dosyasından (container'a girmeden)
   sn=$(grep -w "$inst" /var/lib/waydroid-subnets.map 2>/dev/null | awk '{print $2}')
   [ -z "$sn" ] && { echo ""; return; }
+  ip=$(grep -h "192\.168\.$sn\." "/var/lib/misc/waydroid-$inst.leases" 2>/dev/null | awk '{print $3}' | head -1)
+  if echo "$ip" | grep -qE '^192\.168\.[0-9]+\.[0-9]+$'; then echo "$ip:5555"; return; fi
+  # 3) Son çare: eski varsayım (hiçbir kaynak cevap vermediyse)
   echo "192.168.$sn.112:5555"
 }
 

@@ -60,11 +60,19 @@ if [ "$RC" -ne 0 ]; then log "HATA: DB sorgusu başarısız (rc=$RC) — izleme 
 ROWS=$(echo "$ROWS" | grep -v '^$')
 [ -z "$ROWS" ] && { log "aktif-WA cihazı yok — atlanıyor"; exit 0; }
 
-# Bir instance'ın Android ADB adresini bul (subnet map + .112:5555).
+# Bir instance'ın Android ADB adresini bul.
+# ★★★2026-08-13 ".112 varsayımı" sağlam cihazları ZOMBIE sanıp yeniden başlatıyordu —
+# ayrıntılı gerekçe ve A/B kanıtı için deploy/kvm-host/wd-health-watch.sh içindeki
+# aynı fonksiyonun yorumuna bakın. Adres artık container'ın eth0'ından OKUNUR.
 adb_addr_for() {
-  local inst="$1" sn
+  local inst="$1" sn ip
+  ip=$(lxc-attach -n waydroid -P "/var/lib/waydroid.$inst/lxc" -- /system/bin/ip -4 addr show eth0 2>/dev/null \
+       | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1)
+  if echo "$ip" | grep -qE '^192\.168\.[0-9]+\.[0-9]+$'; then echo "$ip:5555"; return; fi
   sn=$(grep -w "$inst" /var/lib/waydroid-subnets.map 2>/dev/null | awk '{print $2}')
   [ -z "$sn" ] && { echo ""; return; }
+  ip=$(grep -h "192\.168\.$sn\." "/var/lib/misc/waydroid-$inst.leases" 2>/dev/null | awk '{print $3}' | head -1)
+  if echo "$ip" | grep -qE '^192\.168\.[0-9]+\.[0-9]+$'; then echo "$ip:5555"; return; fi
   echo "192.168.$sn.112:5555"
 }
 

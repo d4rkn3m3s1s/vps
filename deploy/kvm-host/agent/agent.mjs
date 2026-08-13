@@ -1190,6 +1190,25 @@ async function reapStaleAdbEndpoints(liveSubnets) {
     const serial = parts[0], state = parts[1];
     if (!serial.startsWith('192.168.')) continue;
     if (!/offline|unauthorized/i.test(state)) continue;
+    // ★★★2026-08-13 KOK-FIX: IS YAPAN CIHAZA ASLA DOKUNMA.
+    //
+    // CANLI OLARAK YASANDI (mi249, +905317467445 — operatorun kaydi YANDI):
+    //   21:52:10  verify: reached OTP screen (round 0)   <- OTP ekrani GERCEKTEN oradaydi
+    //   21:52:15  adb-reap: bayat uc dusuruldu 192.168.152.119:5555
+    //   21:52:30  otp_not_reached                        <- 18 sn bosa, NUMARA YANDI
+    // ADB kopunca curFocus() '' donuyor -> onOtp() 24 turun HEPSINDE false ->
+    // agent "WhatsApp SMS gondermedi" diye YANLIS TERMINAL HUKUM veriyor.
+    // Ayni sey 5 cihazi daha "Durduruldu" gosterdi (21:13/21:16/21:20/21:46/22:03);
+    // olculdu: hepsinin wd-run sureci CALISIYORDU, sadece ADB ucu dusurulmustu.
+    //
+    // `busyDevices` (her job'da dolar) ve `provisioningInstances` reap'e HIC bagli
+    // degildi. `busyDevices` serial'i tam olarak bu formatta ("IP:5555") tutar.
+    // Gecici bir offline, is suren cihazda NORMALDIR (session restart, yuk) — uc
+    // dusurulmezse adb kendi yeniden baglar; dusurulurse is OLUR.
+    if (busyDevices.has(serial)) {
+      log(`adb-reap: ${serial} ATLANDI — cihazda IS SURUYOR (uc dusurulmedi)`);
+      continue;
+    }
     const sub = serial.split('.')[2];
     if (liveSubnets.has(String(sub))) continue;   // gercek instance -> DOKUNMA
     await execFileAsync(ADB, ['disconnect', serial], { timeout: 5000 }).catch(() => undefined);
@@ -2229,6 +2248,15 @@ async function registerWhatsApp(job, legacyPayload) {
   // asks the operator via the panel (status VERIFY_METHOD) instead of blindly guessing
   // — the user asked for this so they control SMS-vs-voice per number/attempt.
   const verifyMethod = String(p(payload, 'verifyMethod', '')).trim().toLowerCase();
+  // ★★★2026-08-13 OPERATOR ISTEGI: "Sıfırla dediğimde WhatsApp SİLİNMESİN ki ekrana
+  // elle müdahale edebileyim." Eskiden "Sıfırla ve Tekrar Dene" otpCode/verifyMethod
+  // OLMADAN yeni bir kayit isi aciyordu -> asagidaki `pm clear` KOSUYORDU -> WhatsApp
+  // fabrika ayarina donuyor ve operatorun ekranda duzeltecegi hicbir sey kalmiyordu
+  // (yanlis kod girildiginde en cok ihtiyac duyulan sey tam olarak buydu).
+  // `keepWaData: true` geldiginde WA verisi KORUNUR: proxy/parmak izi yenilenir,
+  // WhatsApp acik kaldigi yerden devam eder. Fabrika-temiz baslangic isteniyorsa
+  // panel bu bayragi GONDERMEZ (ilk kayitta oldugu gibi) ve eski davranis aynen kosar.
+  const keepWaData = p(payload, 'keepWaData', false) === true;
   // ★MODAL-FIX: a continuation job (operator submitted OTP or picked a verify method) re-
   // launches WhatsApp and re-runs proxy/perms/a11y/launch — but re-narrating those early
   // steps in the panel makes the SAME accountId log look like it "started over" (double
@@ -2401,7 +2429,7 @@ async function registerWhatsApp(job, legacyPayload) {
     try { await adb(serial, ['install', '-r', '-g', local]); }
     catch (e) { stopHeartbeat(); throw e; }
     finally { await safeRm(local); }
-  } else if (!otpCode && !verifyMethod) {
+  } else if (!otpCode && !verifyMethod && !keepWaData) {
     // FIRST register only — WIPE WA data so it starts factory-fresh. ROOT CAUSE
     // (VERIFIED LIVE, mi10): a reused instance keeps the previous number's session and
     // WA reopens on that number's "Verify …" / rate-limit screen, so the new number is
@@ -3989,7 +4017,45 @@ async function registerWhatsApp(job, legacyPayload) {
   }
   if (!otpReached) {
     const st = (await h.screenText()).slice(0, 400);
-    return done('otp_not_reached', { status: 'OTP_SCREEN_NOT_REACHED', note: `Doğrulama ekranına ulaşılamadı — numara gönderimi başarısız olabilir (SMS/arama gönderilemedi). Son ekran: ${_phase}`, phoneNumber, screenTexts: st });
+    // ★★★2026-08-13 "EKRAN BOS" ile "CIHAZ ERISILEMIYOR" AYNI SEY DEGIL.
+    //
+    // curFocus()/screenText() ADB kopunca '' doner (`.catch(() => '')` yutar) ve
+    // onOtp() bu yuzden 24 turun HEPSINDE false doner. Eskiden burada dogrudan
+    // OTP_SCREEN_NOT_REACHED donuluyordu = "WhatsApp SMS gondermedi" TERMINAL hukmu
+    // -> NUMARA YANIYORDU. CANLI: mi249 +905317467445 — ekranda "Verifying your
+    // number" YAZIYORDU (operatorun ekran goruntusu), adb-reap ucu 5 sn once
+    // dusurmustu. Kayit oldu, numara bosa gitti.
+    //
+    // Simdi: ekran BOS ise once ucu geri baglayip BIR KEZ daha bak. Hala bosa
+    // cihaz gercekten erisilemiyor demektir -> numarayi YAKMA, `resumable` birak.
+    if (!st || !st.trim()) {
+      await ensureConnected(serial).catch(() => undefined);
+      await h.sleep(1500);
+      if (await onOtp()) {
+        wlog('verify: ekran BOS'
+          + ' donuyordu (ADB kopmus) — uc geri baglandi, OTP ekrani DOGRULANDI');
+      } else {
+        const st2 = (await h.screenText().catch(() => '')).slice(0, 400);
+        if (!st2 || !st2.trim()) {
+          wlog('verify: CIHAZ ERISILEMIYOR (ekran okunamiyor) — numara YAKILMIYOR, kayit devam edebilir');
+          await snap('adb_lost');
+          return done('adb_lost', {
+            status: 'DEVICE_UNREACHABLE',
+            note: '⚠️ Cihaza ADB ile ulaşılamadı — ekran okunamadığı için doğrulama '
+              + 'ekranına ulaşılıp ulaşılmadığı ANLAŞILAMADI. WhatsApp kaydı REDDETMEDİ; '
+              + 'numaranız muhtemelen SAĞLAM ve SMS gönderilmiş olabilir.',
+            action: 'Panelden canlı ekranı açıp cihazın durumuna bakın. Doğrulama ekranı '
+              + 'duruyorsa kodu ELLE girebilirsiniz; ekran kapandıysa "Sıfırla ve Tekrar '
+              + 'Dene" ile AYNI numarayla devam edin.',
+            resumable: true,   // ★numara YANMADI — terminal hüküm verilmiyor
+            phoneNumber
+          });
+        }
+      }
+    }
+    if (!(await onOtp())) {
+      return done('otp_not_reached', { status: 'OTP_SCREEN_NOT_REACHED', note: `Doğrulama ekranına ulaşılamadı — numara gönderimi başarısız olabilir (SMS/arama gönderilemedi). Son ekran: ${_phase}`, phoneNumber, screenTexts: st });
+    }
   }
   // ★SMS-SEND-FAILED overlay check (operatör isteği): "Couldn't send an SMS to your
   // number" is a DIALOG that pops OVER the VerifyPhoneNumber activity — so onOtp() returns
@@ -8443,6 +8509,27 @@ async function lxcAttach(instance, argv, ms = 60000) {
 
 // Resolve the container's actual DHCP address (it may differ from the .112
 // guess). Reads the instance's dnsmasq lease file; falls back to the container's
+// ★★★2026-08-13 SUBNET -> IP ÖNEKİ (238 tavanı kaldırıldı — operatör: "filo büyüyecek").
+//
+// Subnet numarası doğrudan IP'nin üçüncü oktetine yazılıyordu (`192.168.<S>.x`), bu da
+// filoyu **238 cihazla** sınırlıyordu. ÖLÇÜM (13 Ağu): 145 subnet kullanımda, 140 canlı
+// cihaz. Tavan yaklaşıyordu.
+//
+// Eşleme:  S <= 239 -> "192.168.<S>"        (mevcut cihazlar AYNEN kalır, taşıma YOK)
+//          S >= 240 -> "10.10.<S-239>"      (10.10.1.x … 10.10.254.x → +254 subnet)
+//
+// ★ÇAKIŞMA DENETİMİ (canlı, host'un tüm IPv4'leri): bond0.2 10.0.0.11/24 ·
+//   bond0.3 125.253.73.45/31 · docker0 172.17.0.1/16 → 10.10.0.0/16 BOŞ, çakışma yok.
+//   (Host'un 10.0.0.0/24'ü farklı bir /16'da olduğu için etkilenmez.)
+//
+// ⚠️ Bu fonksiyon net-head.sh ve wd-run.sh'teki `subnet_prefix()` ile AYNI mantığı
+// uygular — üçü birlikte değişmeli, biri geride kalırsa yeni cihazlar yanlış adrese
+// kurulur.
+function subnetPrefix(subnetId) {
+  const s = Number(subnetId);
+  return s >= 240 ? `10.10.${s - 239}` : `192.168.${s}`;
+}
+
 // live eth0 address. Returns null if neither is available yet.
 async function resolveLeaseIp(instance, subnetId) {
   const leaseFile = `/var/lib/misc/dnsmasq.waydroid-${instance}.leases`;
@@ -8452,11 +8539,14 @@ async function resolveLeaseIp(instance, subnetId) {
     const lines = raw.trim().split('\n').filter(Boolean);
     const last = lines[lines.length - 1];
     const ip = last && last.split(/\s+/)[2];
-    if (ip && ip.startsWith(`192.168.${subnetId}.`)) return ip;
+    if (ip && ip.startsWith(`${subnetPrefix(subnetId)}.`)) return ip;
   } catch { /* lease file may not exist yet */ }
   try {
     const out = await lxcAttach(instance, ['/system/bin/ip', '-4', 'addr', 'show', 'eth0'], 15000);
-    const m = new RegExp(`inet (192\\.168\\.${subnetId}\\.\\d+)`).exec(out);
+    // ★2026-08-13: önek artık 10.10.x olabilir → noktaları KAÇIRARAK regex'e göm
+    // (aksi halde "10.10.5" içindeki nokta herhangi bir karakteri eşler).
+    const pfxRe = subnetPrefix(subnetId).replace(/\./g, '\\.');
+    const m = new RegExp(`inet (${pfxRe}\\.\\d+)`).exec(out);
     if (m) return m[1];
   } catch { /* container may not be up yet */ }
   return null;
@@ -8817,11 +8907,11 @@ async function provisionDevice(job) {
     // TÜM tablolara default-route ekle. (DHCP başarılı olsaydı bunu otomatik yapardı.)
     const staticEth0 = () => lxcAttach(instance, ['/system/bin/sh', '-c',
       `export PATH=/system/bin:$PATH; ` +
-      `ip addr add 192.168.${subnetId}.112/24 dev eth0 2>/dev/null; ip link set eth0 up 2>/dev/null; ` +
+      `ip addr add ${subnetPrefix(subnetId)}.112/24 dev eth0 2>/dev/null; ip link set eth0 up 2>/dev/null; ` +
       // ★addInstanceRoutes ile AYNI tablolar: main/local_network/eth0 (legacy_system DEĞİL).
-      `for T in main local_network eth0; do ip route add default via 192.168.${subnetId}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
-      `for T in eth0 local_network; do ip route add 192.168.${subnetId}.0/24 dev eth0 scope link src 192.168.${subnetId}.112 table $T 2>/dev/null; done; ` +
-      `ip route add default via 192.168.${subnetId}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
+      `for T in main local_network eth0; do ip route add default via ${subnetPrefix(subnetId)}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
+      `for T in eth0 local_network; do ip route add ${subnetPrefix(subnetId)}.0/24 dev eth0 scope link src ${subnetPrefix(subnetId)}.112 table $T 2>/dev/null; done; ` +
+      `ip route add default via ${subnetPrefix(subnetId)}.1 dev eth0 2>/dev/null; true`], 12000).catch(() => undefined);
     const dhcpT0 = Date.now();
     let eth0Ip = '';
     let kicks = 0;
@@ -8852,7 +8942,7 @@ async function provisionDevice(job) {
         for (const line of String(raw).trim().split(NLC)) {
           const f = line.split(TABC).join(' ').trim().split(' ').filter(Boolean);
           if (f[0] === '4102444800') continue;               // tohum -> gercek DHCP degil
-          if (f[2] && f[2].startsWith(`192.168.${subnetId}.`)) return f[2];
+          if (f[2] && f[2].startsWith(`${subnetPrefix(subnetId)}.`)) return f[2];
         }
       } catch { /* lease dosyasi henuz yok */ }
       return '';
@@ -8870,7 +8960,7 @@ async function provisionDevice(job) {
       if (i === STATIC_AFTER && !staticApplied) {
         staticApplied = true;
         await staticEth0();
-        plog(`eth0 statik-IP fallback → 192.168.${subnetId}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
+        plog(`eth0 statik-IP fallback → ${subnetPrefix(subnetId)}.112 @ ${((Date.now() - dhcpT0) / 1000).toFixed(0)}s`);
         await logLine('⚙ eth0 statik IP atanıyor (DHCP gecikti)…');
       } else if (!staticApplied && (i === 3 || (i > 3 && (i - 3) % 5 === 0))) {
         // İlk kick i===3 (~8s), sonra ~10s'de bir — SADECE statik atanmadan ÖNCE.
@@ -9101,7 +9191,7 @@ async function provisionDevice(job) {
   // 6) route — Android netstack leaves fwmark tables empty every boot.
   await step('route', 68, 'Ağ yönlendirme', async () => {
     await addInstanceRoutes(instance, subnetId, ip);
-    await logLine(`✓ Ağ yönlendirme eklendi (gw 192.168.${subnetId}.1)`);
+    await logLine(`✓ Ağ yönlendirme eklendi (gw ${subnetPrefix(subnetId)}.1)`);
   });
 
   // 7) proxy — country-matched residential exit (only if requested).
@@ -9415,8 +9505,8 @@ async function provisionDevice(job) {
 // KANIT: agent PATH'i ile `Failed to exec "ip"`, /system/bin/ip ile route listesi geldi.
 // Fix iki katmanli: (a) burada mutlak yol, (b) servise PATH drop-in (pm/setprop vb. icin).
 async function addInstanceRoutes(instance, subnetId, ip) {
-  const gw = `192.168.${subnetId}.1`;
-  const cidr = `192.168.${subnetId}.0/24`;
+  const gw = `${subnetPrefix(subnetId)}.1`;
+  const cidr = `${subnetPrefix(subnetId)}.0/24`;
   for (const table of ['main', 'local_network', 'eth0']) {
     await lxcAttach(instance, ['/system/bin/ip', 'route', 'add', 'default', 'via', gw, 'dev', 'eth0', 'proto', 'static', 'table', table], 15000).catch(() => undefined);
   }
@@ -9453,7 +9543,7 @@ async function wakeDevice(job) {
     await new Promise((r) => setTimeout(r, 8000));
   }
 
-  const ip = (await resolveLeaseIp(instance, subnetId).catch(() => null)) || `192.168.${subnetId}.112`;
+  const ip = (await resolveLeaseIp(instance, subnetId).catch(() => null)) || `${subnetPrefix(subnetId)}.112`;
   const serial = `${ip}:5555`;
   await ensureConnected(serial);
   // ★2026-07-24: erişilemiyorsa (container RUNNING ama ADB "No route") eth0-IP kaybı
@@ -10692,10 +10782,28 @@ async function hostCapacityMetrics() {
     const m = /(\d+)G\s+(\d+)G/.exec(String(stdout));
     if (m) { out.diskTotalGb = Number(m[1]); out.diskFreeGb = Number(m[2]); }
   } catch { /* ignore */ }
+  // ★★★2026-08-13 RAM TAVANI ALARMI (operatör: "filo büyürse nerede patlar").
+  //
+  // ÖLÇÜM (13 Ağu, 163 instance): used 215/250 GB · available 40 GB · cihaz başına
+  // 1.32 GB · swap 1.7 GB KULLANILMAYA BAŞLAMIŞ. Yani gerçek tavan ~195 cihaz ve
+  // filo ona 30 cihaz uzaktaydı — ama RAM için HİÇBİR alarm yoktu (yalnızca CPU ve
+  // disk vardı). RAM biterse Waydroid container'ları OOM ile ölür: cihazlar rastgele
+  // düşer, süren kayıtlar yarıda kesilir, numara yanar.
+  //
+  // ★`free`/`used` DEĞİL `available` ölçülür: buff/cache geri kazanılabilir olduğu için
+  // "free" bu makinede daima ~2 GB görünür ve tamamen yanıltıcıdır (ölçüm: free 1.9 GB
+  // iken available 40 GB). Toplam + swap da gönderilir ki API yüzde hesaplayabilsin ve
+  // "swap'a girdi" erken uyarısını verebilsin.
   try {
-    const { stdout } = await execFileAsync('sh', ['-c', "free -g | awk '/^Mem:/{print $7}'"], { timeout: 8000 });
-    const free = Number(String(stdout).trim());
-    if (Number.isFinite(free)) out.ramFreeGb = free;
+    const { stdout } = await execFileAsync('sh', ['-c',
+      "free -m | awk '/^Mem:/{print $2, $7} /^Swap:/{print $2, $3}'"], { timeout: 8000 });
+    const nums = String(stdout).trim().split(/\s+/).map(Number);
+    const [totalMb, availMb, swapTotalMb, swapUsedMb] = nums;
+    if (Number.isFinite(availMb)) out.ramFreeGb = Math.round(availMb / 1024);
+    if (Number.isFinite(totalMb)) out.ramTotalGb = Math.round(totalMb / 1024);
+    if (Number.isFinite(swapUsedMb) && Number.isFinite(swapTotalMb) && swapTotalMb > 0) {
+      out.swapUsedPct = Math.round((swapUsedMb / swapTotalMb) * 100);
+    }
   } catch { /* ignore */ }
   try {
     // 1-minute load average, normalized to a saturation PERCENT (load / nCPU * 100).
@@ -11850,6 +11958,65 @@ async function dnsSelfHealTick(running) {
   }
 }
 
+// ★★★2026-08-13 KORUMA LISTESI 10,8 DAKIKA GECIKMELIYDI — reap'in ASIL kok nedeni.
+//
+// Eskiden `liveSubnets`, her instance icin `net-head.sh` calistirilarak kuruluyordu.
+// OLCUM (canli, 123 instance): net-head.sh = 5,26 sn/instance -> 647 sn (10,8 DK),
+// ustelik SIRALI. Yavasligin kaynagi mkdir-tabanli kilit (betik atomik subnet TAHSISI
+// icin tasarlandi; biz sadece MEVCUT degeri OKUYORUZ — kilide hic ihtiyac yok).
+// Yeni kurulan cihaz her zaman EN YUKSEK numarali = listenin EN SONUNDA oldugu icin
+// kurban SISTEMATIK olarak hep yeni cihazlardi.
+//
+// Yeni yol iki UCUZ kaynagi birlestirir (olculdu: harita 4 ms, bridge taramasi ~30 ms):
+//   1) /var/lib/waydroid-subnets.map — calisan instance'larin kayitli subnetleri
+//   2) canli bridge'ler (`ip -o -4 addr`) — harita kaysa/bayatlasa bile gercek durum
+// Ikisinin BIRLESIMI kullanilir: biri eksik olsa digeri korur (fail-safe). Ayni
+// "haritaya guvenme, canliyi da tara" dersi 12 Agu subnet-cakismasi fix'inden geliyor.
+async function liveSubnetsFast(running) {
+  const live = new Set();
+  const want = new Set(running);
+  // 1) harita — TEK okuma, kilitsiz
+  try {
+    const raw = await readFile('/var/lib/waydroid-subnets.map', 'utf8');
+    for (const line of String(raw).split(String.fromCharCode(10))) {
+      const f = line.trim().split(/\s+/).filter(Boolean);
+      if (f.length >= 2 && want.has(f[0]) && /^\d+$/.test(f[1])) live.add(String(Number(f[1])));
+    }
+  } catch { /* harita yoksa bridge taramasi devralir */ }
+  // 2) canli bridge'ler — 192.168.<sub>.1/24 seklinde host tarafi adresler
+  try {
+    const { stdout } = await execFileAsync('bash', ['-c',
+      "ip -o -4 addr show 2>/dev/null | grep -oE '192[.]168[.][0-9]+[.]1/' | cut -d. -f3"]);
+    for (const s of String(stdout || '').split(String.fromCharCode(10))) {
+      const t = s.trim();
+      if (/^\d+$/.test(t)) live.add(String(Number(t)));
+    }
+  } catch { /* best-effort */ }
+  return live;
+}
+
+// Tek-tek uc kurtarmada tur basina denenecek en fazla instance sayisi. Amac: 100+
+// cihazlik bir kopusta tick'in uzamamasi (her deneme ~1-2 sn). Kalanlar sonraki
+// tur'da denenir — tick 60-90 sn'de bir kostugu icin tum filo birkac turda taranir.
+const ADB_RECONNECT_PER_TICK = Number(process.env.FLEET_ADB_RECONNECT_PER_TICK || 12);
+// instance -> subnet (net-head.sh ciktisi). eth0-heal dongusu zaten her instance icin
+// bu degeri okuyor; tekrar okumamak icin orada doldurulur.
+const instSubnetCache = new Map();
+
+// ★2026-08-13 Bir instance'in GERCEK eth0 IP'sini oku (varsayma!). Once DHCP lease
+// dosyasindan (ucuz, container'a girmeden), olmazsa container'in kendi `ip addr`
+// ciktisindan. Donen deger "192.168.<sub>.<host>" — son oktet .112 OLMAK ZORUNDA DEGIL.
+async function instanceIp(inst) {
+  try {
+    const { stdout } = await execFileAsync('bash', ['-c',
+      `lxc-attach -n waydroid -P /var/lib/waydroid.${inst}/lxc -- /system/bin/ip -4 addr show eth0 2>/dev/null `
+      + `| grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1`], { timeout: 12000 });
+    const ip = String(stdout || '').trim();
+    if (/^192\.168\.\d+\.\d+$/.test(ip)) return ip;
+  } catch { /* container kapali/mesgul olabilir */ }
+  return null;
+}
+
 async function adbRecoveryTick() {
   // Instances actually running on the host (wd-run shells).
   let running = [];
@@ -11861,12 +12028,7 @@ async function adbRecoveryTick() {
   // birikip yeni kurulumlari (subnet geri-donusumunde) bogmasin. Operator elle tespit
   // etmek zorunda kalmaz. running listesindeki instance'larin GERCEK subnetleri korunur.
   try {
-    const live = new Set();
-    for (const inst of running) {
-      const sub = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`])
-        .then((r) => String(r.stdout || '').trim()).catch(() => '');
-      if (sub) live.add(sub);
-    }
+    const live = await liveSubnetsFast(running);
     if (live.size) await reapStaleAdbEndpoints(live);
     await dnsSelfHealTick(running).catch(() => undefined);
   } catch { /* best-effort */ }
@@ -11879,8 +12041,20 @@ async function adbRecoveryTick() {
   // için eth0'da IPv4 var mı bak; yoksa ata (adb-server-bounce'tan bağımsız — tek cihazın
   // eth0-IP kaybını çoğunluk-wedge beklemeden düzeltir). reachableSerials "192.168.<sub>.112:5555"
   // döndürür; instance'ın subnet'iyle eşleştiririz.
+  // ★★★2026-08-13 ".112 VARSAYIMI" — 23 CIHAZ KURTARMANIN DISINDA KALIYORDU.
+  //
+  // Burasi (ve asagidaki reconnect dongusu) IP'nin HEP "192.168.<sub>.112" oldugunu
+  // varsayiyordu. DHCP baska adres verdiginde varsayim TUTMUYOR:
+  //   OLCUM (canli DB): .112 olan 112 cihaz — .112 OLMAYAN 23 cihaz
+  //   ornekler: mi255=.156.184  mi256=.159.121  mi244=.47.53  mi265=.167.128
+  // Sonuc: bu 23 cihaz "erisilemez" sayiliyor (eth0-heal bosuna kosuyor) ve ADB ucu
+  // dustugunde reconnect YANLIS adrese gidiyor -> uc HIC geri baglanmiyor -> panelde
+  // sonsuza kadar "Durduruldu". CANLI: mi255 22:24'te elle baglandi, 22:26'da yine
+  // dustu ve kimse geri baglamadi; tek `adb connect` ile ANINDA geri geldi.
+  // ★Ayni ders 30 Tem (mi46=.47.112 DEGIL) ve 12 Agu (mi244=.53) yazilmisti — kod
+  // iki noktada hala varsayiyordu. Artik SUBNET'e bakiyoruz, son okteti DEGIL.
   const reachSubnets = new Set(reachable.map((s) => {
-    const m = /192\.168\.(\d+)\.112/.exec(String(s));
+    const m = /192\.168\.(\d+)\.\d+/.exec(String(s));
     return m ? m[1] : null;
   }).filter(Boolean));
   let healedAny = false;
@@ -11889,6 +12063,7 @@ async function adbRecoveryTick() {
       const { stdout } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
       const sub = String(stdout || '').trim();
       if (!sub) continue;
+      instSubnetCache.set(inst, sub);   // tek-tek uc kurtarma bunu kullanir
       // ★2026-07-27: ERİŞİLEBİLİR cihazları da healInstanceEth0'a ver — IP-var-ama-route-YOK
       // durumunu düzeltir (cihaz ADB-reachable ama internete çıkamaz → WhatsApp "Couldn't
       // connect"). healInstanceEth0 IP+route ikisi de tamsa ucuz-geçer ('already-has-ip-and-
@@ -11902,6 +12077,38 @@ async function adbRecoveryTick() {
     try { reachable = await reachableSerials(); } catch { /* keep old */ }
   }
 
+  // ★★★2026-08-13 TEK-TEK UC KURTARMA — EN BUYUK BOSLUK BURASIYDI.
+  //
+  // Eskiden yeniden-baglama YALNIZCA "filonun yarisindan fazlasi erisilemez" olunca
+  // (adb server wedge) calisiyordu. TEK bir cihazin ucu dustugunde HICBIR SEY onu geri
+  // baglamiyordu -> cihaz panelde sonsuza kadar "Durduruldu" goruluyordu, oysa CANLIYDI.
+  // CANLI KANIT: mi255 elle `adb connect` ile ANINDA geri geldi (state=device, boot=1);
+  // filo 123/124 saglikli oldugu icin bounce esigi hic tetiklenmiyordu.
+  // Simdi: calisan ama ADB'de gorunmeyen HER instance icin ucuz bir `adb connect`
+  // denenir (idempotent; zaten bagliysa "already connected" der). Tur basina LIMIT var
+  // ki 100+ cihazlik bir kopusta tick uzamasin.
+  {
+    const missing = running.filter((inst) => {
+      const sub = instSubnetCache.get(inst);
+      return sub ? !reachSubnets.has(sub) : true;
+    });
+    let fixed = 0, tried = 0;
+    for (const inst of missing) {
+      if (tried >= ADB_RECONNECT_PER_TICK) break;
+      tried++;
+      const ip = await instanceIp(inst);
+      if (!ip) continue;
+      const serial = `${ip}:5555`;
+      await execFileAsync(ADB, ['connect', serial], { timeout: 10000 }).catch(() => undefined);
+      const st = await execFileAsync(ADB, ['-s', serial, 'get-state'], { timeout: 6000 })
+        .then((r) => String(r.stdout || '').trim()).catch(() => '');
+      if (/^device$/.test(st)) { fixed++; log(`adb-reconnect: ${inst} ${serial} geri baglandi`); }
+    }
+    if (fixed) {
+      try { reachable = await reachableSerials(); } catch { /* keep old */ }
+    }
+  }
+
   // Signal: many instances up, but fewer than half are ADB-reachable → adb server wedge.
   if (reachable.length >= Math.ceil(running.length / 2)) return; // healthy enough — do nothing
   if (Date.now() - lastAdbBounceAt < ADB_BOUNCE_COOLDOWN_MS) return; // just bounced; give it time
@@ -11912,12 +12119,13 @@ async function adbRecoveryTick() {
     await sleep(1500);
     await execFileAsync(ADB, ['start-server']).catch(() => undefined);
     await sleep(1500);
-    // Reconnect every known instance's serial (192.168.<subnet>.112:5555).
+    // Reconnect every known instance — GERCEK IP ile (bkz. yukaridaki ".112 varsayimi"
+    // notu: 23 cihaz DHCP'den baska adres aliyor ve bu dongu onlara YANLIS adrese
+    // baglanmaya calisiyordu, yani kurtarma o cihazlarda HIC calismiyordu).
     for (const inst of running) {
       try {
-        const { stdout } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
-        const sub = String(stdout || '').trim();
-        if (sub) await execFileAsync(ADB, ['connect', `192.168.${sub}.112:5555`]).catch(() => undefined);
+        const ip = await instanceIp(inst);
+        if (ip) await execFileAsync(ADB, ['connect', `${ip}:5555`]).catch(() => undefined);
       } catch { /* per-instance best-effort */ }
     }
     log('adb-recovery: server bounced + reconnect issued');

@@ -370,31 +370,60 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
   // IP'sini döndürür (yeni sessid) ve kayıt işini tekrar gönderir; ajan kayıt başında
   // WhatsApp verisini zaten `pm clear` ile temizliyor. Yeni kayıt AÇMAZ — böylece aynı
   // numara WhatsApp'ın çok-deneme sayacına ikinci kez "yeni kayıt" olarak yazılmaz.
-  async function retryRegistration() {
+  // ★★★2026-08-13 keepWaData (operatör isteği): "Hatada WhatsApp'ı SIFIRLAMASIN ki
+  // ekrandan elle müdahale edebileyim." keepWaData=true çağrısında WA verisi KORUNUR
+  // ve cihaz kimliği de YENİLENMEZ (kimliği değiştirmek ayakta kalan oturumu bozar);
+  // yalnızca çıkış IP'si yenilenir. Tam sıfırlama ayrı bir buton olarak durur.
+  async function retryRegistration(keepWaData = false) {
     if (retryBusy) return;
     if (remain > 0) {
       setOtpMsg(`Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı. Erken denemek cezayı UZATIR.`);
       return;
     }
     const okRetry = await confirm({
-      title: 'Sıfırla ve tekrar dene',
-      body:
-        `${phoneNumber} için kayıt sıfırlanıp tekrar denenecek:\n` +
-        '• Cihazın WhatsApp verisi silinir\n' +
-        "• Çıkış IP'si (proxy oturumu) yenilenir\n" +
-        '• Cihaz kimliği yenilenir (IMEI / android_id / seri / MAC)\n' +
-        '• AYNI numarayla yeni bir deneme başlar',
-      warning: 'Numara yanmaz — yeni kayıt AÇILMAZ, aynı kayıt devam eder. Bekleme cezası sürüyorsa süre dolmadan denemeyin.',
-      confirmLabel: 'Sıfırla ve dene'
+      title: keepWaData ? 'WhatsApp’ı koruyarak devam et' : 'Sıfırla ve tekrar dene',
+      body: keepWaData
+        ? `${phoneNumber} için kayıt, WhatsApp SİLİNMEDEN devam ettirilecek:\n` +
+          '• WhatsApp verisi KORUNUR — ekran kaldığı yerde kalır\n' +
+          '• Cihaz kimliği DEĞİŞMEZ (oturumu bozmamak için)\n' +
+          "• Yalnızca çıkış IP'si (proxy oturumu) yenilenir\n" +
+          '• Canlı ekrandan ELLE müdahale edebilirsiniz'
+        : `${phoneNumber} için kayıt sıfırlanıp tekrar denenecek:\n` +
+          '• Cihazın WhatsApp verisi silinir\n' +
+          "• Çıkış IP'si (proxy oturumu) yenilenir\n" +
+          '• Cihaz kimliği yenilenir (IMEI / android_id / seri / MAC)\n' +
+          '• AYNI numarayla yeni bir deneme başlar',
+      warning: keepWaData
+        ? 'WhatsApp verisi SİLİNMEZ. Ekranda takılı bir diyalog varsa (ör. "kod yanlış") canlı ekrandan kendiniz kapatabilirsiniz.'
+        : 'Numara yanmaz — yeni kayıt AÇILMAZ, aynı kayıt devam eder. Bekleme cezası sürüyorsa süre dolmadan denemeyin.',
+      confirmLabel: keepWaData ? 'Koruyarak devam et' : 'Sıfırla ve dene'
     });
     if (!okRetry) return;
     setRetryBusy(true);
     setOtpMsg(null);
     try {
-      const res = await fetch(`/api/accounts/whatsapp/register/${accountId}/retry`, { method: 'POST' });
+      const res = await fetch(`/api/accounts/whatsapp/register/${accountId}/retry`, {
+        method: 'POST',
+        ...(keepWaData
+          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keepWaData: true }) }
+          : {})
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setOtpMsg(body?.data?.message || body?.error || 'Tekrar deneme başlatılamadı');
+        // ★★2026-08-13 SEBEBİ GÖSTER. Eskiden mesaj bulunamayınca genel bir metin
+        // yazılıyordu (proxy route error alanını hiç iletmiyordu) → operatör "buton
+        // çalışmıyor" sanıyordu. En sık sebep: cihazda hâlâ bir iş sürüyor
+        // (409 DEVICE_BUSY) — bu GEÇİCİ bir durumdur, ne yapılacağını da yazıyoruz.
+        const reason: string =
+          body?.error || body?.data?.message || body?.message || 'Tekrar deneme başlatılamadı';
+        const code: string = body?.code || '';
+        setOtpMsg(
+          code === 'DEVICE_BUSY'
+            ? `⏳ ${reason} — cihazda süren işlem bitince buton çalışacak (birkaç saniye).`
+            : code === 'WAIT_IN_PROGRESS'
+              ? `⏳ ${reason}`
+              : `❌ ${reason}`
+        );
         return;
       }
       // Kurtarma adımlarının GERÇEKTEN koşup koşmadığını göster (API bildiriyor).
@@ -884,19 +913,40 @@ export default function WhatsappRegisterModal({ accountId, deviceId, phoneNumber
                 <AlertTriangle size={18} /> <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{current.note?.slice(0, 60) || 'Kayıt başarısız'}</span>
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
+                {/* ★★★2026-08-13 (operatör isteği) "Hatada WhatsApp'ı sıfırlamasın ki
+                    ekrandan elle müdahale edeyim". Bu buton WA verisini KORUR ve cihaz
+                    kimliğine DOKUNMAZ — yalnızca çıkış IP'si yenilenir. Tam sıfırlama
+                    yandaki butonda durur; hangisinin ne yaptığı onay kutusunda yazıyor.
+                    ⚠️ onClick'te ok fonksiyonu ŞART: `onClick={retryRegistration}` React
+                    event nesnesini ilk argüman olarak geçirir ve keepWaData TRUTHY olur. */}
                 {canRetry && (
                   <button
                     type="button"
                     className="btn-primary"
                     disabled={retryBusy || remain > 0}
-                    onClick={retryRegistration}
+                    onClick={() => { void retryRegistration(true); }}
                     title={
                       remain > 0
                         ? `Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı`
-                        : "WhatsApp verisini sil, çıkış IP'sini yenile ve AYNI numarayla tekrar dene"
+                        : 'WhatsApp verisini KORU — ekran kaldığı yerde kalsın, elle müdahale edebileyim'
                     }
                   >
-                    {retryBusy ? 'Sıfırlanıyor…' : remain > 0 ? `🔄 Tekrar Dene (${hhmmss(remain)})` : '🔄 Sıfırla ve Tekrar Dene'}
+                    {retryBusy ? 'Devam ediliyor…' : remain > 0 ? `▶ Devam Et (${hhmmss(remain)})` : '▶ WhatsApp’ı Koruyarak Devam Et'}
+                  </button>
+                )}
+                {canRetry && (
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={retryBusy || remain > 0}
+                    onClick={() => { void retryRegistration(false); }}
+                    title={
+                      remain > 0
+                        ? `Bekleme süresi dolmadı — ${hhmmss(remain)} kaldı`
+                        : "WhatsApp verisini SİL, çıkış IP'sini ve cihaz kimliğini yenile, AYNI numarayla tekrar dene"
+                    }
+                  >
+                    {retryBusy ? 'Sıfırlanıyor…' : '🔄 Sıfırla ve Tekrar Dene'}
                   </button>
                 )}
                 {/* ★2026-07-30 BAŞARISIZ DURUMDA DA "Kaydı İptal Et" (operatör isteği:

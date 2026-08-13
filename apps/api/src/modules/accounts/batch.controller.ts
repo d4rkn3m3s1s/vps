@@ -410,8 +410,18 @@ export async function waRegisterStatusHandler(req: Request, res: Response): Prom
 // ★2026-07-30 "Sıfırla ve Tekrar Dene": AYNI hesap satırıyla yeniden dene — çıkış
 // IP'sini döndürüp REGISTER_WHATSAPP'ı tekrar gönder (ajan kayıt başında WA verisini
 // zaten temizliyor). Kesin ban'da 409 döner: yanmış numarayı tekrar denemek zararlı.
+// ★2026-08-13 `keepWaData` (operatör isteği): true ise WhatsApp verisi SİLİNMEZ —
+// kayıt aynı ekranda devam eder ve operatör canlı ekrandan elle müdahale edebilir.
+// Gövde isteğe bağlı; yoksa eski davranış (fabrika-temiz sıfırlama) aynen korunur.
+const retryWaSchema = z.object({ keepWaData: z.boolean().optional() });
+
 export async function retryWhatsappRegisterHandler(req: Request, res: Response): Promise<void> {
-  const data = await batchService.retryWhatsappRegister(getWorkspaceId(req), id(req));
+  const body = retryWaSchema.parse(req.body ?? {});
+  const data = await batchService.retryWhatsappRegister(
+    getWorkspaceId(req),
+    id(req),
+    ...(body.keepWaData ? [{ keepWaData: true }] as const : [])
+  );
   res.json({ data });
 }
 

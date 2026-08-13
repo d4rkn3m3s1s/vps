@@ -998,7 +998,14 @@ export async function registerWhatsappRetryHandler(req: Request, res: Response):
       );
     }
   }
-  const data = await batchService.retryWhatsappRegister(workspaceId, accountId);
+  // ★2026-08-13 keepWaData: true → WhatsApp verisi SİLİNMEZ (kayıt kaldığı ekranda
+  // devam eder, operatör elle müdahale edebilir). Yoksa eski davranış korunur.
+  const keepWaData = (req.body as { keepWaData?: unknown } | undefined)?.keepWaData === true;
+  const data = await batchService.retryWhatsappRegister(
+    workspaceId,
+    accountId,
+    ...(keepWaData ? [{ keepWaData: true }] as const : [])
+  );
   res.json({ data });
 }
 

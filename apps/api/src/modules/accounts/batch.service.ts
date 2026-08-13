@@ -1369,7 +1369,13 @@ export class BatchService {
   //
   // ⚠️ KESİN BAN'da çağrılmamalı: numara yanmıştır, tekrar denemek yalnızca zarar
   // verir. Kontrol hem burada (hata metnindeki [YASAKLI] işareti) hem panelde yapılır.
-  async retryWhatsappRegister(workspaceId: string | undefined, accountId: string) {
+  // ★★★2026-08-13 `keepWaData` (operatör isteği). "Sıfırla ve Tekrar Dene" eskiden
+  // HER ZAMAN WhatsApp verisini siliyordu (agent'ta `pm clear`), çünkü otpCode/
+  // verifyMethod olmadan açılan iş "ilk kayıt" sayılıyordu. Operatör yanlış kod
+  // girdiğinde ekrana ELLE müdahale etmek istiyor; veri silinince müdahale edilecek
+  // bir şey kalmıyordu. keepWaData=true → WA oturumu KORUNUR (proxy + parmak izi yine
+  // yenilenir). Varsayılan false = eski davranış (fabrika-temiz başlangıç) bozulmaz.
+  async retryWhatsappRegister(workspaceId: string | undefined, accountId: string, opts?: { keepWaData?: boolean }) {
     const acc = await prisma.generatedAccount.findFirst({
       where: { id: accountId, ...(workspaceId ? { workspaceId } : {}) },
       select: { id: true, deviceId: true, phoneNumber: true, status: true, error: true, firstName: true, lastName: true, platform: true }
@@ -1421,20 +1427,29 @@ export class BatchService {
     //
     // Best-effort: kimlik yenilenemezse kayıt yine denenir (yeni IP tek başına da
     // çoğu geçici engeli aşıyor). Operatör hangi adımların koştuğunu yanıtta görür.
+    // ★2026-08-13 keepWaData iken kimlik YENİLENMEZ. Gerekçe: WhatsApp oturumu ayakta
+    // kalacaksa cihaz kimliğini (IMEI/android_id/serial) altından değiştirmek oturumu
+    // BOZAR — WhatsApp cihazı tanıyamaz ve operatörün elle düzeltmek istediği ekran
+    // yine kaybolur. Amaç "ekranı olduğu gibi bırak"; proxy rotasyonu ise zararsız
+    // (yalnızca çıkış IP'si değişir, uygulama durumu etkilenmez) ve faydalı kalır.
     let identityRerolled = false;
-    try {
-      // skipBusyCheck ŞART: yukarıdaki rotateExitIp az önce EMULATOR_SET_PROXY'yi
-      // kuyruğa aldı; busy-check olmadan APPLY_FINGERPRINT DEVICE_BUSY ile reddedilir
-      // ve kimlik cihaza HİÇ yazılmaz (canlı olarak yaşandı: DB yenilendi, cihaz eski
-      // kimlikte kaldı → kurtarma sessizce etkisiz). Üç iş de aynı cihazda, agent
-      // tarafından sırayla koşar.
-      await fingerprintService.rerollIdentity(acc.deviceId, workspaceId, { skipBusyCheck: true });
-      identityRerolled = true;
-    } catch (e) {
-      logger.warn('retry: cihaz kimligi yenilenemedi (kayit yine deneniyor)', {
-        deviceId: acc.deviceId,
-        error: e instanceof Error ? e.message : String(e)
-      });
+    if (opts?.keepWaData) {
+      logger.info('retry: keepWaData → parmak izi YENİLENMEDİ (WA oturumu korunuyor)', { accountId: acc.id });
+    } else {
+      try {
+        // skipBusyCheck ŞART: yukarıdaki rotateExitIp az önce EMULATOR_SET_PROXY'yi
+        // kuyruğa aldı; busy-check olmadan APPLY_FINGERPRINT DEVICE_BUSY ile reddedilir
+        // ve kimlik cihaza HİÇ yazılmaz (canlı olarak yaşandı: DB yenilendi, cihaz eski
+        // kimlikte kaldı → kurtarma sessizce etkisiz). Üç iş de aynı cihazda, agent
+        // tarafından sırayla koşar.
+        await fingerprintService.rerollIdentity(acc.deviceId, workspaceId, { skipBusyCheck: true });
+        identityRerolled = true;
+      } catch (e) {
+        logger.warn('retry: cihaz kimligi yenilenemedi (kayit yine deneniyor)', {
+          deviceId: acc.deviceId,
+          error: e instanceof Error ? e.message : String(e)
+        });
+      }
     }
 
     // 2) Hesabı yeniden akışa al ve kayıt işini gönder.
@@ -1446,7 +1461,14 @@ export class BatchService {
     try {
       regJob = await createJobRecord(
         'REGISTER_WHATSAPP',
-        { deviceId: acc.deviceId, accountId: acc.id, phoneNumber: phoneE164, fullName } as unknown as JobPayload,
+        {
+          deviceId: acc.deviceId,
+          accountId: acc.id,
+          phoneNumber: phoneE164,
+          fullName,
+          // Agent bu bayrağı görürse `pm clear` ATLANIR → WhatsApp kaldığı ekranda kalır.
+          ...(opts?.keepWaData ? { keepWaData: true } : {})
+        } as unknown as JobPayload,
         undefined,
         workspaceId,
         // Az önce SET_PROXY ve/veya APPLY_FINGERPRINT kuyruğa girdiyse busy-check'i

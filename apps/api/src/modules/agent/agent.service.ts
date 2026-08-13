@@ -1083,7 +1083,7 @@ export class AgentService {
 
   async heartbeat(
     host: Host,
-    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined; cpuBusyPct?: number | undefined }
+    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; ramTotalGb?: number | undefined; swapUsedPct?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined; cpuBusyPct?: number | undefined }
   ) {
     const updated = await prisma.host.update({
       where: { id: host.id },
@@ -1095,6 +1095,9 @@ export class AgentService {
         ...(typeof input.diskTotalGb === 'number' ? { diskTotalGb: input.diskTotalGb } : {}),
         ...(typeof input.diskFreeGb === 'number' ? { diskFreeGb: input.diskFreeGb } : {}),
         ...(typeof input.ramFreeGb === 'number' ? { ramFreeGb: input.ramFreeGb } : {}),
+        // ★2026-08-13 RAM tavanı alarmı için (bkz. index.ts HOST_SATURATED bloğu).
+        ...(typeof input.ramTotalGb === 'number' ? { ramTotalGb: input.ramTotalGb } : {}),
+        ...(typeof input.swapUsedPct === 'number' ? { swapUsedPct: Math.round(input.swapUsedPct) } : {}),
         ...(typeof input.loadAvg1m === 'number' ? { loadAvg1m: input.loadAvg1m } : {}),
         ...(typeof input.cpuBusyPct === 'number' ? { cpuBusyPct: Math.round(input.cpuBusyPct) } : {}),
         ...(typeof input.cpuCores === 'number' ? { cpuCores: input.cpuCores } : {})

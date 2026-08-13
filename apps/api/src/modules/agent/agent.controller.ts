@@ -21,6 +21,10 @@ const heartbeatSchema = z.object({
   diskTotalGb: z.coerce.number().int().nonnegative().optional(),
   diskFreeGb: z.coerce.number().int().nonnegative().optional(),
   ramFreeGb: z.coerce.number().int().nonnegative().optional(),
+  // ★2026-08-13 RAM tavanı alarmı (bkz. index.ts HOST_SATURATED). Şemaya eklenmezse
+  // zod bu alanları SESSİZCE düşürür ve alarm hiç veri göremez.
+  ramTotalGb: z.coerce.number().int().nonnegative().optional(),
+  swapUsedPct: z.coerce.number().int().min(0).max(100).optional(),
   // 1-minute load average (may be fractional) + CPU count → CPU saturation gauge.
   loadAvg1m: z.coerce.number().nonnegative().optional(),
   // ★2026-08-05: /proc/stat'tan GERÇEK CPU meşguliyeti (0-100). Doygunluk alarmı

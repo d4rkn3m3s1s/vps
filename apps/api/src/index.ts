@@ -281,7 +281,7 @@ async function main(): Promise<void> {
         const liveHosts = await prisma.host
           .findMany({
             where: { status: 'ONLINE' },
-            select: { id: true, name: true, workspaceId: true, loadAvg1m: true, cpuCores: true, diskFreeGb: true, cpuBusyPct: true }
+            select: { id: true, name: true, workspaceId: true, loadAvg1m: true, cpuCores: true, diskFreeGb: true, cpuBusyPct: true, ramFreeGb: true, ramTotalGb: true, swapUsedPct: true, runningPhones: true }
           })
           .catch(() => []);
         for (const h of liveHosts) {
@@ -296,7 +296,43 @@ async function main(): Promise<void> {
             ? busy >= 90
             : cores > 0 && load >= cores * 2;
           const diskLow = disk < 15;
-          if (!cpuSat && !diskLow) continue;
+          // ★★★2026-08-13 RAM TAVANI + KAPASİTE ALARMI (operatör: "filo büyürse nerede
+          // patlar"). Bu blok CPU ve diski izliyordu ama RAM'i İZLEMİYORDU — oysa bu
+          // filoda ilk duvar RAM.
+          //
+          // CANLI ÖLÇÜM (13 Ağu, 163 instance):
+          //   used 215/250 GB · available 40 GB · cihaz başına 1.32 GB · swap 1.7 GB
+          //   → gerçek tavan ~195 cihaz, filo ona 30 cihaz uzaktaydı, alarm YOKTU.
+          // RAM biterse Waydroid container'ları OOM ile ölür: cihazlar rastgele düşer
+          // ve SÜREN KAYITLAR yarıda kesilir (numara yanar) — yani sessizce fark
+          // edilmesi en pahalı arıza türü.
+          //
+          // Üç ayrı sinyal, hepsi ERKEN uyarı niteliğinde:
+          //   ramLow      : kullanılabilir RAM %15'in altı (yaklaşık 2-3 cihazlık pay)
+          //   swapping    : swap %20'yi aştı — RAM tükenmeden ÖNCEKİ ilk işaret
+          //   capacityLow : mevcut tüketim hızıyla 10'dan az cihaz sığıyor
+          // ★"free" DEĞİL "available" kullanılır: buff/cache geri kazanılabilir olduğu
+          // için free bu makinede daima ~2GB görünür (ölçüm: free 1.9GB / avail 40GB).
+          const ramFree = h.ramFreeGb;
+          const ramTotal = h.ramTotalGb;
+          const swapPct = h.swapUsedPct;
+          const phones = h.runningPhones ?? 0;
+          const ramPctFree = typeof ramFree === 'number' && typeof ramTotal === 'number' && ramTotal > 0
+            ? Math.round((ramFree / ramTotal) * 100)
+            : null;
+          const ramLow = ramPctFree !== null && ramPctFree < 15;
+          const swapping = typeof swapPct === 'number' && swapPct >= 20;
+          // Cihaz başına gerçek tüketim → daha kaç cihaz sığar. Ortalama, ölçülen
+          // değerden (used/phones) türetilir; sabit bir varsayım kullanılmaz çünkü
+          // cihaz başına maliyet imaja/sürüme göre değişiyor (1.3-1.5 GB aralığı).
+          const perDeviceGb = typeof ramTotal === 'number' && typeof ramFree === 'number' && phones > 0
+            ? (ramTotal - ramFree) / phones
+            : null;
+          const fits = perDeviceGb && perDeviceGb > 0 && typeof ramFree === 'number'
+            ? Math.floor(ramFree / perDeviceGb)
+            : null;
+          const capacityLow = fits !== null && fits < 10;
+          if (!cpuSat && !diskLow && !ramLow && !swapping && !capacityLow) continue;
           const parts: string[] = [];
           if (cpuSat) {
             parts.push(typeof busy === 'number'
@@ -304,10 +340,19 @@ async function main(): Promise<void> {
               : `CPU yükü ${load.toFixed(0)}/${cores} (satürasyon)`);
           }
           if (diskLow) parts.push(`boş disk ${disk}GB (kritik)`);
+          if (ramLow) parts.push(`kullanılabilir RAM ${ramFree}GB / ${ramTotal}GB (%${ramPctFree} — KRİTİK)`);
+          if (swapping) parts.push(`swap %${swapPct} kullanımda (RAM tükeniyor)`);
+          if (capacityLow) parts.push(`yalnızca ~${fits} cihaz daha sığıyor (${phones} çalışıyor, cihaz başı ~${perDeviceGb?.toFixed(1)}GB)`);
+          // ★Aksiyon cümlesi: alarmın kendisi kadar önemli. RAM/kapasite uyarısında
+          // "boşta cihazı uyut" YETMEZ (sorun anlık yük değil, kalıcı tavan) — operatöre
+          // gerçek seçenekleri söyle.
+          const action = (ramLow || swapping || capacityLow)
+            ? 'YENİ CİHAZ KURMAYI DURDURUN. RAM tükenirse cihazlar OOM ile düşer ve süren kayıtlar yarıda kesilir (numara yanar). Kalıcı çözüm: RAM ekleyin veya ikinci bir sunucu (host) tanımlayın.'
+            : 'Cihazlar yavaşlayabilir/donabilir; boşta cihazları uyutmayı veya kapasiteyi artırmayı düşünün.';
           void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', {
             title: `⚠️ Sunucu kaynağı kritik: ${h.name}`,
-            detail: `${h.name}: ${parts.join(' · ')}. Cihazlar yavaşlayabilir/donabilir; boşta cihazları uyutmayı veya kapasiteyi artırmayı düşünün.`,
-            ...(cores > 0 ? { value: Math.round((load / cores) * 100) } : {})
+            detail: `${h.name}: ${parts.join(' · ')}. ${action}`,
+            ...(ramPctFree !== null ? { value: 100 - ramPctFree } : cores > 0 ? { value: Math.round((load / cores) * 100) } : {})
           });
         }
         // ★2026-07-23 (M-3): dead-man's switch. A LIVE host whose wd-health-watch monitor

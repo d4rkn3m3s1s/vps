@@ -135,7 +135,15 @@ model Host {
   // more devices fit" — each Waydroid instance needs ~8GB disk + ~1.5GB RAM.
   diskTotalGb    Int?
   diskFreeGb     Int?
+  /// `free -m` AVAILABLE sütunu (buff/cache geri kazanılabilir olduğu için "free"
+  /// bu makinede daima ~2GB görünür ve yanıltıcıdır — ölçüm: free 1.9GB / avail 40GB).
   ramFreeGb      Int?
+  /// ★2026-08-13 RAM tavanı alarmı için eklendi. `ramFreeGb` tek başına yüzde
+  /// veremiyordu; toplam olmadan "kritik mi" kararı verilemez.
+  ramTotalGb     Int?
+  /// Swap kullanım yüzdesi. RAM tükenmeden ÖNCE gelen erken uyarı: bu filoda swap'a
+  /// girilmesi tavana yaklaşıldığının ilk işareti (ölçüm 13 Ağu: 163 cihazda 1.7GB).
+  swapUsedPct    Int?
   // 1-minute load average from the agent heartbeat. Combined with cpuCores it
   // gives CPU saturation (load / cores) — the dashboard warns when this is high
   // so an operator can sleep idle devices (software-rendered Waydroid pins CPU).

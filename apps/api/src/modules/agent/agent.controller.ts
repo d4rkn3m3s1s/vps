@@ -25,6 +25,14 @@ const heartbeatSchema = z.object({
   // zod bu alanları SESSİZCE düşürür ve alarm hiç veri göremez.
   ramTotalGb: z.coerce.number().int().nonnegative().optional(),
   swapUsedPct: z.coerce.number().int().min(0).max(100).optional(),
+  // ★2026-08-13 instance -> "ip:port". Bir instance yeniden başlatılınca YENİ subnet
+  // alabiliyor; bu olmadan DB'deki ipAddress bayat kalıyor ve cihaz ÇALIŞTIĞI HALDE
+  // sonsuza kadar OFFLINE görünüyordu (canlı: mi81). Ad ve değer biçimi doğrulanır —
+  // buradan gelen değer doğrudan Device.ipAddress'e yazılıyor.
+  instanceSerials: z.record(
+    z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+    z.string().regex(/^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$/)
+  ).optional(),
   // 1-minute load average (may be fractional) + CPU count → CPU saturation gauge.
   loadAvg1m: z.coerce.number().nonnegative().optional(),
   // ★2026-08-05: /proc/stat'tan GERÇEK CPU meşguliyeti (0-100). Doygunluk alarmı

@@ -10835,6 +10835,42 @@ async function hostCapacityMetrics() {
   return out;
 }
 
+// ★★★2026-08-13 IP DEGISIMI CIHAZI SONSUZA KADAR "OFFLINE" BIRAKIYORDU.
+//
+// API bir cihazin ONLINE olup olmadigina `ipAddress:adbPort` serial'i erisilebilir
+// serial listesinde VAR MI diye bakarak karar veriyor (agent.service.ts:1143). Ama
+// bir instance yeniden baslatildiginda YENI bir subnet/IP alabiliyor ve bunu API'ye
+// KIMSE bildirmiyordu -> DB'deki IP bayat kaliyor -> serial hicbir zaman eslesmiyor
+// -> cihaz CALISIYOR olmasina ragmen panelde sonsuza kadar OFFLINE goruluyor.
+//
+// CANLI VAKA (mi81, +905343666957):
+//   02:18  dns-heal: "DHCP lease YOK" -> wd-run yeniden basladi
+//          eski 192.168.57.112  ->  yeni 192.168.169.72 (net-head yeni subnet verdi)
+//   02:27  adb-reconnect: mi81 geri baglandi (cihaz SAGLIKLI: adb=device, boot=1,
+//          TR proxy calisiyor) ama DB hala .57.112 diyordu -> panel OFFLINE.
+// Operator "bir cihaz neden dustu" diye sordu; cihaz hic dusmemisti.
+//
+// FIX: heartbeat'e instance -> gercek serial haritasi eklenir. API bunu gorunce
+// bayat `ipAddress` kaydini tazeler. Ucuz: veri zaten elimizde (net-head + lease).
+async function instanceSerialMap(serials) {
+  const map = {};
+  try {
+    const { stdout } = await execFileAsync('bash', ['-c',
+      "pgrep -af 'wd-run.sh' 2>/dev/null | grep -oE 'wd-run.sh mi[0-9]+' | grep -oE 'mi[0-9]+' | sort -u"]);
+    const running = String(stdout || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    const live = new Set(serials || []);
+    for (const inst of running) {
+      const ip = await instanceIp(inst);
+      if (!ip) continue;
+      const serial = `${ip}:5555`;
+      // Yalnizca ADB'de GERCEKTEN gorunen ucu bildir — yoksa bayat bir tahmini
+      // API'ye dogruymus gibi yazdirmis oluruz.
+      if (live.has(serial)) map[inst] = serial;
+    }
+  } catch { /* best-effort: harita gonderilemezse eski davranis surer */ }
+  return map;
+}
+
 let _heartbeatPurgeAt = 0;
 async function heartbeat() {
   try {
@@ -10842,7 +10878,17 @@ async function heartbeat() {
     const cap = await hostCapacityMetrics();
     // Send the count (host capacity gauge) + reachable serials (so the API marks
     // only live phones ONLINE) + host disk/RAM (for the "N devices fit" estimate).
-    const hb = await api('/agent/heartbeat', { method: 'POST', body: JSON.stringify({ runningPhones: serials.length, serials, ...cap }) });
+    // instanceSerials: bayat ipAddress kayitlarini tazelemek icin (bkz. yukaridaki not).
+    const instanceSerials = await instanceSerialMap(serials).catch(() => ({}));
+    const hb = await api('/agent/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({
+        runningPhones: serials.length,
+        serials,
+        ...(Object.keys(instanceSerials).length ? { instanceSerials } : {}),
+        ...cap
+      })
+    });
     // ★2026-07-24: cache the DB's known instance list (returned on the heartbeat) so the
     // orphan-reaper can spot host instances whose Device row is gone. null = unknown
     // (older API / error) → reaper stays disabled that round (never reaps blindly).

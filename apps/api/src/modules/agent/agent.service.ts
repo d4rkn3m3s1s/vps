@@ -1083,7 +1083,7 @@ export class AgentService {
 
   async heartbeat(
     host: Host,
-    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; ramTotalGb?: number | undefined; swapUsedPct?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined; cpuBusyPct?: number | undefined }
+    input: { runningPhones?: number | undefined; capacity?: number | undefined; serials?: string[] | undefined; instanceSerials?: Record<string, string> | undefined; diskTotalGb?: number | undefined; diskFreeGb?: number | undefined; ramFreeGb?: number | undefined; ramTotalGb?: number | undefined; swapUsedPct?: number | undefined; loadAvg1m?: number | undefined; cpuCores?: number | undefined; cpuBusyPct?: number | undefined }
   ) {
     const updated = await prisma.host.update({
       where: { id: host.id },
@@ -1113,6 +1113,53 @@ export class AgentService {
     // legacy behavior: a live heartbeat means all bound phones are reachable.
     const hasSerials = Array.isArray(input.serials);
     const reachable = new Set((input.serials ?? []).map((s) => s.trim()).filter(Boolean));
+
+    // ★★★2026-08-13 BAYAT ipAddress → CİHAZ SONSUZA KADAR "OFFLINE" KALIYORDU.
+    //
+    // Aşağıdaki karar `${ipAddress}:${adbPort}` serial'inin erişilebilir listede
+    // olmasına bakıyor. Bir instance yeniden başlatıldığında YENİ bir subnet/IP
+    // alabiliyor (net-head yeniden tahsis eder) ve bunu API'ye kimse bildirmiyordu:
+    // DB'deki IP bayat kalıyor → serial ASLA eşleşmiyor → cihaz ÇALIŞTIĞI HALDE
+    // panelde sonsuza kadar OFFLINE.
+    //
+    // CANLI VAKA (mi81, +905343666957): dns-heal cihazı yeniden başlattı,
+    // 192.168.57.112 → 192.168.169.72 oldu; cihaz sağlıklıydı (adb=device, boot=1,
+    // TR proxy çalışıyor) ama panel OFFLINE gösterdi ve operatör "bir cihaz neden
+    // düştü" diye sordu. Cihaz hiç düşmemişti.
+    //
+    // Agent artık instance→gerçek serial haritası gönderiyor (yalnızca ADB'de
+    // GERÇEKTEN görünen uçlar). Burada bayat kayıtları tazeliyoruz — bu, aşağıdaki
+    // ONLINE/OFFLINE kararından ÖNCE olmalı ki cihaz aynı turda ONLINE'a dönsün.
+    const instMap = input.instanceSerials;
+    if (instMap && typeof instMap === 'object') {
+      const entries = Object.entries(instMap).filter(([, s]) => typeof s === 'string' && s.includes(':'));
+      if (entries.length) {
+        const rows = await prisma.device.findMany({
+          where: { hostId: host.id },
+          select: { id: true, ipAddress: true, adbPort: true, metadata: true }
+        }).catch(() => []);
+        for (const r of rows) {
+          const inst = (r.metadata as { instance?: unknown } | null)?.instance;
+          if (typeof inst !== 'string') continue;
+          const reported = instMap[inst];
+          if (typeof reported !== 'string') continue;
+          const [ip, portRaw] = reported.split(':');
+          const port = Number(portRaw);
+          if (!ip || !Number.isFinite(port)) continue;
+          if (r.ipAddress === ip && r.adbPort === port) continue;   // zaten güncel
+          await prisma.device.update({
+            where: { id: r.id },
+            data: { ipAddress: ip, adbPort: port }
+          }).catch(() => undefined);
+          logger.info('device IP tazelendi (instance yeniden başlatılınca değişmişti)', {
+            instance: inst, eski: `${r.ipAddress}:${r.adbPort}`, yeni: reported
+          });
+          // Bu turun kararı da güncel IP ile verilsin.
+          r.ipAddress = ip;
+          r.adbPort = port;
+        }
+      }
+    }
 
     // Read each affected device's PREVIOUS lastSeen BEFORE we overwrite it, so we
     // can accrue the online minutes elapsed since the last heartbeat (pay-as-you-

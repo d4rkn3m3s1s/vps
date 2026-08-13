@@ -80,6 +80,31 @@ export type ApiCallOptions = {
   auth?: boolean; // include JWT (required for writes)
 };
 
+// ★★★2026-08-13 HATA SEBEBİNİ PANELE TAŞI (operatör: "sıfırla tekrar dene çalışmıyor").
+//
+// Route'lar yanıtı `NextResponse.json({ data: res.data }, { status })` diye kuruyordu.
+// Backend hatayı `{ error, code }` gövdesiyle döndürür ve `apiCall` `data` alanı
+// olmayan gövdeyi OLDUĞU GİBİ `data`ya koyar (aşağıda: `json.data ?? (json as T)`).
+// Sonuç: hata gövdesi `data` içinde saklı kalıyor, panelin okuduğu `body.error`
+// alanı HİÇ OLUŞMUYOR → panel sessiz kalıyor ve operatör "buton çalışmıyor" sanıyor.
+// CANLI KANIT (+905350124185): cihazda iş sürdüğü için API 409 DEVICE_BUSY ve net bir
+// Türkçe mesaj döndürdü ("Cihaz meşgul — 'WhatsApp kaydı' işlemi sürüyor"), panelde
+// hiçbir şey görünmedi.
+//
+// Bu yardımcı hata alanlarını ÜST SEVİYEYE çıkarır. Başarıda davranış birebir aynı.
+export function apiResponse<T>(res: { ok: boolean; status: number; data: T | null }) {
+  if (res.ok) return { body: { data: res.data }, status: 200 };
+  const e = (res.data ?? {}) as { error?: unknown; message?: unknown; code?: unknown };
+  const message =
+    typeof e.error === 'string' ? e.error
+      : typeof e.message === 'string' ? e.message
+        : `İşlem reddedildi (HTTP ${res.status})`;
+  return {
+    body: { data: null, error: message, ...(typeof e.code === 'string' ? { code: e.code } : {}) },
+    status: res.status
+  };
+}
+
 export async function apiCall<T = unknown>(path: string, opts: ApiCallOptions = {}): Promise<{ ok: boolean; status: number; data: T | null }> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',

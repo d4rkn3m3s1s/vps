@@ -36,10 +36,19 @@ touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-sub
 # (DHCP sarttir; DNS'i yalnizca DHCP getirir — bkz. wd-firewall-dhcp.sh).
 # Dolu lease'e DOKUNMA (calisan cihazin IP'sini degistirme).
 _SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null)
+# ★★★2026-08-13 SUBNET -> IP ONEKI (238 tavani kaldirildi, bkz. net-head.sh).
+# S <= 239 -> 192.168.<S>   (mevcut 140 cihaz AYNEN kalir)
+# S >= 240 -> 10.10.<S-239> (yeni blok; host'un 10.0.0.0/24'u ve docker 172.17 ile
+#             cakismaz — canli olarak dogrulandi)
+subnet_prefix() {
+  if [ "$1" -le 239 ]; then echo "192.168.$1"; else echo "10.10.$(($1 - 239))"; fi
+}
+_PFX=""
+[ -n "$_SUB" ] && _PFX=$(subnet_prefix "$_SUB")
 _LEASE=/var/lib/misc/dnsmasq.waydroid-$INST.leases
-if [ -n "$_SUB" ] && [ ! -s "$_LEASE" ]; then
+if [ -n "$_PFX" ] && [ ! -s "$_LEASE" ]; then
   mkdir -p /var/lib/misc 2>/dev/null
-  echo "4102444800 00:16:3e:f9:d3:03 192.168.$_SUB.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > "$_LEASE"
+  echo "4102444800 00:16:3e:f9:d3:03 $_PFX.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > "$_LEASE"
 fi
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native
@@ -75,7 +84,10 @@ bash /opt/fleet-agent/waydroid/wd-adb.sh $INST
 # siler (canli: wd-run IP ekledi 14:44, netd sildi, heal 14:49 tekrar ekledi). COZUM:
 # IP+route ekle, DOGRULA; IPv4 tutmadiysa 5s bekle tekrar dene (netd sakinlesene kadar,
 # max 8 tur ~40s). Boylece heal'e dusmeden, boot biter bitmez internet hazir olur.
-GW="192.168.$SUBNET.1"; IP="192.168.$SUBNET.112"
+# ★2026-08-13: onek subnet_prefix'ten gelir (S>=240 -> 10.10.x). Eski cihazlar
+# (S<=239) icin sonuc birebir ayni: "192.168.<S>".
+_NPFX=$(subnet_prefix "$SUBNET")
+GW="$_NPFX.1"; IP="$_NPFX.112"
 netfix_try() {
   HASIP=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
   if [ "${HASIP:-0}" = "0" ]; then
@@ -87,7 +99,7 @@ netfix_try() {
   done
   timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add default via $GW dev eth0 2>/dev/null
   for T in eth0 local_network; do
-    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add 192.168.$SUBNET.0/24 dev eth0 proto static scope link src $IP table $T 2>/dev/null
+    timeout 8 lxc-attach -n waydroid -P $LXCP -- ip route add $_NPFX.0/24 dev eth0 proto static scope link src $IP table $T 2>/dev/null
   done
 }
 NETOK=0

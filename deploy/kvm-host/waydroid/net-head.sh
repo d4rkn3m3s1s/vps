@@ -45,18 +45,50 @@ subnet_live_used() {
   ip -o -4 addr show 2>/dev/null | grep -qE "[[:space:]]192\.168\.$1\.1/(24|[0-9]+)([[:space:]]|$)"
 }
 
+# ★★★2026-08-13 SUBNET TAVANI 238 -> 492 (operatör: "filo büyüyecek").
+#
+# Subnet numarası doğrudan IP'nin ÜÇÜNCÜ oktetine yazılıyor (wd-run.sh:78
+# `GW="192.168.$SUBNET.1"; IP="192.168.$SUBNET.112"`), bu yüzden 2..239 aralığı
+# 192.168.0.0/16 bloğunun kendisiyle sınırlıydı = en fazla 238 cihaz.
+# ÖLÇÜM (13 Ağu): 145 kullanımda, 140 canlı cihaz → tavana 93 kalmıştı.
+#
+# GENİŞLETME: 240..493 aralığı ikinci bir /16 bloğuna (10.10.0.0/16) eşlenir:
+#   S <= 239  ->  192.168.<S>.0/24        (mevcut davranış, DEĞİŞMEDİ)
+#   S >= 240  ->  10.10.<S-239>.0/24      (10.10.1.0 … 10.10.254.0)
+# Böylece eski 140 cihazın adresi AYNEN kalır — taşıma/yeniden kurulum GEREKMEZ.
+#
+# ★ÇAKIŞMA DENETİMİ (canlı, host'un tüm IPv4'leri okundu):
+#   bond0.2 10.0.0.11/24 · bond0.3 125.253.73.45/31 · docker0 172.17.0.1/16
+#   Yani 10.0.0.0/24 host'un kendi ağı — 10.10.0.0/16 ONA DOKUNMAZ (farklı /16).
+#   Docker 172.17'de, çakışma yok. 10.10.x TAMAMEN BOŞ.
+subnet_prefix() {
+  if [ "$1" -le 239 ]; then echo "192.168.$1"; else echo "10.10.$(($1 - 239))"; fi
+}
+
+# subnet_live_used'ın ikinci-blok karşılığı: verilen S için GERÇEK ön eki tarar.
+subnet_live_used_any() {
+  _p=$(subnet_prefix "$1")
+  ip -o -4 addr show 2>/dev/null | grep -qE "[[:space:]]${_p}\.1/(24|[0-9]+)([[:space:]]|$)"
+}
+
 S=2
-while [ "$S" -le 239 ]; do
+S_MAX=493        # 2..239 (192.168.x) + 240..493 (10.10.1..254) = 492 subnet
+while [ "$S" -le "$S_MAX" ]; do
   if awk -v s="$S" '$2==s{f=1} END{exit !f}' "$MAP"; then S=$((S+1)); continue; fi
-  if subnet_live_used "$S"; then
+  if subnet_live_used_any "$S"; then
     # Haritada bos ama sahada dolu: harita kaymis demektir. Atla ve NOT dus —
     # sessizce gecmek, kokeni gorunmez kilan seyin ta kendisiydi.
-    echo "net-head: subnet $S haritada bos ama CANLI bridge'de dolu — atlandi" >&2
+    echo "net-head: subnet $S ($(subnet_prefix "$S").0/24) haritada bos ama CANLI bridge'de dolu — atlandi" >&2
     S=$((S+1)); continue
   fi
   break
 done
-[ "$S" -gt 239 ] && { echo "240"; exit 0; }
+# Tavana gercekten dayandiysak 240 DONME — o artik GECERLI bir subnet (10.10.1.x).
+# Bunun yerine acikca hata ver ki kurulum sessizce cakisan bir adrese kurulmasin.
+if [ "$S" -gt "$S_MAX" ]; then
+  echo "net-head: TUM SUBNETLER DOLU ($S_MAX) — yeni cihaz kurulamaz, once cihaz silin" >&2
+  exit 1
+fi
 # 2026-07-30 MUKERRER-KORUMASI. Yazmadan ONCE bu instance'in TUM eski satirlarini sil.
 # CANLI OLARAK YASANDI (mi46): haritada iki satir olustu ("mi46 47" + "mi46 31" — ikincisi
 # cihaz silinip yeniden kurulmasindan kalan bayat kayit). health-watch subnet'i

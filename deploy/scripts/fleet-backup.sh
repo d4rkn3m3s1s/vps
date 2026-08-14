@@ -74,11 +74,19 @@ chmod -R 600 "$DIR/config/env" 2>/dev/null
 
 # ── 5. SYSTEMD ───────────────────────────────────────────────────
 say "5/9 systemd unitleri + drop-in'ler..."
-for u in fleet-agent fleet-api fleet-dashboard wd-canary wd-health-watch wd-proxy-restore; do
+# ★2026-08-15: kurtarma katmani birimleri eklendi. Yoksa sunucu bastan
+# kurulunca kurtarma sisteminin KENDISI geri gelmez.
+for u in fleet-agent fleet-api fleet-dashboard wd-canary wd-health-watch wd-proxy-restore \
+         wd-kurtar wd-watchdog wd-izle wd-durum wd-fren wd-adb-tara sshd-acil; do
   cp -r /etc/systemd/system/$u.service* "$DIR/systemd/" 2>/dev/null
   cp -r /etc/systemd/system/$u.timer* "$DIR/systemd/" 2>/dev/null
 done
 cp /etc/systemd/system/waydroid@.service "$DIR/systemd/" 2>/dev/null
+# ★2026-08-15: ACIL SSH KAPISI (port 2222, UsePAM no). Normal SSH'in olduğu
+# kilitlerde tek giris yolu buydu; yapilandirmasi yedekte OLMALI.
+mkdir -p "$DIR/ssh"
+cp /etc/ssh/sshd_acil_config "$DIR/ssh/" 2>/dev/null
+cp /etc/ssh/sshd_config "$DIR/ssh/" 2>/dev/null
 cp /etc/systemd/system/waydroid-mi5.service "$DIR/systemd/" 2>/dev/null
 ls "$DIR/systemd" | wc -l | xargs -I{} ok "{} unit dosyasi"
 systemctl list-units --type=service --state=running --no-legend --plain > "$DIR/systemd/RUNNING-services.txt" 2>/dev/null

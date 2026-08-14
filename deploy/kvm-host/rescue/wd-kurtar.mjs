@@ -153,14 +153,32 @@ const server = http.createServer(async (req, res) => {
   if (yol === '/' || yol === '/durum') {
     const d = procDurum();
     const ms = await systemdMs();
-    const acik = await sh("timeout 8 systemctl list-units --state=running 'waydroid@*' 2>/dev/null | grep -c waydroid@", 10000);
+    // ★2026-08-15: GERCEK calisan container sayisi.
+    // Eskiden systemd sayimi kullaniliyordu ve YANILTICIYDI: health-watch zombie
+    // cihazlari `wd-run.sh` ile DOGRUDAN yeniden baslatiyor, wd-provision da yeni
+    // cihazi systemd disinda aciyor -> unit "running" gorunmuyor ama container
+    // AYAKTA. Canli: systemd=126 derken ADB=156 idi (imkansiz bir oran; operator
+    // fark etti). Olcum artik bridge'in uye arayuzu uzerinden: sadece /sys,
+    // /proc TARAMASI YOK (bkz. README -- taramanin kendisi sistemi kilitliyordu).
+    const acik = await sh(
+      "n=0; for d in /sys/class/net/waydroid-*/brif; do " +
+        '[ -n "$(ls -A "$d" 2>/dev/null)" ] || continue; ' +
+        'i=${d#/sys/class/net/waydroid-}; i=${i%/brif}; ' +
+        'grep -qxF "$i" /opt/fleet-agent/state/instance-haric.txt 2>/dev/null && continue; ' +
+        'n=$((n+1)); done; echo "$n"',
+      10000
+    );
+    const sysd = await sh("timeout 8 systemctl list-units --state=running 'waydroid@*' 2>/dev/null | grep -c waydroid@", 10000);
+    const toplam = await sh('wc -l < /opt/fleet-agent/state/all_inst.txt 2>/dev/null', 6000);
     const adb = await sh("timeout 8 adb devices 2>/dev/null | grep -c 'device$'", 10000);
     log(`OK durum d=${d.dState} sd=${ms}`);
     return gonder(200, {
       ...d,
       systemdMs: ms,
       systemdSaglikli: ms <= 5000,
-      acikCihaz: acik.ok ? acik.out : '?',
+      acikCihaz: acik.ok ? acik.out : '?',      // GERCEK container (bridge uyesi)
+      toplamCihaz: toplam.ok ? toplam.out.trim() : '?',
+      systemdSayimi: sysd.ok ? sysd.out : '?',  // yaniltici olabilir -- bilgi amacli
       adbBagli: adb.ok ? adb.out : '?',
       eylemler: Object.fromEntries(Object.entries(EYLEMLER).map(([k, v]) => [k, v.aciklama]))
     });

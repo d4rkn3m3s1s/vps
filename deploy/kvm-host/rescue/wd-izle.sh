@@ -76,7 +76,11 @@ while true; do
   AG=$(sc is-active fleet-agent); AG=${AG:-?}
   FR=$(sc is-active wd-fren); FR=${FR:-?}
 
-  echo "$T | acik=$ACIK/156 sysd=$SYSD kuyruk=$KUY | adb=${ADB:-0} off=${OFF:-0} | D=$D sd=${SD}ms load=$LO RAM=${RAM}G cpuidle=${CPUID} | agent=$AG fren=$FR" >> "$L"
+  # ★2026-08-15: filo boyutu artik SABIT DEGIL -- instance listesinden okunur.
+  # "156" sabiti yanlisti: /var/lib/waydroid.* altinda filoya ait OLMAYAN dizin
+  # de vardi (`work`), panel 156 derken DB'de 155 cihaz vardi.
+  TOP=$(wc -l < /opt/fleet-agent/state/all_inst.txt 2>/dev/null); TOP=${TOP:-0}
+  echo "$T | acik=$ACIK/$TOP sysd=$SYSD kuyruk=$KUY | adb=${ADB:-0} off=${OFF:-0} | D=$D sd=${SD}ms load=$LO RAM=${RAM}G cpuidle=${CPUID} | agent=$AG fren=$FR" >> "$L"
 
   # Derin tarama: 2 dakikada bir (pahali -- 40 paralel lxc-attach + curl)
   #

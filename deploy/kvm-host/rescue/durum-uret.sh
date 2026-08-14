@@ -16,6 +16,10 @@ while true; do
   D=$(g D); LO=$(g load); RAM=$(g RAM); CPUID=$(g cpuidle)
   AG=$(echo "$SON" | grep -oE "agent=[a-z]+" | cut -d= -f2)
   FR=$(echo "$SON" | grep -oE "fren=[a-z]+" | cut -d= -f2)
+  # ★2026-08-15: toplam artik SABIT DEGIL -- log satirindaki "acik=N/M" den okunur.
+  TOP=$(echo "$SON" | grep -oE "acik=[0-9?]+/[0-9]+" | cut -d/ -f2)
+  [ -z "$TOP" ] && TOP=$(wc -l < /opt/fleet-agent/state/all_inst.txt 2>/dev/null)
+  TOP=${TOP:-155}
   ACIK=${ACIK:-0}; D=${D:-0}; ADB=${ADB:-0}; KUY=${KUY:-0}; OFF=${OFF:-0}
 
   # Derin tarama verileri
@@ -30,16 +34,19 @@ while true; do
 
   # Renkler
   if [ "$D" -ge 50 ]; then DR="#e74c3c"; DT="TEHLIKE"; elif [ "$D" -ge 25 ]; then DR="#f39c12"; DT="dikkat"; else DR="#2ecc71"; DT="normal"; fi
-  if [ "$ACIK" -ge 140 ]; then AR="#2ecc71"; elif [ "$ACIK" -ge 80 ]; then AR="#f39c12"; else AR="#e74c3c"; fi
+  # Renk esikleri de filo boyutuna GORE (sabit 140/80 farkli filo boyutlarinda yanlisti)
+  if [ "$ACIK" -ge $(( TOP * 90 / 100 )) ]; then AR="#2ecc71"
+  elif [ "$ACIK" -ge $(( TOP * 50 / 100 )) ]; then AR="#f39c12"
+  else AR="#e74c3c"; fi
   if [ "$AG" = "active" ]; then AGR="#2ecc71"; else AGR="#e74c3c"; fi
   if [ "$FR" = "active" ]; then FRR="#2ecc71"; else FRR="#e74c3c"; fi
-  YUZDE=$(( ACIK * 100 / 156 ))
+  YUZDE=$(( ACIK * 100 / TOP ))
 
   # Mini grafik: son 30 olcumun acik-cihaz seyri
   BARS=""
   while read -r v; do
     [ -z "$v" ] && continue
-    H=$(( v * 60 / 156 )); [ "$H" -lt 2 ] && H=2
+    H=$(( v * 60 / TOP )); [ "$H" -lt 2 ] && H=2
     BARS="$BARS<div style=\"flex:1;background:#3498db;height:${H}px;border-radius:2px 2px 0 0\" title=\"$v cihaz\"></div>"
   done < <(tail -30 "$L" 2>/dev/null | grep -oE "acik=[0-9]+" | cut -d= -f2)
 
@@ -87,7 +94,7 @@ HEAD
     echo "<h1>Filo Durumu</h1><div class=\"sub\">10 saniyede bir yenilenir &middot; son olcum: $(echo "$SON" | cut -d' ' -f1) &middot; derin tarama: ${DZAMAN:-bekleniyor}</div>"
 
     echo '<div class="g">'
-    echo "<div class=\"c\"><div class=\"k\">Acik cihaz</div><div class=\"v\" style=\"color:$AR\">$ACIK<span class=\"s\">/156</span></div><div class=\"bar\"><div class=\"fill\" style=\"width:${YUZDE}%;background:$AR\"></div></div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Acik cihaz</div><div class=\"v\" style=\"color:$AR\">$ACIK<span class=\"s\">/$TOP</span></div><div class=\"bar\"><div class=\"fill\" style=\"width:${YUZDE}%;background:$AR\"></div></div></div>"
     echo "<div class=\"c\"><div class=\"k\">ADB bagli</div><div class=\"v\">$ADB</div><div class=\"n\">bayat uc: $OFF</div></div>"
     echo "<div class=\"c\"><div class=\"k\">D-state</div><div class=\"v\" style=\"color:$DR\">$D</div><div class=\"n\">$DT &middot; fren esigi 50</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Kuyrukta</div><div class=\"v\">$KUY</div><div class=\"n\">acilmayi bekliyor</div></div>"

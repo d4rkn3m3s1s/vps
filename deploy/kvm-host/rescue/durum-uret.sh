@@ -22,6 +22,11 @@ while true; do
   dg(){ grep "^$1=" "$DETAY" 2>/dev/null | cut -d= -f2-; }
   IP=$(dg ip); NOIP=$(dg noip); BOOT=$(dg boot); ADBOK=$(dg adbok)
   NET=$(dg net); CIKIS=$(dg cikis); DZAMAN=$(dg zaman)
+  # ★2026-08-15 proxy sizintisi: cihaz host'un kendi IP'siyle cikiyorsa proxy YOK
+  # -> WhatsApp'a datacenter IP'sinden gidiliyor -> BAN riski. Sifir olmali.
+  SIZ=$(dg sizinti); SIZ=${SIZ:-0}
+  DCIP=$(dg dcip)
+  if [ "${SIZ:-0}" -gt 0 ] 2>/dev/null; then SIZR="#e74c3c"; SIZN="⚠ BAN RISKI — proxy devrede degil"; else SIZR="#2ecc71"; SIZN="proxy hepsinde devrede"; fi
 
   # Renkler
   if [ "$D" -ge 50 ]; then DR="#e74c3c"; DT="TEHLIKE"; elif [ "$D" -ge 25 ]; then DR="#f39c12"; DT="dikkat"; else DR="#2ecc71"; DT="normal"; fi
@@ -97,8 +102,9 @@ HEAD
     echo "<div class=\"c\"><div class=\"k\">Android acik</div><div class=\"v\">${BOOT:-?}</div><div class=\"n\">boot tamamlandi</div></div>"
     echo "<div class=\"c\"><div class=\"k\">ADB erisilir</div><div class=\"v\">${ADBOK:-?}</div><div class=\"n\">komut alabilir</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Internet + proxy</div><div class=\"v\" style=\"color:#2ecc71\">${NET:-?}</div><div class=\"n\">disari cikabiliyor</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Proxy sizintisi</div><div class=\"v\" style=\"color:$SIZR\">${SIZ}</div><div class=\"n\">$SIZN</div></div>"
     echo '</div>'
-    echo "<div class=\"c\" style=\"margin-bottom:16px\"><div class=\"k\">Proxy cikis IP ornekleri</div><div style=\"font-size:14px;margin-top:6px;font-family:ui-monospace,monospace;color:#3498db\">${CIKIS:-bekleniyor}</div><div class=\"n\">TR residential olmali</div></div>"
+    echo "<div class=\"c\" style=\"margin-bottom:16px\"><div class=\"k\">Proxy cikis IP ornekleri</div><div style=\"font-size:14px;margin-top:6px;font-family:ui-monospace,monospace;color:#3498db\">${CIKIS:-bekleniyor}</div><div class=\"n\">TR residential olmali &middot; host IP: ${DCIP:-?} (bu IP cikarsa SIZINTI)</div></div>"
 
     echo '<div class="two">'
     echo "<div><h2>Acik cihaz seyri (son 10 dk)</h2><div class=\"chart\">$BARS</div></div>"

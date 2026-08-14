@@ -15,6 +15,12 @@ DETAY=/opt/fleet-agent/state/detay.txt
 S=/opt/fleet-agent/state/saglik.out
 TUR=0
 
+# Host'un KENDI cikis IP'si. Bir cihaz bu IP ile cikiyorsa proxy DEVREDE DEGIL
+# (datacenter IP -> WhatsApp bani). Bir kez olculur; degisirse servis restart'inda
+# tazelenir. Ulasilamazsa bos kalir ve sizinti sayimi 0 doner (yanlis alarm yerine
+# sessizlik -- gercek deger health-watch tarafindan da ayrica denetleniyor).
+DC_IP="$(timeout 10 curl -s https://api.ipify.org 2>/dev/null || echo '')"
+
 dblocked(){ awk '/^procs_blocked/{print $2; exit}' /proc/stat 2>/dev/null || echo 0; }
 sc(){ timeout 6 systemctl "$@" 2>/dev/null; }
 
@@ -72,8 +78,21 @@ while true; do
 
   echo "$T | acik=$ACIK/156 sysd=$SYSD kuyruk=$KUY | adb=${ADB:-0} off=${OFF:-0} | D=$D sd=${SD}ms load=$LO RAM=${RAM}G cpuidle=${CPUID} | agent=$AG fren=$FR" >> "$L"
 
-  # Derin tarama: 2 dakikada bir (pahali -- lxc-attach/curl)
-  if [ $((TUR % 6)) -eq 1 ]; then
+  # Derin tarama: 2 dakikada bir (pahali -- 40 paralel lxc-attach + curl)
+  #
+  # ★★2026-08-15 SAGLIK KAPISI. 14 Agu'nun ana dersi: IZLEME KENDISI YUK KAYNAGI
+  # OLMAMALI. O gun sistem uc kez kilitlendi ve ucunde de sebep, olcum komutlarinin
+  # /proc'u taramasiydi; benim izleyicim de `top -bn1` ile ayni hatayi yapip
+  # 22:57'de kayit tutmayi tamamen durdurdu (kor kaldik).
+  # Artik sistem zorlanirken derin tarama ATLANIR: ucuz sayimlar (ust satirlar)
+  # yazilmaya devam eder, boylece kayit HIC kesilmez -- sadece pahali kisim bekler.
+  SKIP=0
+  [ "${SD:-0}" -gt 3000 ] 2>/dev/null && SKIP=1     # systemd zorlaniyor
+  [ "${D:-0}" -gt 35 ] 2>/dev/null && SKIP=1        # /proc/disk baskisi
+  if [ $((TUR % 6)) -eq 1 ] && [ "$SKIP" -eq 1 ]; then
+    echo "$T | derin-tarama ATLANDI (sd=${SD}ms D=$D) — sistem zorlaniyor" >> "$L"
+  fi
+  if [ $((TUR % 6)) -eq 1 ] && [ "$SKIP" -eq 0 ]; then
     timeout 240 /opt/fleet-agent/wd-saglik.sh > "$S.tmp" 2>/dev/null && mv "$S.tmp" "$S"
     { echo "ip=$(grep -cE '\|192\.168\.|\|10\.10\.' "$S" 2>/dev/null)"
       echo "noip=$(grep -c NOIP "$S" 2>/dev/null)"
@@ -81,6 +100,13 @@ while true; do
       echo "adbok=$(cut -d'|' -f4 "$S" 2>/dev/null | grep -c '^device$')"
       echo "net=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -cE '^[0-9]+\.')"
       echo "cikis=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -E '^[0-9]+\.' | head -3 | tr '\n' ' ')"
+      # ★2026-08-15 PROXY SIZINTISI: cihazin cikis IP'si HOST'un kendi IP'siyse
+      # proxy devrede DEGIL -> WhatsApp'a datacenter IP'sinden gidiliyor -> BAN.
+      # 14 Agu gecesi reboot sonrasi 47 cihaz boyle cikti ve PANELDE GORUNMEDI;
+      # health-watch tespit ediyor ama o sirada durdurulmustu. Artik sayisi
+      # burada, tek bakista gorunur.
+      echo "sizinti=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -c "^${DC_IP}$")"
+      echo "dcip=${DC_IP}"
       echo "zaman=$T"; } > "$DETAY"
   fi
 

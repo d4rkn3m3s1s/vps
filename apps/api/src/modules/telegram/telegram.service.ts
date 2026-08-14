@@ -11,6 +11,7 @@
 // workspace (only the chatId the operator registered may command the bot), and
 // reply with inline-keyboard menus for a clean, tap-driven UX.
 
+import { readFile } from 'node:fs/promises';
 import { prisma } from '../../db/prisma';
 import { decryptString, safeDecrypt } from '../../lib/crypto';
 import { logger } from '../../lib/logger';
@@ -205,6 +206,12 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'uyandir', description: '🔆 Offline cihazı uyandır — /uyandir <cihaz>' },
   { command: 'reboot', description: '♻️ Cihazı yeniden başlat — /reboot <cihaz>' },
   { command: 'reconnect', description: '🔧 ADB kopan offline cihazları toplu kurtar' },
+  // ★2026-08-15: SUNUCU KİLİDİ müdahaleleri. 14 Ağu'da sistem 3 kez kilitlendi;
+  // systemctl ve SSH ölüyken tek ayakta kalan kanal API/Telegram'dı. Bu komutlar
+  // host'taki kurtarma ucuna (wd-kurtar) gider — o uç systemd'ye bağımlı değildir.
+  { command: 'kilitdurum', description: '🔒 Sunucu kilit durumu (systemd yanıtı, D-state)' },
+  { command: 'agentsifirla', description: '♻️ Agent + canlı yayın kanalını sıfırla' },
+  { command: 'panik', description: '🛑 Açılış betiklerini durdur — cihazlar KAPANMAZ' },
   // 🛠 Cihaz yönetimi
   { command: 'kur', description: '🚀 Toplu cihaz kur (ülke + adet sorar)' },
   { command: 'etiket', description: '🏷 Cihaz etiketle (adım adım sorar)' },
@@ -225,6 +232,47 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'bakiye', description: '💳 Proxy (thordata) kalan trafik + son kullanma' },
   { command: 'yardim', description: 'ℹ️ Komut listesi ve örnekler' }
 ];
+
+// ── Host kurtarma ucu (wd-kurtar) köprüsü ────────────────────────────────────
+//
+// ★2026-08-15: 14 Ağustos'ta sistem bir günde ÜÇ KEZ kilitlendi. Her seferinde
+// `systemctl` yanıt vermedi ve SSH girişi açılmadı (PAM → pam_systemd → logind
+// D-Bus zinciri asılı kalıyor), AMA API 200 dönmeye devam etti — çünkü zaten
+// çalışan bir süreç ve /proc'a dokunmuyor. Yani Telegram, kilit anında ayakta
+// kalan tek müdahale kanalıydı.
+//
+// Host'ta root çalışan kurtarma ucu var (127.0.0.1:4700). API'nin root yetkisi
+// olmadığı için müdahaleler ona devredilir; o uç `systemctl` yerine doğrudan
+// `pkill` kullanır, böylece systemd tıkalıyken de iş görür.
+const RESCUE_BASE = process.env.RESCUE_URL ?? 'http://127.0.0.1:4700';
+const RESCUE_TOKEN_FILE = process.env.RESCUE_TOKEN_FILE ?? '/opt/fleet-agent/state/kurtar.token';
+
+async function rescueCall(
+  path: string
+): Promise<{ ok: boolean; data: Record<string, unknown>; error?: string }> {
+  const token = await readFile(RESCUE_TOKEN_FILE, 'utf8')
+    .then((t) => t.trim())
+    .catch(() => '');
+  if (!token) return { ok: false, data: {}, error: 'Kurtarma ucu yapılandırılmamış (token yok).' };
+
+  // Kilitli bir sistemde de yanıt vermeli ama operatör sonsuza kadar beklememeli.
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 30_000);
+  try {
+    const sep = path.includes('?') ? '&' : '?';
+    const res = await fetch(`${RESCUE_BASE}${path}${sep}token=${encodeURIComponent(token)}`, {
+      signal: ac.signal
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) return { ok: false, data, error: `Kurtarma ucu HTTP ${res.status}` };
+    return { ok: true, data };
+  } catch (e) {
+    const reason = e instanceof Error && e.name === 'AbortError' ? 'zaman aşımı' : 'ulaşılamadı';
+    return { ok: false, data: {}, error: `Kurtarma ucuna ${reason}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Tokens whose command palette we've already pushed this process life.
 const commandsRegistered = new Set<string>();
@@ -415,6 +463,11 @@ function menuText(): string {
     '• <b>/uyandir</b> &lt;cihaz&gt; — offline cihazı uyandır',
     '• <b>/reboot</b> &lt;cihaz&gt; — cihazı yeniden başlat',
     '• <b>/reconnect</b> — ADB kopan offline cihazları toplu kurtar',
+    // ★2026-08-15: SSH/systemctl ölüyken çalışan müdahaleler. Palette'e ekleyip
+    // yardıma eklememek operatörün komutu keşfedememesine yol açıyordu (bkz. /kayit).
+    '• <b>/kilitdurum</b> — sunucu kilitli mi? (systemd yanıtı + D-state)',
+    '• <b>/agentsifirla</b> — agent + canlı yayın kanalını sıfırla',
+    '• <b>/panik</b> — açılış betiklerini durdur (cihazlar KAPANMAZ)',
     '   <i>(cihaz = isim, numara veya kimlik — örn. /uyandir 90555…)</i>',
     '',
     '<b>🛠 Cihaz yönetimi</b>',
@@ -1541,6 +1594,66 @@ async function handleCommand(
     }
     const tail = failed.length ? `\n⚠️ Uyandırılamayan: ${failed.map(esc).join(', ')}` : '';
     await sendMessage(token, chatId, `🔧 <b>ADB kurtarma</b>\n${woken} offline cihaza uyandırma gönderildi (ADB yeniden bağlanacak).${tail}`, MAIN_MENU);
+  // ── ★2026-08-15 SUNUCU KİLİDİ müdahaleleri (kurtarma ucu köprüsü) ──────────
+  } else if (lower === '/kilitdurum' || lower === 'kilitdurum') {
+    const r = await rescueCall('/kurtar/durum');
+    if (!r.ok) {
+      await sendMessage(token, chatId, `❌ ${esc(r.error ?? 'Kurtarma ucu yanıt vermedi')}`, MAIN_MENU);
+      return;
+    }
+    const d = r.data as {
+      dState?: string; systemdMs?: number; systemdSaglikli?: boolean;
+      acikCihaz?: string; adbBagli?: string; ramBosGb?: number; load?: string;
+    };
+    // ⚠️ load KASTEN ikinci planda: bu hostta yanıltıcı (load 248 iken CPU %84
+    // boştaydı — Waydroid uyuyan thread'leri load'a sayıyor). Karar sinyali
+    // systemd yanıt süresi ve D-state.
+    const saglikli = d.systemdSaglikli === true;
+    const rozet = saglikli ? '🟢 SAĞLIKLI' : '🔴 TIKALI';
+    await sendMessage(
+      token,
+      chatId,
+      `🔒 <b>Sunucu kilit durumu</b> — ${rozet}\n\n` +
+        `⏱ systemd yanıtı: <b>${esc(String(d.systemdMs ?? '?'))} ms</b> (eşik 5000)\n` +
+        `🧱 D-state: <b>${esc(String(d.dState ?? '?'))}</b>\n` +
+        `📱 Açık cihaz: <b>${esc(String(d.acikCihaz ?? '?'))}</b> · ADB: <b>${esc(String(d.adbBagli ?? '?'))}</b>\n` +
+        `💾 Boş RAM: <b>${esc(String(d.ramBosGb ?? '?'))} GB</b>\n` +
+        `📈 load: ${esc(String(d.load ?? '?'))} <i>(bu hostta yanıltıcıdır)</i>\n\n` +
+        (saglikli
+          ? '✅ Sistem normal. Müdahale gerekmiyor.'
+          : '⚠️ systemd yanıt vermiyor. /panik ile açılış betiklerini durdurabilirsin (cihazlar kapanmaz).'),
+      MAIN_MENU
+    );
+  } else if (lower === '/agentsifirla' || lower === 'agentsifirla') {
+    await sendMessage(token, chatId, '♻️ Agent sıfırlanıyor…', undefined);
+    const r = await rescueCall('/kurtar/eylem?ad=sifirla-agent');
+    if (!r.ok) {
+      await sendMessage(token, chatId, `❌ ${esc(r.error ?? 'Sıfırlanamadı')}`, MAIN_MENU);
+      return;
+    }
+    const cikti = String((r.data as { cikti?: string }).cikti ?? '').trim();
+    await sendMessage(
+      token,
+      chatId,
+      `✅ <b>Agent sıfırlandı</b>\n\nSonuç: <code>${esc(cikti || 'tamam')}</code>\n\n` +
+        'Canlı yayın kanalı birkaç saniye içinde yeniden bağlanır.',
+      MAIN_MENU
+    );
+  } else if (lower === '/panik' || lower === 'panik') {
+    await sendMessage(token, chatId, '🛑 Açılış betikleri durduruluyor…', undefined);
+    const r = await rescueCall('/kurtar/eylem?ad=panik');
+    if (!r.ok) {
+      await sendMessage(token, chatId, `❌ ${esc(r.error ?? 'Durdurulamadı')}`, MAIN_MENU);
+      return;
+    }
+    await sendMessage(
+      token,
+      chatId,
+      '🛑 <b>Panik uygulandı</b>\n\nAçılış/onarım betikleri ve agent durduruldu.\n' +
+        '📱 <b>Cihazlar KAPATILMADI</b> — çalışmaya devam ediyorlar.\n\n' +
+        'Sistem toparlayınca /agentsifirla ile agent’ı geri başlat.',
+      MAIN_MENU
+    );
   // ── Grup 2: Cihaz yönetimi ─────────────────────────────────────────────────
   } else if (isCmd(lower, 'etiket')) {
     // "/etiket <cihaz> #test" veya "/etiket <cihaz> test" — mevcut tag'lere ekler.

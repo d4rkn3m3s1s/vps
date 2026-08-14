@@ -143,20 +143,67 @@ function durumSayfasi(o, token) {
   const kart = (baslik, deger, alt, c) =>
     `<div class="c"><div class="k">${baslik}</div><div class="v"${c ? ` style="color:${c}"` : ''}>${deger}</div><div class="n">${alt}</div></div>`;
 
-  // Sirala: gunluk kullanimda en cok gerekenler ustte, tehlikeli en altta.
-  const sira = ['sifirla-agent', 'durdur-betikler', 'durdur-kapilar', 'durdur-agent', 'baslat-agent', 'panik', 'log-izle', 'log-fren', 'log-watchdog', 'reboot-zorla'];
-  const butonlar = sira
-    .filter((ad) => EYLEMLER[ad])
-    .map((ad) => {
-      const e = EYLEMLER[ad];
-      const url = `/kurtar/eylem?ad=${ad}&token=${t}${e.tehlikeli ? '&onay=evet' : ''}`;
-      const cls = e.tehlikeli ? 'b teh' : ad.startsWith('log-') ? 'b log' : 'b';
-      const onay = e.tehlikeli
-        ? ` onclick="return confirm('SUNUCU YENIDEN BASLATILACAK.\\n\\nCalisan tum cihazlar kapanir ve yeniden acilmasi ~20 dakika surer.\\n\\nEmin misin?')"`
-        : '';
-      return `<a class="${cls}" href="${url}"${onay}><b>${ad}</b><span>${e.aciklama}</span></a>`;
-    })
-    .join('');
+  // ── TESHIS: sayilardan "su an ne yapmali" cikar ────────────────────────────
+  // ★2026-08-15: operator acil durumda 10 eylem arasindan dogru olani secmek
+  // zorunda kalmamali. Sayfa duruma bakip ONERILEN eylemi one cikarir ve
+  // NEDEN'ini yazar. ("Hangi durumda neyi kullanmam gerektigini soylesin.")
+  const acikN = Number(o.acikCihaz) || 0;
+  const adbN = Number(o.adbBagli) || 0;
+  const topN = Number(o.toplamCihaz) || 0;
+  const dN = Number(o.dState) || 0;
+
+  let teshis, onerilen = [], teshisRenk;
+  if (!saglikli) {
+    teshisRenk = '#e74c3c';
+    teshis = `<b>systemd yanit vermiyor (${o.systemdMs} ms).</b> Bu, SSH'in da acilmadigi kilidin imzasidir. ` +
+      'Neredeyse her zaman sebep, arka planda calisan bir acilis/onarim betigidir.';
+    onerilen = ['durdur-betikler', 'durdur-kapilar', 'panik'];
+  } else if (dN >= 50) {
+    teshisRenk = '#f39c12';
+    teshis = `<b>D-state ${dN}</b> — surecler diskte/agda bekliyor, fren esigi 50. Sistem sisiyor: ` +
+      'once acilis betiklerini kes, 1-2 dakika bekle.';
+    onerilen = ['durdur-betikler', 'durdur-kapilar'];
+  } else if (topN && acikN < topN * 0.9) {
+    teshisRenk = '#f39c12';
+    teshis = `<b>${topN - acikN} cihaz kapali</b> (${acikN}/${topN}). Sistem saglikli, yani cihazlar ` +
+      'kendiliginden acilabilir; once bekleyen acilis kapilarini serbest birak.';
+    onerilen = ['durdur-kapilar', 'sifirla-agent'];
+  } else if (acikN && adbN < acikN * 0.9) {
+    teshisRenk = '#f39c12';
+    teshis = `<b>Cihazlar acik ama ${acikN - adbN} tanesine ADB ile ulasilamiyor.</b> ` +
+      'Genelde agent/ADB katmani takilmistir.';
+    onerilen = ['sifirla-agent'];
+  } else {
+    teshisRenk = '#2ecc71';
+    teshis = `<b>Her sey normal.</b> systemd ${o.systemdMs} ms &middot; D-state ${dN} &middot; ` +
+      `${acikN}/${topN} cihaz acik &middot; ${adbN} ADB bagli. <b>Mudahaleye gerek yok</b> — ` +
+      'asagidakileri yalnizca bir sorun gordugunde kullan.';
+    onerilen = [];
+  }
+
+  const btn = (ad, vurgu) => {
+    const e = EYLEMLER[ad];
+    if (!e) return '';
+    const url = `/kurtar/eylem?ad=${ad}&token=${t}${e.tehlikeli ? '&onay=evet' : ''}`;
+    const cls = `b${e.tehlikeli ? ' teh' : ad.startsWith('log-') ? ' log' : ''}${vurgu ? ' one' : ''}`;
+    const onay = e.tehlikeli
+      ? ` onclick="return confirm('SUNUCU YENIDEN BASLATILACAK.\\n\\nCalisan tum cihazlar kapanir, yeniden acilmasi ~20 dakika surer.\\n\\nOnce digerlerini denedin mi?')"`
+      : '';
+    return `<a class="${cls}" href="${url}"${onay}><b>${vurgu ? '👉 ' : ''}${ad}</b><span>${e.aciklama}</span></a>`;
+  };
+
+  const grup = (baslik, aciklama, adlar) => {
+    const kalan = adlar.filter((a) => !onerilen.includes(a) && EYLEMLER[a]);
+    if (!kalan.length) return '';
+    return `<h2>${baslik}</h2><div class="ga">${aciklama}</div>${kalan.map((a) => btn(a, false)).join('')}`;
+  };
+
+  const butonlar =
+    (onerilen.length ? `<h2>⚡ Onerilen — sirayla dene</h2>${onerilen.map((a, i) => btn(a, i === 0)).join('')}` : '') +
+    grup('1 &middot; Once bunu dene', 'Yayin/panel kopmus ama cihazlar calisiyorsa. En zararsiz mudahale.', ['sifirla-agent']) +
+    grup('2 &middot; Sistem tikaliysa', 'systemctl yanit vermiyor veya D-state tirmaniyorsa. <b>Cihazlar KAPANMAZ.</b>', ['durdur-betikler', 'durdur-kapilar', 'durdur-agent', 'baslat-agent', 'panik']) +
+    grup('3 &middot; Once bak, sonra karar ver', 'Ne oldugunu anlamak icin kayitlar. Hicbir seyi degistirmez.', ['log-izle', 'log-fren', 'log-watchdog']) +
+    grup('4 &middot; Son care', 'Yukaridakilerin HICBIRI ise yaramadiysa. Cihazlar kapanir, donus ~20 dakika.', ['reboot-zorla']);
 
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -176,9 +223,13 @@ h2{font-size:13px;color:#8a8a95;margin:18px 0 8px;text-transform:uppercase;lette
 .b:active{background:#26262e}
 .b b{display:block;font-size:15px;margin-bottom:2px}
 .b span{font-size:12px;color:#8a8a95}
-.b.log{opacity:.75}
+.b.log{opacity:.7}
 .b.teh{background:#2a1416;border-color:#5c2226}
 .b.teh b{color:#ff6b6b}
+.b.one{background:#13301f;border-color:#2c6b45}
+.b.one b{color:#4ade80;font-size:16px}
+.teshis{border-radius:12px;padding:14px;margin-bottom:18px;font-size:13.5px;line-height:1.65;background:#18181c;border:1px solid #232329;border-left-width:4px}
+.ga{font-size:12px;color:#7a7a85;margin:-2px 0 8px;line-height:1.5}
 .uyari{background:#18181c;border:1px solid #232329;border-radius:12px;padding:12px;font-size:12.5px;color:#a8a8b2;line-height:1.6}
 </style></head><body>
 <h1>🔧 Kurtarma</h1>
@@ -192,7 +243,7 @@ ${kart('ADB bagli', o.adbBagli, 'komut alabilir')}
 ${kart('Bos RAM', `${o.ramBosGb}<span style="font-size:14px;color:#6a6a75">GB</span>`, `toplam ${o.ramToplamGb} GB`)}
 ${kart('Load', String(o.load).split(' ')[0], 'bu hostta YANILTICI')}
 </div>
-<h2>Mudahale — tek dokunus</h2>
+<div class="teshis" style="border-left-color:${teshisRenk}">🔎 ${teshis}</div>
 ${butonlar}
 <h2>Not</h2>
 <div class="uyari">

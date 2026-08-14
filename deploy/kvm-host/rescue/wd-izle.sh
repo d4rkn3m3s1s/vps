@@ -31,9 +31,15 @@ sc(){ timeout 6 systemctl "$@" 2>/dev/null; }
 # Operator "cihazlar dusuyor" diye panikledi; oysa filo buyuyordu.
 # Yontem: bridge'in uye arayuzu VAR mi -> sadece /sys okumasi, /proc TARAMASI YOK.
 gercek_acik(){
-  local n=0 d
+  local n=0 d inst
   for d in /sys/class/net/waydroid-*/brif; do
-    [ -n "$(ls -A "$d" 2>/dev/null)" ] && n=$((n+1))
+    [ -n "$(ls -A "$d" 2>/dev/null)" ] || continue
+    # ★2026-08-15: haric tutulan instance'lar SAYILMAZ. `work` gibi filoya ait
+    # olmayan container hala calisiyor olabilir; sayilinca "156/155" gibi
+    # imkansiz bir oran cikiyordu.
+    inst=${d#/sys/class/net/waydroid-}; inst=${inst%/brif}
+    grep -qxF "$inst" /opt/fleet-agent/state/instance-haric.txt 2>/dev/null && continue
+    n=$((n+1))
   done
   echo "$n"
 }
@@ -97,6 +103,11 @@ while true; do
     echo "$T | derin-tarama ATLANDI (sd=${SD}ms D=$D) — sistem zorlaniyor" >> "$L"
   fi
   if [ $((TUR % 6)) -eq 1 ] && [ "$SKIP" -eq 0 ]; then
+    # ★2026-08-15: instance listesini TAZELE. Yeni kurulan cihaz aksi halde
+    # listeye girmiyor ve hicbir izlemede/taramada gorunmuyordu; canli vaka:
+    # mi322 kuruldu, panel "156/155" gibi imkansiz bir oran gosterdi.
+    # Ucuz: tek dizin listesi (/proc taramasi yok).
+    /opt/fleet-agent/wd-inst-liste.sh 2>/dev/null
     timeout 240 /opt/fleet-agent/wd-saglik.sh > "$S.tmp" 2>/dev/null && mv "$S.tmp" "$S"
     { echo "ip=$(grep -cE '\|192\.168\.|\|10\.10\.' "$S" 2>/dev/null)"
       echo "noip=$(grep -c NOIP "$S" 2>/dev/null)"

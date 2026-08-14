@@ -214,6 +214,12 @@ OK=0; LEAK=0; RECONN=0; UNREACH=0
 DEADEXIT=0; ROTFIX=0; ACCTFIX=0
 DEAD_LIST=""
 declare -A DONE
+# ★2026-08-14: TUR BASI heartbeat. Eskiden yalnizca tur SONUNDA gonderiliyordu;
+# uzun turlarda (zombie restart'lari 40+ dk surebiliyor) API izleyiciyi OLMUS
+# sanip alarm yagmuru uretiyordu. Olmus betik yine hic ping gonderemez -> 
+# dead-man's-switch mantigi bozulmadi.
+notify HEALTH_WATCH_HEARTBEAT "" "health-watch turu BASLADI" true
+
 while IFS='|' read -r inst meta_cc phone; do
   [ -z "$inst" ] && continue
   [ -n "${DONE[$inst]:-}" ] && continue

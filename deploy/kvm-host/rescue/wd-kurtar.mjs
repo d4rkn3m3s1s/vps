@@ -133,6 +133,79 @@ const EYLEMLER = {
   }
 };
 
+// ── Tarayici icin TIKLANABILIR kurtarma sayfasi ──────────────────────────────
+// Acil durumda operator URL yazamaz; her eylem tek dokunusla erisilebilir olmali.
+// Token zaten sayfayi acmak icin verildi, baglantilara gomulur.
+function durumSayfasi(o, token) {
+  const t = encodeURIComponent(token);
+  const saglikli = o.systemdSaglikli === true;
+  const renk = (kotu) => (kotu ? '#e74c3c' : '#2ecc71');
+  const kart = (baslik, deger, alt, c) =>
+    `<div class="c"><div class="k">${baslik}</div><div class="v"${c ? ` style="color:${c}"` : ''}>${deger}</div><div class="n">${alt}</div></div>`;
+
+  // Sirala: gunluk kullanimda en cok gerekenler ustte, tehlikeli en altta.
+  const sira = ['sifirla-agent', 'durdur-betikler', 'durdur-kapilar', 'durdur-agent', 'baslat-agent', 'panik', 'log-izle', 'log-fren', 'log-watchdog', 'reboot-zorla'];
+  const butonlar = sira
+    .filter((ad) => EYLEMLER[ad])
+    .map((ad) => {
+      const e = EYLEMLER[ad];
+      const url = `/kurtar/eylem?ad=${ad}&token=${t}${e.tehlikeli ? '&onay=evet' : ''}`;
+      const cls = e.tehlikeli ? 'b teh' : ad.startsWith('log-') ? 'b log' : 'b';
+      const onay = e.tehlikeli
+        ? ` onclick="return confirm('SUNUCU YENIDEN BASLATILACAK.\\n\\nCalisan tum cihazlar kapanir ve yeniden acilmasi ~20 dakika surer.\\n\\nEmin misin?')"`
+        : '';
+      return `<a class="${cls}" href="${url}"${onay}><b>${ad}</b><span>${e.aciklama}</span></a>`;
+    })
+    .join('');
+
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kurtarma</title><style>
+*{box-sizing:border-box}
+body{background:#0d0d0f;color:#e8e8ea;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0 auto;padding:16px;max-width:900px}
+h1{font-size:19px;margin:0 0 3px}
+.sub{color:#7a7a85;font-size:13px;margin-bottom:14px}
+.rozet{display:inline-block;padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:9px;margin-bottom:18px}
+.c{background:#18181c;border:1px solid #232329;border-radius:12px;padding:12px}
+.k{color:#8a8a95;font-size:11px;text-transform:uppercase;letter-spacing:.6px}
+.v{font-size:25px;font-weight:650;margin-top:3px;line-height:1.1}
+.n{font-size:11px;color:#7a7a85;margin-top:3px}
+h2{font-size:13px;color:#8a8a95;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.6px}
+.b{display:block;background:#1e1e24;border:1px solid #2c2c34;border-radius:12px;padding:13px 15px;margin-bottom:9px;text-decoration:none;color:#e8e8ea}
+.b:active{background:#26262e}
+.b b{display:block;font-size:15px;margin-bottom:2px}
+.b span{font-size:12px;color:#8a8a95}
+.b.log{opacity:.75}
+.b.teh{background:#2a1416;border-color:#5c2226}
+.b.teh b{color:#ff6b6b}
+.uyari{background:#18181c;border:1px solid #232329;border-radius:12px;padding:12px;font-size:12.5px;color:#a8a8b2;line-height:1.6}
+</style></head><body>
+<h1>🔧 Kurtarma</h1>
+<div class="sub">SSH ve systemd olse bile calisir &middot;
+<span class="rozet" style="background:${saglikli ? '#123d24' : '#3d1214'};color:${renk(!saglikli)}">${saglikli ? '🟢 SISTEM SAGLIKLI' : '🔴 SISTEM TIKALI'}</span></div>
+<div class="g">
+${kart('systemd yaniti', `${o.systemdMs}<span style="font-size:14px;color:#6a6a75">ms</span>`, 'esik 5000 &middot; ASIL sinyal', renk(!saglikli))}
+${kart('D-state', o.dState, 'fren esigi 50', renk(Number(o.dState) >= 50))}
+${kart('Acik cihaz', `${o.acikCihaz}<span style="font-size:14px;color:#6a6a75">/${o.toplamCihaz}</span>`, 'gercek container')}
+${kart('ADB bagli', o.adbBagli, 'komut alabilir')}
+${kart('Bos RAM', `${o.ramBosGb}<span style="font-size:14px;color:#6a6a75">GB</span>`, `toplam ${o.ramToplamGb} GB`)}
+${kart('Load', String(o.load).split(' ')[0], 'bu hostta YANILTICI')}
+</div>
+<h2>Mudahale — tek dokunus</h2>
+${butonlar}
+<h2>Not</h2>
+<div class="uyari">
+Bu sayfa <b>systemd'ye bagimli degildir</b>: eylemler <code>systemctl</code> yerine dogrudan
+<code>pkill</code> kullanir, cunku kilit anlarinda <code>systemctl</code> yanit vermiyor.<br><br>
+<b>Cihazlar kapanmaz</b> — "panik" dahil hicbir eylem calisan cihazlari durdurmaz;
+yalnizca acilis betikleri ve agent durur.<br><br>
+Ayni islemler <b>Telegram</b>'dan token'siz da yapilabilir:
+<code>/kilitdurum</code> &middot; <code>/agentsifirla</code> &middot; <code>/panik</code>
+</div>
+</body></html>`;
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${HOST}`);
   const yol = url.pathname.replace(/^\/kurtar/, '') || '/';
@@ -172,16 +245,25 @@ const server = http.createServer(async (req, res) => {
     const toplam = await sh('wc -l < /opt/fleet-agent/state/all_inst.txt 2>/dev/null', 6000);
     const adb = await sh("timeout 8 adb devices 2>/dev/null | grep -c 'device$'", 10000);
     log(`OK durum d=${d.dState} sd=${ms}`);
-    return gonder(200, {
+    const ozet = {
       ...d,
       systemdMs: ms,
       systemdSaglikli: ms <= 5000,
       acikCihaz: acik.ok ? acik.out : '?',      // GERCEK container (bridge uyesi)
       toplamCihaz: toplam.ok ? toplam.out.trim() : '?',
       systemdSayimi: sysd.ok ? sysd.out : '?',  // yaniltici olabilir -- bilgi amacli
-      adbBagli: adb.ok ? adb.out : '?',
-      eylemler: Object.fromEntries(Object.entries(EYLEMLER).map(([k, v]) => [k, v.aciklama]))
-    });
+      adbBagli: adb.ok ? adb.out : '?'
+    };
+    // ★2026-08-15: TARAYICIDAN gelene TIKLANABILIR sayfa ver.
+    // Onceki surum sadece JSON donuyordu: eylemler LISTELENIYOR ama tiklanacak
+    // bir sey yoktu -> operator acil durumda elle URL yazmak zorundaydi.
+    // ("Bu sayfadan nasil kurtaracagiz ki?") Acil mudahalede tek dokunus sart.
+    // curl/API cagrilari JSON almaya devam eder (Accept basligina bakiyoruz).
+    if ((req.headers.accept || '').includes('text/html')) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end(durumSayfasi(ozet, geldi));
+    }
+    return gonder(200, { ...ozet, eylemler: Object.fromEntries(Object.entries(EYLEMLER).map(([k, v]) => [k, v.aciklama])) });
   }
 
   if (yol === '/eylem') {
@@ -194,6 +276,24 @@ const server = http.createServer(async (req, res) => {
     log(`EYLEM ${ad} basliyor`);
     const r = await sh(e.cmd, 30000);
     log(`EYLEM ${ad} bitti ok=${r.ok} out=${r.out.slice(0, 200)}`);
+    // Tarayicidan gelene okunabilir sonuc + geri donus baglantisi ver.
+    if ((req.headers.accept || '').includes('text/html')) {
+      const esc = (x) => String(x ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(ad)}</title><style>
+body{background:#0d0d0f;color:#e8e8ea;font-family:system-ui,-apple-system,sans-serif;margin:0 auto;padding:16px;max-width:900px}
+h1{font-size:19px;margin:0 0 12px}
+pre{background:#18181c;border:1px solid #232329;border-radius:12px;padding:13px;overflow-x:auto;font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word}
+a{display:inline-block;margin-top:14px;background:#1e1e24;border:1px solid #2c2c34;border-radius:12px;padding:12px 18px;text-decoration:none;color:#e8e8ea;font-weight:600}
+.d{font-size:13px;color:#8a8a95;margin-bottom:10px}
+</style></head><body>
+<h1>${r.ok ? '✅' : '❌'} ${esc(ad)}</h1>
+<div class="d">${esc(e.aciklama)}</div>
+<pre>${esc(r.out || (r.ok ? 'tamam (cikti yok)' : 'hata'))}${r.err ? '\n\n[stderr]\n' + esc(r.err) : ''}${r.timedOut ? '\n\n⚠️ ZAMAN ASIMI' : ''}</pre>
+<a href="/kurtar/durum?token=${encodeURIComponent(geldi)}">← Kurtarma sayfasina don</a>
+</body></html>`);
+    }
     return gonder(200, { eylem: ad, ok: r.ok, cikti: r.out, hata: r.err, zamanAsimi: r.timedOut });
   }
 

@@ -251,6 +251,20 @@ GERI YUKLEME: GERI-YUKLEME.md
 BUTUNLUK   : sha256sum -c SHA256SUMS
 EOF
 
+# ★2026-08-15: ARSIVLE. Panel listesi sadece .tar.gz gosteriyor; dizin birakan
+# yedekler panelde GORUNMUYOR ve indirilemiyordu. Panel tarafi arsiv varsa
+# yeniden paketlemez ("betik zaten paketlemis"), yani cift is olmaz.
+ARSIV="$(dirname "$DIR")/$(basename "$DIR").tar.gz"
+if [ ! -f "$ARSIV" ]; then
+  say "9.5/9 arsivleniyor (panelden indirilebilsin diye)..."
+  if tar czf "$ARSIV" -C "$(dirname "$DIR")" "$(basename "$DIR")" 2>/dev/null; then
+    ( cd "$(dirname "$ARSIV")" && sha256sum "$(basename "$ARSIV")" > "$(basename "$ARSIV").sha256" ) 2>/dev/null
+    ok "arsiv $(du -h "$ARSIV" | cut -f1) — panelde gorunur"
+  else
+    say "UYARI: arsivlenemedi — yedek DIZIN olarak gecerli, ama panelde gorunmez"
+  fi
+fi
+
 say "=== BITTI ==="
 say "Konum: $DIR"
 say "Boyut: $(du -sh "$DIR" | cut -f1)"

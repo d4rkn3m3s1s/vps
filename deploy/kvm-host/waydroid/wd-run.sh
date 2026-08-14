@@ -13,6 +13,33 @@ INST="${1:?instance}"
 case "$INST" in
   ''|*[!A-Za-z0-9_-]*) echo "wd-run: REDDEDILDI — gecersiz instance adi: '$INST'" >&2; exit 1;;
 esac
+# ★★★2026-08-14 MUKERRER-BASLATMA KILIDI — SUNUCUYU COKERTEN SEYIN KORUMASI.
+#
+# Bu betigin AYNI instance icin ikinci kez calismasi felakete yol aciyor: iki
+# sarmalayici ayni container'i yonetmeye calisiyor, ust uste biniyor ve her tur
+# bir kopya daha ekliyor.
+# CANLI FELAKET (14 Agu): dns-heal eski wd-run'i oldurmeden yenisini baslatti ->
+# 617 wd-run (155 olmali) -> 398 surec D-state'te kilitlendi -> `kill -9` bile
+# ise yaramadi -> SUNUCU REBOOT gerekti, tum filo durdu, panel "0 cevrimici".
+#
+# `flock` ile tek-ornek garantisi: kilit alinamiyorsa ZATEN calisan bir kopya
+# var demektir, sessizce cik. Kilit surec olunce kernel tarafindan otomatik
+# birakilir (asili kalmaz). -n = bekleme, anında vazgec.
+exec 9>"/run/wd-run-$INST.lock"
+if ! flock -n 9; then
+  # ★2026-08-15: kilit alinamadi -- ama bu HER ZAMAN "zaten calisiyor" demek DEGIL.
+  # FD 9'u miras alan uzun omurlu cocukler (dbus-daemon vb.) wd-run ciktiktan sonra
+  # da kilidi tutuyor -> OLU KILIT. Canli: mi112/mi114/mi261 kilidi dbus-daemon
+  # tutuyordu, wd-run sureci YOKTU, cihazlar gece boyunca hic acilamadi.
+  # Bu yuzden kilide DEGIL, container'in gercekten calisip calismadigina bakiyoruz.
+  # Olcum ucuz: bridge'in uye arayuzu var mi (sadece /sys; /proc TARAMASI YOK).
+  if [ -n "$(ls -A "/sys/class/net/waydroid-$INST/brif" 2>/dev/null)" ]; then
+    echo "wd-run: $INST GERCEKTEN calisiyor — bu cagri ATLANDI" >&2
+    exit 0
+  fi
+  echo "wd-run: $INST kilidi OLU (container yok) — kilit yok sayilip devam ediliyor" >&2
+fi
+
 exec >> /var/log/wd-$INST-run.log 2>&1
 set -x
 XRD=/run/xdg-$INST
@@ -22,7 +49,20 @@ export PYTHONPATH=$MI
 SUBNET=$(sh /opt/fleet-agent/waydroid/net-head.sh $INST)
 
 # 1 temizle
-pkill -9 -f "wayland-$INST" 2>/dev/null; pkill -9 -f "instance $INST" 2>/dev/null
+# ★★★2026-08-14 `pkill -f "instance $INST"` KENDI KILIDINI OLDURUYORDU.
+# Bu kalip, calisan ONCEKI wd-run.sh surecinin KENDISINI de yakaliyor (komut
+# satirinda instance adi geciyor). Kilit sahibi olunce kernel kilidi birakiyor ve
+# ikinci cagri rahatca giriyordu -> flock korumasi ETKISIZ kaliyordu.
+# CANLI TEST: kilit izole olarak KUSURSUZ calisti (1 aldi, 2-3 atlandi) ama
+# wd-run.sh icinde 3 kopya olustu -> fark bu satirdan cikti.
+# FIX: kendi PID'imizi (ve ust surecimizi) HARIC tut.
+_self=$$; _ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+pkill -9 -f "wayland-$INST" 2>/dev/null
+for _p in $(pgrep -f "instance $INST" 2>/dev/null); do
+  [ "$_p" = "$_self" ] && continue
+  [ "$_p" = "${_ppid:-0}" ] && continue
+  kill -9 "$_p" 2>/dev/null
+done
 rm -rf /run/wd-$INST /run/xdg-$INST 2>/dev/null; sleep 1
 # netfix: stale network_up marker bridge yeniden kurulmasini engeller (KOK NEDEN)
 rm -f /run/waydroid-$INST-lxc/network_up 2>/dev/null  # netfix

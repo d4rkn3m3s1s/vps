@@ -11814,6 +11814,9 @@ async function isSerialReachable(serial) {
 // Aynı ders `wd-health-watch.sh`'ta zaten uygulanmıştı (WD_ZOMBIE_FAIL_MAX); burada eksikti.
 const eth0HealFails = new Map();   // instance -> ardışık başarısız heal sayısı
 const eth0HealGaveUp = new Set();  // vazgeçilenler (alarm bir kez gitsin)
+// ★2026-08-14 instance -> son heal denemesi (ms). Soğuma penceresi için; aynı cihaza
+// saniyeler içinde tekrar tekrar müdahale "heal fırtınası" yaratıp sistemi boğuyordu.
+const eth0HealAt = new Map();
 const ETH0_HEAL_MAX_FAILS = Number(process.env.FLEET_ETH0_HEAL_MAX_FAILS || 12); // ~6 dk (30sn tick)
 
 // Başarılı heal (ya da zaten sağlıklı) → sayaç sıfırlanır: geçici arızalar limiti yemez.
@@ -11849,6 +11852,14 @@ async function healInstanceEth0(inst, knownReachable) {
     if (provisioningInstances.has(inst)) return { healed: false, reason: 'provisioning' };
     // Vazgeçilmiş instance'ı artık deneme — alarm gitti, karar operatörde.
     if (eth0HealGaveUp.has(inst)) return { healed: false, reason: 'vazgecildi' };
+    // ★★★2026-08-14 SOGUMA SURESI — heal FIRTINASINI onler.
+    // Ayni cihaz saniyeler icinde tekrar tekrar onarilmaya calisiliyordu (canli log:
+    // mi297/mi298 6 saniyede 2 kez). Her deneme lxc-attach + route yazimi demek;
+    // 155 cihazda bu, sistemi bogan yuke donusuyor. netd zaten ~2-3 dk agresif
+    // siliyor, o pencerede tekrar denemek FAYDASIZ. En az 90 sn bekle.
+    const _lastHeal = eth0HealAt.get(inst) || 0;
+    if (Date.now() - _lastHeal < 90000) return { healed: false, reason: 'soguma' };
+    eth0HealAt.set(inst, Date.now());
     const { stdout: subOut } = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`]);
     const sub = String(subOut || '').trim();
     if (!sub) return { healed: false, reason: 'no-subnet' };
@@ -11888,10 +11899,23 @@ async function healInstanceEth0(inst, knownReachable) {
       const { stdout: rtOut } = await execFileAsync('bash', ['-c', `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route show table eth0 2>/dev/null | grep -c '^default'`]).catch(() => ({ stdout: '0' }));
       if (Number(String(rtOut || '0').trim()) > 0) { eth0HealOk(inst); return { healed: false, reason: 'already-has-ip-and-route' }; }
       // IP var ama default-route yok → SADECE route ekle (IP'ye dokunma).
-      log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor`);
+      // ★★★2026-08-14 GATEWAY'i CIHAZIN GERCEK IP'sinden TURET.
+      // Eski kod `192.168.${sub}.1` kullaniyordu; `sub` net-head.sh'ten geliyor ama
+      // cihaz DHCP'den BASKA bir subnet'te olabiliyor (bkz. ".112 varsayimi" dersi).
+      // Yanlis gateway ile eklenen route TUTMUYOR -> netd siliyor -> her tick tekrar
+      // deneniyor -> `eth0-heal` firtinasi -> her tur yeni wd-run -> YIGILMA.
+      // CANLI (14 Agu): mi291..mi298 saniyeler icinde tekrar tekrar denendi, agent
+      // 36 wd-run dogurdu, filo 155 -> 117'ye dustu.
+      const _devIp = await execFileAsync('bash', ['-c',
+        `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip -4 addr show eth0 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1`])
+        .then((r) => String(r.stdout || '').trim()).catch(() => '');
+      const _gw = /^(\d+\.\d+\.\d+)\.\d+$/.test(_devIp)
+        ? `${_devIp.replace(/\.\d+$/, '')}.1`     // GERCEK IP'nin ag gecidi
+        : `192.168.${sub}.1`;                      // yedek: eski davranis
+      log(`eth0-heal: ${inst} eth0 IP var ama default-route YOK → route ekleniyor (gw=${_gw})`);
       await execFileAsync('bash', ['-c',
-        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 proto static table $T 2>/dev/null; done; ` +
-        `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via 192.168.${sub}.1 dev eth0 2>/dev/null; true`]).catch(() => undefined);
+        `for T in main local_network eth0; do lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via ${_gw} dev eth0 proto static table $T 2>/dev/null; done; ` +
+        `lxc-attach -n waydroid -P ${lxcp} -- /system/bin/ip route add default via ${_gw} dev eth0 2>/dev/null; true`]).catch(() => undefined);
       await sleep(800);
       // ★DOGRULA: table eth0 (uygulama-trafigi orayi kullanir) GERCEKTEN tuttu mu? netd
       // boot-sonrasi ~2-3dk agresif siler -> "route-added" yanlis-pozitif olurdu. Tutmadiysa
@@ -11980,7 +12004,13 @@ async function dnsSelfHealTick(running) {
     const sub = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`])
       .then((r) => String(r.stdout || '').trim()).catch(() => '');
     if (!sub) continue;
-    if (busyDevices.has(`192.168.${sub}.112:5555`)) continue;   // is yapiyor -> dokunma
+    // ★★★2026-08-14 ".112 VARSAYIMI" BU KORUMAYI ETKISIZ KILIYORDU.
+    // Cihazlarin cogu DHCP'den BASKA adres aliyor (olcum: mi10 = 192.168.6.248).
+    // Bu satir sabit ".112" aradigi icin `busyDevices` eslesmesi HIC tutmuyordu ->
+    // IS YAPAN cihaz da yeniden baslatiliyordu. Gercek IP ile bak.
+    const _ip = await instanceIp(inst);
+    if (_ip && busyDevices.has(`${_ip}:5555`)) continue;         // is yapiyor -> dokunma
+    if (busyDevices.has(`192.168.${sub}.112:5555`)) continue;    // (eski kayitlar icin geriye donuk)
     const last = dnsHealAt.get(inst) || 0;
     if (NOW - last < 3600000) continue;                          // saatte en fazla 1 kez
     const leaseFile = `/var/lib/misc/dnsmasq.waydroid-${inst}.leases`;
@@ -11995,7 +12025,21 @@ async function dnsSelfHealTick(running) {
     if (hasReal) continue;                                       // DNS var -> gec
     dnsHealAt.set(inst, NOW);
     log(`dns-heal: ${inst} GERCEK DHCP lease YOK (DNS'siz, WhatsApp kirilir) -> lease tohumla + yeniden baslat`);
+    // ★★★2026-08-14 YIGILMA KOK-FIX: ESKI wd-run SARMALAYICISINI DE OLDUR.
+    //
+    // Eski kod yalnizca `wd-stop.sh` cagiriyordu — o container'i durdurur ama
+    // `wd-run.sh` SARMALAYICI SURECI HAYATTA KALIR. Sonra yeni bir `wd-run`
+    // baslatiliyor ve UST USTE biniyor. Her dns-heal turu bir kopya daha ekliyor.
+    //
+    // CANLI FELAKET (14 Agu): 163 dns-heal -> 617 wd-run (155 olmali) -> 398 surec
+    // D-state'te kilitlendi -> `kill -9` bile ise yaramadi -> sunucu REBOOT gerekti.
+    // Panel "0 cevrimici" gosterdi, tum filo durdu.
+    //
+    // FIX: yeniden baslatmadan ONCE bu instance'in TUM wd-run PID'lerini oldur.
+    // `pgrep -f "wd-run.sh <inst>$"` TAM ESLESME ile (aksi halde "mi10" kalibi
+    // mi100/mi105/mi111'i de yakalar — bu hata bugun teshiste de yasandi).
     await execFileAsync('bash', ['-c',
+      `for P in $(pgrep -f "wd-run.sh ${inst}$" 2>/dev/null); do kill -9 "$P" 2>/dev/null; done; ` +
       `/opt/fleet-agent/waydroid/wd-stop.sh ${inst} >/dev/null 2>&1; sleep 2; ` +
       `pkill -f "dnsmasq.*waydroid-${inst}" 2>/dev/null; ` +
       `echo "4102444800 00:16:3e:f9:d3:03 192.168.${sub}.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > ${leaseFile}; ` +

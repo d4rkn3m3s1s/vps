@@ -384,15 +384,19 @@ async function main(): Promise<void> {
         for (const h of monitorDown) {
           const title = `🛑 Sağlık izleyici durdu: ${h.name}`;
           const detail = `${h.name} üzerindeki proaktif sağlık izleyici (proxy-sızıntı/zombie tespiti) 35+ dakikadır rapor vermiyor — izleme katmanı çökmüş olabilir. Kontrol: \`systemctl status wd-health-watch.timer\` + \`tail /var/log/wd-health-watch.log\`.`;
-          void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', { title, detail });
           // ★2026-07-29: bu alarm KURAL TANIMLI OLMASA BİLE gitmeli. İzleme katmanının
           // ölmesi, "her şey yolunda" sanılmasına yol açan en tehlikeli sessizliktir —
           // operatörün önceden bir HOST_SATURATED kuralı oluşturmuş olmasına bel bağlayamayız.
           // ⚠️ Bu tick 60-90 sn'de bir çalışıyor → koşulsuz göndermek MESAJ YAĞMURU olurdu.
           // Host başına 30 dakikada bir kez gönderiyoruz (sorun sürdükçe hatırlatır ama boğmaz).
+          // ★★2026-08-14 FIX: `evaluate` bu bloğun DIŞINDAYDI → 30dk'lık koruma sadece
+          // dispatch'i kapsıyordu, evaluate her tick'te (60-90sn) Telegram'a düşüyordu.
+          // Canlı: operatör 23:44-23:48 arası DAKİKADA BİR aynı uyarıyı aldı. İkisi de
+          // artık aynı kapının arkasında.
           const lastPing = monitorDownNotified.get(h.id) ?? 0;
           if (Date.now() - lastPing > 30 * 60 * 1000) {
             monitorDownNotified.set(h.id, Date.now());
+            void alertsService.evaluate(h.workspaceId ?? undefined, 'HOST_SATURATED', { title, detail });
             void notificationsService
               .dispatch(h.workspaceId ?? '', {
                 title,

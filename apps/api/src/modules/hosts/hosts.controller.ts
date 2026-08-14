@@ -59,6 +59,23 @@ export async function heartbeatHostHandler(req: Request, res: Response): Promise
   res.json({ data: await hostsService.heartbeat(id, input) });
 }
 
+// ★2026-08-14: yayın kanalı koptuğunda panelden tek tıkla agent sıfırlama.
+// Operatör SSH açamadan da müdahale edebilmeli (14 Ağu: SSH 5 saat kilitliydi).
+export async function resetHostAgentHandler(req: Request, res: Response): Promise<void> {
+  const id = requireId(req);
+  const result = await hostsService.resetAgent(id, getWorkspaceId(req));
+  await writeAuditLog({
+    userId: req.auth?.userId,
+    action: 'host.agent.reset',
+    resourceType: 'host',
+    resourceId: id,
+    requestId: req.requestId,
+    ip: req.ip,
+    userAgent: req.get('user-agent') ?? undefined
+  });
+  res.json({ data: result });
+}
+
 export async function deleteHostHandler(req: Request, res: Response): Promise<void> {
   const id = requireId(req);
   // Scope deletion to the caller's workspace so an admin can't delete another

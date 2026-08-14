@@ -3,7 +3,13 @@ import { asyncHandler } from '../../lib/asyncHandler';
 import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { createHostHandler, deleteHostHandler, heartbeatHostHandler, listHostsHandler } from './hosts.controller';
+import {
+  createHostHandler,
+  deleteHostHandler,
+  heartbeatHostHandler,
+  listHostsHandler,
+  resetHostAgentHandler
+} from './hosts.controller';
 
 export const hostsRouter = Router();
 
@@ -12,4 +18,7 @@ hostsRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createHostHan
 // Heartbeat is an unattended host-agent call: authenticate by the per-host agent
 // key (x-agent-key) so a host can only heartbeat ITSELF — not any host by id.
 hostsRouter.post('/:id/heartbeat', requireApiKey, requireHostAgent, asyncHandler(heartbeatHostHandler));
+// Yayın kanalı koptuğunda panelden agent'ı sıfırla. JWT + workspace kapsamı: bir
+// operatör yalnızca kendi workspace'indeki host'a müdahale edebilir.
+hostsRouter.post('/:id/agent/reset', requireApiKey, authenticateJwt, asyncHandler(resetHostAgentHandler));
 hostsRouter.delete('/:id', requireApiKey, authenticateJwt, asyncHandler(deleteHostHandler));

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Server, Plus, Trash2, Cpu, MemoryStick, Smartphone, ShieldCheck, MapPin, Activity, Copy, Terminal, X, HardDrive, Zap } from 'lucide-react';
+import { Server, Plus, Trash2, Cpu, MemoryStick, Smartphone, ShieldCheck, MapPin, Activity, Copy, Terminal, X, HardDrive, Zap, RefreshCw } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D, Reveal } from '../../components/hud';
 
 export type Host = {
@@ -48,6 +48,8 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
   const [agentKey, setAgentKey] = useState<string | null>(null);
   const [confirmHost, setConfirmHost] = useState<Host | null>(null);
   const [removing, setRemoving] = useState(false);
+  // Hangi host sıfırlanıyor (id) — birden fazla host varsa yalnız o satır kilitlenir.
+  const [resetting, setResetting] = useState<string | null>(null);
   const [form, setForm] = useState({ name: '', address: '', region: '', capacity: '4', cpuCores: '8', memoryGb: '32' });
 
   function flash(t: Toast) {
@@ -83,6 +85,26 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
       flash({ kind: 'err', text: 'Sunucu kaydedilemedi.' });
     } finally {
       setBusy(false);
+    }
+  }
+
+  // ★2026-08-14: canlı yayın kanalı koptuğunda tek tıkla agent sıfırlama.
+  // Kanal API restart'ında/ağ kesintisinde kopuyor ve kendiliğinden dönmeyebiliyor;
+  // tek çare SSH'tan `systemctl restart fleet-agent` idi. 14 Ağu'da SSH 5 saat
+  // kilitli kaldı — bu yüzden müdahale panele taşındı.
+  async function resetAgent(h: Host) {
+    setResetting(h.id);
+    try {
+      const res = await fetch(`/api/hosts/${h.id}/agent-reset`, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof json?.error === 'string' ? json.error : '');
+      flash({ kind: 'ok', text: `${h.name}: agent ve yayın kanalı sıfırlandı.` });
+      router.refresh();
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : 'Agent sıfırlanamadı.';
+      flash({ kind: 'err', text: msg });
+    } finally {
+      setResetting(null);
     }
   }
 
@@ -186,9 +208,21 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
                     <span className="helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                       <MapPin size={11} /> {h.region ?? 'kendi sunucunuz'} · son görülme {h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString('tr-TR') : 'hiç'}
                     </span>
-                    <button type="button" className="action-btn action-danger" onClick={() => setConfirmHost(h)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                      <Trash2 size={13} /> Kaldır
-                    </button>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <button
+                        type="button"
+                        className="action-btn"
+                        disabled={resetting === h.id}
+                        onClick={() => resetAgent(h)}
+                        title="Canlı yayın kanalı koptuysa agent'ı yeniden başlatır. Cihazlar kapanmaz."
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+                      >
+                        <RefreshCw size={13} /> {resetting === h.id ? 'Sıfırlanıyor…' : 'Agent’ı sıfırla'}
+                      </button>
+                      <button type="button" className="action-btn action-danger" onClick={() => setConfirmHost(h)} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                        <Trash2 size={13} /> Kaldır
+                      </button>
+                    </span>
                   </div>
                 </div>
               </Holo3D>

@@ -1,0 +1,10 @@
+[Unit]
+Description=Canli durum sayfasi ureticisi
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/fleet-agent/durum-uret.sh
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

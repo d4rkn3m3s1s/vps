@@ -1,0 +1,10 @@
+[Unit]
+Description=Waydroid sisme freni (D-state/RAM izleyici)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/fleet-agent/wd-fren.sh
+Restart=always
+RestartSec=15
+[Install]
+WantedBy=multi-user.target

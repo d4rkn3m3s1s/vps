@@ -1,0 +1,13 @@
+[Unit]
+Description=Acil kurtarma HTTP ucu (systemd bagimsiz)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/fleet-agent/wd-kurtar.mjs
+Restart=always
+RestartSec=10
+# Kurtarma ucu sistem zorlanirken de yanit verebilmeli
+Nice=-5
+OOMScoreAdjust=-500
+[Install]
+WantedBy=multi-user.target

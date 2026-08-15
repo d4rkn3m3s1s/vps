@@ -4579,8 +4579,20 @@ async function whatsappSend(serial, payload) {
     // 7 Ağu'daki "Searching…" düzeltmesi sayesinde bu metin artık screenTexts'e DÜŞÜYOR
     // — yani sinyal görünür oldu ama desen yakalamıyordu).
     // `isn'?t on whatsapp` eklendi (düz kesme + typographic ' ikisi de).
-    if (/not on whatsapp|isn.?t on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(notice)) {
+    // ★2026-08-15 DESEN YINE KACIRIYORDU: canli ekran "+902592573551 **is not a**
+    // valid phone number." yaziyor ama desen yalnizca KISALTMAYI (`isn't a valid`)
+    // taniyordu -> gecersiz numara belirsiz CHAT_NOT_OPENED olarak raporlaniyordu
+    // (bugun 15 CHAT_NOT_OPENED'in 2'si tam bu). Acik yazim da eklendi.
+    if (/not on whatsapp|isn.?t on whatsapp|invalid|is ?n.?o?.?t a valid|not a valid phone|WhatsApp'ta değil|geçerli bir telefon/i.test(notice)) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: notice.slice(0, 300) };
+    }
+    // ★2026-08-15 BAGLANTI HATASI ayri raporlansin: "Couldn't connect. Please try again
+    // later." bir UI/otomasyon arizasi DEGIL — cihazin proxy/ag cikisi o an calismiyor.
+    // CHAT_NOT_OPENED olarak raporlanmasi operatoru yanlis yere bakiyordu (bugun 15'in
+    // 2'si). Ayri kod ile: yeniden denenebilir ve proxy sorunu gorunur olur.
+    if (/couldn.?t connect|connection failed|bağlanılamadı|bağlantı kurulamadı/i.test(notice)) {
+      await clearComposeDraft(serial, h, tlog);
+      return { status: 'CONNECTION_FAILED', note: 'Cihaz WhatsApp sunucusuna bağlanamadı (proxy/ağ) — tekrar denenebilir', to, screenTexts: notice.slice(0, 300) };
     }
     // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
     // ★2026-08-05 Ama dönmeden ÖNCE taslağı temizle: metin kutuya girmiş olabilir ve
@@ -4612,7 +4624,8 @@ async function whatsappSend(serial, payload) {
       await dismissBlockingDialogs(serial, h); // handle any further dialogs
     }
     // "X is not on WhatsApp" / invalid-number → report, don't hang.
-    if (/not on whatsapp|isn.?t on whatsapp|invalid|isn.?t a valid|WhatsApp'ta değil/i.test(flat)) {
+    // ★2026-08-15 acik yazim ("is not a valid phone number") da yakalanir — bkz. yukarisi.
+    if (/not on whatsapp|isn.?t on whatsapp|invalid|is ?n.?o?.?t a valid|not a valid phone|WhatsApp'ta değil|geçerli bir telefon/i.test(flat)) {
       return { status: 'INVALID_RECIPIENT', note: 'Numara WhatsApp\'ta değil veya geçersiz', to, screenTexts: flat.slice(0, 300) };
     }
     // Capture the send button from THIS dump (no extra dump). id/send is the paper-

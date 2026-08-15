@@ -83,7 +83,13 @@ trap cleanup EXIT
 # 5 saniyede "hazir" sandi -> cihaz daha boot ederken kontrol edildi -> YANLIS ALARM.
 # Tek dogru kaynak: is durumu API'si (jobId'ye bagli, gecmise karismaz).
 SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null)
-IP="192.168.${SUB}.112"
+# ★2026-08-15 IKI HATA DUZELTILDI (canary HER TUR yalanci alarm veriyordu:
+# "DNS-YOK internet-cikis(TCP=) ulke=BOS" -- oysa cihaz saglamdi):
+#  (1) ".112 VARSAYIMI": DHCP cihaza .112 DISINDA adres verebiliyor (13 Agu'da ayni
+#      varsayim health-watch'ta 98 gereksiz restart yaptirmisti). Artik gercek IP
+#      DHCP lease dosyasindan okunur; .112 yalnizca son care fallback.
+#  (2) "adb connect YOK": script hic connect yapmadan `adb -s IP:5555 shell`
+#      cagiriyordu -> her komut BOS donuyordu (kanit: TCP= bos, DNS-YOK, ulke=BOS).
 READY=0
 for i in $(seq 1 60); do
   sleep 5
@@ -95,8 +101,25 @@ done
 [ "$READY" != "1" ] && { log "BASARISIZ: kurulum tamamlanmadi (son durum=${ST:-bilinmiyor})"; notify "canary: kurulum tamamlanmadi/${ST:-?} ($INST)"; exit 1; }
 sleep 3   # READY isaretlendikten sonra ADB'nin oturmasi icin kisa pay
 
+# ★GERCEK IP: dnsmasq'in bu instance'a verdigi son DHCPACK (journal). Lease DOSYASI
+# canary omru boyunca olusmuyor (cihaz silinince dnsmasq yazmadan gidiyor), bu yuzden
+# journal tek guvenilir kaynak. KANIT: mi327 .65 aldi, canary .112'ye bakip "DNS-YOK
+# internet-YOK" dedi — oysa cihaz SAGLAMDI (API de .65'i gormustu).
+IP=""
+for _t in 1 2 3 4 5 6 7 8 9 10; do
+  IP=$(journalctl --since "-10 min" --no-pager 2>/dev/null \
+       | grep -oE "DHCPACK\(waydroid-${INST}\) [0-9.]+" | tail -1 | awk '{print $2}')
+  [ -n "$IP" ] && break
+  sleep 3
+done
+[ -z "$IP" ] && IP=$(awk '{print $3}' "/var/lib/misc/dnsmasq.waydroid-${INST}.leases" 2>/dev/null | tail -1)
+[ -z "$IP" ] && IP="192.168.${SUB}.112"
+log "canary cihaz IP=$IP (instance=$INST)"
+
 # ── DOGRULAMALAR ────────────────────────────────────────────────────────────
 FAILS=""
+timeout 10 adb connect "$IP:5555" >/dev/null 2>&1 || true   # ★SART: connect olmadan shell BOS doner
+sleep 2
 adbsh() { timeout 25 adb -s "$IP:5555" shell "$1" 2>/dev/null | tr -d '\r'; }
 
 # 1) internete cikis (DNS-siz ham TCP)

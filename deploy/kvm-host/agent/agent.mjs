@@ -10940,6 +10940,13 @@ async function pollInboxFromStore(serial) {
     const text = line.slice(d + 1);
     if (id > maxId) maxId = id;
     if (!text) continue;
+    // ★2026-08-15 WHATSAPP SISTEM MESAJLARINI ELE. msgstore'a WhatsApp'in KENDI
+    // bilgi kartlari da yaziliyor (gonderen jid.user='0' — gercek kisi DEGIL), orn.
+    // "Sync your contacts to instantly find your favorite people...". Bunlar operator
+    // icin gurultu (canli: 3 cihazdan ayni anda TG'ye dustu) ve cevaplanacak bir mesaj
+    // degil. Not: cihazlar KILITLENMIYOR — ekranda modal YOK, izin zaten granted.
+    // Gercek numaralar en az 10 haneli; '0'/bos gonderen = sistem.
+    if (!/^\d{10,15}$/.test(from)) continue;
     try {
       // Push by ADB serial; control plane maps it to the workspace-scoped deviceId.
       await api('/agent/whatsapp/inbound', {
@@ -10982,7 +10989,12 @@ async function whatsappInboxTick() {
     // (/proc TARAMASI YOK -> kilit riski yok). Tur saniyelere iner; hangi cihazdan kac
     // mesaj gelirse gelsin ayni turda toplanir. BATCH env ile ayarlanabilir (varsayilan 10).
     const serials = (await reachableSerials()).filter((s) => !busyDevices.has(s));
-    const BATCH = Math.max(1, Number(process.env.FLEET_WA_INBOX_BATCH || 25));
+    // ★2026-08-15 CANLI OLCUM — BATCH 25 CIHAZ DUSURDU: 25'erli paralel msgstore
+    // okumasi ADB'yi doyurdu; wd-health-watch'un 12 sn'lik `adb shell echo ok`
+    // yoklamasi timeout'a dustu -> SAGLAM cihazlar "ZOMBIE" sanilip yeniden
+    // baslatildi (bugun 8 kill / onceki iki gun 0; ilk kill deploy'dan ~25 dk sonra).
+    // 12 hem turu kisa tutuyor (~20-25 sn) hem health-watch'i yaniltmiyor.
+    const BATCH = Math.max(1, Number(process.env.FLEET_WA_INBOX_BATCH || 12));
     for (let i = 0; i < serials.length; i += BATCH) {
       await Promise.all(serials.slice(i, i + BATCH).map(async (serial) => {
         await pollWhatsappInbox(serial).catch(() => undefined);

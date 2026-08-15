@@ -43,6 +43,7 @@ import {
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, HoloTabs, Holo3D, Reveal } from '../../components/hud';
 import ProvisionModal, { type ProvisionStep } from './ProvisionModal';
+import WaUpdateModal, { type WaJobRef } from './WaUpdateModal';
 import WhatsappRegisterModal, { type WaStep } from './WhatsappRegisterModal';
 import InstagramRegisterModal, { type IgStep } from './InstagramRegisterModal';
 import DeviceProxyModal from './DeviceProxyModal';
@@ -242,7 +243,7 @@ function proxyExitCountry(metadata?: Record<string, unknown> | null): string | n
   return pc.trim() ? pc.trim().toUpperCase() : null;
 }
 
-const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'Dosya gönder', 'Sil'] as const;
+const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'WhatsApp Güncelle', 'Dosya gönder', 'Sil'] as const;
 
 const BULK_ICONS: Record<string, ReactNode> = {
   'Başlat': <Power size={13} />,
@@ -251,6 +252,7 @@ const BULK_ICONS: Record<string, ReactNode> = {
   'Taşı': <FolderInput size={13} />,
   'Proxy ata': <Network size={13} />,
   'Uygulama yükle': <Package size={13} />,
+  'WhatsApp Güncelle': <MessageCircle size={13} />,
   'Dosya gönder': <Send size={13} />,
   'Sil': <Trash2 size={13} />
 };
@@ -387,6 +389,8 @@ export function ProfilesView({
   // Bulk install-app modal.
   const [appOpen, setAppOpen] = useState(false);
   const [appChoice, setAppChoice] = useState('');
+  // ★2026-08-15 Toplu WhatsApp güncelleme ilerleme modalı (canlı yüzde/log).
+  const [waUpdate, setWaUpdate] = useState<{ jobs: WaJobRef[]; skipped: { deviceId: string; reason: string }[] } | null>(null);
   // "Tek Tık WhatsApp" — open WhatsApp registration on ONE device. Separate from
   // provisioning: pick a ready device, enter a number, the agent drives to the OTP
   // screen and stops (operator enters the SMS code on the /whatsapp page).
@@ -849,6 +853,39 @@ export function ProfilesView({
     }
   }
 
+  // ★2026-08-15 Toplu WhatsApp güncelleme: her seçili cihaza bir WA_UPDATE_APK job'u
+  // (veri koruyarak — pm install -r; hesap/mesaj korunur). Filoda 3+ farklı WA sürümü
+  // vardı → autodownload menüsü otomasyonu her sürümde farklıydı + en eskiler "güncelle"
+  // duvarında açılmıyordu. Bu, hepsini filo-referans sürüme toplar. Dönen jobs
+  // (deviceId↔jobId) ile canlı ilerleme modalı açılır.
+  async function updateWhatsapp() {
+    if (selectionCount === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/bulk/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: Array.from(selected), jobType: 'WA_UPDATE_APK', payload: {} })
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message ?? 'Güncelleme başlatılamadı');
+      const data = (body?.data ?? {}) as { jobs?: { deviceId: string; id: string }[]; skipped?: { deviceId: string; reason: string }[] };
+      const rawJobs = Array.isArray(data.jobs) ? data.jobs : [];
+      if (rawJobs.length === 0) throw new Error('Seçili cihazlarda güncelleme işi oluşturulamadı');
+      const jobs: WaJobRef[] = rawJobs.map((j) => {
+        const d = devices.find((x) => x.id === j.deviceId);
+        return { deviceId: j.deviceId, id: j.id, ...(d?.name ? { name: d.name } : {}) };
+      });
+      setWaUpdate({ jobs, skipped: Array.isArray(data.skipped) ? data.skipped : [] });
+      setSelected(new Set());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Güncelleme başlatılamadı');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Modal open/close helpers — each clears the shared `error` state so a message
   // from one modal never leaks into another (P8).
   function openCreate() {
@@ -1143,6 +1180,7 @@ export function ProfilesView({
       setAppOpen(true);
       return undefined;
     }
+    if (action === 'WhatsApp Güncelle') return updateWhatsapp();
     if (action === 'Taşı') {
       setError(null);
       setMoveOpen(true);
@@ -2332,6 +2370,10 @@ export function ProfilesView({
           steps={provisioning.steps}
           onClose={() => setProvisioning(null)}
         />
+      ) : null}
+
+      {waUpdate ? (
+        <WaUpdateModal jobs={waUpdate.jobs} skipped={waUpdate.skipped} onClose={() => setWaUpdate(null)} />
       ) : null}
 
       {waRegistering ? (

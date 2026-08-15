@@ -54,6 +54,10 @@ export const JobTypes = [
   // durumu). Gelen medyanin otomatik inmesi icin sart (networkSafe). Idempotent +
   // surum-agnostik (You / ⋮ Settings). Yeni cihazlarda kayittan sonra otomatik.
   'WA_SET_AUTODOWNLOAD',
+  // ★2026-08-15 Cihazdaki WhatsApp'i filo-referans APK'ya guncelle (veri KORUYARAK,
+  // pm install -r). Filoda 3+ farkli WA surumu -> autodownload UI'i her surumde farkli +
+  // en eskiler "guncelle" duvarinda hic acilmiyordu. Surumu tek noktaya toplar; idempotent.
+  'WA_UPDATE_APK',
   // Send a media message (image/file) to a peer via wa.me + attach flow.
   'WHATSAPP_SEND_MEDIA',
   // Delete a message: for me (scope=me) or for everyone (scope=everyone).

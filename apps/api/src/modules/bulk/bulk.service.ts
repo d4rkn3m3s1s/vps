@@ -43,15 +43,19 @@ export class BulkService {
       )
     );
     const jobIds: string[] = [];
+    // ★jobId↔deviceId eslemesi: ilerleme modali (WA guncelleme) her cihazin satirini
+    // job baslamadan once olusturabilsin ve provision.progress event'ini dogru cihaza
+    // yazsin diye. jobIds (geriye donuk) korunur; jobs ek alan.
+    const jobs: { deviceId: string; id: string }[] = [];
     const skipped: { deviceId: string; reason: string }[] = [];
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled') jobIds.push(r.value.id);
+      if (r.status === 'fulfilled') { jobIds.push(r.value.id); jobs.push(r.value); }
       else {
         const err = r.reason as { code?: string; message?: string };
         skipped.push({ deviceId: input.deviceIds[i]!, reason: err?.message || 'İş oluşturulamadı' });
       }
     });
-    return { created: jobIds.length, jobIds, skipped };
+    return { created: jobIds.length, jobIds, jobs, skipped };
   }
 
   // Assigns the same proxy to many devices: updates each device's connection

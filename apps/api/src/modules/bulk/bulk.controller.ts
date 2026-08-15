@@ -15,7 +15,10 @@ const BULK_ALLOWED_JOB_TYPES = [
   'DEVICE_WAKE', 'DEVICE_SLEEP',
   'EMULATOR_START', 'EMULATOR_STOP',
   'EMULATOR_OPEN_APP', 'EMULATOR_CLOSE_APP',
-  'EMULATOR_INSTALL_APK', 'EMULATOR_SET_PROXY', 'APPLY_FINGERPRINT'
+  'EMULATOR_INSTALL_APK', 'EMULATOR_SET_PROXY', 'APPLY_FINGERPRINT',
+  // ★2026-08-15 WhatsApp'i filo-referans APK'ya guncelle (veri koruyarak). Toplu:
+  // secili cihazlarin WA surumunu tek noktaya toplar; her cihaza bir WA_UPDATE_APK job.
+  'WA_UPDATE_APK'
 ] as const;
 
 const bulkJobSchema = z.object({

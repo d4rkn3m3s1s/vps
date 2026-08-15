@@ -18,6 +18,7 @@ import { logger } from '../../lib/logger';
 import { batchService } from '../accounts/batch.service';
 import { whatsappService, type ConversationFilter } from '../whatsapp/whatsapp.service';
 import { DeviceService } from '../devices/device.service';
+import { bulkService } from '../bulk/bulk.service';
 import { fleetHealthService } from '../fleet-health/fleet-health.service';
 import { provisionService } from '../provision/provision.service';
 import { ProxyService } from '../proxies/proxy.service';
@@ -212,6 +213,7 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'kilitdurum', description: '🔒 Sunucu kilit durumu (systemd yanıtı, D-state)' },
   { command: 'agentsifirla', description: '♻️ Agent + canlı yayın kanalını sıfırla' },
   { command: 'panik', description: '🛑 Açılış betiklerini durdur — cihazlar KAPANMAZ' },
+  { command: 'waguncelle', description: '⬆️ WhatsApp\'ı filo sürümüne güncelle (veri korunur)' },
   // 🛠 Cihaz yönetimi
   { command: 'kur', description: '🚀 Toplu cihaz kur (ülke + adet sorar)' },
   { command: 'etiket', description: '🏷 Cihaz etiketle (adım adım sorar)' },
@@ -468,6 +470,7 @@ function menuText(): string {
     '• <b>/kilitdurum</b> — sunucu kilitli mi? (systemd yanıtı + D-state)',
     '• <b>/agentsifirla</b> — agent + canlı yayın kanalını sıfırla',
     '• <b>/panik</b> — açılış betiklerini durdur (cihazlar KAPANMAZ)',
+    '• <b>/waguncelle</b> — WhatsApp\'ı filo sürümüne güncelle (hesap korunur)',
     '   <i>(cihaz = isim, numara veya kimlik — örn. /uyandir 90555…)</i>',
     '',
     '<b>🛠 Cihaz yönetimi</b>',
@@ -1594,6 +1597,34 @@ async function handleCommand(
     }
     const tail = failed.length ? `\n⚠️ Uyandırılamayan: ${failed.map(esc).join(', ')}` : '';
     await sendMessage(token, chatId, `🔧 <b>ADB kurtarma</b>\n${woken} offline cihaza uyandırma gönderildi (ADB yeniden bağlanacak).${tail}`, MAIN_MENU);
+  } else if (lower === '/waguncelle' || lower === 'waguncelle') {
+    // ★2026-08-15 Toplu WhatsApp güncelleme: ONLINE cihazların WA'sını filo-referans
+    // APK'ya çeker (veri KORUYARAK — pm install -r). Filoda 3+ farklı WA sürümü vardı;
+    // bu, hepsini tek sürüme toplar (autodownload menüsü ancak tek sürümde güvenilir
+    // otomatikleşir + en eskiler "güncelle" duvarından kurtulur). Idempotent — zaten
+    // güncel olan hızlı atlanır. Kasmasın diye ilk 50 ile sınırlı; tekrar çalıştırınca
+    // kalanlar sıraya girer. Canlı ilerleme panelde /profiles ekranından izlenir.
+    const devices = await deviceService.listDevices(workspaceId);
+    const online = devices.filter((d) => d.status === 'ONLINE');
+    if (!online.length) { await sendMessage(token, chatId, 'ℹ️ Güncellenecek ONLINE cihaz yok.', MAIN_MENU); return; }
+    const capped = online.slice(0, 50);
+    try {
+      const result = await bulkService.runJob(
+        { deviceIds: capped.map((d) => d.id), jobType: 'WA_UPDATE_APK', payload: {} },
+        workspaceId
+      );
+      const tail2 = capped.length < online.length
+        ? `\nℹ️ İlk ${capped.length}/${online.length} cihazla sınırlandı (kasmasın diye). Tekrar <code>/waguncelle</code> ile kalanlar sıraya girer.`
+        : '';
+      await sendMessage(
+        token,
+        chatId,
+        `⬆️ <b>WhatsApp Güncelleme başlatıldı</b>\n${result.created} cihaza güncelleme işi verildi.\n• Hesap/mesaj KORUNUR (pm install -r)\n• Zaten güncel olan hızlı atlanır${tail2}\n\n📊 Canlı ilerleme: panelde <b>Profiller</b> → cihaz seç → <b>WhatsApp Güncelle</b>.`,
+        MAIN_MENU
+      );
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Güncelleme başlatılamadı: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
   // ── ★2026-08-15 SUNUCU KİLİDİ müdahaleleri (kurtarma ucu köprüsü) ──────────
   } else if (lower === '/kilitdurum' || lower === 'kilitdurum') {
     const r = await rescueCall('/kurtar/durum');

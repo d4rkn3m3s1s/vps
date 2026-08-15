@@ -19,7 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir, loadavg, cpus as osCpus } from 'node:os';
 import { join, basename } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
@@ -1240,6 +1240,7 @@ const JOB_TIMEOUTS_MS = {
   WHATSAPP_BLOCKLIST: 90 * 1000,
   WHATSAPP_MYNUMBER: 90 * 1000,
   WA_SET_AUTODOWNLOAD: 150 * 1000,   // UI: Ayarlar→Storage→3 satır×4 kutu (idempotent atlarsa saniyeler)
+  WA_UPDATE_APK: 240 * 1000,         // 141MB push + pm install -r (cold ~30s); idempotent atlarsa saniyeler
   WHATSAPP_DELETE_MSG: 90 * 1000,
   WHATSAPP_CLEAR_CHAT: 90 * 1000,
   TELEGRAM_SEND: 100 * 1000,        // mirror WHATSAPP_SEND: normally 15-30s, 100s ceiling
@@ -1721,6 +1722,9 @@ async function runJobInner(job) {
 
     case 'WA_SET_AUTODOWNLOAD':
       return waSetAutoDownload(serial, payload);
+
+    case 'WA_UPDATE_APK':
+      return waUpdateApk(serial, payload, job.id);
 
     case 'WHATSAPP_SEND_MEDIA':
       return whatsappSendMedia(serial, payload);
@@ -7110,6 +7114,52 @@ async function whatsappBlocklist(serial /*, payload */) {
 // es zamanli UI otomasyonu YAPILMAZ (o sistemi kilitler). Idempotent: zaten
 // 15 ise hizli atlar.
 //
+// ★2026-08-15 WhatsApp'i filo-referans APK'ya guncelle — VERI KORUYARAK.
+// Kok sorun: filoda 3+ farkli WA surumu vardi (2.26.25/2.26.30/2.26.31); autodownload
+// menusu her surumde farkli (activity adi, "Settings" vs "Settings X", scroll gereksinimi,
+// checkbox davranisi) -> otomasyon guvenilmezdi; en eski surumler "guncelle" duvarinda
+// (Alert ekrani) hic acilmiyordu. Cozum: ayni-imzali referans APK'yi `pm install -r -d`
+// ile mevcut kurulumun USTUNE yaz. Canli dogrulandi (37.115: 2.26.30.77 -> 2.26.31.78):
+// hesap/mesaj/oturum KORUNUR (chat listesi + eski mesajlar duruyor), surum tek noktaya
+// toplanir. Buyuk APK'da `adb install` takiliyor -> push + `pm install` (EMULATOR_INSTALL
+// ile ayni desen). Idempotent: zaten hedef surumdeyse dokunmaz.
+async function waUpdateApk(serial, payload, jobId) {
+  // Panel "guncelleme modali" icin canli ilerleme: her asama /jobs/:id/progress'e
+  // yuzde+not gonderir (PROVISION ile ayni kanal → provision.progress WS event).
+  const prog = (percent, note, status) =>
+    (jobId ? reportProgress(jobId, 'wa-update', percent, note, status).catch(() => undefined) : Promise.resolve());
+  const apkPath = String(p(payload, 'apkPath', '') || '/opt/fleet-agent/apk/whatsapp-latest.apk');
+  if (!existsSync(apkPath)) throw new Error('referans APK bulunamadi: ' + apkPath);
+  const readVer = async () => {
+    // Sadece versionName satirini cek (tum dumpsys cikti ~100KB, maxBuffer bosuna sismesin).
+    const out = await adb(serial, ['shell', `dumpsys package ${WA_PKG} | grep -m1 versionName`]).catch(() => '');
+    return (/versionName=([0-9.]+)/.exec(String(out || '')) || [])[1] || '';
+  };
+  await prog(5, 'Referans APK ve mevcut sürüm kontrol ediliyor', 'RUNNING');
+  const before = await readVer();
+  let target = '';
+  try { target = String(readFileSync(apkPath + '.version', 'utf8')).replace(/[^0-9.]/g, ''); } catch { /* .version opsiyonel */ }
+  // Idempotent: zaten hedef surumdeyse hicbir sey yapma (toplu guncellemede tekrar-guvenli).
+  if (before && target && before === target) {
+    await prog(100, `Zaten güncel (${before})`, 'COMPLETED');
+    return { ok: true, status: 'ZATEN_GUNCEL', before, after: before, target };
+  }
+  const tmp = '/data/local/tmp/wa-upd.apk';
+  const apkMB = (() => { try { return Math.round(statSync(apkPath).size / 1048576); } catch { return 0; } })();
+  await prog(25, `APK cihaza yükleniyor (${apkMB} MB)`, 'RUNNING');
+  await adbT(serial, ['push', apkPath, tmp], 120000);
+  await prog(60, `Kuruluyor — hesap/mesaj korunuyor (${before || '?'} → ${target || 'yeni'})`, 'RUNNING');
+  const res = String(await adbT(serial, ['shell', 'pm', 'install', '-r', '-d', tmp], 180000) || '');
+  await adb(serial, ['shell', 'rm', '-f', tmp]).catch(() => undefined);
+  const ok = /Success/i.test(res);
+  await prog(90, 'Sürüm doğrulanıyor', 'RUNNING');
+  const after = await readVer();
+  const status = ok ? (before === after ? 'AYNI_KALDI' : 'GUNCELLENDI') : 'BASARISIZ';
+  await prog(100, ok ? `Tamamlandı: ${before || '?'} → ${after || '?'}` : `Başarısız: ${res.trim().slice(0, 80)}`,
+    ok ? 'COMPLETED' : 'FAILED');
+  return { ok, status, before, after, target, install: res.trim().slice(0, 140) };
+}
+
 // ★SURUM-AGNOSTIK (kullanici uyarisi): ayarlar YENI surumde "You" sekmesinde,
 // ESKI surumde ⋮ menusunde "Settings" altinda. Ikisi de denenir. Landmark
 // (metin) tabanli — koordinat DEGIL.
@@ -7120,11 +7170,13 @@ async function waSetAutoDownload(serial /*, payload */) {
   const readMasks = async () =>
     (await adbSu(serial, `grep -ohE 'autodownload[a-z_]*" value="[0-9-]+' ${PREF} 2>/dev/null`)) || '';
 
-  // Idempotent: uc maske de 15 ise dokunma.
+  // ★2026-08-15 (kullanici): SADECE roaming yeterli — cihazlar Waydroid'de ethernet
+  // uzerinden ROAMING olarak algilaniyor (networkType=3). 3 satir yerine tek satir:
+  // daha az hata yuzeyi. Idempotent: roaming zaten 15 ise dokunma.
   const before = await readMasks();
-  const all15 = ['roaming', 'cellular', 'wifi'].every((k) =>
-    new RegExp(`autodownload_${k}_mask" value="15`).test(before));
-  if (all15) return { ok: true, status: 'ZATEN_ACIK', masks: before.trim().split('\n') };
+  if (/autodownload_roaming_mask" value="15/.test(before)) {
+    return { ok: true, status: 'ZATEN_ACIK', masks: before.trim().split('\n') };
+  }
 
   // ★★★SURUM-AGNOSTIK ACILIS: "Storage and data" ekranina DOGRUDAN intent ile git.
   // Aktivite adi (.settings.SettingsDataUsageActivity) surumler arasi SABIT; boylece
@@ -7153,53 +7205,73 @@ async function waSetAutoDownload(serial /*, payload */) {
   await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '800', '400']).catch(() => undefined);
   await h.sleep(800);
 
+  // SADECE roaming (kullanici istegi — cihaz zaten roaming'de algilanıyor).
   const satirlar = [
-    ['When using mobile data', 'Mobil veri kullanırken', 'Mobil veri kullanılırken'],
-    ['When connected on Wi-Fi', 'Wi-Fi bağlantısı varken', "Wi-Fi'ye bağlıyken"],
     ['When roaming', 'Dolaşımdayken', 'Dolaşımda']
   ];
-  // ★DOGRULAMALI-TOGGLE (prefs'e GUVENMEZ). Kanit: diyalogda text+checked AYNI
-  // node'da (`text="Photos" ... checked="true/false"`). prefs WhatsApp calisirken
-  // STALE (memory'de tutuyor, ara sira yazar) -> prefs-tabanli bit matematigi kaos
-  // uretti (14/15/1 sonra 0/1/15). Cozum: diyalogdaki GERCEK checked'i oku, eksik
-  // olani isaretle, 2 TUR dogrula (idempotent; zaten acik olana DOKUNMAZ).
   const turler = [['Photos', 'Fotoğraflar'], ['Audio', 'Ses', 'Ses dosyaları'], ['Videos', 'Videolar'], ['Documents', 'Belgeler', 'Dokümanlar']];
-  const isChecked = (dump, labels) => labels.some((x) =>
-    new RegExp(`text="${x}"[^>]*?checked="true"`).test(dump) ||
-    new RegExp(`checked="true"[^>]*?text="${x}"`).test(dump));
+
+  // ★★★KOORDINAT-TABANLI DOGRULAMALI-TOGGLE (a11y/synthetic tap YOK).
+  // 4 denemede non-deterministik sonuc (14/15/1→0/1/15) ciktı; kok neden:
+  // a11yClickText yanlis elemana gidiyor + tapSynNode kaciriyor + prefs STALE.
+  // Cozum: dump'tan HER node'un checked'ini VE bounds'unu AYNI node'dan oku
+  // (kanit: text+checked+bounds ayni node'da), SADECE kapali olanin bounds
+  // ORTASINA `input tap` (koordinat). Zamanlama guvenli, hedefleme kesin.
+  const tap = (cx, cy) => adb(serial, ['shell', 'input', 'tap', String(Math.round(cx)), String(Math.round(cy))]).catch(() => undefined);
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nodeInfo = (dump, labels) => {
+    for (const x of labels) {
+      const m = new RegExp(`<node[^>]*\\btext="${esc(x)}"[^>]*?/?>`).exec(dump);
+      if (!m) continue;
+      const node = m[0];
+      const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(node);
+      if (!b) continue;
+      return { checked: /checked="true"/.test(node), cx: (Number(b[1]) + Number(b[3])) / 2, cy: (Number(b[2]) + Number(b[4])) / 2 };
+    }
+    return null;
+  };
+
   let done = 0;
   for (const row of satirlar) {
+    // Satiri AC: pollNode+tapSynNode (satir tiklanabilir PARENT'i bulur; metin
+    // node'unun bounds'una koordinat-tap satiri ACMIYORDU — ayarlanan=0 kaldi).
     let node = await h.pollNode(row, 2500, 'any');
-    if (!node) { await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '800', '400']).catch(() => undefined); await h.sleep(800); node = await h.pollNode(row, 3000, 'any'); }
+    if (!node) { await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '800', '400']).catch(() => undefined); await h.sleep(900); node = await h.pollNode(row, 3000, 'any'); }
     if (!node) continue;
     await h.tapSynNode(node);
+    await h.sleep(1800);
+    // Diyalog acildi mi — pollNode ile (calisan yontem; nodeInfo diyalog kontrolunde
+    // Photos'u bulamiyor ve satiri islenmemis sayip ayarlanan=0 birakiyordu).
     if (!(await h.pollNode(turler[0], 5000, 'any'))) continue;
-    // 2 tur: eksik kutulari isaretle, sonra dogrula
-    for (let pass = 0; pass < 2; pass++) {
-      const dump = await h.dumpOrRetry();
+    // 3 tur: kapali kutulari isaretle (once a11y — script'te calisan yontem —
+    // olmazsa koordinat-tap), dump ile dogrula. Kutu checked ise DOKUNMA.
+    for (let pass = 0; pass < 3; pass++) {
+      const dd = await h.dumpOrRetry();
       let allOn = true;
-      for (const labels of turler) {
-        if (isChecked(dump, labels)) continue;
+      for (const t of turler) {
+        const tn = nodeInfo(dd, t);
+        if (!tn || tn.checked) continue;   // yok veya zaten acik
         allOn = false;
         let hit = false;
-        for (const x of labels) { if (await h.a11yClickText(x).catch(() => false)) { hit = true; break; } }
-        if (!hit) { const n = await h.pollNode(labels, 2000, 'any'); if (n) await h.tapSynNode(n); }
-        await h.sleep(300);
+        for (const x of t) { if (await h.a11yClickText(x).catch(() => false)) { hit = true; break; } }
+        if (!hit) await tap(tn.cx, tn.cy);  // a11y tutmazsa koordinat
+        await h.sleep(450);
       }
       if (allOn) break;
     }
-    let ok = false;
-    for (const x of ['OK', 'TAMAM', 'Tamam']) { if (await h.a11yClickText(x).catch(() => false)) { ok = true; break; } }
-    if (!ok) { const n = await h.pollNode(['OK', 'TAMAM', 'Tamam'], 2500, 'any'); if (n) await h.tapSynNode(n); }
-    await h.sleep(700);
+    // OK
+    let okd = false;
+    for (const x of ['OK', 'TAMAM', 'Tamam']) { if (await h.a11yClickText(x).catch(() => false)) { okd = true; break; } }
+    if (!okd) { const okn = nodeInfo(await h.dumpOrRetry(), ['OK', 'TAMAM', 'Tamam']); if (okn) await tap(okn.cx, okn.cy); }
+    await h.sleep(800);
     done++;
   }
   // ★Gercek sonuc: WhatsApp'i kapat -> prefs FLUSH olur -> guncel maskeyi oku.
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
-  await h.sleep(1500);
+  await h.sleep(1800);
   const after = await readMasks();
-  const hepsi15 = ['roaming', 'cellular', 'wifi'].every((k) => new RegExp(`autodownload_${k}_mask" value="15`).test(after));
-  return { ok: hepsi15, status: hepsi15 ? 'AYARLANDI' : 'KISMI', ayarlanan: done, masks: after.trim().split('\n') };
+  const roamOk = /autodownload_roaming_mask" value="15/.test(after);   // sadece roaming
+  return { ok: roamOk, status: roamOk ? 'AYARLANDI' : 'KISMI', ayarlanan: done, masks: after.trim().split('\n') };
 }
 
 async function whatsappMyNumber(serial /*, payload */) {
@@ -10660,6 +10732,7 @@ async function pushOutgoingReceipt(serial, preNodes, preSw) {
 //   FLEET_WA_MEDIA=0 ile tamamen kapatilabilir.
 const WA_MEDIA_ENABLED = process.env.FLEET_WA_MEDIA !== '0';
 const WA_MEDIA_POS = new Map();          // serial -> son islenen message _id
+const WA_INBOX_POS = new Map();          // serial -> son islenen (from_me=0) message._id (msgstore-tabanli inbound)
 const WA_CONTACTS_AT = new Map();        // serial -> son rehber-tamamlama zamani (throttle)
 const WA_MEDIA_MAXBYTES = Number(process.env.FLEET_WA_MEDIA_MAXBYTES || 45 * 1024 * 1024);
 // Goreceli file_path'ler "Media/WhatsApp Images/..." formatinda -> kok "...WhatsApp/".
@@ -10675,7 +10748,15 @@ async function ensureContacts(serial, selfNumber) {
   if (!rows || !rows.length) return 0;
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.WRITE_CONTACTS'], 6000).catch(() => undefined);
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.READ_CONTACTS'], 6000).catch(() => undefined);
-  const self = String(selfNumber || '').replace(/[^\d]/g, '');
+  // ★2026-08-15: cihazin KENDI numarasini rehbere EKLEME. Caller selfNumber
+  // vermezse WhatsApp'in registration_jid prefs'inden oku (kendi E.164 numarasi).
+  // Aksi halde cihaz kendi numarasini "kisi" olarak ekliyordu (kozmetik kirlilik).
+  let self = String(selfNumber || '').replace(/[^\d]/g, '');
+  if (!self) {
+    const reg = await adbSu(serial,
+      `grep -ohE 'registration_jid">[0-9]+' /data/data/com.whatsapp/shared_prefs/*.xml 2>/dev/null | head -1`).catch(() => '');
+    self = (/(\d{10,15})/.exec(String(reg || '')) || [])[1] || '';
+  }
   let added = 0;
   for (const n0 of rows) {
     const n = String(n0).replace(/[^\d]/g, '');
@@ -10683,15 +10764,26 @@ async function ensureContacts(serial, selfNumber) {
     const has = await adbT(serial, ['shell',
       `content query --uri content://com.android.contacts/data --projection data1 --where "data1='+${n}'" 2>/dev/null`], 6000).catch(() => '');
     if (String(has).includes('data1=')) continue;
+    // ★★★2026-08-15 IKI GERCEK HATA DUZELTILDI (canli kanit: 113.230 rehberinde
+    // "display_name=+905327329497, data1=+905349636768" — ISIM BASKA KISININ):
+    //  (1) YANLIS EŞLEŞME: raw_contact id'si `--sort '_id DESC'` ile TAHMIN ediliyordu;
+    //      ardisik eklemelerde/baska bir yazar araya girince YANLIS kaydin uzerine
+    //      isim+telefon yaziliyordu -> kisiler birbirine karisiyordu. Artik HER kisi
+    //      icin account_name'e numarayi gomup (fleet:<numara>) o kaydin id'sini
+    //      SORGUYLA kesin buluyoruz (tahmin YOK).
+    //  (2) ISIM FORMATI: isim "+<numara>" yapilmisti (kozmetik); WhatsApp numara-
+    //      formatli ismi GERCEK isim saymiyor -> kisi "guvenilmez" kaliyor ve gelen
+    //      medyayi OTOMATIK INDIRMIYOR. Calisan cihazda (147.235) isim "Kisi<numara>"
+    //      ve medya otomatik iniyor; calismayanda isim bos/numara -> inmiyor.
+    const acct = `fleet${n}`;
     await adbT(serial, ['shell',
-      `content insert --uri content://com.android.contacts/raw_contacts --bind account_name:s:fleet --bind account_type:s:fleet`], 6000).catch(() => undefined);
+      `content insert --uri content://com.android.contacts/raw_contacts --bind account_name:s:${acct} --bind account_type:s:fleet`], 6000).catch(() => undefined);
     const rq = await adbT(serial, ['shell',
-      `content query --uri content://com.android.contacts/raw_contacts --projection _id --sort '_id DESC'`], 6000).catch(() => '');
+      `content query --uri content://com.android.contacts/raw_contacts --projection _id --where "account_name='${acct}'" --sort '_id DESC'`], 6000).catch(() => '');
     const rid = (/(_id=)(\d+)/.exec(String(rq)) || [])[2];
     if (!rid) continue;
-    // İsim = sade numara (kozmetik: "Kisi..." yerine okunur numara).
     await adbT(serial, ['shell',
-      `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:+${n}`], 6000).catch(() => undefined);
+      `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:Kisi${n}`], 6000).catch(() => undefined);
     await adbT(serial, ['shell',
       `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:+${n} --bind data2:i:2`], 6000).catch(() => undefined);
     added++;
@@ -10790,62 +10882,79 @@ async function pollWhatsappMedia(serial) {
   WA_MEDIA_POS.set(serial, maxId);
 }
 
+// ★★★2026-08-15 MSGSTORE-TABANLI (root) INBOUND — eksiksiz + hizli + taş gibi.
+// ESKI yontem notification (dumpsys) + acik-chat scrape idi. İKİ zaafi vardi:
+//   1) EKSIK: WhatsApp AYNI sohbetin ARDISIK mesajlarini TEK bildirimde toplar
+//      -> ilk mesaj ("Test") bastirilir, kacar. (msgstore'da VAR, panele DUSMEZ.)
+//   2) YAVAS: dumpsys+dump her cihazda yuzlerce ms; 155 cihaz sirayla -> tur 2-5 dk
+//      -> mesaj 2 dk gec duser.
+// YENI: msgstore.db'den from_me=0 yeni mesajlari DOGRUDAN oku (medya ile ayni yontem).
+// Bastirma YOK (DB'de her mesaj ayri satir), tek hafif SQL, pozisyon takibi ile kayipsiz.
+// Giden mesajin okundu-bilgisi (receipt) acik-chat'te AYNEN korunur.
 async function pollWhatsappInbox(serial) {
-  const dump = await adbSu(serial, 'dumpsys notification --noredact 2>/dev/null');
-  let msgs = dump ? parseWaNotifications(dump) : [];
-
-  // WhatsApp suppresses notifications while a chat is OPEN in the foreground, so
-  // the notification poll would miss those messages. When WhatsApp's Conversation
-  // is on screen, also scrape incoming bubbles directly (message_text nodes that
-  // aren't ours). This makes inbound capture work whether the app is fore/back.
+  await pollInboxFromStore(serial);
+  // Acik chat'te: giden mesajin okundu-bilgisi (receipt) — mevcut mantik korunur.
   try {
     const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);
     if (/com\.whatsapp\/\S*Conversation/.test(top)) {
-      // Share ONE dump between the inbound scrape and the receipt read (HIZ-1):
-      // scrapeIncomingBubbles stashes its parsed nodes+sw on ctx; the receipt reader
-      // reuses them instead of dumping again.
       const ctx = {};
-      const scraped = await scrapeIncomingBubbles(serial, ctx);
-      if (scraped.length) msgs = msgs.concat(scraped);
-      // Same open chat → passively read our outgoing bubble's delivery receipt
-      // (no extra taps, Fix9-safe). Best-effort, deduped per (serial|peer|status).
+      await scrapeIncomingBubbles(serial, ctx).catch(() => undefined); // ctx.nodes doldur (yalnizca receipt icin)
       await pushOutgoingReceipt(serial, ctx.nodes, ctx.sw).catch(() => undefined);
     }
   } catch { /* best-effort */ }
+}
 
-  if (msgs.length === 0) return;
-  const seen = waSeenSet(serial);
-  const fresh = [];
-  for (const m of msgs) {
-    // Include `seq` for scrape-path messages (undefined for notification-path):
-    // it lets two identical-text foreground replies dedup as distinct.
-    const key = createHash('sha256').update(`${m.from}|${m.text}|${m.whenMs}|${m.seq ?? ''}`).digest('hex');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    fresh.push({ ...m, key });
+// msgstore.db'den from_me=0 YENI metin mesajlarini okuyup panele/TG'ye yollar.
+// Pozisyon (WA_INBOX_POS) son islenen _id'de; ilk tur SEED (gecmisi bosaltmaz).
+async function pollInboxFromStore(serial) {
+  // İlk tur: pozisyonu MEVCUT en son mesaja kur -> gecmis mesajlar API'ye bosaltilmaz,
+  // ama bundan SONRAKI ilk mesaj yakalanir. (root/db yoksa null -> sessiz gec.)
+  if (!WA_INBOX_POS.has(serial)) {
+    const seed = await waSql(serial, 'msgstore', `SELECT coalesce(max(_id),0) FROM message`);
+    if (seed === null) return;
+    WA_INBOX_POS.set(serial, seed[0] ? Number(seed[0]) || 0 : 0);
+    return;
   }
-  // Cap the seen-set memory.
-  if (seen.size > WA_SEEN_MAX) {
-    const excess = seen.size - WA_SEEN_MAX;
-    let i = 0;
-    for (const k of seen) { if (i++ >= excess) break; seen.delete(k); }
-  }
-  if (fresh.length === 0) return;
-  for (const m of fresh) {
+  const pos = WA_INBOX_POS.get(serial) || 0;
+  // from_me=0 yeni metin mesajlari. Gonderen: chat jid LID ise jid_map ile gercek numara
+  // (medya sorgusuyla ayni JOIN). Newline'lari bosluga cevir (waSql satir-bazli parse eder).
+  // Alan sirasi: id|from|ts|text -> text SON; icinde '|' olsa da ilk 3 '|' ile guvenli ayrilir.
+  const rows = await waSql(serial, 'msgstore',
+    `SELECT m._id||'|'||coalesce(rj.user,j.user,'')||'|'||m.timestamp||'|'||` +
+    `replace(replace(m.text_data,char(10),' '),char(13),' ') ` +
+    `FROM message m ` +
+    `LEFT JOIN chat c ON c._id=m.chat_row_id LEFT JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid rj ON rj._id=jm.jid_row_id ` +
+    `WHERE m.from_me=0 AND m._id>${pos} AND m.text_data IS NOT NULL AND m.text_data<>'' ORDER BY m._id`);
+  if (rows === null) return;   // root/db gecici erisilemez -> pozisyonu koru, sonraki tur dener
+  if (rows.length === 0) return;
+  let maxId = pos;
+  for (const line of rows) {
+    const a = line.indexOf('|');
+    const b = line.indexOf('|', a + 1);
+    const d = line.indexOf('|', b + 1);
+    if (a < 0 || b < 0 || d < 0) continue;
+    const id = Number(line.slice(0, a)) || 0;
+    const from = line.slice(a + 1, b);
+    const ts = Number(line.slice(b + 1, d)) || Date.now();
+    const text = line.slice(d + 1);
+    if (id > maxId) maxId = id;
+    if (!text) continue;
     try {
-      // Push by ADB serial; the control plane maps it to the workspace-scoped
-      // deviceId (it owns the host↔device binding and agent auth).
+      // Push by ADB serial; control plane maps it to the workspace-scoped deviceId.
       await api('/agent/whatsapp/inbound', {
         method: 'POST',
-        body: JSON.stringify({ serial, from: m.from, text: m.text, ts: m.whenMs || Date.now() }),
+        body: JSON.stringify({ serial, from, text, ts }),
       });
-      log(`wa inbound ${serial}: ${m.from} -> ${m.text.slice(0, 40)}`);
+      log(`wa inbound ${serial}: ${from} -> ${text.slice(0, 40)}`);
     } catch (err) {
-      // Re-arm so a transient push failure retries next tick instead of dropping.
-      seen.delete(m.key);
       log('wa inbound push failed:', err.message);
+      // Pozisyonu bu mesajin ONUNE al -> sonraki tur buradan devam (kayip yok, kopya yok).
+      WA_INBOX_POS.set(serial, id - 1 > pos ? id - 1 : pos);
+      return;
     }
   }
+  WA_INBOX_POS.set(serial, maxId);
 }
 
 // Poll every reachable device for new WhatsApp notifications. Devices without
@@ -10868,13 +10977,18 @@ async function whatsappInboxTick() {
   // instability. With per-device concurrency the poll now yields PER DEVICE
   // (busyDevices.has(serial)) instead of stopping for the whole host whenever any job
   // runs — so inbound capture keeps working on idle devices during parallel sends.
-    const serials = await reachableSerials();
-    for (const serial of serials) {
-      if (busyDevices.has(serial)) continue; // a job owns this device — skip it, poll the rest
-      await pollWhatsappInbox(serial).catch(() => undefined);
-      // ★2026-08-15: medya yakalama AYNI tura eklendi (yeni dongu/adb-baglanti YOK).
-      // Bos turda tek SQL sorgusu -> olculebilir yuk yok. FLEET_WA_MEDIA=0 ile kapali.
-      await pollWhatsappMedia(serial).catch(() => undefined);
+    // ★2026-08-15 PARALEL BATCH — 155 cihazi SIRAYLA gezmek turu 2-5 dk yapiyordu
+    // (mesaj 2 dk gec duser). Artik N'erli PARALEL: her cihaz TEK hafif msgstore SQL'i
+    // (/proc TARAMASI YOK -> kilit riski yok). Tur saniyelere iner; hangi cihazdan kac
+    // mesaj gelirse gelsin ayni turda toplanir. BATCH env ile ayarlanabilir (varsayilan 10).
+    const serials = (await reachableSerials()).filter((s) => !busyDevices.has(s));
+    const BATCH = Math.max(1, Number(process.env.FLEET_WA_INBOX_BATCH || 25));
+    for (let i = 0; i < serials.length; i += BATCH) {
+      await Promise.all(serials.slice(i, i + BATCH).map(async (serial) => {
+        await pollWhatsappInbox(serial).catch(() => undefined);
+        // medya yakalama AYNI tura: bos turda tek SQL -> olculebilir yuk yok. FLEET_WA_MEDIA=0 kapali.
+        await pollWhatsappMedia(serial).catch(() => undefined);
+      }));
     }
   } catch (err) {
     log('wa inbox tick failed:', err.message);

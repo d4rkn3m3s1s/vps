@@ -10817,15 +10817,22 @@ async function pollWhatsappMedia(serial) {
   const pos = WA_MEDIA_POS.get(serial) || 0;
 
   // ★★★2026-08-15 REHBER TETIKLEME — KISIR DONGU DUZELTMESI.
-  // WhatsApp rehberde OLMAYAN gonderenin medyasini INDIRMEZ (notReliableContact).
-  // Eski kod rehberi yalnizca INMIS medya gorunce tamamliyordu; ama ilk medya
-  // ZATEN inmiyor (rehber bos) -> file_path bos -> rehber hic eklenmez -> kisir
-  // dongu. Cozum: INMEMIS gelen medya mesaji varsa (belirti: gonderen rehberde
-  // degil) rehberi tamamla ki SONRAKI medyasi otomatik insin. Cihaz basina 3 dk
-  // throttle (content-query'ler pahali; bos turda hic degmez).
+  // WhatsApp rehberde OLMAYAN gonderenin medyasini INDIRMEZ (kisi "guvenilmez"
+  // sayilir). En eski kod rehberi yalnizca INMIS medya gorunce tamamliyordu; ama
+  // ilk medya ZATEN inmiyor (rehberde yok) -> file_path bos -> rehber hic eklenmez
+  // -> kisir dongu. Once "inmemis medya" tetigine cevrildi, simdi ise GELEN HER
+  // YENI MESAJ tetikliyor (asagida). Cihaz basina 3 dk throttle (content-query'ler
+  // pahali; bos turda tek ucuz COUNT disinda hic degmez).
+  // ★2026-08-15 (kullanici istegi: "mesaj atan herkes eklensin"): tetikleyici artik
+  // SADECE inmemis medya degil, GELEN HER YENI MESAJ. Neden: rehber ancak medya
+  // gelince tamamlaninca, hic yazismamis birinin ATTIGI ILK FOTO inmiyordu (o an
+  // rehberde degil) — ancak ikinci fotosu iniyordu. Kisi "selam" yazdigi anda
+  // rehbere girerse, sonra attigi foto ILK SEFERDE iner. Maliyet ayni: 3 dk
+  // throttle + yalnizca yeni mesaj varsa (bos turda tek ucuz COUNT sorgusu).
   const pend = await waSql(serial, 'msgstore',
-    `SELECT count(*) FROM message m JOIN message_media mm ON mm.message_row_id=m._id ` +
-    `WHERE m.from_me=0 AND (mm.file_path IS NULL OR mm.file_path='') AND m._id>${pos}`);
+    `SELECT count(*) FROM message m LEFT JOIN message_media mm ON mm.message_row_id=m._id ` +
+    `WHERE m.from_me=0 AND m._id>${pos} ` +
+    `AND (mm.message_row_id IS NULL OR mm.file_path IS NULL OR mm.file_path='')`);
   if (pend && Number(pend[0]) > 0) {
     const last = WA_CONTACTS_AT.get(serial) || 0;
     if (Date.now() - last > 180000) {

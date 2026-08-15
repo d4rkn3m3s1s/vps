@@ -10135,6 +10135,19 @@ function parseWaNotifications(dump) {
     if (/^\d+\s+new messages?$/i.test(text) || /messages? from .* chats?$/i.test(text)) continue;
     // Ignore non-message notices (backup, storage, security).
     if (/^(Backing up|Checking for new messages|WhatsApp web|Tap for more)/i.test(text)) continue;
+    // ★2026-08-15: MEDYA-PLACEHOLDER bildirimlerini ATLA. Bildirimde bir foto/video
+    // "📷 Photo" / "① Photo" / "🎥 Video" / "🎤 0:07" gibi metinle gorunur; dosyanin
+    // KENDISI bildirimden alinamaz. Artik gercek dosyayi ayri medya izleyici
+    // (msgstore.message_media) yakalayip yolluyor, bu yuzden placeholder metni
+    // gondermek YANILTICI + mukerrer olurdu. Env ile kapatilabilir (eski davranis).
+    // Sadece SIRF placeholder olan bildirimleri atlariz; yazili caption'lar gecer.
+    if (process.env.FLEET_WA_SKIP_MEDIA_NOTIF !== '0') {
+      const t = text.trim();
+      // circled/emoji + tek kelime medya turu (opsiyonel sure "0:07" ekiyle)
+      if (/^[①-⑳📷🎥🎤🎙📎🖼●•\s]*(Photo|Video|GIF|Sticker|Voice message|Audio|Document|Location|Contact|View once|Foto[ğg]raf|Video|Ses|Belge|Konum|Ki[şs]i|\d+:\d{2})[\s•]*$/i.test(t)) {
+        continue;
+      }
+    }
     const whenMs = Number(/when=(\d+)/.exec(b)?.[1] || 0);
     out.push({ from: title.trim(), text: text.trim(), whenMs });
   }
@@ -10521,6 +10534,158 @@ async function pushOutgoingReceipt(serial, preNodes, preSw) {
   }
 }
 
+// ── WhatsApp GELEN MEDYA yakalama (foto/video/belge + TEK GOSTERIMLIK) ─────────
+//
+// ★NEDEN: gelen medya bildirimde sadece "📷 Photo" olarak gorunur; dosyanin KENDISI
+//   bildirimden alinamaz. Dosya ancak WhatsApp onu diske indirdiginde olusur ve
+//   msgstore.message_media.file_path'e yazilir.
+//
+// ★ONKOSUL (15 Agu canli kanit): WhatsApp rehberde OLMAYAN numaradan gelen medyayi
+//   INDIRMEZ (log: isAutoDownloadEligible/false reason=notReliableContact) ve okundu
+//   bilgisini kapatir. Bu yuzden medya beklenirken bilinmeyen gonderen once REHBERE
+//   eklenir (ensureContacts). O andan SONRAKI medyasi otomatik iner.
+//
+// ★TEK GOSTERIMLIK farki (15 Agu): message_type=42, dosyasi genel medya klasorunde
+//   DEGIL /data/user/0/com.whatsapp/files/ViewOnce/ altinda (MUTLAK yol), ve
+//   GORULDUKTEN SONRA SILINIR -> first_viewed_timestamp=0 iken yakalanmali.
+//   Ayrimi message_view_once_media JOIN'i ile yapiyoruz.
+//
+// ★YUK: dosya sistemi TARANMAZ. Tek SQL sorgusu (yeni _id > pozisyon). Agent'in
+//   ZATEN yaptigi inbound tur'una eklenir -> yeni adb baglantisi / dongu YOK.
+//   Rehber tamamlama SADECE yeni medya gorulunce calisir (bos turda deymez).
+//   FLEET_WA_MEDIA=0 ile tamamen kapatilabilir.
+const WA_MEDIA_ENABLED = process.env.FLEET_WA_MEDIA !== '0';
+const WA_MEDIA_POS = new Map();          // serial -> son islenen message _id
+const WA_CONTACTS_AT = new Map();        // serial -> son rehber-tamamlama zamani (throttle)
+const WA_MEDIA_MAXBYTES = Number(process.env.FLEET_WA_MEDIA_MAXBYTES || 45 * 1024 * 1024);
+// Goreceli file_path'ler "Media/WhatsApp Images/..." formatinda -> kok "...WhatsApp/".
+// (WA_MEDIA_ROOT yukarida ".../WhatsApp/Media" olarak tanimli; bir ust dizini alalim.)
+const WA_MEDIA_APPROOT = WA_MEDIA_ROOT.replace(/\/Media$/, '');
+
+// Bilinmeyen gonderenleri cihaz rehberine ekle (medyanin inmesi icin onkosul).
+// content-provider yazimi WRITE_CONTACTS ister; `su -c content` uid=1000 olarak
+// SecurityException verir -> izni com.android.shell'e verip su OLMADAN yaziyoruz.
+async function ensureContacts(serial, selfNumber) {
+  const rows = await waSql(serial, 'msgstore',
+    `SELECT DISTINCT user FROM jid WHERE server='s.whatsapp.net' AND length(user) BETWEEN 10 AND 15`);
+  if (!rows || !rows.length) return 0;
+  await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.WRITE_CONTACTS'], 6000).catch(() => undefined);
+  await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.READ_CONTACTS'], 6000).catch(() => undefined);
+  const self = String(selfNumber || '').replace(/[^\d]/g, '');
+  let added = 0;
+  for (const n0 of rows) {
+    const n = String(n0).replace(/[^\d]/g, '');
+    if (!n || n === self) continue;
+    const has = await adbT(serial, ['shell',
+      `content query --uri content://com.android.contacts/data --projection data1 --where "data1='+${n}'" 2>/dev/null`], 6000).catch(() => '');
+    if (String(has).includes('data1=')) continue;
+    await adbT(serial, ['shell',
+      `content insert --uri content://com.android.contacts/raw_contacts --bind account_name:s:fleet --bind account_type:s:fleet`], 6000).catch(() => undefined);
+    const rq = await adbT(serial, ['shell',
+      `content query --uri content://com.android.contacts/raw_contacts --projection _id --sort '_id DESC'`], 6000).catch(() => '');
+    const rid = (/(_id=)(\d+)/.exec(String(rq)) || [])[2];
+    if (!rid) continue;
+    // İsim = sade numara (kozmetik: "Kisi..." yerine okunur numara).
+    await adbT(serial, ['shell',
+      `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/name --bind data1:s:+${n}`], 6000).catch(() => undefined);
+    await adbT(serial, ['shell',
+      `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:+${n} --bind data2:i:2`], 6000).catch(() => undefined);
+    added++;
+  }
+  return added;
+}
+
+async function pollWhatsappMedia(serial) {
+  if (!WA_MEDIA_ENABLED) return;
+  // İlk turda pozisyonu MEVCUT en son MESAJA kur (gecmis medyayi TG'ye bosaltma,
+  // ama bundan SONRA gelen ILK medya da yakalansin). Referans: son message._id
+  // (medya degil) — boylece agent restart'i sonrasi gelen ilk foto atlanmaz.
+  if (!WA_MEDIA_POS.has(serial)) {
+    const seed = await waSql(serial, 'msgstore', `SELECT coalesce(max(_id),0) FROM message`);
+    WA_MEDIA_POS.set(serial, seed && seed[0] ? Number(seed[0]) || 0 : 0);
+    return; // ilk tur sadece seed
+  }
+  const pos = WA_MEDIA_POS.get(serial) || 0;
+
+  // ★★★2026-08-15 REHBER TETIKLEME — KISIR DONGU DUZELTMESI.
+  // WhatsApp rehberde OLMAYAN gonderenin medyasini INDIRMEZ (notReliableContact).
+  // Eski kod rehberi yalnizca INMIS medya gorunce tamamliyordu; ama ilk medya
+  // ZATEN inmiyor (rehber bos) -> file_path bos -> rehber hic eklenmez -> kisir
+  // dongu. Cozum: INMEMIS gelen medya mesaji varsa (belirti: gonderen rehberde
+  // degil) rehberi tamamla ki SONRAKI medyasi otomatik insin. Cihaz basina 3 dk
+  // throttle (content-query'ler pahali; bos turda hic degmez).
+  const pend = await waSql(serial, 'msgstore',
+    `SELECT count(*) FROM message m JOIN message_media mm ON mm.message_row_id=m._id ` +
+    `WHERE m.from_me=0 AND (mm.file_path IS NULL OR mm.file_path='') AND m._id>${pos}`);
+  if (pend && Number(pend[0]) > 0) {
+    const last = WA_CONTACTS_AT.get(serial) || 0;
+    if (Date.now() - last > 180000) {
+      WA_CONTACTS_AT.set(serial, Date.now());
+      const added = await ensureContacts(serial).catch(() => 0);
+      if (added) log(`wa media: ${serial} rehbere ${added} kisi eklendi (medya insin diye)`);
+    }
+  }
+
+  // GONDERIM: inmis (file_path dolu) medyalari yolla. tek-gosterimlik bayragiyla.
+  // ★GONDEREN: chat jid'i LID olabilir (174256...@lid = ic kimlik, gercek numara
+  // DEGIL) -> jid_map ile gercek s.whatsapp.net numarasina cevir.
+  const rows = await waSql(serial, 'msgstore',
+    `SELECT m._id||'|'||m.message_type||'|'||mm.file_path||'|'||coalesce(rj.user, j.user, '?')||'|'||` +
+    `CASE WHEN v.message_row_id IS NULL THEN '0' ELSE '1' END ` +
+    `FROM message m JOIN message_media mm ON mm.message_row_id=m._id ` +
+    `LEFT JOIN chat c ON c._id=m.chat_row_id LEFT JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid rj ON rj._id=jm.jid_row_id ` +
+    `LEFT JOIN message_view_once_media v ON v.message_row_id=m._id ` +
+    `WHERE m.from_me=0 AND m._id>${pos} AND mm.file_path IS NOT NULL AND mm.file_path<>'' ORDER BY m._id`);
+  if (!rows || !rows.length) return;
+
+  let maxId = pos;
+  for (const line of rows) {
+    const [idS, tip, yol, gonderen, tekg] = String(line).split('|');
+    const id = Number(idS) || 0;
+    if (id > maxId) maxId = id;
+    if (!yol) continue;
+    // ★ESKI/YENI CIHAZ farki: file_path bazen MUTLAK (ViewOnce, /data/user/0/...),
+    // bazen GORECELI ("Media/WhatsApp Images/..."). Goreceli ise medya koku
+    // surume/Android'e gore degisir (scoped-storage oncesi /sdcard/WhatsApp,
+    // sonrasi .../Android/media/com.whatsapp/WhatsApp). Bu yuzden birden fazla kok
+    // DENENIR — ilk VAR olan kullanilir. Birkac ucuz `-f` testi (tarama DEGIL).
+    const yolQ = yol.replace(/'/g, "'\\''");
+    const b64 = await adbT(serial, ['exec-out', 'su', '-c',
+      `rel='${yolQ}'; f=''; ` +
+      `case "$rel" in /*) f="$rel";; esac; ` +
+      `if [ -z "$f" ]; then for r in ` +
+      `/data/media/0/Android/media/com.whatsapp/WhatsApp ` +
+      `/data/media/0/WhatsApp ` +
+      `/sdcard/Android/media/com.whatsapp/WhatsApp ` +
+      `/sdcard/WhatsApp ` +
+      `/storage/emulated/0/WhatsApp; do ` +
+      `[ -f "$r/$rel" ] && { f="$r/$rel"; break; }; done; fi; ` +
+      `[ -z "$f" ] && exit 0; ` +
+      `sz=$(stat -c %s "$f" 2>/dev/null||echo 0); ` +
+      `if [ "$sz" -gt 0 ] && [ "$sz" -le ${WA_MEDIA_MAXBYTES} ]; then base64 "$f"; fi`], 60000).catch(() => '');
+    const buf = b64 ? Buffer.from(String(b64).replace(/\s+/g, ''), 'base64') : Buffer.alloc(0);
+    if (!buf.length) { log(`wa media #${id}: cekilemedi/buyuk (${yol})`); continue; }
+    try {
+      await api('/agent/whatsapp/media', {
+        method: 'POST',
+        body: JSON.stringify({
+          serial, msgId: id, mediaType: Number(tip), from: gonderen,
+          viewOnce: tekg === '1', fileName: yol.split('/').pop(),
+          dataB64: buf.toString('base64')
+        }),
+      });
+      log(`wa media #${id} pushed (${buf.length}b${tekg === '1' ? ' view-once' : ''})`);
+    } catch (err) {
+      log('wa media push failed:', err.message);
+      // pozisyonu ilerletme — sonraki tur tekrar dener
+      WA_MEDIA_POS.set(serial, id - 1 > pos ? id - 1 : pos);
+      return;
+    }
+  }
+  WA_MEDIA_POS.set(serial, maxId);
+}
+
 async function pollWhatsappInbox(serial) {
   const dump = await adbSu(serial, 'dumpsys notification --noredact 2>/dev/null');
   let msgs = dump ? parseWaNotifications(dump) : [];
@@ -10603,6 +10768,9 @@ async function whatsappInboxTick() {
     for (const serial of serials) {
       if (busyDevices.has(serial)) continue; // a job owns this device — skip it, poll the rest
       await pollWhatsappInbox(serial).catch(() => undefined);
+      // ★2026-08-15: medya yakalama AYNI tura eklendi (yeni dongu/adb-baglanti YOK).
+      // Bos turda tek SQL sorgusu -> olculebilir yuk yok. FLEET_WA_MEDIA=0 ile kapali.
+      await pollWhatsappMedia(serial).catch(() => undefined);
     }
   } catch (err) {
     log('wa inbox tick failed:', err.message);

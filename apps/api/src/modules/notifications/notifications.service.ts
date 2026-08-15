@@ -265,6 +265,61 @@ export async function dispatch(workspaceId: string, message: DispatchMessage): P
   }
 }
 
+// ★2026-08-15: WhatsApp'tan yakalanan GERCEK medya dosyasini Telegram kanallarina
+// yollar (foto/video/ses/belge). Eski mediaCaptured yalnizca metadata gonderiyordu;
+// dosya cihazda kaliyor, operator goremiyordu. Buradaki her kanal icin dogru Telegram
+// ucu (sendPhoto/Video/Audio/Document) + multipart file part kullanilir.
+// Telegram olmayan kanallar (slack/discord) icin normal metin bildirimi dispatch
+// zaten ayrica gonderiliyor; burada yalnizca dosya-tasiyan Telegram'i ele aliyoruz.
+export async function dispatchWhatsappMedia(
+  workspaceId: string,
+  media: { bytes: Buffer; mediaType: number; fileName: string; caption: string; viewOnce: boolean }
+): Promise<{ sent: number }> {
+  if (!media.bytes.length) return { sent: 0 };
+  // WA mesaj tipi → Telegram ucu (42 = tek gosterimlik; foto/video uzantidan ayirt).
+  const isVideoName = /\.(mp4|mov|mkv|webm)$/i.test(media.fileName);
+  let method = 'sendDocument', field = 'document', mime = 'application/octet-stream';
+  switch (media.mediaType) {
+    case 1:  method = 'sendPhoto'; field = 'photo'; mime = 'image/jpeg'; break;
+    case 3:  method = 'sendVideo'; field = 'video'; mime = 'video/mp4';  break;
+    case 2:  method = 'sendAudio'; field = 'audio'; mime = 'audio/ogg';  break;
+    case 42: if (isVideoName) { method = 'sendVideo'; field = 'video'; mime = 'video/mp4'; }
+             else { method = 'sendPhoto'; field = 'photo'; mime = 'image/jpeg'; } break;
+    default: break; // belge
+  }
+  let rows;
+  try {
+    rows = await prisma.notificationChannel.findMany({
+      where: { active: true, type: 'telegram', ...(workspaceId ? { workspaceId } : {}) }
+    });
+  } catch { return { sent: 0 }; }
+
+  let sent = 0;
+  for (const row of rows) {
+    let cfg: TelegramConfig;
+    try { cfg = JSON.parse(decryptString(row.configEnc)) as TelegramConfig; } catch { continue; }
+    if (!cfg.botToken || !cfg.chatId) continue;
+    for (const chatId of parseChatIds(cfg.chatId)) {
+      try {
+        const form = new FormData();
+        form.append('chat_id', String(chatId));
+        form.append('caption', media.caption);
+        form.append('parse_mode', 'HTML');
+        form.append(field, new Blob([media.bytes], { type: mime }), media.fileName || 'wa-media');
+        const res = await fetch(`https://api.telegram.org/bot${cfg.botToken}/${method}`, {
+          method: 'POST', body: form, signal: AbortSignal.timeout(60000)
+        });
+        const json = (await res.json().catch(() => ({}))) as { ok?: boolean };
+        if (json.ok) sent++;
+        else logger.warn('wa media tg send failed', { method, resp: JSON.stringify(json).slice(0, 160) });
+      } catch (e) {
+        logger.warn('wa media tg send error', { method, error: String(e) });
+      }
+    }
+  }
+  return { sent };
+}
+
 export async function sendTest(
   workspaceId: string,
   id: string
@@ -298,5 +353,6 @@ export const notificationsService = {
   saveChannel,
   deleteChannel,
   dispatch,
+  dispatchWhatsappMedia,
   sendTest
 };

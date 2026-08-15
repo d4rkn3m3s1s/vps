@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, abandonClaimedHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappHealthProbeHandler, mediaCapturedHandler, whatsappReceiptHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, abandonClaimedHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappHealthProbeHandler, mediaCapturedHandler, mediaReceivedHandler, whatsappReceiptHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -30,6 +30,8 @@ agentRouter.post('/whatsapp/inbound', asyncHandler(whatsappInboundHandler));
 agentRouter.post('/whatsapp/health-probe', asyncHandler(whatsappHealthProbeHandler));
 // Agent media-capture poll → new-media metadata (opt-in FLEET_WA_CAPTURE=1).
 agentRouter.post('/whatsapp/media-captured', asyncHandler(mediaCapturedHandler));
+// ★2026-08-15: agent gercek medya DOSYASINI yollar (base64) → sakla + TG/panel/webhook.
+agentRouter.post('/whatsapp/media', asyncHandler(mediaReceivedHandler));
 // Outbound delivery receipt (✓✓ delivered / blue-tick read). Agent-side tick read
 // is a TODO; the endpoint exists so the webhook/enum half is deployable now.
 agentRouter.post('/whatsapp/receipt', asyncHandler(whatsappReceiptHandler));

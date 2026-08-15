@@ -1,7 +1,13 @@
+import path from 'node:path';
+import { promises as fsp } from 'node:fs';
 import type { AlertTrigger, GeneratedAccountStatus, Host } from '@prisma/client';
 import { prisma } from '../../db/prisma';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../lib/errors';
+
+// ★2026-08-15: gelen WhatsApp medyasi burada saklanir (panel indirir/gosterir).
+// Kalici disk; workspace/cihaz bazli alt-klasor. Env ile tasinabilir.
+const WA_MEDIA_STORE = process.env.FLEET_WA_MEDIA_DIR ?? '/opt/fleet-agent/wa-media';
 
 // Best-effort side-effect logger. Use in place of `.catch(() => undefined)` on
 // post-completion downstream writes so a failure leaves a diagnosable trail
@@ -1591,6 +1597,71 @@ export class AgentService {
       .catch(() => undefined);
 
     return { ok: true };
+  }
+
+  // ★2026-08-15: agent GERCEK medya dosyasini yolladi (foto/video/ses/belge +
+  // tek-gosterimlik). Eski mediaCaptured yalnizca metadata tasiyordu; dosya cihazda
+  // kaliyor, operator goremiyordu. Bu metot dosyayi UC yere ulastirir:
+  //   1) Telegram — foto/video/belge olarak (dispatchWhatsappMedia)
+  //   2) Panel — kalici saklama + deviceHub broadcast (canli "yeni medya")
+  //   3) Webhook — WHATSAPP_MEDIA_RECEIVED (dis entegrasyonlar)
+  // Tek-gosterimlik ozel isaretlenir (karsi taraf silse de KALICI kopya alindi).
+  async mediaReceived(
+    host: Host,
+    input: { serial: string; msgId: number; mediaType: number; from: string; viewOnce: boolean; fileName: string; dataB64: string }
+  ): Promise<{ ok: boolean; tg: number }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true, name: true }
+    });
+    const device = devices.find((d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial);
+    if (!device) return { ok: false, tg: 0 };
+
+    const bytes = Buffer.from(input.dataB64 || '', 'base64');
+    if (!bytes.length) return { ok: false, tg: 0 };
+
+    // Kalici saklama — panel indirebilsin. Workspace/cihaz bazli, ay-klasorlu.
+    const ws = device.workspaceId ?? 'default';
+    const dir = path.join(WA_MEDIA_STORE, ws, device.id);
+    await fsp.mkdir(dir, { recursive: true }).catch(() => undefined);
+    const safeName = `${input.msgId}-${String(input.fileName || 'media').replace(/[^\w.\-]/g, '_')}`;
+    const rel = path.join(ws, device.id, safeName);
+    await fsp.writeFile(path.join(WA_MEDIA_STORE, rel), bytes).catch(() => undefined);
+
+    const kind = input.mediaType === 1 ? 'image' : input.mediaType === 3 ? 'video'
+      : input.mediaType === 2 ? 'audio' : input.mediaType === 42 ? 'view_once' : 'document';
+    const numOnly = String(input.from || '').replace(/[^\d]/g, '');
+    const emoji = input.viewOnce ? '👁' : kind === 'image' ? '🖼️' : kind === 'video' ? '🎬' : kind === 'audio' ? '🎤' : '📎';
+    const caption =
+      `${emoji} <b>WhatsApp medya</b>${input.viewOnce ? ' — TEK GÖSTERİMLİK (kalıcı kopya)' : ''}\n` +
+      `📱 Cihaz: ${device.name}\n👤 Gönderen: +${numOnly || '?'}\n📦 ${(bytes.length / 1024).toFixed(0)} KB`;
+
+    // 1) Telegram — gercek dosya
+    let tg = 0;
+    try {
+      const r = await notificationsService.dispatchWhatsappMedia(device.workspaceId ?? '', {
+        bytes, mediaType: input.mediaType, fileName: input.fileName || 'wa-media', caption, viewOnce: input.viewOnce
+      });
+      tg = r.sent;
+    } catch (e) { logger.warn('wa media tg dispatch failed', { error: String(e) }); }
+
+    // 2) Panel — canli event (dosya indirme yolu ile)
+    deviceHub.broadcast({
+      type: 'whatsapp.media',
+      deviceId: device.id,
+      payload: { msgId: input.msgId, kind, from: `+${numOnly}`, fileName: safeName, size: bytes.length, viewOnce: input.viewOnce, path: rel },
+      timestamp: new Date().toISOString(),
+      workspaceId: device.workspaceId ?? undefined
+    });
+
+    // 3) Webhook fan-out (mevcut WHATSAPP_MEDIA_CAPTURED enum'unu kullaniyoruz —
+    //    yeni enum degeri Prisma migration gerektirirdi; bu olay ayni sinifta.)
+    void webhooksService.dispatch('WHATSAPP_MEDIA_CAPTURED', {
+      deviceId: device.id, deviceName: device.name, msgId: input.msgId, kind,
+      from: `+${numOnly}`, fileName: safeName, size: bytes.length, viewOnce: input.viewOnce, received: true
+    }, device.workspaceId ?? undefined);
+
+    return { ok: true, tg };
   }
 
   // Record an outbound delivery receipt the agent read off a sent bubble's tick

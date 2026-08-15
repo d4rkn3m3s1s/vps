@@ -90,6 +90,19 @@ const mediaCapturedSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+// ★2026-08-15: agent GERCEK medya dosyasini (base64) yollar. mediaCaptured'in
+// aksine bytes'i tasir; API dosyayi saklar + Telegram/panel/webhook'a ulastirir.
+// 60 MB base64 ~ 45 MB dosya (agent tarafi FLEET_WA_MEDIA_MAXBYTES ile de sinirli).
+const mediaReceivedSchema = z.object({
+  serial: z.string().min(1),
+  msgId: z.coerce.number().int().nonnegative(),
+  mediaType: z.coerce.number().int(),
+  from: z.string().max(40).optional().default(''),
+  viewOnce: z.boolean().optional().default(false),
+  fileName: z.string().max(200).optional().default('wa-media'),
+  dataB64: z.string().min(1).max(64 * 1024 * 1024)
+});
+
 // Agent reports an outbound delivery receipt read off a sent bubble (✓✓ / blue).
 // AGENT SIDE NOT WIRED YET — the endpoint + validation exist so the webhook/enum
 // half is deployable; the on-device tick read is the remaining TODO.
@@ -240,6 +253,13 @@ export async function mediaCapturedHandler(req: Request, res: Response): Promise
   const host = requireHost(req);
   const input = mediaCapturedSchema.parse(req.body);
   res.json({ data: await agentService.mediaCaptured(host, input) });
+}
+
+// ★2026-08-15: agent gercek medya DOSYASINI yolladi → sakla + Telegram/panel/webhook.
+export async function mediaReceivedHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = mediaReceivedSchema.parse(req.body);
+  res.json({ data: await agentService.mediaReceived(host, input) });
 }
 
 // Agent pushes an outbound delivery receipt (message DELIVERED/READ on the peer's

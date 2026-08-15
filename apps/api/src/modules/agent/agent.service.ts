@@ -22,6 +22,7 @@ const quiet = (step: string, jobId?: string) => (err: unknown) => {
 import { decryptString, encryptString, sha256 } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
+import { createJobRecord } from '../jobs/jobs.service';
 import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
 import { calendarService } from '../calendar/calendar.service';
@@ -694,6 +695,22 @@ export class AgentService {
               { accountId, deviceId: devId, phoneNumber: phone, status: nextStatus, ...(error ? { error } : {}) },
               updated.workspaceId ?? undefined
             );
+          }
+
+          // ★2026-08-15: kayit tamamlaninca (ACTIVE) otomatik medya-indirme maskesini
+          // ac. Gelen medyanin otomatik inmesinin ON KOSULU (networkSafe). Bir kez
+          // acilir ve kalicidir; idempotent job zaten aciksa hizli atlar. Boylece
+          // YENI kurulan her cihaz elle ayar gerektirmeden medya alir.
+          // ★createJobRecord SART: agent job'u payload.deviceId'ye gore claim eder
+          // (Job.deviceId'ye DEGIL). Dogrudan prisma.job.create devId'yi yanlis alana
+          // yazar ve agent job'u hic almaz. Helper deviceId'yi payload'a foldlar.
+          if (nextStatus === 'ACTIVE' && devId) {
+            void createJobRecord(
+              'WA_SET_AUTODOWNLOAD',
+              { deviceId: devId, reason: 'auto-after-register' } as unknown as Parameters<typeof createJobRecord>[1],
+              undefined,
+              updated.workspaceId ?? undefined
+            ).catch(() => undefined);
           }
         }
 

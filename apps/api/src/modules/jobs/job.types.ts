@@ -50,6 +50,10 @@ export const JobTypes = [
   'WHATSAPP_BLOCKLIST',
   // Read the account's OWN WhatsApp number off the device (Settings › profile).
   'WHATSAPP_MYNUMBER',
+  // ★2026-08-15 Otomatik medya indirme MASKESINI ac (foto/ses/video/belge, 3 ağ
+  // durumu). Gelen medyanin otomatik inmesi icin sart (networkSafe). Idempotent +
+  // surum-agnostik (You / ⋮ Settings). Yeni cihazlarda kayittan sonra otomatik.
+  'WA_SET_AUTODOWNLOAD',
   // Send a media message (image/file) to a peer via wa.me + attach flow.
   'WHATSAPP_SEND_MEDIA',
   // Delete a message: for me (scope=me) or for everyone (scope=everyone).

@@ -85,6 +85,8 @@ enum JobType {
   WHATSAPP_BLOCKLIST
   // Read the account's OWN WhatsApp number off the device.
   WHATSAPP_MYNUMBER
+  // ★2026-08-15 Otomatik medya indirme maskesini ac (gelen medya otomatik insin).
+  WA_SET_AUTODOWNLOAD
   // Send a media message (image/file) to a peer.
   WHATSAPP_SEND_MEDIA
   // Delete a message (for me / for everyone).

@@ -1239,6 +1239,7 @@ const JOB_TIMEOUTS_MS = {
   WHATSAPP_BLOCK: 90 * 1000,
   WHATSAPP_BLOCKLIST: 90 * 1000,
   WHATSAPP_MYNUMBER: 90 * 1000,
+  WA_SET_AUTODOWNLOAD: 150 * 1000,   // UI: Ayarlar→Storage→3 satır×4 kutu (idempotent atlarsa saniyeler)
   WHATSAPP_DELETE_MSG: 90 * 1000,
   WHATSAPP_CLEAR_CHAT: 90 * 1000,
   TELEGRAM_SEND: 100 * 1000,        // mirror WHATSAPP_SEND: normally 15-30s, 100s ceiling
@@ -1717,6 +1718,9 @@ async function runJobInner(job) {
 
     case 'WHATSAPP_MYNUMBER':
       return whatsappMyNumber(serial, payload);
+
+    case 'WA_SET_AUTODOWNLOAD':
+      return waSetAutoDownload(serial, payload);
 
     case 'WHATSAPP_SEND_MEDIA':
       return whatsappSendMedia(serial, payload);
@@ -7098,6 +7102,106 @@ async function whatsappBlocklist(serial /*, payload */) {
 // content-desc is "You") → the Profile screen shows a "Phone" label immediately
 // followed by the account's own number. We scrape the first phone-like text on
 // that screen. Everything polls a fresh dump so we never read a stale screen.
+// ── WA OTOMATIK MEDYA INDIRME maskesini AC (job: WA_SET_AUTODOWNLOAD) ──────────
+//
+// ★NEDEN JOB: gelen medyanin OTOMATIK inmesi icin maske acik olmali
+// (networkSafe). Maske UI'dan acilir (root TUTMAZ; WA acilista geri yukler).
+// Job olmasi = agent'in mevcut kademeli dispatch'ine takilir -> 156 cihazda
+// es zamanli UI otomasyonu YAPILMAZ (o sistemi kilitler). Idempotent: zaten
+// 15 ise hizli atlar.
+//
+// ★SURUM-AGNOSTIK (kullanici uyarisi): ayarlar YENI surumde "You" sekmesinde,
+// ESKI surumde ⋮ menusunde "Settings" altinda. Ikisi de denenir. Landmark
+// (metin) tabanli — koordinat DEGIL.
+async function waSetAutoDownload(serial /*, payload */) {
+  const h = waHelpers(serial);
+  await h.ensureTouch();
+  const PREF = '/data/data/com.whatsapp/shared_prefs/com.whatsapp_preferences_light.xml';
+  const readMasks = async () =>
+    (await adbSu(serial, `grep -ohE 'autodownload[a-z_]*" value="[0-9-]+' ${PREF} 2>/dev/null`)) || '';
+
+  // Idempotent: uc maske de 15 ise dokunma.
+  const before = await readMasks();
+  const all15 = ['roaming', 'cellular', 'wifi'].every((k) =>
+    new RegExp(`autodownload_${k}_mask" value="15`).test(before));
+  if (all15) return { ok: true, status: 'ZATEN_ACIK', masks: before.trim().split('\n') };
+
+  // ★★★SURUM-AGNOSTIK ACILIS: "Storage and data" ekranina DOGRUDAN intent ile git.
+  // Aktivite adi (.settings.SettingsDataUsageActivity) surumler arasi SABIT; boylece
+  // You/⋮/Settings/Storage navigasyonu (surumden surume DEGISEN) tamamen ATLANIR.
+  // Canli: hem yeni (mi235) hem eski (mi186) hem 3. varyant (mi7) surumde acildi.
+  const onStorage = async () =>
+    Boolean(await h.pollNode(['Media auto-download', 'Medya otomatik indirme', 'When roaming', 'Dolaşımdayken'], 6000, 'any'));
+  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.settings.SettingsDataUsageActivity`]).catch(() => undefined);
+  let ready = await onStorage();
+  // Dogrudan intent tutmazsa (nadir/cok eski surum) navigasyona dus.
+  if (!ready) {
+    let opened = await waOpenSettings(serial, h).catch(() => false);
+    if (!opened) {
+      await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.home.ui.HomeActivity`]).catch(() => undefined);
+      const you = await h.pollNode(['You', 'Sen', 'Siz'], 6000, 'any');
+      if (you) { await h.tapSynNode(you); await h.sleep(1500); }
+      opened = Boolean(await h.pollNode(['Account', 'Hesap', 'Storage and data', 'Depolama ve veriler'], 7000, 'any'));
+    }
+    if (opened) {
+      let depo = await h.pollNode(['Storage and data', 'Depolama ve veriler', 'Depolama ve Veriler'], 4000, 'any');
+      if (!depo) { await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '700', '400']).catch(() => undefined); await h.sleep(900); depo = await h.pollNode(['Storage and data', 'Depolama ve veriler'], 4000, 'any'); }
+      if (depo) { await h.tapSynNode(depo); ready = await onStorage(); }
+    }
+  }
+  if (!ready) return { ok: false, status: 'DEPOLAMA_EKRANI_ACILMADI' };
+  await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '800', '400']).catch(() => undefined);
+  await h.sleep(800);
+
+  const satirlar = [
+    ['When using mobile data', 'Mobil veri kullanırken', 'Mobil veri kullanılırken'],
+    ['When connected on Wi-Fi', 'Wi-Fi bağlantısı varken', "Wi-Fi'ye bağlıyken"],
+    ['When roaming', 'Dolaşımdayken', 'Dolaşımda']
+  ];
+  // ★DOGRULAMALI-TOGGLE (prefs'e GUVENMEZ). Kanit: diyalogda text+checked AYNI
+  // node'da (`text="Photos" ... checked="true/false"`). prefs WhatsApp calisirken
+  // STALE (memory'de tutuyor, ara sira yazar) -> prefs-tabanli bit matematigi kaos
+  // uretti (14/15/1 sonra 0/1/15). Cozum: diyalogdaki GERCEK checked'i oku, eksik
+  // olani isaretle, 2 TUR dogrula (idempotent; zaten acik olana DOKUNMAZ).
+  const turler = [['Photos', 'Fotoğraflar'], ['Audio', 'Ses', 'Ses dosyaları'], ['Videos', 'Videolar'], ['Documents', 'Belgeler', 'Dokümanlar']];
+  const isChecked = (dump, labels) => labels.some((x) =>
+    new RegExp(`text="${x}"[^>]*?checked="true"`).test(dump) ||
+    new RegExp(`checked="true"[^>]*?text="${x}"`).test(dump));
+  let done = 0;
+  for (const row of satirlar) {
+    let node = await h.pollNode(row, 2500, 'any');
+    if (!node) { await adb(serial, ['shell', 'input', 'swipe', '540', '1500', '540', '800', '400']).catch(() => undefined); await h.sleep(800); node = await h.pollNode(row, 3000, 'any'); }
+    if (!node) continue;
+    await h.tapSynNode(node);
+    if (!(await h.pollNode(turler[0], 5000, 'any'))) continue;
+    // 2 tur: eksik kutulari isaretle, sonra dogrula
+    for (let pass = 0; pass < 2; pass++) {
+      const dump = await h.dumpOrRetry();
+      let allOn = true;
+      for (const labels of turler) {
+        if (isChecked(dump, labels)) continue;
+        allOn = false;
+        let hit = false;
+        for (const x of labels) { if (await h.a11yClickText(x).catch(() => false)) { hit = true; break; } }
+        if (!hit) { const n = await h.pollNode(labels, 2000, 'any'); if (n) await h.tapSynNode(n); }
+        await h.sleep(300);
+      }
+      if (allOn) break;
+    }
+    let ok = false;
+    for (const x of ['OK', 'TAMAM', 'Tamam']) { if (await h.a11yClickText(x).catch(() => false)) { ok = true; break; } }
+    if (!ok) { const n = await h.pollNode(['OK', 'TAMAM', 'Tamam'], 2500, 'any'); if (n) await h.tapSynNode(n); }
+    await h.sleep(700);
+    done++;
+  }
+  // ★Gercek sonuc: WhatsApp'i kapat -> prefs FLUSH olur -> guncel maskeyi oku.
+  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  await h.sleep(1500);
+  const after = await readMasks();
+  const hepsi15 = ['roaming', 'cellular', 'wifi'].every((k) => new RegExp(`autodownload_${k}_mask" value="15`).test(after));
+  return { ok: hepsi15, status: hepsi15 ? 'AYARLANDI' : 'KISMI', ayarlanan: done, masks: after.trim().split('\n') };
+}
+
 async function whatsappMyNumber(serial /*, payload */) {
   const h = waHelpers(serial);
   await h.ensureTouch();

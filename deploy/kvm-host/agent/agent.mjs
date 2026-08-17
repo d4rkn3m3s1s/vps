@@ -4442,6 +4442,45 @@ async function clearAnrDialog(serial, h, tries = 3) {
   return dismissed;
 }
 
+// ★★★2026-08-17 CHAT_NOT_OPENED'in UCUNCU GERCEK SEBEBI: WA BILGI KARTI.
+// Sohbet ACILIR (mCurrentFocus=com.whatsapp.Conversation) ama WhatsApp'in KENDI
+// bilgi karti mesaj kutusunun (id/entry) UZERINE biner ve KENDILIGINDEN KAPANMAZ.
+// -> entry poll 9 tur x 500ms bosuna doner, is CHAT_NOT_OPENED ile duser.
+// ★CANLI KANIT (2026-08-17, 192.168.109.13 -> 905400403800): deep link acildi,
+// t+2/4/7/10 sn'nin HEPSINDE ekranda "Disappearing messages are on in this chat"
+// + [OK]/[LEARN MORE] duruyordu; id/entry hic gorunmedi. AYNI hedef IKI AYRI
+// cihazdan da basarisizdi -> cihaz arizasi DEGIL, HEDEFE OZGU (o sohbette
+// kaybolan-mesajlar acik). Panelde: "Sohbet ekrani acilamadi (CHAT_NOT_OPENED)".
+// clearAnrDialog bunu TANIMIYOR (yalnizca ANR'a bakar) — bu yuzden ayri temizleyici.
+// Kart metni surumden surume degisebilir; bu yuzden BUTON kimligi/metni uzerinden
+// gidiyoruz ve YALNIZCA Conversation ekraninda, entry YOKKEN calisiyoruz (yanlis
+// yerde OK'a basip veri kaybettirmemek icin dar kapsam).
+// NOT: findNode REGEX DESTEKLEMEZ (String(cand)+includes ile arar) — regex verilirse
+// "/.../i" METNI aranir ve HICBIR ZAMAN eslesmez. Bu yuzden DIZI kullaniyoruz:
+// findNode diziyi sirayla dener, herhangi biri tutarsa eslesir.
+const WA_INFO_CARD_TEXTS = [
+  'Disappearing messages are on',
+  'Kaybolan mesajlar',
+  'This increases your privacy'
+];
+async function clearWaInfoCard(serial, h) {
+  // Yalnizca sohbet ekraninda ilgilen — baska ekranda OK'a basmak istemiyoruz.
+  const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+  if (!/com\.whatsapp\/com\.whatsapp\.Conversation/.test(String(w))) return false;
+  if (!(await h.seen(WA_INFO_CARD_TEXTS, 250))) return false;
+  // Kart var: OK/Tamam'a bas (LEARN MORE'a DEGIL — o tarayici acar ve sohbetten cikar).
+  // ⚠️findNode SUBSTRING eslesir ve 'ok' cok yaygin bir parca ('Bok', 'Tokat', 'Looking'…)
+  // -> serbest arama YANLIS dugmeye basabilir. Bu yuzden dugmeyi TAM METIN esitligiyle
+  // kendimiz seciyoruz (id/desc yok; kart butonu duz metin).
+  const nodes = await h.dump().catch(() => []);
+  const btn = (nodes || []).find((n) => {
+    const t = String(n.text || '').trim().toLowerCase();
+    return t === 'ok' || t === 'tamam';
+  });
+  if (btn) { await h.tapSyn(btn.cx, btn.cy); await h.sleep(600); return true; }
+  return false;
+}
+
 // ── WhatsApp: send a message ────────────────────────────────────────────────
 //
 // Uses the wa.me deep link so we don't need the recipient saved as a contact:
@@ -4488,19 +4527,29 @@ async function whatsappSend(serial, payload) {
     chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
     // Every couple of polls, if an ANR is up, press "Wait" and give it a beat to recover.
     if (!chatOpened && i % 2 === 1 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
+    // ★2026-08-17 ANR ile AYNI konumda: WA bilgi karti da entry'yi orter ve kendiliginden
+    // KAPANMAZ (bkz. clearWaInfoCard ustundeki canli kanit). Temizlenirse entry hemen
+    // gorunur, bu yuzden ayni turda yeniden yokla — bir tur daha beklemeye gerek yok.
+    if (!chatOpened && i % 2 === 1 && await clearWaInfoCard(serial, h).catch(() => false)) {
+      chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+    }
   }
   tlog(`chat opened (entry poll)=${chatOpened}`);
   // Last-chance recovery: if the box still never appeared, an ANR may STILL be up
   // (it can re-pop). Clear it once more and re-poll briefly before giving up — this
   // turns a transient ANR from a hard CHAT_NOT_OPENED failure into a successful send.
   if (!chatOpened) {
-    if (await clearAnrDialog(serial, h, 3)) {
+    // ★2026-08-17: ANR ile birlikte WA bilgi kartini da dene. Kart entry'yi orttugu
+    // icin buraya kadar gelinmis olabilir; ikisinden biri temizlenirse yeniden yokla.
+    const anrCleared = await clearAnrDialog(serial, h, 3);
+    const cardCleared = await clearWaInfoCard(serial, h).catch(() => false);
+    if (anrCleared || cardCleared) {
       await h.sleep(1000);
       for (let i = 0; i < 6 && !chatOpened; i++) {
         await h.sleep(500);
         chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
       }
-      tlog(`chat opened after ANR recovery=${chatOpened}`);
+      tlog(`chat opened after recovery (anr=${anrCleared} card=${cardCleared})=${chatOpened}`);
     }
   }
   // If the compose box never appeared, WhatsApp landed on something OTHER than the

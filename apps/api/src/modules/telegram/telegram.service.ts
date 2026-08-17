@@ -820,10 +820,15 @@ async function renderFleetHealth(workspaceId: string): Promise<string> {
     for (const host of h.hosts.slice(0, 6)) {
       const load = host.load1 !== null ? host.load1.toFixed(1) : '—';
       const pct = host.saturationPct;
-      const disk = host.diskFreeGb !== null ? ` · ${Math.round(host.diskFreeGb)}GB boş` : '';
+      // ★2026-08-17 RAPOR YANILTIYORDU: yalnizca DISK bos alani yaziliyordu ve
+      // "yük 4.1 (%5) · 3233GB boş" satirinda bu RAM sanildi. Bu hostta disk
+      // HICBIR ZAMAN darbogaz degil (3520GB'in %4'u dolu); asil duvar RAM
+      // (~233 cihazda tukeniyor). Artik RAM once, disk acikca etiketli yazilir.
+      const ram = host.ramFreeGb !== null ? ` · RAM ${Math.round(host.ramFreeGb)}GB boş` : '';
+      const disk = host.diskFreeGb !== null ? ` · disk ${Math.round(host.diskFreeGb)}GB` : '';
       const dot = pct === null ? '⚪️' : pct > 90 ? '🔴' : pct > 70 ? '🟡' : '🟢';
       const stale = host.monitorStale ? ' ⚠️izleme-durdu' : '';
-      lines.push(`${dot} <b>${esc(host.name)}</b> — yük ${load}${pct !== null ? ` (%${pct})` : ''}${disk}${stale}`);
+      lines.push(`${dot} <b>${esc(host.name)}</b> — yük ${load}${pct !== null ? ` (%${pct})` : ''}${ram}${disk}${stale}`);
     }
   }
   return lines.join('\n');

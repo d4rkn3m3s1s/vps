@@ -10911,9 +10911,22 @@ async function pollWhatsappMedia(serial) {
 // YENI: msgstore.db'den from_me=0 yeni mesajlari DOGRUDAN oku (medya ile ayni yontem).
 // Bastirma YOK (DB'de her mesaj ayri satir), tek hafif SQL, pozisyon takibi ile kayipsiz.
 // Giden mesajin okundu-bilgisi (receipt) acik-chat'te AYNEN korunur.
-async function pollWhatsappInbox(serial) {
+// ★★★2026-08-17 MESAJ 3-5 DK GEC DUSUYORDU — KOK: MESGUL CIHAZ ATLANIYORDU.
+// ESKI davranis: whatsappInboxTick, job calisan cihazlari (busyDevices) TAMAMEN
+// atliyordu. Gerekce ADB cakismasiydi, ama bu KABA bir onlemdi: cihaz sürekli job
+// aliyorsa gelen mesajlari HIC okunmuyor, cihaz bosalinca hepsi TOPLU dusuyor.
+// ★CANLI OLCUM (2026-08-17): mesajlar 13:03:18'de UC'U AYNI SANIYEDE, sonra 12:58:32'de
+// IKISI AYNI SANIYEDE dustu — obek obek. Aralar 2.5 dk. Ayni pencerede 135 job vardi
+// ve her WHATSAPP_SEND 9+ sn suruyordu (log: "dialog check +9064ms").
+// ★AYRIM: inbox okumasi TEK hafif msgstore SQL'i — 0.04 sn olculdu, EKRANA DOKUNMAZ.
+// Job'in uiautomator dump/screencap'i ile YARISMAZ (farkli yuzey: dosya-DB vs UI).
+// Receipt kismi ise EKRANI okur (dumpsys + scrape) — job ile GERCEKTEN carpisir.
+// Bu yuzden ikisi AYRILDI: SQL her zaman calisir, ekran isi yalnizca cihaz bostayken.
+async function pollWhatsappInbox(serial, busy = false) {
   await pollInboxFromStore(serial);
-  // Acik chat'te: giden mesajin okundu-bilgisi (receipt) — mevcut mantik korunur.
+  // Acik chat'te: giden mesajin okundu-bilgisi (receipt). EKRANA dokunur -> job
+  // calisirken ATLA (uiautomator dump/screencap ile carpisir; bkz. yukaridaki not).
+  if (busy) return;
   try {
     const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);
     if (/com\.whatsapp\/\S*Conversation/.test(top)) {
@@ -11008,17 +11021,29 @@ async function whatsappInboxTick() {
     // (mesaj 2 dk gec duser). Artik N'erli PARALEL: her cihaz TEK hafif msgstore SQL'i
     // (/proc TARAMASI YOK -> kilit riski yok). Tur saniyelere iner; hangi cihazdan kac
     // mesaj gelirse gelsin ayni turda toplanir. BATCH env ile ayarlanabilir (varsayilan 10).
-    const serials = (await reachableSerials()).filter((s) => !busyDevices.has(s));
-    // ★2026-08-15 CANLI OLCUM — BATCH 25 CIHAZ DUSURDU: 25'erli paralel msgstore
-    // okumasi ADB'yi doyurdu; wd-health-watch'un 12 sn'lik `adb shell echo ok`
-    // yoklamasi timeout'a dustu -> SAGLAM cihazlar "ZOMBIE" sanilip yeniden
-    // baslatildi (bugun 8 kill / onceki iki gun 0; ilk kill deploy'dan ~25 dk sonra).
-    // 12 hem turu kisa tutuyor (~20-25 sn) hem health-watch'i yaniltmiyor.
+    // ★2026-08-17 ARTIK MESGUL CIHAZ ATLANMIYOR (bkz. pollWhatsappInbox ustundeki not).
+    // Mesgul cihazda YALNIZCA hafif msgstore SQL'i calisir (ekran isi atlanir), boylece
+    // job yagmuru altindaki cihazin mesajlari da AYNI turda dusér — 3-5 dk gecikmenin koku.
+    const serials = await reachableSerials();
+    // ★★★2026-08-15/16 BATCH DEGERI — YUKSELTMEDEN ONCE BUNU OKU.
+    // BATCH=25 CANLIDA 8 CIHAZ DUSURDU (mi120-mi128): 25'erli paralel msgstore okumasi
+    // + O SIRADA CALISAN AGIR JOB YUKU birlikte ADB'yi doyurdu; wd-health-watch'un
+    // 12 sn'lik `adb shell echo ok` yoklamasi timeout'a dustu -> SAGLAM cihazlar
+    // "ZOMBIE" sanilip yeniden baslatildi (o gun 8 kill / onceki iki gun 0).
+    // ★KRITIK BAGLAM: dusus aninda 40 dk icinde 375 JOB vardi (toplu WHATSAPP_SET_NAME
+    // firtinasi). BOS sistemde yapilan olcum bu durumu TEMSIL ETMEZ — 2026-08-16'da
+    // bos sistemde 40 paralel/154 cihaz 259 ms ve saglik yoklamasi 16 ms olculdu
+    // (limitin ~700 kati pay), buna guvenip 30'a cikarildi ve GERI ALINDI: asil risk
+    // paralelligin KENDISI degil, AGIR JOB YUKUYLE UST USTE BINMESI.
+    // 12 hem turu kisa tutuyor (~20 sn) hem en kotu gunde bile health-watch'i yaniltmiyor.
+    // Yukseltmek gerekirse once job-yogun bir pencerede olcum yapilmali (bos sistemde DEGIL).
     const BATCH = Math.max(1, Number(process.env.FLEET_WA_INBOX_BATCH || 12));
     for (let i = 0; i < serials.length; i += BATCH) {
       await Promise.all(serials.slice(i, i + BATCH).map(async (serial) => {
-        await pollWhatsappInbox(serial).catch(() => undefined);
+        const busy = busyDevices.has(serial);
+        await pollWhatsappInbox(serial, busy).catch(() => undefined);
         // medya yakalama AYNI tura: bos turda tek SQL -> olculebilir yuk yok. FLEET_WA_MEDIA=0 kapali.
+        // Bu da EKRANA DOKUNMAZ (yalnizca waSql + exec-out dosya okumasi) -> mesgulken de guvenli.
         await pollWhatsappMedia(serial).catch(() => undefined);
       }));
     }

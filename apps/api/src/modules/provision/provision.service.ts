@@ -239,7 +239,22 @@ class ProvisionService {
     // "No free instance slot" long before the real capacity (RAM/CPU) or the agent's
     // 238-subnet range were anywhere near full. Dropping that phantom limit — a powerful
     // host now scales to hundreds of instances, bounded only by real resources.
-    for (let n = 2; n < 400; n++) {
+    // ★★★2026-08-18 TAVAN 400 → 4000. İsim havuzu GERÇEK kapasiteden ÇOK ÖNCE doldu.
+    // ÖLÇÜM (canlı): 127 canlı cihaz + 271 EMEKLİ ad = 398 → havuz (mi2..mi399) TAM DOLU
+    // ve panel "No free instance slot" veriyordu. Oysa gerçek kaynaklar bomboştu:
+    // subnet 143/492 kullanılmış, 114 GB boş RAM, 3227 GB boş disk.
+    //
+    // Emekli adlar BİLEREK kalıcı rezerve (yukarıdaki nota bak): silinen bir adı
+    // yeniden kullanmak, eski cihazın izlerini (bayat ADB ucu / DHCP lease / ARP
+    // kaydı) yeni cihaza bulaştırıp kurulumu öldürüyordu (28 Tem arızası). Yani
+    // çözüm "emeklileri geri al" DEĞİL, havuzu genişletmek — ad üretmek bedelsiz.
+    //
+    // ⚠️GERÇEK SINIRLAR BURASI DEĞİL, bunu bilerek kullan:
+    //   • RAM  → ilk duvar, ~233 cihaz (ram-tavani-alarmi notu)
+    //   • subnet → 492 (net-head.sh; subnet-tavani-238den-492ye notu)
+    // Bu döngü yalnızca "boş AD" bulur; kapasiteyi o iki sınır belirler.
+    const NAME_POOL_MAX = 4000;
+    for (let n = 2; n < NAME_POOL_MAX; n++) {
       const name = `${prefix}${n}`;
       if (!usedNames.has(name)) return name;
     }

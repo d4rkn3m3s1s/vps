@@ -21,6 +21,7 @@ import { deviceHub } from '../devices/device.hub';
 import { alertsService } from '../alerts/alerts.service';
 import { notificationsService } from '../notifications/notifications.service';
 import { logger } from '../../lib/logger';
+import type { GeneratedAccountStatus } from '@prisma/client';
 
 // Kept in sync with the dashboard label picker + Telegram chip rendering.
 export const LABEL_COLORS = [
@@ -988,11 +989,143 @@ export async function listBroadcasts(
   return rows.map((b) => ({ id: b.id, message: b.message, total: b.total, sentCount: b.sentCount, failCount: b.failCount, status: b.status, createdAt: b.createdAt }));
 }
 
+// ★★★2026-08-18 OPERATOR ELLE ACMA (manuel saglik degistirme).
+//
+// NEDEN GEREKLI: setAccountHealth MONOTONIK'tir (bir ban/kisit sinyali asla
+// yumusatilamaz) ve otomatik iyilesme (recoverAccountHealth) yalnizca
+// RESTRICTED/LOGGED_OUT'u kaldirir — BANNED bilerek kapsam disidir.
+// Ama operator cihazi ELLE duzeltebiliyor (WA'da kisiti kaldirma akisini
+// tamamlamak, yeniden giris yapmak, itiraz sonrasi hesabin acilmasi...).
+// Bu durumda panel kartinda "KISITLI/YASAKLI" rozeti SONSUZA KADAR kaliyordu
+// ve operator calisan cihazi kullanilamaz saniyordu.
+//
+// Bu fonksiyon OTOMATIK DEGIL, INSAN kararidir: bu yuzden monotonik kurali ve
+// BANNED istisnasi UYGULANMAZ. Karsiliginda:
+//   - her degisiklik AUDIT'e yazilir (kim, ne zaman, hangi durumdan hangisine),
+//   - `error` alanina "elle" notu dusulur (otomatik tarama notundan ayirt edilir),
+//   - webhook + WS yayini yapilir (panel rozeti aninda duser).
+// ⚠️Bu bir "hesap gercekten acildi" GARANTISI DEGIL — yalnizca operatorun beyani.
+// Dogrulamayi `rescanAccountHealth` yapar: cihazi yeniden yoklar ve hala kisitliysa
+// damgayi GERI KOYAR (setAccountHealth monotonik oldugu icin bu guvenli).
+async function manualSetAccountHealth(input: {
+  deviceId: string;
+  workspaceId: string | null;
+  health: 'ACTIVE' | 'RESTRICTED' | 'BANNED' | 'LOGGED_OUT';
+  note?: string | undefined;
+}): Promise<{ changed: boolean; from?: string | undefined }> {
+  const account = await prisma.generatedAccount.findFirst({
+    where: { deviceId: input.deviceId, platform: 'whatsapp' },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, status: true, phoneNumber: true }
+  });
+  if (!account) return { changed: false };
+  if (account.status === input.health) return { changed: false, from: account.status };
+
+  const from = account.status;
+  await prisma.generatedAccount.update({
+    where: { id: account.id },
+    data: {
+      status: input.health,
+      // ACTIVE'e cekilirken eski hata metnini temizle; aksi halde neden yaz.
+      error: input.health === 'ACTIVE' ? null : `Elle ayarlandi: ${String(input.note ?? '').slice(0, 200)}`
+    }
+  });
+
+  const num = account.phoneNumber ?? input.deviceId;
+  logger.info('wa account health set manually', { deviceId: input.deviceId, from, to: input.health, phone: num });
+
+  void webhooksService.dispatch(
+    'WHATSAPP_ACCOUNT_HEALTH',
+    {
+      deviceId: input.deviceId,
+      phoneNumber: account.phoneNumber ?? null,
+      health: input.health,
+      manual: true,
+      previous: from,
+      ...(input.note ? { note: input.note } : {})
+    },
+    input.workspaceId ?? undefined
+  );
+
+  deviceHub.broadcast({
+    type: 'device.updated',
+    deviceId: input.deviceId,
+    payload: { waAccountHealth: input.health === 'ACTIVE' ? null : input.health },
+    timestamp: new Date().toISOString(),
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {})
+  });
+
+  return { changed: true, from };
+}
+
+// ★★★2026-08-18 KISITLI/YASAKLI HESAPLARI YENIDEN TARA.
+//
+// Mekanizma ZATEN vardi ama TETIKLEYICISI yoktu: `WHATSAPP_ACCOUNT_HEALTH` job'i
+// cihazi UI'dan sessizce yokluyor (mesaj GONDERMEDEN) ve BANNED/RESTRICTED/
+// LOGGED_OUT/ACTIVE donduruyor; job bitince agent.service bunu hem kotulesme
+// (setAccountHealth) hem IYILESME (recoverAccountHealth) yonunde uyguluyor.
+// Eksik olan: bu job'i kisitli cihazlar icin KIMSE olusturmuyordu.
+//
+// Tipik akis (operator istegi): once elle ac (manualSetAccountHealth), sonra bunu
+// calistir — sistem gercekten acilmis mi diye BAKAR; hala kisitliysa damgayi
+// otomatik GERI KOYAR. Yani "elle acma" korunmasiz bir beyan olarak kalmaz.
+async function rescanAccountHealth(input: {
+  workspaceId: string;
+  deviceIds?: string[] | undefined;
+  statuses?: Array<'RESTRICTED' | 'BANNED' | 'LOGGED_OUT' | 'ACTIVE'> | undefined;
+}): Promise<{ queued: number; devices: string[]; skipped: number }> {
+  // Varsayilan: yalnizca RESTRICTED + LOGGED_OUT. BANNED varsayilana DAHIL DEGIL —
+  // operator acikca isterse (statuses ile) taranir; aksi halde her turda ban'li
+  // cihazlari yoklamak gereksiz UI yuku olur.
+  const wantStatuses: GeneratedAccountStatus[] = input.statuses?.length
+    ? (input.statuses as GeneratedAccountStatus[])
+    : (['RESTRICTED', 'LOGGED_OUT'] as GeneratedAccountStatus[]);
+
+  // Hedef cihazlar: acikca verilmisse onlar, yoksa istenen saglik durumundaki TUM hesaplar.
+  const accounts = await prisma.generatedAccount.findMany({
+    where: {
+      platform: 'whatsapp',
+      workspaceId: input.workspaceId,
+      status: { in: wantStatuses },
+      deviceId: input.deviceIds?.length ? { in: input.deviceIds } : { not: null }
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { deviceId: true, status: true }
+  });
+
+  // Cihaz basina EN YENI hesap gecerlidir (bir cihazda birden cok kayit denemesi olabilir).
+  const latestByDevice = new Map<string, string>();
+  for (const a of accounts) {
+    if (!a.deviceId) continue;
+    if (!latestByDevice.has(a.deviceId)) latestByDevice.set(a.deviceId, a.status);
+  }
+
+  // Yalnizca ONLINE cihazlara job ac — kapali cihaz job'i kuyrukta bekler, gurultu olur.
+  const online = await prisma.device.findMany({
+    where: { id: { in: [...latestByDevice.keys()] }, status: 'ONLINE', workspaceId: input.workspaceId },
+    select: { id: true }
+  });
+  const onlineIds = new Set(online.map((d) => d.id));
+
+  const queued: string[] = [];
+  for (const deviceId of latestByDevice.keys()) {
+    if (!onlineIds.has(deviceId)) continue;
+    const job = await createJobRecord('WHATSAPP_ACCOUNT_HEALTH', {} as JobPayload, deviceId, input.workspaceId).catch(
+      () => null
+    );
+    if (job) queued.push(deviceId);
+  }
+
+  return { queued: queued.length, devices: queued, skipped: latestByDevice.size - queued.length };
+}
+
 export const whatsappService = {
   recordMessage,
   advanceOutboundReceipt,
   setAccountHealth,
   recoverAccountHealth,
+  manualSetAccountHealth,
+  rescanAccountHealth,
   listConversations,
   unreadTotal,
   getThreadMessages,

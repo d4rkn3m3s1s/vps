@@ -81,6 +81,9 @@ export type DetailDevice = {
   fingerprint?: DetailFingerprint | null;
   externalId?: string | null;
   protected?: boolean;
+  // ★2026-08-18 WhatsApp hesap sağlığı (API detayda zaten dönüyor: device.service).
+  // 'RESTRICTED' | 'BANNED' | 'LOGGED_OUT' | null — kısıt kaldırma butonu buna bakar.
+  waAccountHealth?: string | null;
 };
 
 export type DetailJob = {
@@ -257,6 +260,42 @@ export function ProfileDetailView({
   // Protect / unprotect: a protected device refuses delete / reset / snapshot-
   // restore server-side (device.service + snapshot.service enforce it). Use for a
   // valuable phone (e.g. one holding an active WhatsApp account).
+  // ★2026-08-18 WA KISITINI KALDIR (operatör beyanı + doğrulama).
+  //
+  // İKİ ADIM, sırası önemli:
+  //  1) /whatsapp/health/set  → damgayı ELLE kaldır (ACTIVE). Bu, monotonik kuralı
+  //     bilerek deler (normalde bir kısıt/ban sinyali yumuşatılamaz) — bu yüzden
+  //     API tarafında AUDIT'e yazılır: kim, ne zaman, hangi durumdan.
+  //  2) /whatsapp/health/rescan → cihazı hemen yeniden yoklat. Sistem gerçeği görür;
+  //     hesap hâlâ kısıtlıysa damgayı OTOMATİK geri koyar. Yani "elle açma" denetimsiz
+  //     bir beyan olarak kalmaz — operatör yanılırsa sistem düzeltir.
+  async function clearWaRestriction() {
+    setBusy('WA kısıt');
+    try {
+      const res = await fetch('/api/whatsapp/health/set', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: device.id, health: 'ACTIVE', note: 'Panelden elle kaldırıldı' })
+      });
+      if (!res.ok) {
+        flash('Kısıt kaldırılamadı', 'err');
+        return;
+      }
+      // Doğrulama turu — sonucu beklemiyoruz, job kuyruğa girer ve kartı kendi günceller.
+      await fetch('/api/whatsapp/health/rescan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceIds: [device.id], statuses: ['RESTRICTED', 'BANNED', 'LOGGED_OUT', 'ACTIVE'] })
+      }).catch(() => undefined);
+      flash('Kısıt kaldırıldı — cihaz doğrulama için yeniden taranıyor', 'ok');
+      router.refresh();
+    } catch {
+      flash('İşlem başarısız oldu', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function toggleProtect() {
     const next = !device.protected;
     setBusy(next ? 'Koru' : 'Koruma');
@@ -332,6 +371,24 @@ export function ProfileDetailView({
             >
               {device.protected ? <><ShieldCheck size={14} /> Korumalı</> : <><Shield size={14} /> Koru</>}
             </button>
+            {/* ★2026-08-18 WA KISIT KALDIR — yalnızca damga varken görünür.
+                Kısıtlı/yasaklı damgası TEK YÖNLÜYDÜ: operatör cihazı elle düzeltse
+                (kısıt akışını tamamlasa, yeniden giriş yapsa, itiraz kabul edilse)
+                bile kart sonsuza kadar "WA Kısıtlı/Yasaklı" gösteriyordu.
+                Bu buton operatör beyanıyla damgayı kaldırır (audit'e yazılır) ve
+                HEMEN ARDINDAN cihazı yeniden taratır: sistem gerçekten açılmış mı
+                bakar, hâlâ kısıtlıysa damgayı otomatik geri koyar. */}
+            {device.waAccountHealth ? (
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={!!busy}
+                onClick={clearWaRestriction}
+                title="Hesabı elle AKTİF işaretle, ardından cihazı yeniden taratarak doğrula (hâlâ kısıtlıysa damga geri konur)"
+              >
+                <ShieldCheck size={14} /> WA kısıtını kaldır
+              </button>
+            ) : null}
             <button type="button" className="btn-primary" disabled={!!busy} onClick={screenshot}>
               <Camera size={14} /> Ekran görüntüsü
             </button>

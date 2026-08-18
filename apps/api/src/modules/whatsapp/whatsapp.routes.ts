@@ -23,7 +23,9 @@ import {
   deleteCannedHandler,
   statsHandler,
   createBroadcastHandler,
-  listBroadcastsHandler
+  listBroadcastsHandler,
+  setAccountHealthManualHandler,
+  rescanAccountHealthHandler,
 } from './whatsapp.controller';
 
 // WhatsApp-Web-style conversation layer for the dashboard. All routes are
@@ -67,3 +69,10 @@ whatsappRouter.get('/stats', requireApiKey, authenticateJwt, asyncHandler(statsH
 // Broadcast (one-to-many throttled send) — rate-limited (drives real devices).
 whatsappRouter.post('/broadcast', requireApiKey, authenticateJwt, apiRateLimiter, asyncHandler(createBroadcastHandler));
 whatsappRouter.get('/broadcast', requireApiKey, authenticateJwt, asyncHandler(listBroadcastsHandler));
+
+// Hesap sagligi — ELLE ayarla / YENIDEN TARA (★2026-08-18).
+// set: operator beyani (kisitli/yasakli hesabi elle ACTIVE'e ceker; audit'e yazilir).
+// rescan: cihazi yeniden yoklatir (WHATSAPP_ACCOUNT_HEALTH job) — gercegi sistem soyler,
+//         hala kisitliysa damgayi otomatik GERI KOYAR (setAccountHealth monotonik).
+whatsappRouter.post('/health/set', requireApiKey, authenticateJwt, asyncHandler(setAccountHealthManualHandler));
+whatsappRouter.post('/health/rescan', requireApiKey, authenticateJwt, asyncHandler(rescanAccountHealthHandler));

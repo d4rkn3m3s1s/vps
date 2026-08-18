@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { whatsappService } from './whatsapp.service';
+import { writeAuditLog } from '../audit/audit.service';
 
 // ── conversation list ───────────────────────────────────────────────────────
 
@@ -226,4 +227,70 @@ export async function deleteLabelHandler(req: Request, res: Response): Promise<v
   const id = typeof req.params.id === 'string' ? req.params.id : '';
   await whatsappService.deleteLabel(getWorkspaceId(req), id);
   res.json({ data: { ok: true } });
+}
+
+// ── Hesap sagligi: ELLE ayarla + YENIDEN TARA ───────────────────────────────
+//
+// ★2026-08-18 (operator istegi): "kisitli/yasakli hesaplarin bazilari aslinda
+// acilmis; ben bunlari elle acayim, sonra sistem kendi tarasin, hala kisitliysa
+// tekrar isaretlesin."
+//
+// Otomatik yol bunu yapamiyordu cunku setAccountHealth MONOTONIK (ban/kisit geri
+// alinamaz) ve otomatik iyilesme BANNED'i kapsam disi birakiyor — dogru bir
+// varsayilan, ama insan mudahalesine kapali. Bu iki uc o boslugu kapatir:
+//   POST /whatsapp/health/set     → operator beyani (audit'e yazilir)
+//   POST /whatsapp/health/rescan  → cihazi yeniden yoklat (gercegi sistem soyler)
+
+const setHealthSchema = z.object({
+  deviceId: z.string().min(1),
+  health: z.enum(['ACTIVE', 'RESTRICTED', 'BANNED', 'LOGGED_OUT']),
+  note: z.string().max(300).optional()
+});
+
+export async function setAccountHealthManualHandler(req: Request, res: Response): Promise<void> {
+  const input = setHealthSchema.parse(req.body);
+  const workspaceId = getWorkspaceId(req);
+  const result = await whatsappService.manualSetAccountHealth({
+    deviceId: input.deviceId,
+    workspaceId: workspaceId ?? null,
+    health: input.health,
+    ...(input.note ? { note: input.note } : {})
+  });
+  // Insan karari + monotonik kurali deliyor → iz birakmasi SART.
+  await writeAuditLog({
+    ...(req.auth?.userId ? { userId: req.auth.userId } : {}),
+    action: 'whatsapp.health.manual',
+    resourceType: 'device',
+    resourceId: input.deviceId,
+    ...(req.requestId ? { requestId: req.requestId } : {}),
+    ...(req.ip ? { ip: req.ip } : {}),
+    metadata: { to: input.health, from: result.from ?? null, changed: result.changed, note: input.note ?? null },
+    ...(workspaceId ? { workspaceId } : {})
+  });
+  res.json({ data: result });
+}
+
+const rescanSchema = z.object({
+  deviceIds: z.array(z.string().min(1)).max(500).optional(),
+  statuses: z.array(z.enum(['RESTRICTED', 'BANNED', 'LOGGED_OUT', 'ACTIVE'])).optional()
+});
+
+export async function rescanAccountHealthHandler(req: Request, res: Response): Promise<void> {
+  const input = rescanSchema.parse(req.body ?? {});
+  const workspaceId = getWorkspaceId(req);
+  const result = await whatsappService.rescanAccountHealth({
+    workspaceId: workspaceId ?? '',
+    ...(input.deviceIds ? { deviceIds: input.deviceIds } : {}),
+    ...(input.statuses ? { statuses: input.statuses } : {})
+  });
+  await writeAuditLog({
+    ...(req.auth?.userId ? { userId: req.auth.userId } : {}),
+    action: 'whatsapp.health.rescan',
+    resourceType: 'workspace',
+    ...(req.requestId ? { requestId: req.requestId } : {}),
+    ...(req.ip ? { ip: req.ip } : {}),
+    metadata: { queued: result.queued, skipped: result.skipped, statuses: input.statuses ?? ['RESTRICTED', 'LOGGED_OUT'] },
+    ...(workspaceId ? { workspaceId } : {})
+  });
+  res.json({ data: result });
 }

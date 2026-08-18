@@ -75,7 +75,10 @@ const whatsappInboundSchema = z.object({
 // ★2026-08-05 Agent'ın otonom WA sağlık taramasının sonucu (ban/kısıt/çıkış).
 const whatsappHealthProbeSchema = z.object({
   serial: z.string().min(1),
-  status: z.enum(['ACCOUNT_BANNED', 'ACCOUNT_RESTRICTED', 'ACCOUNT_LOGGED_OUT']),
+  // ★2026-08-18 ACCOUNT_ACTIVE eklendi: otonom tarama artik IYILESMEYI de bildiriyor.
+  // Bu olmadan agent'in gonderdigi saglikli sonucu zod REDDEDIYORDU (400) ve kisitli
+  // damgasi hic kalkmiyordu.
+  status: z.enum(['ACCOUNT_BANNED', 'ACCOUNT_RESTRICTED', 'ACCOUNT_LOGGED_OUT', 'ACCOUNT_ACTIVE']),
   state: z.string().optional(),
   evidence: z.string().max(600).optional()
 });

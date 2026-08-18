@@ -1385,6 +1385,20 @@ export class AgentService {
       ACCOUNT_RESTRICTED: 'RESTRICTED',
       ACCOUNT_LOGGED_OUT: 'LOGGED_OUT'
     };
+    // ★★★2026-08-18 IYILESME YOLU. Otonom tarama artik SAGLIKLI sonucu da bildiriyor
+    // (ACCOUNT_ACTIVE). Eskiden yalnizca kotu durumlar geliyordu, bu yuzden bir kez
+    // kisitlanan hesap elle duzeltilse bile damga hic kalkmiyordu.
+    // recoverAccountHealth BILEREK yalnizca RESTRICTED/LOGGED_OUT'u kaldirir — BANNED
+    // kapsam disidir, boylece yanlis-pozitif bir "ACTIVE" gercek bir bani gizleyemez.
+    if (String(input.status) === 'ACCOUNT_ACTIVE') {
+      const { changed } = await whatsappService.recoverAccountHealth({
+        deviceId: device.id,
+        workspaceId: device.workspaceId,
+        note: `Otonom tarama: saglikli (${String(input.evidence ?? '').slice(0, 160)})`
+      });
+      return { stored: true, changed };
+    }
+
     const health = HEALTH_MAP[String(input.status)];
     if (!health) return { stored: false };   // tanınmayan durum → yok say
 

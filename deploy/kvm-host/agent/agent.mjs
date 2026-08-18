@@ -11149,11 +11149,18 @@ async function waHealthTick() {
       try {
         const probe = await waHealthProbe(serial);
         const state = String(probe?.state || '');
-        // Yalnızca KÖTÜ ve KESİN durumları bildir. 'UNKNOWN' ve `unverified` bilerek
-        // atlanır: sağlıklı hesabı yanlışlıkla damgalamak, geç fark etmekten daha kötü.
-        if (state !== 'BANNED' && state !== 'RESTRICTED' && state !== 'LOGGED_OUT') continue;
+        // KESIN olmayan sonucu ASLA bildirme ('UNKNOWN' / unverified): saglikli hesabi
+        // yanlislikla damgalamak, gec fark etmekten daha kotudur.
         if (probe?.unverified) continue;
-        const statusMap = { BANNED: 'ACCOUNT_BANNED', RESTRICTED: 'ACCOUNT_RESTRICTED', LOGGED_OUT: 'ACCOUNT_LOGGED_OUT' };
+        // ★★★2026-08-18 IYILESME DE BILDIRILIR (eskiden YALNIZCA kotu durumlar gidiyordu).
+        // Eski kod `state !== BANNED/RESTRICTED/LOGGED_OUT` ise `continue` diyordu; yani
+        // cihaz SAGLIKLI cikinca HICBIR SEY bildirilmiyordu. Sonuc: bir kez kisitlanan
+        // hesap elle duzeltilse bile panelde SONSUZA KADAR "KISITLI" kaliyordu — otonom
+        // tarama iyilesmeyi asla goremiyordu. Artik ACTIVE de gonderilir; API tarafinda
+        // recoverAccountHealth yalnizca RESTRICTED/LOGGED_OUT'u kaldirir (BANNED bilerek
+        // kapsam disi), yani yanlis-pozitif bir "ACTIVE" gercek bir bani gizleyemez.
+        if (state !== 'BANNED' && state !== 'RESTRICTED' && state !== 'LOGGED_OUT' && state !== 'ACTIVE') continue;
+        const statusMap = { BANNED: 'ACCOUNT_BANNED', RESTRICTED: 'ACCOUNT_RESTRICTED', LOGGED_OUT: 'ACCOUNT_LOGGED_OUT', ACTIVE: 'ACCOUNT_ACTIVE' };
         log(`wa-health: ${serial} → ${state} (otonom tarama)`);
         await api('/agent/whatsapp/health-probe', {
           method: 'POST',

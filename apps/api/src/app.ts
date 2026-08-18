@@ -8,6 +8,7 @@ import { apiRateLimiter } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
 import { notFound } from './middleware/notFound';
 import { requestContext } from './middleware/requestContext';
+import { opsRequestLogger } from './modules/ops/ops.service';
 import { registerRoutes } from './routes';
 import { swaggerSpec } from './swagger';
 
@@ -25,6 +26,10 @@ export function createApp() {
 
   app.disable('x-powered-by');
   app.use(requestContext);
+  // ★2026-08-18 Canli operasyon akisi: her istegi bellek halka tamponuna yazar +
+  // panele WS ile iter. requestContext'ten HEMEN SONRA: requestId hazir olsun ve
+  // helmet/cors/body-parser dahil TUM surenin olculmesi icin en dista dursun.
+  app.use(opsRequestLogger);
   app.use(helmet());
   app.use(cors({ origin: [env.webBaseUrl], credentials: true }));
   app.use(compression());

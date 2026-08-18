@@ -24,6 +24,9 @@ export type DeviceHubEvent = {
     | 'notification.created'
     | 'whatsapp.message'
     | 'whatsapp.media'
+    // ★2026-08-18 Canli operasyon ekrani: her HTTP istegi (panel/agent/public).
+    // Bellekte tutulur, DB'ye YAZILMAZ — bkz. ops.service.ts basindaki gerekce.
+    | 'ops.request'
     | 'provision.progress'
     | 'whatsapp.register.progress'
     | 'instagram.register.progress';

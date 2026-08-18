@@ -28,6 +28,7 @@ const DICT: Record<string, { en: string; tr: string }> = {
   'nav.overview': { en: 'Overview', tr: 'Genel Bakış' },
   'nav.analytics': { en: 'Analytics', tr: 'Analitik' },
   'nav.health': { en: 'Fleet health', tr: 'Filo Sağlığı' },
+  'nav.live': { en: 'Live ops', tr: 'Canlı Akış' },
   'nav.reports': { en: 'Reports', tr: 'Raporlar' },
   'nav.farm': { en: 'Farm', tr: 'Çiftlik' },
   'nav.rpa': { en: 'RPA Studio', tr: 'RPA Stüdyo' },

@@ -392,6 +392,7 @@ export function FleetLanding() {
           <p>© 2026 VPS Fleet · Kendi altyapında, tam kontrol sende.</p>
           <div className="rn-footer-social">
             <Link href="/console">Konsol</Link>
+            <Link href="/canli">Canlı Akış</Link>
             <Link href="/jobs">İşler</Link>
             <Link href="/logs">Kayıtlar</Link>
           </div>

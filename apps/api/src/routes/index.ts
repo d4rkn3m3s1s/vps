@@ -40,6 +40,7 @@ import { usersRouter } from '../modules/users/users.routes';
 import { resourcesRouter } from '../modules/resources/resources.routes';
 import { vastRouter } from '../modules/vast/vast.routes';
 import { webhooksRouter } from '../modules/webhooks/webhooks.routes';
+import { opsRouter } from '../modules/ops/ops.routes';
 import { whatsappRouter } from '../modules/whatsapp/whatsapp.routes';
 import { workspaceRouter } from '../modules/workspace/workspace.routes';
 
@@ -94,6 +95,7 @@ export function registerRoutes(app: Express): void {
   app.use('/notifications', notificationsRouter);
   // WhatsApp conversation layer (chat list, threads, labels) — dashboard-facing.
   app.use('/whatsapp', whatsappRouter);
+  app.use('/ops', opsRouter);
   // External/public API (x-api-key only, no JWT) — see modules/public.
   app.use('/public', publicRouter);
 }

@@ -16,6 +16,9 @@ export type FleetEvent = {
     | 'alert.fired'
     | 'notification.created'
     | 'whatsapp.message'
+    // ★2026-08-18 Canlı operasyon: her HTTP isteği (panel/agent/public). Bellekte
+    // tutulur, DB'ye yazılmaz — /canli sayfası bunu dinler.
+    | 'ops.request'
     | 'provision.progress'
     | 'whatsapp.register.progress'
     | 'instagram.register.progress';

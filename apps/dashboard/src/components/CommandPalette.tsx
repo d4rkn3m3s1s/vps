@@ -17,6 +17,7 @@ const COMMANDS: Command[] = [
   { label: 'Zamanlayıcı', href: '/scheduler', icon: '⏱', group: 'Git', keywords: 'cron recurring' },
   { label: 'Senkronizatör', href: '/synchronizer', icon: '⧉', group: 'Git', keywords: 'mirror sync' },
   { label: 'Webhook\'lar', href: '/webhooks', icon: '⇲', group: 'Git', keywords: 'callbacks notify' },
+  { label: 'Canlı Akış', href: '/canli', icon: '◉', group: 'Git', keywords: 'live ops istekler api canli operasyon' },
   { label: 'İşler', href: '/jobs', icon: '☰', group: 'Git', keywords: 'tasks queue' },
   { label: 'Üyeler', href: '/members', icon: '☻', group: 'Git', keywords: 'team users' },
   { label: 'Faturalandırma', href: '/billing', icon: '▭', group: 'Git', keywords: 'plan upgrade' },

@@ -18,7 +18,25 @@ if ! _hw_lock; then
   # CANLI: 40+ dk boyunca HIC tur calismadi (surec sayisi 0 iken her tur "atlandi"),
   # panel "Saglik izleyici durdu" alarmi verdi ve otonom kurtarma tamamen durdu.
   # Bu yuzden kilide DEGIL, GERCEGE bakiyoruz: baska bir tur gercekten yasiyor mu?
-  _alive=$(pgrep -f 'wd-health-watch\.sh' 2>/dev/null | grep -v "^$$\$" | head -1)
+  # ★★★2026-08-18 KENDI ALT KABUGUMUZU "baska tur" SANIYORDUK.
+  # `$( )` komut ikamesi betigin bir KOPYASINI fork'lar; komut satiri ayni oldugu icin
+  # `pgrep -f` onu BULUR, ama pid'i `$$`'tan farklidir -> eleme tutmaz -> koruma HIC
+  # calismaz. CANLI: 55 dk boyunca her tur "onceki tur HALA calisiyor (pid=...)" dedi,
+  # pid her seferinde DEGISIYORDU ve gercekte HICBIR tur yoktu (surec sayisi 0).
+  # Cozum: pid'i YASINA gore ele — kendi fork'umuz 0-1 sn'lik, gercek bir onceki tur
+  # en az bir timer araligi (7 dk) once baslamistir. 20 sn esigi ikisini kesin ayirir.
+  _hw_other_turn() {
+    local p age
+    for p in $(pgrep -f 'wd-health-watch\.sh' 2>/dev/null); do
+      [ "$p" = "$$" ] && continue
+      [ "$p" = "$BASHPID" ] && continue
+      age=$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ')
+      case "$age" in ''|*[!0-9]*) continue ;; esac
+      [ "$age" -ge 20 ] && { echo "$p"; return 0; }
+    done
+    return 1
+  }
+  _alive=$(_hw_other_turn)
   if [ -n "$_alive" ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') ⏭ onceki tur HALA calisiyor (pid=$_alive) — bu tur atlandi" \
       >> /var/log/wd-health-watch.log 2>/dev/null

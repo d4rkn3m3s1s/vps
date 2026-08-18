@@ -9,6 +9,46 @@ INST="${1:?instance}"
 # "ZOMBIE" sanilip yeniden baslatiliyordu (sonsuz dongu, cihaz hic kalkamiyordu).
 # Damga surecten BAGIMSIZ oldugu icin bu tuzagi kapatir.
 date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
+
+# ★★★2026-08-18 GOZCU (fonksiyon). Iki yerden cagrilir:
+#   (a) normal kurulum sonunda,
+#   (b) "zaten calisiyor" yolunda — eskiden orada `exit 0` vardi ve GOZCUYU OLDURUYORDU.
+# Container olurse ya da icerideki Android cevapsizlasirsa `exit 1` -> systemd
+# `Restart=on-failure` ile cihazi ~70 sn'de kendi kaldirir.
+wd_watchdog_loop() {
+  echo "WATCHDOG_START $INST"
+  local _miss=0 _dead=0 _ip
+  while :; do
+    sleep 30
+    if ! pgrep -f "waydroid\.$INST/lxc" >/dev/null 2>&1; then
+      # (1) Container SURECI yok — kesin olum.
+      _miss=$((_miss + 1)); _dead=0
+      # 2 ust uste kacirma (60 sn) = gercekten olmus; tek seferlik yarislara takilma
+      if [ "$_miss" -ge 2 ]; then
+        echo "CONTAINER_DIED $INST — servis basarisiz biriliyor, systemd yeniden baslatacak"
+        exit 1
+      fi
+      continue
+    fi
+    _miss=0
+    # (2) ZOMBIE: surec YASIYOR ama Android OLMUS olabilir. Eski gozcu yalnizca
+    # pgrep'e bakiyordu ve bu durumu HIC goremiyordu (canli: mi277/mi290).
+    # ⚠️Esik GENIS (6 x 30sn = 3 dk): "saglam cihazi zombie sanmak" daha once
+    # filoyu 140->133 dusurmustu; anlik ADB doygunlugu tetiklememeli.
+    _ip=$(cat "/var/lib/misc/dnsmasq.waydroid-$INST.leases" 2>/dev/null \
+          | awk '$2 != "00:16:3e:f9:d3:03" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' | tail -1)
+    if [ -z "$_ip" ]; then _dead=0; continue; fi   # IP bilinmiyorsa KARAR VERME
+    if timeout 4 bash -c "echo > /dev/tcp/$_ip/5555" 2>/dev/null; then
+      _dead=0
+    else
+      _dead=$((_dead + 1))
+      if [ "$_dead" -ge 6 ]; then
+        echo "CONTAINER_ZOMBIE $INST — surec yasiyor ama ADB 3 dk cevapsiz ($_ip:5555); yeniden baslatiliyor"
+        exit 1
+      fi
+    fi
+  done
+}
 # ★2026-08-12 GUVENLIK: instance adini KAPIDA dogrula. Bu betikte $INST 23 yerde,
 # cogunlukla TIRNAKSIZ kullaniliyor (ornegin satir ~17: `rm -rf /run/wd-$INST`).
 # Deger API'den geliyor ve orada icerik denetimi YOK (`metadata: z.unknown()`),
@@ -66,8 +106,13 @@ if ! flock -n 9; then
     timeout 3 bash -c "echo > /dev/tcp/$_dev_ip/5555" 2>/dev/null && _adb_canli=1
   fi
   if [ -n "$_brif_dolu" ] && [ -n "$_lxc_var" ] && [ -n "$_adb_canli" ]; then
-    echo "wd-run: $INST GERCEKTEN calisiyor (bridge+lxc+adb) — bu cagri ATLANDI" >&2
-    exit 0
+    # ★★★2026-08-18 ARTIK `exit 0` YOK — GOZETIM DEVRALINIYOR.
+    # Eskiden burada cikiliyordu; systemd Type=simple oldugu icin bu cagri, gozcu
+    # dongusunu calistiran ESKI sureci degistirip aninda sonlandiriyordu ->
+    # servis `active/exited` kaliyor, ORTADA GOZCU KALMIYORDU (canli: mi14/mi277/mi290).
+    # Container saglam, yeniden KURULMUYOR; yalnizca gozetimi ustleniyoruz.
+    echo "wd-run: $INST zaten calisiyor — yeniden kurulmadi, GOZETIM devralindi" >&2
+    wd_watchdog_loop
   fi
   if [ -n "$_brif_dolu" ] && [ -z "$_adb_canli" ]; then
     echo "wd-run: $INST ZOMBIE (bridge var ama ADB cevapsiz) — temizlenip yeniden baslatiliyor" >&2
@@ -241,18 +286,4 @@ echo "BOOT_DONE $INST subnet=$SUBNET boot=$(timeout 5 lxc-attach -n waydroid -P 
 # Artik container'i gozetliyoruz: olurse exit 1 -> systemd FAILED gorur ->
 # Restart=on-failure devreye girer -> cihaz ~10 sn'de otomatik kalkar.
 # Olcum ucuz: pgrep (tek arama), /proc TARAMASI YOK (bkz. proc-taramasi kilidi dersi).
-echo "WATCHDOG_START $INST"
-_miss=0
-while :; do
-  sleep 30
-  if pgrep -f "waydroid\.$INST/lxc" >/dev/null 2>&1; then
-    _miss=0
-  else
-    _miss=$((_miss + 1))
-    # 2 ust uste kacirma (60 sn) = gercekten olmus; tek seferlik yarislara takilma
-    if [ "$_miss" -ge 2 ]; then
-      echo "CONTAINER_DIED $INST — servis basarisiz biriliyor, systemd yeniden baslatacak"
-      exit 1
-    fi
-  fi
-done
+wd_watchdog_loop

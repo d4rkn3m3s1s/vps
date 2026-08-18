@@ -3,7 +3,7 @@ import { prisma } from '../../db/prisma';
 import { jobQueue } from './queue';
 import { deviceHub } from '../devices/device.hub';
 import { AppError } from '../../lib/errors';
-import { EXCLUSIVE_JOB_TYPES, type JobPayload, type JobType } from './job.types';
+import { EXCLUSIVE_JOB_TYPES, QUEUE_CAPPED_READ_TYPES, MAX_PENDING_READ, type JobPayload, type JobType } from './job.types';
 import { waRegisterService } from '../accounts/wa-register.service';
 import { markDeviceRegistered } from '../accounts/batch.service';
 import { encryptString, sha256 } from '../../lib/crypto';
@@ -189,6 +189,36 @@ export async function createJobRecord(
     ...(validEmulatorId ? { emulatorId: validEmulatorId } : {}),
     ...(workspaceId ? { workspaceId } : {})
   };
+
+  // ★★★2026-08-18 OKUMA ISLERINDE KUYRUK DERINLIGI SINIRI.
+  // Bu turler bilerek EXCLUSIVE degil (hafif okuma, biri digerini bloklamamali) ama
+  // sinirsiz kuyruklanabildikleri icin tek cihaza YIGILIYORLARDI:
+  // ★CANLI: tek cihaza 24 saatte 956 is; sondakiler ~15 dk bekleyip zaman asimina
+  // ugradi (154 FAILED = "kuyrukta beklerken hic calistirilmadi"), ~38 saat cihaz-zamani.
+  // Ayni cihaz+tur icin bekleyen is MAX_PENDING_READ'i asarsa yeni satir ACMA —
+  // MEVCUT bekleyen isi dondur. Okumada guvenli: ayni veri, ayni cevap.
+  if (targetDeviceId && QUEUE_CAPPED_READ_TYPES.has(type)) {
+    const pending = await prisma.job.findMany({
+      where: { deviceId: targetDeviceId, type, status: 'PENDING' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+      take: MAX_PENDING_READ + 1
+    });
+    if (pending.length >= MAX_PENDING_READ) {
+      const existingId = pending[0]?.id;
+      if (existingId) {
+        const existing = await prisma.job.findUnique({ where: { id: existingId } });
+        if (existing) {
+          logger.warn('okuma isi kuyrugu doldu — mevcut is donduruldu', {
+            deviceId: targetDeviceId,
+            type,
+            bekleyen: pending.length
+          });
+          return existing;
+        }
+      }
+    }
+  }
 
   let job;
   if (!opts?.skipBusyCheck && targetDeviceId && EXCLUSIVE_JOB_TYPES.has(type)) {

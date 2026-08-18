@@ -99,6 +99,41 @@ export function CanliView() {
     };
   }, []);
 
+  // ★2026-08-18 İŞLER PANELİ AÇILIŞ DOLUMU.
+  // Panel yalnızca sayfa AÇIKKEN oluşan işleri gösteriyordu; sayfa ilk açıldığında
+  // boş kalıyor ve operatör "iş akmıyor mu?" diye tereddüt ediyordu. Artık son
+  // işler bir kez REST ile doldurulur, üstüne canlı olaylar eklenir.
+  // (İstekler bellekte tutulur ama İŞLER veritabanındadır — geçmiş burada gerçek.)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/jobs');
+        const body = await res.json().catch(() => ({}));
+        if (!alive) return;
+        const raw = body?.data;
+        const list = (Array.isArray(raw) ? raw : raw?.jobs ?? []) as Array<{
+          id?: string; type?: string; status?: string; createdAt?: string; finishedAt?: string | null;
+        }>;
+        const rows: JobEvent[] = list
+          .filter((j) => j?.id)
+          .slice(0, 40)
+          .map((j) => ({
+            key: `init-${j.id}`,
+            at: j.finishedAt ?? j.createdAt ?? new Date().toISOString(),
+            type: j.type ?? '—',
+            status: j.status ?? '—'
+          }));
+        if (rows.length) setJobs(rows);
+      } catch {
+        /* dolum başarısız olsa da canlı akış çalışır */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   useFleetEvents(
     ['ops.request'],
     useCallback(

@@ -23,6 +23,7 @@ import { decryptString, encryptString, sha256 } from '../../lib/crypto';
 import { webhooksService } from '../webhooks/webhooks.service';
 import { deviceHub } from '../devices/device.hub';
 import { createJobRecord } from '../jobs/jobs.service';
+import type { JobPayload } from '../jobs/job.types';
 import { alertsService } from '../alerts/alerts.service';
 import { snapshotService } from '../snapshots/snapshot.service';
 import { calendarService } from '../calendar/calendar.service';
@@ -378,6 +379,48 @@ export class AgentService {
         const outBody = String(pl.message).slice(0, 4096);
         const outAt = new Date();
         const ok = outcome.status === 'COMPLETED' && res.status === 'SENT';
+
+        // ★★★2026-08-18 CONNECTION_FAILED → OTOMATIK YENIDEN DENE.
+        //
+        // NEDEN: agent "Cihaz WhatsApp sunucusuna baglanamadi (proxy/ag) — tekrar
+        // denenebilir" diyor ama KIMSE tekrar denemiyordu; mesaj kalici FAILED olarak
+        // yaziliyor, operatore hata dusuyordu.
+        // ★OLCUM (2 saat): 31 SENT / 4 CONNECTION_FAILED (~%11). Basarisiz cihazlar
+        // olcumde SAGLIKLIYDI (TR proxy cikisi ✓, WA soketi ESTABLISHED ✓) — yani
+        // gecici kopma. 3 farkli cihazda 1-2'ser kez; tek cihazda yogunlasma YOK.
+        //
+        // Mevcut reaper-retry deseninin AYNISI (jobs.service: MAX_SEND_RETRY):
+        //   • yayin (broadcast) uyeleri HARIC — 1000 alicilik yayinda tekrar yuku katlar
+        //   • sendAttempt sayaci ile en fazla 2 tekrar (toplam 3 deneme)
+        //   • skipBusyCheck: gonderim zaten yetkilendirilmisti
+        // Son denemede de basarisizsa AŞAĞIDAKI kalici FAILED yolu isler (degismedi).
+        const CONN_RETRY_MAX = 2;
+        const connAttempt = Number((pl as unknown as { sendAttempt?: number }).sendAttempt ?? 0);
+        if (
+          !ok &&
+          String(res.status) === 'CONNECTION_FAILED' &&
+          !pl.broadcastId &&
+          connAttempt < CONN_RETRY_MAX
+        ) {
+          const requeued = await createJobRecord(
+            updated.type,
+            { ...pl, sendAttempt: connAttempt + 1, retryOfJobId: updated.id } as unknown as JobPayload,
+            pl.deviceId,
+            updated.workspaceId ?? undefined,
+            { skipBusyCheck: true }
+          ).catch(() => null);
+          if (requeued) {
+            logger.info('CONNECTION_FAILED → gonderim yeniden kuyruklandi', {
+              deviceId: pl.deviceId,
+              attempt: connAttempt + 1,
+              of: CONN_RETRY_MAX
+            });
+            // Kalici FAILED satiri/bildirimi YAZMA — tekrar kuyruga girdi.
+            return;
+          }
+          logger.warn('CONNECTION_FAILED tekrar kuyruklanamadi', { deviceId: pl.deviceId });
+        }
+
         const status = ok ? 'SENT' : 'FAILED';
         // Prefer the agent's human-readable Turkish `note` (e.g. "Bu WhatsApp hesabı
         // incelemede…") over the bare status code so the operator sees WHY it failed —

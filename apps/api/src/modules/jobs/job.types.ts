@@ -141,3 +141,41 @@ export type JobPayload = {
   metadata?: unknown;
   [key: string]: unknown;
 };
+
+// ★★★2026-08-18 KUYRUK DERINLIGI SINIRLI OKUMA ISLERI.
+//
+// Bunlar cihazin kendi SQLite'ini okuyan HAFIF islerdir (~0.8 sn) ve bilerek
+// EXCLUSIVE_JOB_TYPES'ta DEGILDIR — bir okumanin digerini bloklamasi yanlis olurdu.
+// AMA sinirsiz kuyruklanabildikleri icin tek cihaza YIGILABILIYORLAR:
+// ★CANLI OLCUM (2026-08-18): tek cihaza (+905300251841) 24 saatte 956 is yigildi;
+// cihaz sirayla isledigi icin sondakiler ~15 DAKIKA bekleyip zaman asimina ugradi
+// (154 FAILED, hepsi "is kuyrukta beklerken hic calistirilmadi"). Yaklasik 38 saat
+// cihaz-zamani bosa gitti.
+//
+// Ayni cihaz+tur icin bekleyen is sayisi MAX_PENDING_READ'i asarsa YENI SATIR
+// ACILMAZ; cagirana MEVCUT bekleyen is dondurulur. Okuma islerinde bu guvenlidir:
+// ayni cihazdan ayni veriyi iki kez okumak AYNI cevabi verir.
+export const QUEUE_CAPPED_READ_TYPES: ReadonlySet<JobType> = new Set<JobType>([
+  'WHATSAPP_RECEIPTS',
+  'WHATSAPP_MEDIA',
+  'WHATSAPP_CALLS',
+  'WHATSAPP_SEARCH',
+  'WHATSAPP_UNREAD',
+  'WHATSAPP_CONVERSATIONS',
+  'WHATSAPP_CONTACTS',
+  'WHATSAPP_READ',
+  'WHATSAPP_CHAT_SUMMARY',
+  'WHATSAPP_GROUP_MEMBERS',
+  'WHATSAPP_REACTIONS',
+  'WHATSAPP_POLLS',
+  'WHATSAPP_READ_BY',
+  'WHATSAPP_STARRED',
+  'WHATSAPP_LABELS',
+  'WHATSAPP_VIEW_ONCE',
+  'WHATSAPP_VOICE_NOTES'
+]);
+
+// Cihaz+tur basina en fazla kac BEKLEYEN okuma isi olabilir. 3: normal kullanimda
+// (panel bir sayfa acar, birkac uc cagirir) asla yetersiz kalmaz; kacak bir dongu
+// ya da agresif dis entegrasyon ise burada durur.
+export const MAX_PENDING_READ = 3;

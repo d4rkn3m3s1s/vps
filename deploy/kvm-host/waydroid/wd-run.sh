@@ -2,6 +2,13 @@
 # wd-run.sh <instance> — phoenixNAP: çözülen 8-adım setsid multi-instance boot.
 # Agent hostShDetached ile çağırır (fire-and-forget). Boot sonrası ADB tcp açar.
 INST="${1:?instance}"
+
+# ★★★2026-08-17 BOOT DAMGASI — health-watch'in boot-grace'i BUNA dayanir.
+# ESKIDEN grace "wd-run.sh <inst> sureci yasiyor mu" diye bakiyordu; ama bu betik
+# container'i baslatip CIKIYOR -> surec yok -> grace ATLANIYOR -> boot eden cihaz
+# "ZOMBIE" sanilip yeniden baslatiliyordu (sonsuz dongu, cihaz hic kalkamiyordu).
+# Damga surecten BAGIMSIZ oldugu icin bu tuzagi kapatir.
+date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
 # ★2026-08-12 GUVENLIK: instance adini KAPIDA dogrula. Bu betikte $INST 23 yerde,
 # cogunlukla TIRNAKSIZ kullaniliyor (ornegin satir ~17: `rm -rf /run/wd-$INST`).
 # Deger API'den geliyor ve orada icerik denetimi YOK (`metadata: z.unknown()`),
@@ -33,9 +40,43 @@ if ! flock -n 9; then
   # tutuyordu, wd-run sureci YOKTU, cihazlar gece boyunca hic acilamadi.
   # Bu yuzden kilide DEGIL, container'in gercekten calisip calismadigina bakiyoruz.
   # Olcum ucuz: bridge'in uye arayuzu var mi (sadece /sys; /proc TARAMASI YOK).
-  if [ -n "$(ls -A "/sys/class/net/waydroid-$INST/brif" 2>/dev/null)" ]; then
-    echo "wd-run: $INST GERCEKTEN calisiyor — bu cagri ATLANDI" >&2
+  # ★★★2026-08-17: BRIDGE TEK BASINA YETMEZ — ZOMBIE'yi CANLI gosteriyordu.
+  # CANLI KANIT: mi49 brif=[veth8MAaxW] lxc=VAR ama ping YOK; mi100 ayni. veth,
+  # Android icerde OLDUGUNDE bile ayakta kaliyor -> wd-run "calisiyor" deyip cikiyor,
+  # `systemctl restart` HICBIR SEY yapmiyor, cihaz sonsuza kadar olu kaliyor
+  # (10 cihaz bu dongudeydi; ancak veth elle silinince kalktilar).
+  # Bu yuzden bridge'e EK olarak Android'in cevap verdigini de dogruluyoruz:
+  # container'in lxc-start sureci var mi VE ADB portu (5555) dinleniyor mu.
+  # Ikisi de ucuz (/sys + ss); /proc TARAMASI YOK.
+  _brif_dolu=""; [ -n "$(ls -A "/sys/class/net/waydroid-$INST/brif" 2>/dev/null)" ] && _brif_dolu=1
+  _lxc_var=""; pgrep -f "waydroid\.$INST/lxc" >/dev/null 2>&1 && _lxc_var=1
+  # ★★★2026-08-17 (DUZELTME) CANLILIK TESTI ARTIK GERCEK IP + GERCEK PORT.
+  # ONCEKI HALI YANLIS POZITIF VERIYORDU: `ss ... dst <subnet>/24` o subnet'e ait
+  # HERHANGI bir bayat baglantiyi sayiyor, yedek test de yine ".112" deniyordu.
+  # Sonuc: olu cihaz "calisiyor" sanilip ATLANIYOR, health-watch "baslatiliyor" dese
+  # bile wd-run hemen cikiyordu (canli: mi35 iki tur ust uste kalkmadi).
+  _dev_ip=$(timeout 6 lxc-attach -n waydroid -P "/var/lib/waydroid.$INST/lxc" -- /system/bin/ip -4 -o addr show eth0 2>/dev/null \
+            | awk '{print $4}' | cut -d/ -f1 | head -1)
+  if [ -z "$_dev_ip" ]; then
+    _dev_ip=$(cat "/var/lib/misc/dnsmasq.waydroid-$INST.leases" 2>/dev/null \
+              | awk '$2 != "00:16:3e:f9:d3:03" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' | tail -1)
+  fi
+  _adb_canli=""
+  if [ -n "$_dev_ip" ]; then
+    timeout 3 bash -c "echo > /dev/tcp/$_dev_ip/5555" 2>/dev/null && _adb_canli=1
+  fi
+  if [ -n "$_brif_dolu" ] && [ -n "$_lxc_var" ] && [ -n "$_adb_canli" ]; then
+    echo "wd-run: $INST GERCEKTEN calisiyor (bridge+lxc+adb) — bu cagri ATLANDI" >&2
     exit 0
+  fi
+  if [ -n "$_brif_dolu" ] && [ -z "$_adb_canli" ]; then
+    echo "wd-run: $INST ZOMBIE (bridge var ama ADB cevapsiz) — temizlenip yeniden baslatiliyor" >&2
+    lxc-stop -P "/var/lib/waydroid.$INST/lxc" -n waydroid -k >/dev/null 2>&1
+    pgrep -f "waydroid\.$INST/lxc" | xargs -r kill -9 >/dev/null 2>&1
+    for _v in $(ls -A "/sys/class/net/waydroid-$INST/brif" 2>/dev/null); do
+      ip link delete "$_v" >/dev/null 2>&1
+    done
+    sleep 2
   fi
   echo "wd-run: $INST kilidi OLU (container yok) — kilit yok sayilip devam ediliyor" >&2
 fi
@@ -86,10 +127,13 @@ subnet_prefix() {
 _PFX=""
 [ -n "$_SUB" ] && _PFX=$(subnet_prefix "$_SUB")
 _LEASE=/var/lib/misc/dnsmasq.waydroid-$INST.leases
-if [ -n "$_PFX" ] && [ ! -s "$_LEASE" ]; then
-  mkdir -p /var/lib/misc 2>/dev/null
-  echo "4102444800 00:16:3e:f9:d3:03 $_PFX.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > "$_LEASE"
-fi
+# ★★★2026-08-17 LEASE TOHUMLAMASI KALDIRILDI — MAC UYUSMADIGI ICIN ISE YARAMIYORDU.
+# Tohum SABIT bir MAC (00:16:3e:f9:d3:03) ile yaziliyordu, ama fingerprint sistemi
+# her cihaza RASTGELE MAC veriyor. dnsmasq lease'i MAC'e gore esler -> tohum HIC
+# kullanilmadi; cihaz havuzdan rastgele IP aldi (CANLI: 665 DHCPACK'in HEPSI .112 DISI).
+# Geride yalnizca yanlis IP'li olu bir lease satiri kaliyor ve teshisi zorlastiriyordu.
+# Artik tohum YAZILMIYOR; IP asagida GERCEK degerden okunuyor (bkz. GERCEK IP TESPITI).
+:
 # 2 hazırla
 mkdir -p $XRD/pulse; chmod 700 $XRD; : > $XRD/pulse/native
 # 3 binder
@@ -127,7 +171,24 @@ bash /opt/fleet-agent/waydroid/wd-adb.sh $INST
 # ★2026-08-13: onek subnet_prefix'ten gelir (S>=240 -> 10.10.x). Eski cihazlar
 # (S<=239) icin sonuc birebir ayni: "192.168.<S>".
 _NPFX=$(subnet_prefix "$SUBNET")
-GW="$_NPFX.1"; IP="$_NPFX.112"
+GW="$_NPFX.1"
+# ★★★2026-08-17 GERCEK IP TESPITI — ".112 VARSAYIMI" BOOT'U OLDURUYORDU.
+# ESKI: IP="$_NPFX.112" (SABIT varsayim). Cihaz DHCP'den .13/.55/.235 gibi BASKA bir
+# adres alinca wd-run yanlis IP'ye ip/route yaziyor -> netfix_try 14 tur bosuna doner
+# -> "NET_READY ok=0 tries=14" -> boot yarim kalir -> Terminated (19 cihaz "Durduruldu").
+# YENI SIRA: (1) container eth0'daki GERCEK IP  (2) lease dosyasindaki gercek satir
+#            (3) hicbiri yoksa eski .112 davranisi (geriye donuk guvenli fallback).
+_realip=$(timeout 8 lxc-attach -n waydroid -P "$LXCP" -- ip -4 -o addr show eth0 2>/dev/null \
+          | awk '{print $4}' | cut -d/ -f1 | head -1)
+if [ -z "$_realip" ] && [ -s "$_LEASE" ]; then
+  # tohum satirini (Pixel-8-Pro / sabit MAC) ELE, gercek kiralamayi al
+  _realip=$(awk '$2 != "00:16:3e:f9:d3:03" {print $3}' "$_LEASE" 2>/dev/null | tail -1)
+fi
+case "$_realip" in
+  [0-9]*.[0-9]*.[0-9]*.[0-9]*) IP="$_realip" ;;
+  *) IP="$_NPFX.112" ;;
+esac
+echo "REAL_IP $INST ip=$IP (varsayim .112 DEGIL)"
 netfix_try() {
   HASIP=$(timeout 8 lxc-attach -n waydroid -P $LXCP -- ip -4 addr show eth0 2>/dev/null | grep -c "inet ")
   if [ "${HASIP:-0}" = "0" ]; then
@@ -172,4 +233,26 @@ fi
 timeout 8 lxc-attach -n waydroid -P $LXCP -- start adbd 2>/dev/null
 echo "BOOT_DONE $INST subnet=$SUBNET boot=$(timeout 5 lxc-attach -n waydroid -P $LXCP -- getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
 # session i canlı tut (agent detached bekliyor)
-sleep infinity
+# ★★★2026-08-17 GOZCU DONGUSU — ESKIDEN BURADA `sleep infinity` VARDI.
+# Sorun: container SONRADAN olse bile `sleep infinity` yasiyordu -> systemd birimi
+# "active" kaliyor -> Restart=on-failure HIC tetiklenmiyor, `systemctl start` de
+# NO-OP oluyordu -> olen cihaz KENDILIGINDEN BIR DAHA KALKMIYORDU (canli: 20 cihaza
+# `start` -> 94'te kaldi; `restart` -> 118'e cikti; mi100/mi102/mi105 4+ saat olu).
+# Artik container'i gozetliyoruz: olurse exit 1 -> systemd FAILED gorur ->
+# Restart=on-failure devreye girer -> cihaz ~10 sn'de otomatik kalkar.
+# Olcum ucuz: pgrep (tek arama), /proc TARAMASI YOK (bkz. proc-taramasi kilidi dersi).
+echo "WATCHDOG_START $INST"
+_miss=0
+while :; do
+  sleep 30
+  if pgrep -f "waydroid\.$INST/lxc" >/dev/null 2>&1; then
+    _miss=0
+  else
+    _miss=$((_miss + 1))
+    # 2 ust uste kacirma (60 sn) = gercekten olmus; tek seferlik yarislara takilma
+    if [ "$_miss" -ge 2 ]; then
+      echo "CONTAINER_DIED $INST — servis basarisiz biriliyor, systemd yeniden baslatacak"
+      exit 1
+    fi
+  fi
+done

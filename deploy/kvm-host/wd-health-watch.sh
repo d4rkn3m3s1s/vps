@@ -1,4 +1,36 @@
 #!/usr/bin/env bash
+
+# ★★★2026-08-17 TEK-ORNEK KILIDI — CAKISAN TURLAR CIHAZ DUSURUYORDU.
+# Timer 7 dk'da bir tetikler ama bir tur (zombie-restart'larla) 85 dk surebiliyor
+# -> turlar UST USTE biniyordu. CANLI KANIT: ayni anda pid=534571 (31 dk) ve
+# pid=2102361 (0 dk). Iki tur ayni cihazda yarisinca: A restart eder (Android boot
+# ediyor, ADB yok) -> B "ZOMBIE" ilan edip TEKRAR baslatir -> cihaz boot'u hic
+# bitiremez, sonsuz churn. Panelde "cihazlar kendiliginden dusuyor" bu.
+# Kilit alinamazsa sessizce cik; bir sonraki timer turunda nasil olsa denenir.
+_hw_lock() {
+  exec 9>/run/wd-health-watch.lock
+  flock -n 9
+}
+if ! _hw_lock; then
+  # ★★★2026-08-18 OLU KILIT KORUMASI. Kilit alinamamasi HER ZAMAN "zaten calisiyor"
+  # demek DEGIL: FD 9'u miras alan uzun omurlu cocukler (redsocks/dbus/adb alt
+  # surecleri) ana surec oldukten sonra da kilidi tutabiliyor.
+  # CANLI: 40+ dk boyunca HIC tur calismadi (surec sayisi 0 iken her tur "atlandi"),
+  # panel "Saglik izleyici durdu" alarmi verdi ve otonom kurtarma tamamen durdu.
+  # Bu yuzden kilide DEGIL, GERCEGE bakiyoruz: baska bir tur gercekten yasiyor mu?
+  _alive=$(pgrep -f 'wd-health-watch\.sh' 2>/dev/null | grep -v "^$$\$" | head -1)
+  if [ -n "$_alive" ]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ⏭ onceki tur HALA calisiyor (pid=$_alive) — bu tur atlandi" \
+      >> /var/log/wd-health-watch.log 2>/dev/null
+    exit 0
+  fi
+  # Calisan tur YOK -> kilit OLU. Temizle ve DEVAM ET (yoksa kurtarma sonsuza kadar durur).
+  echo "$(date '+%Y-%m-%d %H:%M:%S') ♻ OLU KILIT temizlendi (calisan tur yok) — devam ediliyor" \
+    >> /var/log/wd-health-watch.log 2>/dev/null
+  rm -f /run/wd-health-watch.lock 2>/dev/null
+  _hw_lock || true
+fi
+
 # wd-health-watch.sh — PROAKTİF SAĞLIK İZLEME + OTO-İYİLEŞME (systemd timer, ~7 dk).
 #
 # Ban olmadan ÖNCE yakala: her aktif/kısıtlı WhatsApp cihazının GERÇEK çıkış-IP'sini
@@ -11,6 +43,36 @@ set -uo pipefail
 
 WP="/opt/fleet-agent/waydroid/wd-proxy.sh"
 WD_RUN="/opt/fleet-agent/waydroid/wd-run.sh"   # zombie instance restart (self-heal)
+
+# ★★★2026-08-17 KURTARMA SURESI OLCUMU (/durum sayfasinda canli gosterilir).
+# Amac: "dusen cihaz ben mudahale etmeden kac dk'da kalkiyor?" sorusunu OLCMEK.
+# Maliyet ~sifir: cihaz basina tek kucuk dosya yaz/oku (/proc TARAMASI YOK).
+WD_STATE_DIR=/var/lib/wd-health
+mkdir -p "$WD_STATE_DIR" 2>/dev/null || true
+RECLOG="$WD_STATE_DIR/recovery.log"
+
+# Cihaz dustu: ILK dusus anini kaydet (zaten varsa DOKUNMA - sure baştan sayilmali).
+mark_down() {
+  local _i="$1"
+  [ -f "$WD_STATE_DIR/down-$_i" ] || date +%s > "$WD_STATE_DIR/down-$_i" 2>/dev/null
+}
+
+# Cihaz geri geldi: sureyi hesapla, kalici loga yaz, dusus damgasini temizle.
+# $2 = kurtarma yontemi (reconnect | zombie-restart | kendiliginden)
+mark_up() {
+  local _i="$1" _how="${2:-kendiliginden}" _t0 _now _dur
+  _t0=$(cat "$WD_STATE_DIR/down-$_i" 2>/dev/null)
+  case "$_t0" in ''|*[!0-9]*) rm -f "$WD_STATE_DIR/down-$_i" 2>/dev/null; return ;; esac
+  _now=$(date +%s); _dur=$((_now - _t0))
+  [ "$_dur" -lt 0 ] && _dur=0
+  echo "$_now $_i $_dur $_how" >> "$RECLOG" 2>/dev/null
+  # log sisme freni: 5000 satiri gecerse son 2000'i tut
+  if [ "$(wc -l < "$RECLOG" 2>/dev/null || echo 0)" -gt 5000 ]; then
+    tail -2000 "$RECLOG" > "$RECLOG.tmp" 2>/dev/null && mv "$RECLOG.tmp" "$RECLOG" 2>/dev/null
+  fi
+  rm -f "$WD_STATE_DIR/down-$_i" 2>/dev/null
+  log "  ⏱ $_i: ${_dur}sn sonra geri geldi ($_how)"
+}
 LOG="/var/log/wd-health-watch.log"
 ADB="${FLEET_ADB:-/usr/bin/adb}"
 # Host'un kendi (datacenter) çıkış IP'si — bir cihaz BUNDAN çıkıyorsa proxy sızmış demektir.
@@ -204,7 +266,14 @@ adb_addr_for() {
   # 2) Yedek: DHCP lease dosyasından (container'a girmeden)
   sn=$(grep -w "$inst" /var/lib/waydroid-subnets.map 2>/dev/null | awk '{print $2}')
   [ -z "$sn" ] && { echo ""; return; }
-  ip=$(grep -h "192\.168\.$sn\." "/var/lib/misc/waydroid-$inst.leases" 2>/dev/null | awk '{print $3}' | head -1)
+  # ★★★2026-08-17 YOL DUZELTILDI: gercek dosya "dnsmasq." onekli.
+  # Eski yol (/var/lib/misc/waydroid-<inst>.leases) HIC yoktu -> bu adim daima
+  # bos donuyor, adres ".112" fallback'ine dusuyordu -> yanlis adrese baglanip
+  # saglam cihaz ZOMBIE sanilip sonsuza kadar yeniden baslatiliyordu.
+  # Tohum satirini (sabit MAC 00:16:3e:f9:d3:03 = eski .112 tohumu) ELE; en TAZE
+  # gercek kiralamayi al (son satir).
+  ip=$(cat "/var/lib/misc/dnsmasq.waydroid-$inst.leases" "/var/lib/misc/waydroid-$inst.leases" 2>/dev/null \
+       | awk '$2 != "00:16:3e:f9:d3:03" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $3}' | tail -1)
   if echo "$ip" | grep -qE '^192\.168\.[0-9]+\.[0-9]+$'; then echo "$ip:5555"; return; fi
   # 3) Son çare: eski varsayım (hiçbir kaynak cevap vermediyse)
   echo "192.168.$sn.112:5555"
@@ -244,15 +313,18 @@ while IFS='|' read -r inst meta_cc phone; do
   if timeout 12 "$ADB" -s "$addr" shell 'echo ok' </dev/null 2>/dev/null | grep -q ok; then
     _adb_up=1
     rm -f "/var/lib/wd-health/zfail-$inst" 2>/dev/null || true   # sağlıklı → sayacı temizle
+    mark_up "$inst" kendiliginden   # ★dusukse sureyi kaydet (degilse no-op)
   else
     _adb_up=0
   fi
   if [ "$_adb_up" = "0" ]; then
+    mark_down "$inst"   # ★ILK dusus ani (varsa korunur) — kurtarma suresi buradan sayilir
     "$ADB" disconnect "$addr" >/dev/null 2>&1 || true
     "$ADB" connect "$addr" >/dev/null 2>&1 || true
     sleep 2
     if timeout 12 "$ADB" -s "$addr" shell 'echo ok' </dev/null 2>/dev/null | grep -q ok; then
       log "🔄 $inst: erişilemiyordu → adb reconnect BAŞARILI"
+      mark_up "$inst" reconnect
       notify AUTO_RECONNECT "$inst" "Cihaz ADB'den erişilemiyordu, otomatik yeniden baglandi" true
       RECONN=$((RECONN+1))
       # ★Cihaz geri geldi → zombie-restart sayacını sıfırla (aşağıdaki DEGRADED
@@ -266,6 +338,27 @@ while IFS='|' read -r inst meta_cc phone; do
       # KANITLANDI: mi68 + mi7 aynı şekilde çöktü, sadece reconnect kurtaramadı.
       # Şart: host-wrapper AYAKTA (wd-run.sh $inst süreci var) → gerçekten bu instance,
       # yeni provision değil. wd-run zombie'yi temizleyip Android'i sıfırdan boot eder.
+      # ★★★2026-08-17 ZOMBIE ILAN ETMEDEN ONCE ADB'DEN BAGIMSIZ TEYIT.
+      # ADB sunucusu doydugunda (150 cihaz + agent trafigi) 12sn'lik `adb shell echo ok`
+      # yoklamasi TIMEOUT'a dusuyor ve SAGLAM cihaz "erisilemez" sayiliyordu -> zombie
+      # -> yeniden baslatma -> 2-3 dk boot -> panelde "cihaz dustu" (CANLI KANIT:
+      # mi308/mi300/mi185 zombie ilan edildi ama ping OK, port ACIK, boot=1, shell "ok").
+      # Bu yuzden once UCUZ ve BAGIMSIZ iki kanit: TCP 5555 acik mi + boot_completed=1 mi.
+      _live_ip="${addr%%:*}"
+      _tcp_ok=""
+      [ -n "$_live_ip" ] && timeout 3 bash -c "echo > /dev/tcp/$_live_ip/5555" 2>/dev/null && _tcp_ok=1
+      if [ -n "$_tcp_ok" ]; then
+        _bc=$(timeout 8 lxc-attach -n waydroid -P "/var/lib/waydroid.$inst/lxc" -- getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+        if [ "$_bc" = "1" ]; then
+          # Cihaz CANLI — sorun ADB ucunda. Yeniden baslatma; ucu tazele ve gec.
+          log "🔌 $inst: ADB yoklamasi basarisiz AMA cihaz CANLI (port 5555 acik, boot=1) → zombie-restart YOK, uc tazelendi"
+          "$ADB" disconnect "$addr" >/dev/null 2>&1 || true
+          "$ADB" connect "$addr" >/dev/null 2>&1 || true
+          mark_up "$inst" uc-tazeleme
+          rm -f "/var/lib/wd-health/zfail-$inst" 2>/dev/null || true
+          continue
+        fi
+      fi
       if pgrep -f "wd-run.sh $inst" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst\|lxc-start.*waydroid.$inst" >/dev/null 2>&1; then
         # ★BOOT-GRACE (2026-07-23): bir instance BOOT ederken (henüz ~90s dolmamış) ADB'den
         # erişilemez — bu ZOMBIE DEĞİL, sadece boot bitmemiş. Onu zombie sanıp yeniden
@@ -273,23 +366,54 @@ while IFS='|' read -r inst meta_cc phone; do
         # wd-run → aynı binder/DBus runtime'ında çakışma → İKİSİ DE bozulur (KANITLANDI:
         # 33 wd-run + 14 cihaz düştü). Bu yüzden: wd-run.sh $inst süreci son BOOT_GRACE_S
         # saniye içinde başlamışsa BEKLE, dokunma. mtime ile yaşını ölç (process start).
-        BOOT_GRACE_S="${WD_BOOT_GRACE_S:-150}"
+        # ★★★2026-08-17 GRACE ARTIK SURECE DEGIL BOOT DAMGASINA DAYANIYOR.
+        # ESKI KOD "wd-run.sh <inst> sureci yasiyor mu" diye bakiyordu; ama wd-run
+        # container'i baslatip CIKIYOR -> wr_pid BOS -> grace blogu TAMAMEN atlaniyor
+        # -> BOOT EDEN cihaz "ZOMBIE" ilan edilip yeniden baslatiliyordu -> boot bir
+        # daha basliyor -> SONSUZ DONGU (canli: 4 dk izlemede adb 140 -> 133 DUSTU;
+        # log'da mi300/mi306/mi308 boot ederken zombie ilan edildi).
+        # Artik UC kaynaktan EN TAZESI'ne bakiyoruz; biri bile taze ise DOKUNMA.
+        BOOT_GRACE_S="${WD_BOOT_GRACE_S:-300}"
+        _now_s=$(date +%s); _boot_age=999999
+        # a) wd-run sureci (hala calisiyorsa)
         wr_pid=$(pgrep -f "wd-run.sh $inst\$" 2>/dev/null | head -1)
         if [ -n "$wr_pid" ]; then
-          wr_age=$(($(date +%s) - $(stat -c %Y "/proc/$wr_pid" 2>/dev/null || echo 0)))
-          if [ "$wr_age" -lt "$BOOT_GRACE_S" ]; then
-            log "⏳ $inst: boot sürüyor (wd-run ${wr_age}s < ${BOOT_GRACE_S}s) → zombie-restart ATLANDI, bekleniyor"
-            continue
-          fi
+          _a=$((_now_s - $(stat -c %Y "/proc/$wr_pid" 2>/dev/null || echo 0)))
+          [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a
         fi
-        # ★LOAD-GATE (2026-07-23, P-3): a zombie-restart boots a fresh Android → CPU spike.
-        # If the host is ALREADY saturated (load ≥ cores*0.9), starting another boot deepens
-        # a load-100 storm and makes the boot itself crawl/fail. Skip this instance THIS tick;
-        # the next run (~7min) retries once load has dropped. Uses /proc/loadavg (cheap).
-        _load1=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null || echo 0)
-        _load_max=$(awk -v n="$(nproc)" 'BEGIN{printf "%.0f", n*0.9}')
-        if [ "${_load1:-0}" -ge "${_load_max:-999}" ]; then
-          log "⏸ $inst: zombie ama host yükü yüksek (load=$_load1 ≥ $_load_max) → restart ERTELENDİ (sonraki tur)"
+        # b) BOOT DAMGASI — asil kaynak (wd-run basinda yazar, surece bagli DEGIL)
+        if [ -f "/run/wd-boot-$inst" ]; then
+          _t0=$(cat "/run/wd-boot-$inst" 2>/dev/null)
+          case "$_t0" in ''|*[!0-9]*) _t0="" ;; esac
+          if [ -n "$_t0" ]; then _a=$((_now_s - _t0)); [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a; fi
+        fi
+        # c) lxc-start sureci yasi — damga yoksa yedek
+        _lx=$(pgrep -f "waydroid\.$inst/lxc" 2>/dev/null | head -1)
+        if [ -n "$_lx" ]; then
+          _a=$((_now_s - $(stat -c %Y "/proc/$_lx" 2>/dev/null || echo 0)))
+          [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a
+        fi
+        if [ "$_boot_age" -lt "$BOOT_GRACE_S" ]; then
+          log "⏳ $inst: boot sürüyor (${_boot_age}s < ${BOOT_GRACE_S}s) → zombie-restart ATLANDI, bekleniyor"
+          continue
+        fi
+        # ★★★2026-08-17 LOAD-GATE KALDIRILDI -> D-STATE GATE.
+        # ESKI: load >= cores*0.9 (=72) ise zombie-restart ERTELENIYORDU.
+        # CANLI KANIT (2026-08-17): "⏸ mi129: ... (load=116 ≥ 72) → ERTELENDİ" satiri
+        # dusuldugu ANDA gercek olcumler: D-state=0, CPU %88 BOSTA, 119 GB bos RAM.
+        # Sistem BOSTU ama fren basili kaldi -> mi100/mi102/mi105 4+ SAAT olu kaldi,
+        # panelde filo 178->121 dustu. Yani "yuk freni"nin KENDISI arizayi kalicilastirdi.
+        # NEDEN: Waydroid'de her instance yuzlerce UYUYAN thread tutar ve Linux bunlari
+        # load'a sayar (150 cihaz ~ yuz binlerce thread) -> load DAIMA 90-500, CPU bos olsa
+        # bile. Panel de bunu yaziyor: "Ham load ... yaniltici". wd-boot-gate.sh'te ayni
+        # ders 2026-08-14'te ogrenilip load ORADAN kaldirilmisti; burada atlanmisti.
+        # YENI OLCUT: /proc/stat procs_blocked (D-state) — gercek I/O tikanmasi, cekirdek
+        # sayaci, tek kucuk dosya okumasi (/proc TARAMASI YOK).
+        _dstate=$(awk '/^procs_blocked/{print $2; exit}' /proc/stat 2>/dev/null || echo 0)
+        case "$_dstate" in ''|*[!0-9]*) _dstate=0 ;; esac
+        _dmax="${WD_DSTATE_MAX:-50}"
+        if [ "${_dstate:-0}" -ge "${_dmax}" ]; then
+          log "⏸ $inst: zombie ama host GERCEKTEN tikali (D-state=$_dstate ≥ $_dmax) → restart ERTELENDİ (sonraki tur)"
           continue
         fi
 
@@ -338,14 +462,54 @@ while IFS='|' read -r inst meta_cc phone; do
         rm -rf "/run/xdg-$inst" "/run/wd-$inst" "/run/waydroid-$inst-lxc" 2>/dev/null || true
         sleep 3
         # setsid + arka plan: wd-run uzun sürer (~90s boot), bu döngüyü bloklamasın.
-        setsid bash "$WD_RUN" "$inst" >/dev/null 2>&1 < /dev/null &
+        setsid bash "$WD_RUN" "$inst" >/dev/null 2>&1 < /dev/null 9>&- &
         notify AUTO_RECONNECT "$inst" "Instance cokmustu (zombie) - runtime temizlenip yeniden baslatildi" true
         RECONN=$((RECONN+1))
         continue  # boot devam ediyor; proxy'yi bir sonraki tur (cihaz ONLINE olunca) uygular
       else
-        log "✗ $inst: erişilemiyor, reconnect başarısız (host-wrapper da yok)"
-        notify UNREACHABLE "$inst" "Cihaz ADB'den erişilemiyor, reconnect basarisiz" false
-        UNREACH=$((UNREACH+1))
+        # ★★★2026-08-17 OTONOM KURTARMA — BURASI ESKIDEN SADECE LOG YAZIYORDU.
+        # Container TAMAMEN olunce (lxc/bridge/dnsmasq YOK) kimse cihazi ayaga
+        # kaldirmiyordu -> SONSUZA KADAR OLU (canli: 12 cihaz "IP yok"; mi100/mi102/
+        # mi105 4+ SAAT). systemd de kurtarmiyor cunku waydroid@.service
+        # Type=simple + RemainAfterExit=yes: wd-run container'i baslatip CIKIYOR,
+        # servis "active/exited" kaliyor, Restart=on-failure HIC tetiklenmiyor.
+        # Artik cihazi GERCEKTEN baslatiyoruz (dar kapsam + frenlerle).
+        _hw_start=0
+        if systemctl is-enabled "waydroid@$inst" >/dev/null 2>&1; then
+          # (1) D-state kapisi — asil kilit sinyali (ham load Waydroid'de YANILTICI)
+          _ds=$(awk '/^procs_blocked/{print $2; exit}' /proc/stat 2>/dev/null || echo 0)
+          case "$_ds" in ''|*[!0-9]*) _ds=0 ;; esac
+          # (2) BOOT DAMGASI grace — az once baslatilmissa DOKUNMA (churn onleme)
+          _bage=999999
+          if [ -f "/run/wd-boot-$inst" ]; then
+            _bt=$(cat "/run/wd-boot-$inst" 2>/dev/null)
+            case "$_bt" in ''|*[!0-9]*) _bt="" ;; esac
+            [ -n "$_bt" ] && _bage=$(($(date +%s) - _bt))
+          fi
+          # (3) ardisik basarisizlik freni (DEGRADED ile ayni sayac dosyasi)
+          _zf2=$(cat "/var/lib/wd-health/zfail-$inst" 2>/dev/null || echo 0)
+          case "$_zf2" in ''|*[!0-9]*) _zf2=0 ;; esac
+          if [ "$_ds" -ge "${WD_DSTATE_MAX:-50}" ]; then
+            log "⏸ $inst: olu ama host GERCEKTEN tikali (D-state=$_ds) → baslatma ERTELENDI"
+          elif [ "$_bage" -lt "${WD_BOOT_GRACE_S:-300}" ]; then
+            log "⏳ $inst: yeni baslatilmis (${_bage}s) → tekrar baslatilmadi, boot bekleniyor"
+          elif [ "$_zf2" -ge "${WD_ZOMBIE_FAIL_MAX:-6}" ]; then
+            log "⛔ $inst: ${_zf2} ardisik basarisiz baslatma → DEGRADED, otomatik deneme durduruldu"
+          else
+            mkdir -p /var/lib/wd-health 2>/dev/null
+            echo $((_zf2 + 1)) > "/var/lib/wd-health/zfail-$inst" 2>/dev/null
+            log "🚑 $inst: container YOK (lxc/bridge/dnsmasq) → OTONOM BASLATILIYOR (deneme $((_zf2 + 1)))"
+            mark_down "$inst"
+            systemctl restart "waydroid@$inst" >/dev/null 2>&1 9>&- &
+            _hw_start=1
+            RECONN=$((RECONN+1))
+          fi
+        fi
+        if [ "$_hw_start" = "0" ]; then
+          log "✗ $inst: erişilemiyor, reconnect başarısız (host-wrapper da yok)"
+          notify UNREACHABLE "$inst" "Cihaz ADB'den erişilemiyor, reconnect basarisiz" false
+          UNREACH=$((UNREACH+1))
+        fi
         continue
       fi
     fi

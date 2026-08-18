@@ -79,5 +79,20 @@ else
   log "UYARI: systemctl enable BASARISIZ — bu cihaz reboot sonrasi ACILMAZ, elle enable edilmeli"
 fi
 
+# ★★★2026-08-18 GOZETIM systemd'YE DEVREDILIR — `enable` TEK BASINA YETMEZ.
+# `enable` yalnizca REBOOT icin kayit yapar; birim SIMDI `inactive/dead` kalir.
+# Bu durumda gozcu (wd-run icinde) calisir AMA systemd onu SAHIPLENMEZ:
+# gozcu "container oldu" deyip `exit 1` yapsa bile systemd GORMEZ ve
+# `Restart=on-failure` DEVREYE GIRMEZ → otomatik kurtarma zinciri KOPUK kalir.
+# ★OLCUM: 151 cihazin 48'i (hepsi yeni kurulanlar) bu bosluktaydi.
+# `start` guvenli: container ZATEN calisiyor, wd-run'un "zaten calisiyor →
+# GOZETIM devralindi" yolu onu YENIDEN KURMAZ, yalnizca gozetimi ustlenir
+# (canli kanit mi366: ADB kopmadi, lxc sureci ayni kaldi).
+if systemctl start "waydroid@$INSTANCE" >/dev/null 2>&1; then
+  log "gozetim systemd'ye devredildi (container olurse ~70sn'de otomatik kalkar)"
+else
+  log "UYARI: systemctl start BASARISIZ — cihaz systemd gozetimi DISINDA, otomatik kurtarma calismaz"
+fi
+
 log "instance hazır subnet=$SUBNET_ID ip=$DEV_IP"
 echo "PROVISION_RESULT subnet=$SUBNET_ID ip=$DEV_IP port=5555 instance=$INSTANCE"

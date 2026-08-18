@@ -22,6 +22,19 @@ while true; do
   TOP=${TOP:-155}
   ACIK=${ACIK:-0}; D=${D:-0}; ADB=${ADB:-0}; KUY=${KUY:-0}; OFF=${OFF:-0}
 
+  # ★2026-08-17 GERCEK YUK. Panelde ciplak "load" YANILTICIYDI (canli: load 11.6 iken
+  # CPU %93 BOSTA). Sebep: Waydroid'de her cihaz yuzlerce UYUYAN Android thread'i tutar;
+  # bunlarin anlik uyanmasi load sayacini sisirir ama CPU'yu KULLANMAZ. Dogru okuma:
+  # load'u cekirdek sayisina bol -> gercek doluluk %. Idle'i de dogrudan gosteriyoruz.
+  CORES=$(nproc 2>/dev/null); CORES=${CORES:-80}
+  # load ondalikli -> tam sayi yuzde (awk ile, 100*load/cores)
+  YUK=$(awk -v l="${LO:-0}" -v c="$CORES" 'BEGIN{ if(c>0) printf "%d", 100*l/c; else print 0 }')
+  # Renk: gercek doluluga gore (idle >70 yesil, >40 sari, altı kirmizi)
+  CU=${CPUID:-100}
+  if [ "${CU%%.*}" -ge 70 ] 2>/dev/null; then CUR="#2ecc71"; CUT="rahat"
+  elif [ "${CU%%.*}" -ge 40 ] 2>/dev/null; then CUR="#f39c12"; CUT="orta"
+  else CUR="#e74c3c"; CUT="yogun"; fi
+
   # Derin tarama verileri
   dg(){ grep "^$1=" "$DETAY" 2>/dev/null | cut -d= -f2-; }
   IP=$(dg ip); NOIP=$(dg noip); BOOT=$(dg boot); ADBOK=$(dg adbok)
@@ -93,12 +106,22 @@ pre{background:#18181c;border:1px solid #232329;border-radius:12px;padding:13px;
 HEAD
     echo "<h1>Filo Durumu</h1><div class=\"sub\">10 saniyede bir yenilenir &middot; son olcum: $(echo "$SON" | cut -d' ' -f1) &middot; derin tarama: ${DZAMAN:-bekleniyor}</div>"
 
+    # ★2026-08-17 Genel saglik ozeti — tek bakista "iyi mi kotu mu". Karar D-state'e
+    # gore (asil kilit sinyali); ham load'a DEGIL (o Waydroid'de hep yuksek gorunur).
+    if [ "$D" -ge 50 ]; then OZR="#e74c3c"; OZT="&#9888; TEHLIKE — sistem sisiyor, fren devrede olmali"
+    elif [ "$D" -ge 25 ]; then OZR="#f39c12"; OZT="&#9888; DIKKAT — I/O baskisi artiyor, izle"
+    elif [ "$ACIK" -lt $(( TOP * 90 / 100 )) ]; then OZR="#f39c12"; OZT="&#9888; bazi cihazlar dusuk ($ACIK/$TOP acik)"
+    elif [ "${SIZ:-0}" -gt 0 ] 2>/dev/null; then OZR="#e74c3c"; OZT="&#9888; PROXY SIZINTISI — ban riski"
+    else OZR="#2ecc71"; OZT="&#10004; SISTEM SAGLIKLI — kilit yok, filo ayakta"; fi
+    echo "<div class=\"c\" style=\"margin-bottom:16px;border-left:4px solid $OZR\"><div style=\"font-size:16px;font-weight:650;color:$OZR\">$OZT</div><div class=\"n\" style=\"margin-top:5px\">Karar D-state'e gore verilir (asil kilit sinyali). Ham load Waydroid'de hep yuksek gorunur, aldatmaz.</div></div>"
+
     echo '<div class="g">'
     echo "<div class=\"c\"><div class=\"k\">Acik cihaz</div><div class=\"v\" style=\"color:$AR\">$ACIK<span class=\"s\">/$TOP</span></div><div class=\"bar\"><div class=\"fill\" style=\"width:${YUZDE}%;background:$AR\"></div></div></div>"
     echo "<div class=\"c\"><div class=\"k\">ADB bagli</div><div class=\"v\">$ADB</div><div class=\"n\">bayat uc: $OFF</div></div>"
-    echo "<div class=\"c\"><div class=\"k\">D-state</div><div class=\"v\" style=\"color:$DR\">$D</div><div class=\"n\">$DT &middot; fren esigi 50</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">D-state &#9733; asil sinyal</div><div class=\"v\" style=\"color:$DR\">$D</div><div class=\"n\">$DT &middot; I/O bekleyen &middot; fren esigi 50</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Gercek yuk</div><div class=\"v\" style=\"color:$CUR\">${CU%%.*}<span class=\"s\">% bosta</span></div><div class=\"n\">doluluk ~%${YUK} &middot; $CUT</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Ham load</div><div class=\"v\" style=\"font-size:20px;color:#7a7a85\">${LO:-?}</div><div class=\"n\">$CORES cekirdek &middot; <b>yaniltici</b>: Waydroid uyuyan thread'leri sisirir</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Kuyrukta</div><div class=\"v\">$KUY</div><div class=\"n\">acilmayi bekliyor</div></div>"
-    echo "<div class=\"c\"><div class=\"k\">CPU bosta</div><div class=\"v\">${CPUID:-?}<span class=\"s\">%</span></div><div class=\"n\">load: ${LO:-?}</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Bos RAM</div><div class=\"v\">${RAM:-?}<span class=\"s\">GB</span></div><div class=\"n\">toplam 250 GB</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Agent</div><div class=\"v\" style=\"font-size:19px;color:$AGR\">${AG:-?}</div><div class=\"n\">panel baglantisi</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Fren</div><div class=\"v\" style=\"font-size:19px;color:$FRR\">${FR:-?}</div><div class=\"n\">sisme korumasi</div></div>"
@@ -111,6 +134,47 @@ HEAD
     echo "<div class=\"c\"><div class=\"k\">Internet + proxy</div><div class=\"v\" style=\"color:#2ecc71\">${NET:-?}</div><div class=\"n\">disari cikabiliyor</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Proxy sizintisi</div><div class=\"v\" style=\"color:$SIZR\">${SIZ}</div><div class=\"n\">$SIZN</div></div>"
     echo '</div>'
+    # ★★★2026-08-17 OTONOM KURTARMA OLCUMU
+    # "Dusen cihaz BEN MUDAHALE ETMEDEN kac dk'da kalkiyor?" — health-watch her
+    # kurtarmada /var/lib/wd-health/recovery.log'a "<epoch> <inst> <sn> <yontem>"
+    # yaziyor; down-<inst> dosyalari da SU AN dusuk olanlari (ve suresini) tutuyor.
+    RECLOG=/var/lib/wd-health/recovery.log
+    RNOW=$(date +%s); RCUT=$((RNOW - 86400))
+    RSTAT=$(awk -v c="$RCUT" '$1>=c && $3 ~ /^[0-9]+$/ {n++; s+=$3; a[n]=$3; if($3>mx)mx=$3}
+      END{ if(n==0){print "0 0 0 0"; exit}
+           for(i=1;i<n;i++)for(j=i+1;j<=n;j++)if(a[i]>a[j]){t=a[i];a[i]=a[j];a[j]=t}
+           md=(n%2)?a[(n+1)/2]:int((a[n/2]+a[n/2+1])/2)
+           printf "%d %d %d %d", n, s/n, md, mx }' "$RECLOG" 2>/dev/null || echo "0 0 0 0")
+    RN=$(echo "$RSTAT" | awk '{print $1}');  RAVG=$(echo "$RSTAT" | awk '{print $2}')
+    RMED=$(echo "$RSTAT" | awk '{print $3}'); RMAX=$(echo "$RSTAT" | awk '{print $4}')
+    # yonteme gore dagilim
+    RREC=$(awk -v c="$RCUT" '$1>=c && $4=="reconnect"{n++}END{print n+0}' "$RECLOG" 2>/dev/null || echo 0)
+    RZOM=$(awk -v c="$RCUT" '$1>=c && $4=="zombie-restart"{n++}END{print n+0}' "$RECLOG" 2>/dev/null || echo 0)
+    RKEN=$(awk -v c="$RCUT" '$1>=c && $4=="kendiliginden"{n++}END{print n+0}' "$RECLOG" 2>/dev/null || echo 0)
+    # SU AN dusuk olanlar
+    DOWNN=0; DOWNL=""
+    for _df in /var/lib/wd-health/down-*; do
+      [ -e "$_df" ] || continue
+      _in=$(basename "$_df" | sed 's/^down-//')
+      _t0=$(cat "$_df" 2>/dev/null); case "$_t0" in ''|*[!0-9]*) continue ;; esac
+      _dk=$(( (RNOW - _t0) / 60 )); DOWNN=$((DOWNN+1))
+      DOWNL="$DOWNL<span style=\"display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border-radius:10px;background:#2b2b33;color:#e6a23c;font-size:13px\">$_in &middot; ${_dk}dk</span>"
+    done
+    [ "$DOWNN" = "0" ] && DOWNL="<span style=\"color:#2ecc71\">su an dusuk cihaz YOK</span>"
+    # renk: ortalama 5dk alti yesil, 15dk alti sari, ustu kirmizi
+    RAVGDK=$((RAVG / 60)); RMEDDK=$((RMED / 60)); RMAXDK=$((RMAX / 60))
+    if [ "$RN" = "0" ]; then RCOL="#7a7a85"; elif [ "$RAVGDK" -lt 5 ]; then RCOL="#2ecc71";
+    elif [ "$RAVGDK" -lt 15 ]; then RCOL="#e6a23c"; else RCOL="#e74c3c"; fi
+
+    echo "<h2>Otonom kurtarma (son 24 saat &middot; mudahalesiz)</h2><div class=\"g\">"
+    echo "<div class=\"c\"><div class=\"k\">Ortalama kalkis</div><div class=\"v\" style=\"color:$RCOL\">${RAVGDK}<span class=\"s\">dk</span></div><div class=\"n\">${RAVG} sn &middot; kendiliginden toparlanma</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Medyan</div><div class=\"v\">${RMEDDK}<span class=\"s\">dk</span></div><div class=\"n\">tipik cihaz &middot; ${RMED} sn</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">En kotu</div><div class=\"v\">${RMAXDK}<span class=\"s\">dk</span></div><div class=\"n\">en uzun suren kurtarma</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Kurtarma sayisi</div><div class=\"v\">${RN}</div><div class=\"n\">reconnect ${RREC} &middot; restart ${RZOM} &middot; kendi ${RKEN}</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Su an dusuk</div><div class=\"v\" style=\"color:$([ "$DOWNN" = "0" ] && echo '#2ecc71' || echo '#e6a23c')\">${DOWNN}</div><div class=\"n\">kurtarilmayi bekliyor</div></div>"
+    echo "</div>"
+    echo "<div class=\"c\" style=\"margin-bottom:16px\"><div class=\"k\">Su an dusuk cihazlar</div><div style=\"margin-top:6px\">${DOWNL}</div><div class=\"n\">health-watch 7 dk'da bir tarar &middot; D-state esigi asilmadikca BEKLEMEZ</div></div>"
+
     echo "<div class=\"c\" style=\"margin-bottom:16px\"><div class=\"k\">Proxy cikis IP ornekleri</div><div style=\"font-size:14px;margin-top:6px;font-family:ui-monospace,monospace;color:#3498db\">${CIKIS:-bekleniyor}</div><div class=\"n\">TR residential olmali &middot; host IP: ${DCIP:-?} (bu IP cikarsa SIZINTI)</div></div>"
 
     echo '<div class="two">'

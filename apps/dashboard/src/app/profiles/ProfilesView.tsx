@@ -243,7 +243,7 @@ function proxyExitCountry(metadata?: Record<string, unknown> | null): string | n
   return pc.trim() ? pc.trim().toUpperCase() : null;
 }
 
-const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'WhatsApp Güncelle', 'Dosya gönder', 'Sil'] as const;
+const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'WhatsApp Güncelle', 'WA Sağlık Tara', 'Dosya gönder', 'Sil'] as const;
 
 const BULK_ICONS: Record<string, ReactNode> = {
   'Başlat': <Power size={13} />,
@@ -253,6 +253,7 @@ const BULK_ICONS: Record<string, ReactNode> = {
   'Proxy ata': <Network size={13} />,
   'Uygulama yükle': <Package size={13} />,
   'WhatsApp Güncelle': <MessageCircle size={13} />,
+  'WA Sağlık Tara': <RefreshCw size={13} />,
   'Dosya gönder': <Send size={13} />,
   'Sil': <Trash2 size={13} />
 };
@@ -498,11 +499,39 @@ export function ProfilesView({
 
   // Fleet telemetry derived for the HoloStat deck.
   const onlineCount = useMemo(() => devices.filter((d) => d.status === 'ONLINE').length, [devices]);
+  // Kurulumu SÜREN cihaz: satır zaten var ama Android henüz boot etmediği için
+  // durumu OFFLINE'dır. Kartta "⚡ Kuruluyor" rozetiyle görünür; sayaçlarda da
+  // İŞLEMDE'ye girmeli, HATA'ya DEĞİL (bkz. errorCount).
+  const isProvisioning = (d: DeviceProfile) =>
+    (d.metadata?.provisionStatus as string | undefined) === 'PROVISIONING';
+
   const busyCount = useMemo(
-    () => devices.filter((d) => d.status === 'STARTING' || d.status === 'UPDATING' || d.status === 'REBOOTING' || d.status === 'STOPPING').length,
+    () =>
+      devices.filter(
+        (d) =>
+          d.status === 'STARTING' ||
+          d.status === 'UPDATING' ||
+          d.status === 'REBOOTING' ||
+          d.status === 'STOPPING' ||
+          isProvisioning(d)
+      ).length,
     [devices]
   );
-  const errorCount = useMemo(() => devices.filter((d) => d.status === 'ERROR').length, [devices]);
+  // ★2026-08-18 HATA sayacı DURDURULAN cihazları da kapsar.
+  // Eskiden yalnızca status==='ERROR' sayılıyordu; ama panelde "Durduruldu" olarak
+  // görünen cihazın durumu OFFLINE'dır ve bu HİÇBİR karta girmiyordu — filo 110'dan
+  // 89'a düştüğünde üst kartlar hâlâ "HATA 0" gösteriyordu, yani operatör düşüşü
+  // kartlardan göremiyordu. Operatör açısından duran cihaz da müdahale gerektirir.
+  // (Geçiş durumları STARTING/STOPPING/UPDATING/REBOOTING İŞLEMDE'de kalır — kurulan
+  // ya da yeni başlatılan cihaz "hata" sayılmaz, boot bitince ONLINE'a geçer.)
+  // ⚠️KURULMAKTA OLAN CİHAZ HATA DEĞİLDİR. İlk sürümde yalnızca statüye bakıyordum;
+  // kurulum sırasında satır OFFLINE olduğu için yeni açılan cihaz anında "HATA 1"
+  // olarak sayıldı (canlı: "wa-x8ze ⚡ Kuruluyor" kartı HATA'ya düştü). Kurulumu
+  // sürenler yukarıda İŞLEMDE'ye alınır, burada elenir.
+  const errorCount = useMemo(
+    () => devices.filter((d) => !isProvisioning(d) && (d.status === 'ERROR' || d.status === 'OFFLINE')).length,
+    [devices]
+  );
 
   // Lazy-load the provisioning catalog the first time the create modal opens.
   useEffect(() => {
@@ -858,6 +887,38 @@ export function ProfilesView({
   // vardı → autodownload menüsü otomasyonu her sürümde farklıydı + en eskiler "güncelle"
   // duvarında açılmıyordu. Bu, hepsini filo-referans sürüme toplar. Dönen jobs
   // (deviceId↔jobId) ile canlı ilerleme modalı açılır.
+  // ★2026-08-18 WA SAĞLIK YENİDEN TARAMA.
+  // Kısıtlı/çıkış-yapmış damgası tek yönlüydü: hesap elle düzeltilse bile kartta
+  // sonsuza kadar kalıyordu. Bu, seçili cihazlara WHATSAPP_ACCOUNT_HEALTH işi açar;
+  // cihaz sessizce yoklanır (mesaj GÖNDERİLMEZ) ve sonuç sağlıklıysa damga otomatik
+  // kalkar, hâlâ kısıtlıysa geri konur. Seçim yoksa kısıtlı/çıkış olan TÜM hesaplar.
+  async function rescanWaHealth() {
+    setBusy(true);
+    setError(null);
+    try {
+      const ids = Array.from(selected);
+      const res = await fetch('/api/whatsapp/health/rescan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ids.length ? { deviceIds: ids } : {})
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.message ?? 'Sağlık taraması başlatılamadı');
+      const data = (body?.data ?? {}) as { queued?: number; skipped?: number };
+      const q = data.queued ?? 0;
+      setError(
+        q > 0
+          ? `✅ ${q} cihaz için sağlık taraması kuyruğa alındı${data.skipped ? ` (${data.skipped} atlandı: çevrimdışı)` : ''}. Sonuç birkaç dakika içinde kartlara yansır.`
+          : 'Taranacak kısıtlı/çıkış-yapmış hesap bulunamadı.'
+      );
+      setSelected(new Set());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Sağlık taraması başlatılamadı');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function updateWhatsapp() {
     if (selectionCount === 0) return;
     setBusy(true);
@@ -1181,6 +1242,7 @@ export function ProfilesView({
       return undefined;
     }
     if (action === 'WhatsApp Güncelle') return updateWhatsapp();
+    if (action === 'WA Sağlık Tara') return rescanWaHealth();
     if (action === 'Taşı') {
       setError(null);
       setMoveOpen(true);
@@ -1236,8 +1298,8 @@ export function ProfilesView({
         <div className="holo-stats-grid">
           <HoloStat label="TOPLAM CİHAZ" value={<span className="mono">{devices.length}</span>} sub="Filodaki profiller" tone="cyan" icon={<Smartphone size={15} />} />
           <HoloStat label="ÇEVRİMİÇİ" value={<span className="mono">{onlineCount}</span>} sub="Aktif çalışan" tone="success" icon={<Activity size={15} />} />
-          <HoloStat label="İŞLEMDE" value={<span className="mono">{busyCount}</span>} sub="Geçiş durumunda" tone="warning" icon={<RefreshCw size={15} />} />
-          <HoloStat label="HATA" value={<span className="mono">{errorCount}</span>} sub="Müdahale gerekli" tone="error" icon={<Power size={15} />} />
+          <HoloStat label="İŞLEMDE" value={<span className="mono">{busyCount}</span>} sub="Kurulan · başlatılan · yeniden başlatılan" tone="warning" icon={<RefreshCw size={15} />} />
+          <HoloStat label="HATA" value={<span className="mono">{errorCount}</span>} sub="Durduruldu / hatalı — müdahale gerekli" tone="error" icon={<Power size={15} />} />
         </div>
         {/* ★2026-07-30 CANLI BAĞLANTI GÖSTERGESİ. Yukarıdaki kartlar WebSocket
             olaylarıyla anlık güncelleniyor; bağlantı koparsa rakamlar sessizce

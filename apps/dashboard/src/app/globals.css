@@ -9015,3 +9015,206 @@ input, select, textarea, .field-input, .field-input--sm {
   border-color: color-mix(in srgb, var(--success) 38%, transparent);
   background: color-mix(in srgb, var(--success) 12%, transparent);
 }
+
+/* ── Canlı Operasyon (/canli) ★2026-08-18 ──────────────────────────────────
+   Akış hızlı ve satırlar dar: tablo kendi kapsayıcısında kayar, sayfa gövdesi
+   ASLA yatay kaymaz. Dar ekranda iki panel alt alta iner (console-grid ile aynı
+   kırılma noktası, 900px). */
+.canli-grid { gap: 1rem; align-items: start; }
+.canli-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.canli-filters { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; }
+
+/* Uzun akış listesi panel içinde kayar — sayfa boyu sonsuza uzamasın. */
+.canli-scroll { max-height: 60vh; overflow-y: auto; }
+/* İşler paneli genelde kısa: sabit yükseklik vermek altında koca boşluk bırakıyordu.
+   İçeriğe göre büyüsün, yalnızca taşarsa kaysın. */
+.canli-jobs { max-height: 60vh; }
+.canli-jobs .profile-table { min-width: 0; }
+
+/* ⚠️KOLON GENİŞLİKLERİ `table-layout: fixed` GEREKTİRİR.
+   İlk sürümde "Yol" hücresine `max-width:0; width:100%` hilesi yazmıştım ama tablo
+   otomatik yerleşimdeydi: tarayıcı Yol'a tüm alanı verip DİĞER kolonları harf
+   genişliğine sıkıştırdı — başlıklar dikey harflere çöktü (S/A/A/T alt alta).
+   Sabit yerleşimde aşağıdaki genişlikler aynen uygulanır ve taşan metin kesilir. */
+.canli-scroll .profile-table { table-layout: fixed; width: 100%; }
+/* min-width YALNIZCA istek tablosunda: 6 kolon dar panele sığmaz, sarmalayıcı
+   (.profile-table-wrap, overflow-x:auto) yatay kaydırır ve "Yol" ezilmez.
+   ⚠️İşler tablosuna UYGULANMAZ — 3 kolonu var; genel kural konunca o panel de
+   yatay kayıyor ve "Durum" kolonu dışarı taşıyordu. */
+.canli-req .profile-table { min-width: 760px; }
+.canli-scroll .profile-table th,
+.canli-scroll .profile-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Boş durum hücresi tek satıra sıkışmasın — açıklama metni sarmalı.
+   ⚠️`nowrap` mirası yüzünden metin panelden taşıp kesiliyordu ("…değiştiğinde"). */
+.canli-scroll .profile-table td:has(.table-empty) { white-space: normal; overflow: visible; }
+.canli-scroll .table-empty { padding: 1.4rem 1rem; }
+.canli-scroll .table-empty p { white-space: normal; max-width: 34ch; margin: 0 auto; font-size: 0.82rem; }
+/* Boş durumdaki dev ikon paneli gereksiz uzatıyordu — ölçekle. */
+.canli-scroll .empty-art { font-size: 1.6rem; width: 52px; height: 52px; }
+
+/* Genişlikler GERÇEK içeriğe göre: "03:49:38" monospace ~104px, "Yöntem" başlığı
+   ~88px, "Sunucu aracısı" ~150px. Dar verince başlık/değer "…" ile kesiliyordu. */
+.canli-col-time { width: 104px; }
+.canli-col-method { width: 88px; }
+.canli-col-src { width: 152px; }
+.canli-col-code { width: 84px; }
+.canli-col-ms { width: 78px; }
+
+/* Yol kalan alanı alır; uzun querystring kesilir, tamamı title'da görünür. */
+.canli-path { font-size: 0.8rem; }
+
+/* Satır hizası: hücreler dikeyde ORTALI olsun. `status-chip` (inline-flex) diğer
+   hücrelerden yüksek olduğu için varsayılan `baseline` hizasında "Kod" sütunu
+   komşularından kayık görünüyordu. Ayrıca .status-dot'un margin-right'ı ile
+   .status-chip'in gap'i ÜST ÜSTE biniyordu (6px + 0.4rem) — tek boşluk yeter. */
+.canli-scroll .profile-table td,
+.canli-scroll .profile-table th { vertical-align: middle; }
+.canli-scroll .status-chip .status-dot { margin-right: 0; }
+/* Satırlar hızlı akıyor — ince ayırıcı okumayı kolaylaştırır. */
+.canli-scroll .profile-table tbody tr:nth-child(odd) { background: rgba(255, 255, 255, 0.014); }
+
+/* İşler panelinde "Tür" kolonu kalanı alsın; Saat + Durum sabit. */
+.canli-jobs .canli-col-src { width: 132px; }
+
+.canli-note {
+  margin-top: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+/* Etkin filtre çipi — mevcut birincil vurgu rengiyle. */
+.btn-xs.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+@media (max-width: 900px) {
+  .canli-grid { grid-template-columns: 1fr; }
+  .canli-scroll { max-height: 52vh; }
+  /* Dar ekranda "Yöntem" ve "Kaynak" kolonlarını gizle — Saat + Yol + Kod + Süre
+     kalır, satır sıkışmadan okunur. (Yöntem zaten yolun anlamını değiştirmiyor;
+     kaynak filtresi üstteki çiplerden görülüyor.) */
+  /* YALNIZCA istek tablosu (.canli-req). İşler tablosu 3 kolonlu — orada bu kural
+     "Tür" kolonunu gizlerdi. */
+  .canli-req .profile-table th:nth-child(2),
+  .canli-req .profile-table td:nth-child(2),
+  .canli-req .profile-table th:nth-child(4),
+  .canli-req .profile-table td:nth-child(4) { display: none; }
+}
+
+@media (max-width: 640px) {
+  .canli-col-time { width: 68px; }
+  .canli-col-code { width: 74px; }
+  .canli-col-ms { width: 64px; }
+  .canli-note { font-size: 0.72rem; }
+}
+
+/* ── /profiles MOBİL OPTİMİZASYON ★2026-08-18 ─────────────────────────────────
+   Operatör sahada telefondan giriyor. Masaüstü düzeni telefonda kullanılmazdı:
+   kart aksiyonları 2 kolonda sıkışıyor, toplu-işlem çubuğu 10 butonla taşıyor,
+   etiket filtresi satırlarca yer kaplıyordu. Dokunma hedefleri de küçüktü.
+   ⚠️Hover'a bağlı hiçbir bilgi bırakılmadı: dokunmatikte hover YOKTUR, `title`
+   ipuçları telefonda görünmez — bu yüzden kritik bilgi metinde/rozette durur. */
+@media (max-width: 620px) {
+  /* Üst sayaçlar: tek kolon çok yer yiyordu → 2'li ızgara, kompakt. */
+  .profiles .holo-stats-grid { grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
+  .profiles .holo-stat { padding: 0.7rem 0.75rem; }
+  .profiles .holo-stat .metric-value,
+  .profiles .holo-stat .mono { font-size: 1.35rem; }
+
+  /* Toplu işlemler: sarmak yerine YATAY KAYDIR — dikeyde 3 satır yer kaplamasın. */
+  .profiles .action-buttons,
+  .profiles .page-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 0.4rem;
+    padding-bottom: 0.25rem;
+  }
+  .profiles .action-buttons::-webkit-scrollbar,
+  .profiles .page-actions::-webkit-scrollbar { display: none; }
+  .profiles .action-buttons > button { flex: 0 0 auto; }
+
+  /* Etiket filtresi de tek satırda kaysın (20+ etiket ekranı doldurmasın). */
+  .tag-filter-row {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 0.35rem;
+  }
+  .tag-filter-row::-webkit-scrollbar { display: none; }
+  .tag-filter-row > * { flex: 0 0 auto; }
+
+  /* Kart aksiyonları: 2 kolon telefonda dar → tam genişlik, dokunma hedefi 44px
+     (Apple/Google erişilebilirlik alt sınırı). */
+  .card-actions { grid-template-columns: repeat(2, 1fr); gap: 0.45rem; }
+  .card-action-btn { min-height: 44px; font-size: 0.78rem; padding: 0.5rem 0.4rem; }
+
+  /* Kart iç boşlukları ve uzun değerler (ID/serial) taşmasın. */
+  .profile-card { padding: 0.85rem; }
+  .profile-card .mono { overflow-wrap: anywhere; }
+
+  /* Filtre alanları alt alta ve tam genişlik — yan yana sıkışmasın. */
+  .profiles .field-row { flex-direction: column; gap: 0.6rem; }
+  .profiles .field-input,
+  .profiles select { width: 100%; }
+}
+
+/* Dokunmatik cihazlarda hover efektlerini kapat: parmakla dokununca "takılı hover"
+   kalıyor ve kart sürekli yukarı kalkmış görünüyordu. */
+@media (hover: none) {
+  .profile-card:hover { transform: none; }
+  .card-action-btn:hover:not(:disabled) { transform: none; }
+  /* Hover'da belirip kaybolan yeniden-adlandırma butonu dokunmatikte HİÇ görünmezdi. */
+  .profile-card .card-rename-btn { opacity: 0.6; }
+}
+
+/* ── SİTE GENELİ MOBİL/DOKUNMATİK ★2026-08-18 ────────────────────────────────
+   Sayfa bazlı kurallar zaten vardı (login 27, landing 24 kural + clamp tipografi);
+   burada onların ATLADIĞI ortak sorunlar kapatılıyor. */
+
+/* 1) Dokunmatikte hover YOKTUR: hover'da beliren kontroller telefonda ERİŞİLEMEZ
+      kalıyordu; hover'da uygulanan transform ise dokununca "takılı" kalıyordu. */
+@media (hover: none) {
+  .btn-primary:hover, .btn-ghost:hover, .btn-secondary:hover,
+  .tag-chip:hover, .holo-stat:hover { transform: none; }
+  /* Yalnızca hover'da görünen ikon/aksiyonlar kalıcı (soluk) görünür olsun. */
+  [class*='-hover-only'], .row-hover-action { opacity: 0.65 !important; }
+}
+
+/* 2) Dokunma hedefi alt sınırı (Apple/Google: 44px). Küçük ikon butonları
+      telefonda ıskalanıyordu. Masaüstünde boyut DEĞİŞMEZ. */
+@media (max-width: 620px) {
+  button, .btn-primary, .btn-ghost, .btn-secondary, .tag-chip, select, .field-input {
+    min-height: 42px;
+  }
+  .btn-xs, .tag-chip-sm { min-height: 34px; }
+
+  /* 3) Yatay taşma koruması — tek bir geniş öğe tüm sayfayı kaydırıyordu. */
+  html, body { overflow-x: hidden; }
+  table { max-width: 100%; }
+
+  /* 4) Modal telefonda neredeyse tam ekran olsun (kenarda kaybolmasın). */
+  .modal, .modal-wide { width: 96vw; max-height: 88vh; overflow-y: auto; }
+
+  /* 5) Uzun kimlik/serial değerleri satır kırsın, kutuyu patlatmasın. */
+  .mono { overflow-wrap: anywhere; }
+}
+
+/* 6) iOS'ta 16px altı input yazı boyutu sayfayı ZORLA yakınlaştırır (istenmeyen
+      zoom + kaydırma). Tüm form alanlarında en az 16px. */
+@media (max-width: 620px) {
+  input, select, textarea, .field-input { font-size: 16px; }
+}

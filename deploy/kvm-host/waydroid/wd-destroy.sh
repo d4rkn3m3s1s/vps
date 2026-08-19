@@ -50,11 +50,17 @@ fi
 # port, wd-run shell + dbus). Kill them by their instance-scoped patterns so "destroy" really
 # frees everything. Patterns are anchored to THIS instance name (guarded [A-Za-z0-9_-] above),
 # so they can't match another instance. Best-effort; SIGTERM then SIGKILL for stragglers.
-for pat in "wd-run.sh $INSTANCE" "wd-run.sh $INSTANCE\$" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE" "wayland-$INSTANCE" "dnsmasq.*waydroid-$INSTANCE"; do
+# ★★★2026-08-18 ONEK ESLESMESI DUZELTILDI — komsu cihazlari olduruyordu.
+# `pkill -f "wd-run.sh mi18"` deseni mi180..mi189'u DA oldururdu (sonu bagli degil).
+# CANLI: mi18/mi30/mi9 silinince 20 cihaz dustu (mi180-189, mi300-309, mi90-98).
+# Instance adlari mi<rakam> oldugundan catisma yalnizca "sonuna rakam eklenmis"
+# adlarla olur; ($|[^0-9]) bunu tam keser. ⚠️Bu deseni ANCHOR'SUZ birakma.
+_A='($|[^0-9])'
+for pat in "wd-run\.sh $INSTANCE$_A" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE\.conf" "wayland-$INSTANCE$_A"; do
   pkill -f "$pat" 2>/dev/null || true
 done
 sleep 1
-for pat in "wd-run.sh $INSTANCE" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE" "wayland-$INSTANCE"; do
+for pat in "wd-run\.sh $INSTANCE$_A" "xdg-$INSTANCE/bus" "redsocks-inst-$INSTANCE\.conf" "wayland-$INSTANCE$_A"; do
   pkill -9 -f "$pat" 2>/dev/null || true
 done
 # Remove this instance's redsocks config (else /etc fills with dead per-instance confs).

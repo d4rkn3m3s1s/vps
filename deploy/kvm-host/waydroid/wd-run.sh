@@ -15,12 +15,31 @@ date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
 #   (b) "zaten calisiyor" yolunda — eskiden orada `exit 0` vardi ve GOZCUYU OLDURUYORDU.
 # Container olurse ya da icerideki Android cevapsizlasirsa `exit 1` -> systemd
 # `Restart=on-failure` ile cihazi ~70 sn'de kendi kaldirir.
+# ★★★2026-08-19 pgrep MALIYETI — gozcu tek basina ~3.1 CEKIRDEK yiyordu.
+# `pgrep -f` TUM /proc'u tarar ve her surecin cmdline'ini okur. Bu makinede
+# 14.198 surec / 153.424 thread var -> her cagri ~14 bin dosya okumasi. Gozcu
+# 140 cihazda 30 sn'de bir cagiriyordu = saniyede ~66 bin okuma.
+# OLCUM (top -bn2, surec adina toplam): pgrep 306.8% = ~3.1 cekirdek.
+# (Kiyas: com.whatsapp 679%, surfaceflinger 426% — bunlar kacinilmaz, pgrep DEGIL.)
+# FIX: pid onbellege alinir, /proc/<pid>/cmdline DOGRUDAN okunur (TEK dosya).
+# Tam tarama yalnizca onbellekteki pid oldugunde yapilir; davranis AYNI.
+# ⚠`tr` KULLANMA: NUL karakterini kabuk argumaninda tasiyamazsin (onceki yama
+# dosyaya gercek 0x00 yazdi ve kontrol her zaman basarisiz olurdu). `grep -a`
+# NUL iceren cmdline dosyasini dogrudan okur.
+_wd_lxc_pid=""
+wd_lxc_alive() {
+  if [ -n "$_wd_lxc_pid" ] && grep -aq "waydroid\.$INST/lxc" "/proc/$_wd_lxc_pid/cmdline" 2>/dev/null; then
+    return 0
+  fi
+  _wd_lxc_pid=$(pgrep -f "waydroid\.$INST/lxc" 2>/dev/null | head -1)
+  [ -n "$_wd_lxc_pid" ]
+}
 wd_watchdog_loop() {
   echo "WATCHDOG_START $INST"
   local _miss=0 _dead=0 _ip
   while :; do
     sleep 30
-    if ! pgrep -f "waydroid\.$INST/lxc" >/dev/null 2>&1; then
+    if ! wd_lxc_alive; then
       # (1) Container SURECI yok — kesin olum.
       _miss=$((_miss + 1)); _dead=0
       # 2 ust uste kacirma (60 sn) = gercekten olmus; tek seferlik yarislara takilma

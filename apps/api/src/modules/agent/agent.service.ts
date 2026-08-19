@@ -205,7 +205,18 @@ export class AgentService {
         ]
       },
       orderBy: { createdAt: 'asc' },
-      take: Math.min(cap * 4, 100)
+      // ★★★2026-08-19 ADAY PENCERESI BUYUTULDU — is ACLIGININ kokuydu.
+      // Asagidaki dongu parti basina CIHAZ BASINA YALNIZCA 1 is alir. Aday
+      // penceresi 96 iken, filoda bekleyen is sayisi bunu asinca pencereye
+      // giremeyen cihazlarin isleri HIC GORULMUYOR ve 15 dk sonra
+      // "kuyrukta beklerken hic alinmadi" diye DUSUYOR — cihaz bostayken bile.
+      // CANLI OLCUM (18 saat): 50 WHATSAPP_RECEIPTS + 8 WHATSAPP_SEND boyle
+      // dustu (ort. 930 sn bekleyip). Isler iki cihazda toplandi (35 ve 18),
+      // oysa o cihazlar 18 saatin yalnizca %3'unde mesguldu.
+      // Pencereyi buyutmek SEMANTIGI DEGISTIRMEZ: dongu zaten `cap` kadar is
+      // alinca kiriliyor; yalnizca daha fazla cihaz aday olabiliyor. Maliyet
+      // tek indeksli okumada 100 yerine 500 satir — ihmal edilebilir.
+      take: Math.min(cap * 20, 500)
     });
 
     const claimedJobs: AgentJob[] = [];

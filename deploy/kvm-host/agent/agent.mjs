@@ -1178,9 +1178,23 @@ async function vtouchInfo(serial) {
 // If the device supports root+vtouch but the node is currently missing (after a
 // reboot / `stop && start`), re-run the idempotent bring-up script to restore
 // the touchscreen + integrity spoof. Cheap no-op when already up.
+// ★★★2026-08-19 BASARISIZ BRINGUP GERI-ALIM PENCERESI — her gonderimden 3.4 sn kesiyordu.
+// OLCUM (FLEET_SEND_TIMING dokumu): `ensureTouch` +3453 ms — gonderimin ILK ve
+// ikinci en buyuk kalemi. Kalem `vtouchInfo` DEGIL (getevent -pl olculdu: 35-44 ms),
+// tamami `wa-bringup.sh` calistirma denemesi.
+// KOK: bu imajda vtouch OLUSMUYOR ama `wa-bringup.sh` cihazda VAR, bu yuzden
+// ensureVtouch her seferinde onu calistirmayi deniyor; `VT_CACHE_MS` 60 sn oldugundan
+// pratikte HER gonderimde tekrarlaniyor. Sonuc hep basarisiz, maliyet hep odeniyor.
+// GUVENLI: vtouch yoksa `tapReal` zaten `input tap`'e dusuyor (calisan yol bu).
+// Yalnizca uzun-basma vtouch ister; 30 dk'lik yeniden deneme penceresi, vtouch
+// sonradan olusabilecek bir cihazi (orn. reboot sonrasi) hala yakalar.
+const vtBringupFailAt = new Map();   // serial -> son BASARISIZ bringup denemesi (ms)
+const VT_BRINGUP_RETRY_MS = Number(process.env.FLEET_VT_BRINGUP_RETRY_MS || 1800000); // 30 dk
 async function ensureVtouch(serial) {
   const info = await vtouchInfo(serial);
   if (info.has) return true;
+  const failedAt = vtBringupFailAt.get(serial) || 0;
+  if (Date.now() - failedAt < VT_BRINGUP_RETRY_MS) return false;   // yakinda denendi, bosuna odeme
   // Provision drops wa-bringup.sh at /data/local/tmp; a rebooted device may still
   // have the persisted copy at /data/adb. Try both. /dev/uinput does NOT exist on
   // a fresh Waydroid boot — vtouch can't register its node without it, so create
@@ -1194,6 +1208,7 @@ async function ensureVtouch(serial) {
     `mknod /dev/uinput c 10 223 2>/dev/null; chmod 666 /dev/uinput; sh ${script}`], 40000).catch(() => '');
   vtouchCache.delete(serial);
   const after = await vtouchInfo(serial);
+  if (!after.has) vtBringupFailAt.set(serial, Date.now());   // basarisiz -> pencereyi baslat
   return after.has;
 }
 

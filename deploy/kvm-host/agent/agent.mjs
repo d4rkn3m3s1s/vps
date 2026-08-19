@@ -11293,6 +11293,7 @@ async function pollWhatsappMedia(serial) {
 // Receipt kismi ise EKRANI okur (dumpsys + scrape) — job ile GERCEKTEN carpisir.
 // Bu yuzden ikisi AYRILDI: SQL her zaman calisir, ekran isi yalnizca cihaz bostayken.
 let _inboxTickNo = 0;   // receipt taramasi icin tur sayaci (bkz. asagidaki not)
+const _waIdleWhitelisted = new Set();   // pil muafiyeti verilmis cihazlar (ajan omru)
 async function pollWhatsappInbox(serial, busy = false) {
   await pollInboxFromStore(serial);
   // ★★★2026-08-19 RECEIPT AYRI TEMPOYA ALINDI — gelen mesaj gecikmesinin kalan kalemi.
@@ -11313,6 +11314,17 @@ async function pollWhatsappInbox(serial, busy = false) {
   // launcher'daydi. Olcum: filoda 2/140 cihaz bu durumdaydi.
   // Ucuz: `pidof` ~30-50 ms ve YALNIZCA olu bulunca `am start` calisir.
   if (_inboxTickNo % 12 === 0) {
+    // ★★★2026-08-19 PIL MUAFIYETI — cihaz basina BIR KEZ (ajan omru boyunca).
+    // Android, arka plana dusen WhatsApp'i "app idle" + arka plan ANR zinciriyle
+    // olduruyordu (canli log: "Killing com.whatsapp (adj 700): bg anr"). Muafiyet
+    // bu zinciri BASINDAN keser. 140 cihaza elle uygulandi, ama HICBIR kurulum
+    // betiginde yok -> YENI cihazlar alamiyordu ve sessizce sagir kaliyordu.
+    // Burada yapmak hem yeni hem mevcut cihazlari kapsar; idempotent ve ucuz
+    // (ajan omru boyunca cihaz basina TEK adb cagrisi).
+    if (!_waIdleWhitelisted.has(serial)) {
+      _waIdleWhitelisted.add(serial);
+      await adb(serial, ['shell', 'dumpsys', 'deviceidle', 'whitelist', `+${WA_PKG}`]).catch(() => undefined);
+    }
     const pid = await adb(serial, ['shell', 'pidof', WA_PKG]).catch(() => '');
     if (!String(pid || '').trim()) {
       await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`]).catch(() => undefined);

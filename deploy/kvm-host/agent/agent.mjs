@@ -535,38 +535,169 @@ async function waHealthProbe(serial) {
   await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
   // CANLI OLCUM: `monkey -c LAUNCHER` bu imajda WhatsApp'i ACMIYOR (ekranda launcher
   // kaliyor) -> yoklama ana ekrani okuyup yanlislikla "sohbet yok" diyordu. Dogru yol:
-  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.HomeActivity`]).catch(() => undefined);
-  await sleep(4500);
-  const foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  // ★2026-08-18 GENIS SURUM DESTEGI: ana ekran aktivitesinin adi surumden surume
+  // degisiyor. Sirayla denenir; ilki on plana getirirse digerleri atlanir.
+  //   • com.whatsapp.home.ui.HomeActivity  → yeni surumler (canli dogrulandi)
+  //   • com.whatsapp.HomeActivity          → eski surumler
+  //   • LAUNCHER intent                    → son care (ad degisse bile calisir)
+  // ⚠️`monkey -c LAUNCHER` bu imajda WhatsApp'i ACMIYOR — bu yuzden `am start` kullaniliyor.
+  const WA_HOME_ACTS = ['com.whatsapp.home.ui.HomeActivity', 'com.whatsapp.HomeActivity'];
+  let foc = '';
+  for (const act of WA_HOME_ACTS) {
+    await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/${act}`]).catch(() => undefined);
+    await sleep(3500);
+    foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    if (/com\.whatsapp\//i.test(foc)) break;
+  }
+  if (!/com\.whatsapp\//i.test(foc)) {
+    await adb(serial, ['shell', 'am', 'start', '-a', 'android.intent.action.MAIN',
+      '-c', 'android.intent.category.LAUNCHER', '-n', `${WA_PKG}/${WA_HOME_ACTS[0]}`]).catch(() => undefined);
+    await sleep(3000);
+    foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  }
   // ★ON PLAN DOGRULAMASI: WhatsApp gercekten acilmadiysa HICBIR hukum verme. Bunsuz
   // launcher/ANR ekrani "sorun yok" gibi okunur ve gercek bir kisit gozden kacar.
   if (!/com\.whatsapp\//i.test(foc)) return { state: 'UNKNOWN', evidence: 'WhatsApp on plana gelmedi', unverified: true };
+
+  // ★★★2026-08-19 ACILIS (SPLASH) EKRANINDA HUKUM VERME — yoklamanin ban'i
+  // KACIRMA YOLU TAM OLARAK BUYDU.
+  // CANLI OLCUM (+905350171796): soguk baslatmada WhatsApp once `com.whatsapp.Main`
+  // acilis ekranini gosteriyor, ban ekranina SONRA geciyor. Eski yoklama 4.5sn'de
+  // bakip `Main`'i goruyordu → "WhatsApp acildi, ban yok" deyip devam ediyor ve
+  // hesabi ACTIVE isaretliyordu. (WhatsApp SICAKKEN ban ekrani ~1sn'de geliyor —
+  // iki olcum turunun ikisinde de +1.0sn'de BanAppealActivity'ydi.)
+  // Bu yuzden `Main` gorulurse KARAR VERILMEZ, ekranin yerlesmesi beklenir.
+  for (let i = 0; i < 3 && /com\.whatsapp[./]+Main(?![A-Za-z])/i.test(foc); i += 1) {
+    await sleep(2500);
+    foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => foc);
+  }
   let scr = await texts();
-  // 1) YASAKLI — ban ekrani / ban metni
-  if (/BanAppeal|userban/i.test(foc) || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz|banned|suspended|yasakl|askıya/i.test(scr)) {
-    return { state: 'BANNED', evidence: scr.slice(0, 300) };
+  // ★★★2026-08-18 BAN TESPITI GOREV YIGININA DA BAKAR — odak TEK BASINA YETMIYOR.
+  // KOK: yoklama `force-stop` YAPMIYOR; WhatsApp zaten acik ve bir SOHBET ekranindaysa
+  // `am start` mevcut gorevi one getiriyor, ban ekrani HIC gorunmuyor.
+  // CANLI KANIT (+905350171796): yoklama `state: ACTIVE` dondu ve kaniti bir sohbet
+  // ekraniydi ("Video call | Voice call | Messages and calls are end-to-end…"), oysa
+  // cihaz force-stop sonrasi BanAppealActivity aciyordu → panel hesabi ACTIVE
+  // gosteriyordu, operator o hesaba is atsa BOSA giderdi.
+  // Yigin okumasi ucuz (tek `dumpsys`) ve bayat on-plan durumundan ETKILENMEZ:
+  // ayni cihazda yiginda 23 BanAppeal kaydi vardi.
+  const acts = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']).catch(() => '');
+  // 1) YASAKLI — ban ekrani / ban metni / gorev yigininda ban aktivitesi
+  if (/BanAppeal|userban/i.test(foc) || /BanAppeal|userban/i.test(acts)
+      || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz|banned|suspended|yasakl|askıya/i.test(scr)) {
+    return { state: 'BANNED', evidence: (/BanAppeal|userban/i.test(acts) && !/BanAppeal|userban/i.test(foc)
+      ? 'gorev yiginda BanAppealActivity (on planda bayat sohbet) | ' : '') + scr.slice(0, 260) };
   }
   // 2) CIKIS YAPILMIS — kayit/EULA ekrani
   if (/whatsapp\/.*(registration|\.EULA|RegisterName|verifynumber)/i.test(foc)
       || /welcome to whatsapp|agree and continue|kabul et ve devam/i.test(scr)) {
     return { state: 'LOGGED_OUT', evidence: scr.slice(0, 300) };
   }
-  // 3) KISITLI — var olan bir sohbeti AC (mesaj YOK) ve banner/read-only ara.
-  // CANLI: bu surumde sohbet satiri 'contact_row_container' (conversations_row_contact_name YOK).
-  const row = await h.find('com.whatsapp:id/contact_row_container', 'id').catch(() => null)
-    || await h.find('com.whatsapp:id/conversations_row_contact_name', 'id').catch(() => null);
-  if (!row) return { state: 'ACTIVE', evidence: 'sohbet listesi acik, sohbet yok (kisit dogrulanamadi)', unverified: true };
+  // 3) KISITLI — GERCEK bir kisiyle sohbet ac (mesaj YOK) ve banner/read-only ara.
+  // ★★★2026-08-19 RESMI "WhatsApp" HESABI ATLANIR — 42 SAGLAM HESABI "KISITLI"
+  // ISARETLEYEN KOK TAM OLARAK BUYDU.
+  // Eski kod listedeki ILK sohbeti aciyordu. WhatsApp'in kendi promo mesajlari
+  // listeyi surekli basa tasidigi icin acilan sohbet cogu zaman RESMI HESAP
+  // oluyordu — ve o sohbet DOGASI GEREGI tek yonlu:
+  //   `read_only_chat_info` HER ZAMAN var  +  yazma kutusu (`entry`) YOK
+  // → yoklama "RESTRICTED" diyor, monotonik kural yuzunden hesap KALICI olarak
+  // parkta kaliyordu. CANLI KANIT: panelde KISITLI gorunen 46 cihazin 42'sinde
+  // WhatsApp tamamen calisir durumdaydi (mavi cift tikli giden mesajlar dahil);
+  // acilan sohbetin altinda "Only WhatsApp can send messages" yaziyordu.
+  const allNodes = await h.dump().catch(() => []);
+  const rowNodes = allNodes
+    .filter((n) => /contact_row_container/i.test(String(n.resId || '')))
+    .sort((a, b) => (a.cy || 0) - (b.cy || 0));
+  const rowName = (r) => {
+    const b = r.bounds || [0, 0, 0, 0];
+    const named = allNodes.find((n) => /conversations_row_contact_name/i.test(String(n.resId || ''))
+      && (n.cy || 0) >= b[1] && (n.cy || 0) <= b[3] && (n.cx || 0) >= b[0] && (n.cx || 0) <= b[2]);
+    return String((named && (named.text || named.desc)) || '').trim();
+  };
+  // Resmi hesabin satir adi TAM OLARAK "WhatsApp"; gercek kisilerde numara/isim olur.
+  const candidates = rowNodes.filter((r) => !/^whatsapp$/i.test(rowName(r)));
+  const row = candidates[0]
+    || (rowNodes.length ? null : await h.find('com.whatsapp:id/conversations_row_contact_name', 'id').catch(() => null));
+  if (!row) {
+    // ★★★2026-08-19 SOHBETI OLMAYAN HESAP ICIN "YENI SOHBET" SINAMASI.
+    // Gercek sohbeti olmayan hesapta (yalnizca resmi WhatsApp sohbeti var, ya da
+    // hic sohbet yok) hicbir sey dogrulanamiyordu; hesap eski/HATALI "KISITLI"
+    // etiketiyle SONSUZA KADAR parkta kaliyordu — canli olarak 16 cihaz oyleydi.
+    // WhatsApp kisitli hesapta yeni sohbet ekranini ACMAZ, "yeni sohbet
+    // baslatamazsiniz" uyarisi verir; saglam hesapta ContactPicker acilir.
+    // CANLI KANIT (+905348375022): ContactPicker acildi — "New group / New contact
+    // / New community" + kisi listesi gorundu → hesap kisitli DEGIL.
+    // ⚠️⚠️`h.find(...,'id')` KULLANMA — findNode SUBSTRING esleser (satir ~8092:
+    // `.includes(q)`), ve dugum siralamasinda `fab_second` ONCE gelir:
+    //   "com.whatsapp:id/fab_second".includes("com.whatsapp:id/fab") === true
+    // CANLI KANIT: yoklama "New chat" yerine content-desc="Message your assistant"
+    // (Meta AI) butonuna basiyordu → ContactPicker hic acilmiyor → 8 cihaz
+    // "kisit DOGRULANAMADI" ile parkta kaliyordu. TAM kimlik esleseceksin.
+    const fab = allNodes.find((n) => String(n.resId || '') === 'com.whatsapp:id/fab')
+      || allNodes.find((n) => /^new chat$/i.test(String(n.desc || '')));
+    if (!fab) return { state: 'ACTIVE', evidence: 'sohbet yok, yeni-sohbet butonu bulunamadi — kisit DOGRULANAMADI', unverified: true };
+    await h.tapNode(fab).catch(() => undefined);
+    await sleep(3000);
+    const pickFoc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    const pickScr = await texts();
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(pickScr)) {
+      return { state: 'RESTRICTED', evidence: 'yeni sohbet ENGELLENDI | ' + pickScr.slice(0, 240) };
+    }
+    if (/ContactPicker|contact\.ui\.picker/i.test(pickFoc)) {
+      return { state: 'ACTIVE', evidence: 'yeni sohbet ekrani acildi, kisit YOK | ' + pickScr.slice(0, 200) };
+    }
+    return { state: 'ACTIVE', evidence: 'sohbet yok, yeni sohbet ekrani acilmadi — kisit DOGRULANAMADI', unverified: true };
+  }
   await h.tapNode(row).catch(() => undefined);
   await sleep(2500);
+  // ★★★2026-08-19 DOKUNUSUN ETKISI DOGRULANIR — sessiz kacan dokunus KISITLI
+  // ETIKETINI KALICI YAPIYORDU. Sohbet acilmadiysa ekran hala sohbet LISTESIDIR;
+  // orada yazma kutusu (`entry`) yoktur → yoklama UNKNOWN doner → hesap eski
+  // (hatali) etiketiyle parkta kalir. CANLI: 192.168.65.29 ust uste 3 turda
+  // UNKNOWN dondu, oysa ayni noktaya `input tap` ELLE basildiginda Conversation
+  // ACILIYORDU. Sebebi ne olursa olsun (dugum koordinati/zamanlama), etkiyi
+  // ODAKTAN dogrulayip bir kez daha, dogrudan koordinatla deniyoruz.
+  let convFoc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  if (!/com\.whatsapp\.Conversation/i.test(convFoc)) {
+    await adb(serial, ['shell', 'input', 'tap', String(row.cx), String(row.cy)]).catch(() => undefined);
+    await sleep(2500);
+    convFoc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+  }
   scr = await texts();
-  const readOnly = await h.find('com.whatsapp:id/read_only_chat_info', 'id').catch(() => null)
-    || await h.find('com.whatsapp:id/read_only_chat_info_content', 'id').catch(() => null);
-  const entry = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+  // IKINCI KALKAN: satir adindan kacsa bile acilan ekran resmi hesap/kanal ise
+  // HUKUM VERME — "read only" orada hesabin degil, kanalin ozelligidir.
+  if (/only whatsapp can send messages|official whatsapp account|yalnızca whatsapp mesaj gönderebilir/i.test(scr)) {
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    return { state: 'ACTIVE', evidence: 'acilan sohbet resmi WhatsApp hesabi — kisit DOGRULANAMADI', unverified: true };
+  }
+  // ★★★2026-08-19 BOS DUMP KARARI BOZUYORDU — tek seferlik `find` YETMEZ.
+  // Bu GPU'suz Waydroid host'unda `uiautomator dump` Conversation ekraninda
+  // araliklı olarak BOS doner. Bos dump'ta `entry` bulunamaz → yoklama UNKNOWN
+  // der → hesap eski (hatali) etiketiyle parkta KALIR.
+  // CANLI KANIT (192.168.65.29): 4 turda ust uste UNKNOWN dondu; ekran
+  // goruntusunde sohbet ACIKTI, yazma kutusu ve YESIL GONDER butonu duruyordu
+  // (kutuda "cevat bey*" taslagi vardi) — dump ise 0 dugum donduruyordu.
+  // Cozum: `dumpOrRetry` ile birkac kez dene ve yazma yetenegini TEK bir id'ye
+  // degil, birden fazla isarete bak (entry / send / emoji).
+  const convNodes = await h.dumpOrRetry({ tries: 4, gapMs: 700 }).catch(() => []);
+  const hasExact = (id) => convNodes.some((n) => String(n.resId || '') === id);
+  const readOnly = hasExact('com.whatsapp:id/read_only_chat_info')
+    || hasExact('com.whatsapp:id/read_only_chat_info_content');
+  const entry = hasExact('com.whatsapp:id/entry')
+    || hasExact('com.whatsapp:id/send')
+    || hasExact('com.whatsapp:id/emoji_picker_btn');
   let state = 'ACTIVE';
   if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(scr) || readOnly) state = 'RESTRICTED';
+  else if (!convNodes.length) state = 'UNKNOWN';  // dump BOS geldi -> ekrani GORMEDIK, karar VERME
   else if (!entry) state = 'UNKNOWN';   // yazma kutusu yok ama banner da yok -> karar VERME
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
-  await adb(serial, ['shell', 'am', 'force-stop', WA_PKG]).catch(() => undefined);
+  // ★★★2026-08-19 YOKLAMA WhatsApp'i ACIK BIRAKIR — eskiden `force-stop` ile bitiyordu.
+  // KAPALI WhatsApp'a MESAJ ULASMAZ. Yoklama 20 dk'da 2 cihaza dokunuyor, yani her
+  // turda iki cihazin gelen kutusu SESSIZCE susuyordu — panelde hicbir belirti yok.
+  // CANLI OLCUM (2026-08-19): filoda 5 cihazda WhatsApp kapaliydi.
+  // (Ayni tuzak daha once medya betiginde 27 cihazi susturmustu.)
+  await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/${WA_HOME_ACTS[0]}`]).catch(() => undefined);
   return { state, evidence: scr.slice(0, 300) };
 }
 
@@ -7914,7 +8045,18 @@ async function uiDumpXml(serial) {
   // unreadable. Since state detection now leads with dumpsys-window (curFocus, which
   // never hangs) and actions use raw coordinate taps, a short dump timeout keeps the
   // loop responsive and lets it fall back to focus/coordinate paths fast.
-  await adbT(serial, ['shell', 'uiautomator', 'dump', '/sdcard/uidump.xml'], 5000).catch(() => undefined);
+  // ★★★2026-08-19 BAYAT DUMP DOSYASI — dump BASARISIZ olunca ESKI ekran okunuyordu.
+  // `uiautomator dump` bu ekranda (Conversation) hang/timeout edebiliyor; o zaman
+  // /sdcard/uidump.xml BIR ONCEKI ekranin icerigiyle YERINDE KALIYOR ve `cat` onu
+  // donduruyor → cagiran taraf YANLIS ekrani "canli" saniyor. `exec-out` yalnizca
+  // "yazilan baytlari taze gor" sorununu cozer, DOSYANIN BAYATLIGINI cozmez.
+  // CANLI KANIT (192.168.65.29): yoklama 5 turda ust uste BIREBIR AYNI kaniti
+  // dondurdu ("Ask Meta AI or Search | ... | Swipe down to reveal a"), oysa ekranda
+  // sohbet ACIKTI (yazma kutusu + yesil gonder butonu goruluyordu) → hesap sonsuza
+  // kadar UNKNOWN/parkta kaliyordu.
+  // FIX: dump'tan ONCE dosyayi sil — basarisiz dump artik '' doner (= "goremedim"),
+  // bayat icerik DEGIL. Tek `shell` cagrisinda birlestirildi, EK TUR MALIYETI YOK.
+  await adbT(serial, ['shell', 'rm -f /sdcard/uidump.xml; uiautomator dump /sdcard/uidump.xml'], 5000).catch(() => undefined);
   return adbExecOutText(serial, ['cat', '/sdcard/uidump.xml'], 4000).catch(() => '');
 }
 

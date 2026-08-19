@@ -377,7 +377,9 @@ while IFS='|' read -r inst meta_cc phone; do
           continue
         fi
       fi
-      if pgrep -f "wd-run.sh $inst" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst\|lxc-start.*waydroid.$inst" >/dev/null 2>&1; then
+      # ★★★2026-08-19 ONEK ESLESMESI DUZELTILDI — zombie karari KOMSUNUN sureciyle
+      # veriliyordu: `pgrep -f "wd-run.sh mi30"` mi300'un surecini de bulur.
+      if pgrep -f "wd-run\.sh $inst($|[^0-9])" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst($|[^0-9])\|lxc-start.*waydroid\.$inst($|[^0-9])" >/dev/null 2>&1; then
         # ★BOOT-GRACE (2026-07-23): bir instance BOOT ederken (henüz ~90s dolmamış) ADB'den
         # erişilemez — bu ZOMBIE DEĞİL, sadece boot bitmemiş. Onu zombie sanıp yeniden
         # başlatmak, boot eden instance'ın ÜSTÜNE İKİNCİ bir wd-run başlatır → DUPLICATE
@@ -471,11 +473,11 @@ while IFS='|' read -r inst meta_cc phone; do
         # ★DUPLICATE-GUARD (2026-07-23): ESKİ wd-run.sh $inst wrapper'ını da öldür — yoksa
         # eski + yeni wd-run aynı anda çalışıp çakışır (bu oturumun ana bug'ı).
         pkill -9 -f "wd-run.sh $inst\$" 2>/dev/null || true
-        pkill -9 -f "wayland-$inst" 2>/dev/null || true
-        pkill -9 -f "xdg-$inst" 2>/dev/null || true
-        pkill -9 -f "waydroid.*--instance $inst" 2>/dev/null || true
-        pkill -9 -f "lxc-start.*waydroid.$inst" 2>/dev/null || true
-        pkill -9 -f "dnsmasq.*waydroid-$inst" 2>/dev/null || true
+        pkill -9 -f "wayland-$inst($|[^0-9])" 2>/dev/null || true
+        pkill -9 -f "xdg-$inst($|[^0-9])" 2>/dev/null || true
+        pkill -9 -f "waydroid.*--instance $inst($|[^0-9])" 2>/dev/null || true
+        pkill -9 -f "lxc-start.*waydroid\.$inst($|[^0-9])" 2>/dev/null || true
+        pkill -9 -f "dnsmasq.*waydroid-$inst($|[^0-9])" 2>/dev/null || true
         lxc-stop -n waydroid -P "/var/lib/waydroid.$inst/lxc" -k 2>/dev/null || true
         rm -rf "/run/xdg-$inst" "/run/wd-$inst" "/run/waydroid-$inst-lxc" 2>/dev/null || true
         sleep 3

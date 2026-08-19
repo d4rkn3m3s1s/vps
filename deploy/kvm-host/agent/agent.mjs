@@ -633,6 +633,27 @@ async function waHealthProbe(serial) {
     // CANLI KANIT: yoklama "New chat" yerine content-desc="Message your assistant"
     // (Meta AI) butonuna basiyordu → ContactPicker hic acilmiyor → 8 cihaz
     // "kisit DOGRULANAMADI" ile parkta kaliyordu. TAM kimlik esleseceksin.
+    // ★★★2026-08-19 KISIT UYARISI HER SOHBETTE GORUNUR — RESMI sohbet DE ise yarar.
+    // Dun eklenen "yeni sohbet" testi KISITLI hesabi ACTIVE sayiyordu: WhatsApp
+    // kisitli hesapta da ContactPicker'i ACIYOR, engel ancak sohbet BASLATILINCA
+    // ortaya cikiyor. Yani picker'in acilmasi saglamlik KANITI DEGIL.
+    // CANLI KANIT (192.168.158.169): panel ACTIVE diyordu; gonderim "SENT" dondu
+    // ama cihaz DB'sinde status=20 (teslim YOK) ve sohbet ekraninin altinda
+    //   "Your account is restricted. You can't start new chats right now."
+    // yaziyordu. Ayni uyari RESMI WhatsApp sohbetinde de goruluyor (dogrulandi),
+    // dugum kimligi `read_only_chat_info`.
+    // ⚠️Bu yuzden karar METNE gore verilir, dugum VARLIGINA gore DEGIL: resmi
+    // sohbette ayni dugum "Only WhatsApp can send messages" ile de dolu olabilir.
+    if (rowNodes.length) {
+      await h.tapNode(rowNodes[0]).catch(() => undefined);
+      await sleep(2500);
+      const resmiScr = await texts();
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(resmiScr)) {
+        return { state: 'RESTRICTED', evidence: 'hesap kisiti banneri (resmi sohbette gorundu) | ' + resmiScr.slice(0, 220) };
+      }
+      await sleep(1200);
+    }
     const fab = allNodes.find((n) => String(n.resId || '') === 'com.whatsapp:id/fab')
       || allNodes.find((n) => /^new chat$/i.test(String(n.desc || '')));
     if (!fab) return { state: 'ACTIVE', evidence: 'sohbet yok, yeni-sohbet butonu bulunamadi — kisit DOGRULANAMADI', unverified: true };
@@ -4609,6 +4630,32 @@ const WA_INFO_CARD_TEXTS = [
   'Kaybolan mesajlar',
   'This increases your privacy'
 ];
+// ★★★2026-08-19 ARAYA GIREN WhatsApp EKRANLARINI GEC.
+// WhatsApp zaman zaman tanitim/onboarding ekrani aciyor. CANLI GORULEN:
+// `com.whatsapp.profile.UsernameManagementFlowActivity` —
+// "Usernames are coming soon. Reserve yours today." (Create username / Use Instagram…).
+// Bu ekranlar sohbet listesinin ONUNE geciyor; koordinatla dokunan akislar yanlis
+// yere basiyor ve is SESSIZCE yanlis sonuclaniyor (canli: yoklama sohbet acacakken
+// bu ekrana girdi).
+// KURAL (ileriye donuk): on planda com.whatsapp var AMA BEKLENEN ekranlardan biri
+// DEGILSE -> GERI bas. Boylece bugun bilmedigimiz yeni tanitim ekranlari da gecilir.
+// ⚠️BanAppeal/userban BEKLENEN listesinde: ban tespiti o ekrani GORMELI, gecmemeli.
+const WA_EXPECTED_SCREENS = /Conversation|HomeActivity|com\.whatsapp\.Main|ContactPicker|registration|EULA|RegisterName|VerifyNumber|BanAppeal|userban/i;
+async function clearWaInterstitial(serial, tries = 2) {
+  let gecildi = false;
+  for (let i = 0; i < tries; i += 1) {
+    const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+    const foc = (/mCurrentFocus=Window\{[^}]*\}/.exec(String(w)) || [''])[0];
+    if (!/com\.whatsapp\//i.test(foc)) return gecildi;       // WhatsApp on planda degil
+    if (WA_EXPECTED_SCREENS.test(foc)) return gecildi;        // beklenen ekran, dokunma
+    log(`wa ara-ekran gecildi: ${serial} ${foc.slice(-55)}`);
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+    await sleep(1200);
+    gecildi = true;
+  }
+  return gecildi;
+}
+
 async function clearWaInfoCard(serial, h) {
   // Yalnizca sohbet ekraninda ilgilen — baska ekranda OK'a basmak istemiyoruz.
   const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
@@ -4694,7 +4741,11 @@ async function whatsappSend(serial, payload) {
       }
     }
     // ANR yalnizca WhatsApp on planda DEGILKEN anlamli — dialog odagi calar.
-    if (!chatOpened && !convFocused && i % 4 === 3 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
+    if (!chatOpened && !convFocused && i % 4 === 3) {
+      // Once ARA-EKRAN (tanitim/onboarding) gec, sonra ANR dialogu.
+      if (await clearWaInterstitial(serial, 1).catch(() => false)) await h.sleep(500);
+      else if (await clearAnrDialog(serial, h, 1)) await h.sleep(700);
+    }
   }
   tlog(`chat opened (entry poll)=${chatOpened}`);
   // Last-chance recovery: if the box still never appeared, an ANR may STILL be up
@@ -5044,6 +5095,26 @@ async function whatsappSend(serial, payload) {
   // receipt reader when the title matches (saved-contact case); null here is fine.
   waLastSentPeer.set(serial, { to, at: Date.now(), peerName: null });
   waReceiptState.delete(serial); // new send → allow this chat's DELIVERED/READ to re-fire
+  // ★★★2026-08-19 TESLIM DOGRULAMASI — "SENT" DEMEDEN ONCE msgstore'a BAK.
+  // Buraya kadarki dogrulama EKRANA bakiyor (yazma kutusu bosaldi + giden baloncuk
+  // gorundu). Bu KISITLI hesapta da saglanir: baloncuk cikar ama WhatsApp mesaji
+  // TESLIM ETMEZ -> operator "gonderildi" gorur, alici hicbir sey almaz.
+  // CANLI KANIT (6 test gonderimi, ayni alici): 6'si da "SENT" dondu; cihaz
+  // DB'sinde 2'si status=5 (teslim), 4'u status=20 (teslim YOK). Kisitli cihazin
+  // sohbet ekraninda "Your account is restricted. You can't start new chats right
+  // now." yaziyordu ve baloncugun yaninda KIRMIZI UNLEM vardi.
+  // ⚠️Saglam hesaplarda status YALNIZCA 4/5/6/13 goruldu (iki cok-mesajli cihazda
+  // olculdu, HIC 20 yok) — yani 20 gercek bir basarisizlik kodu.
+  // Kisa bir yerlesme payi: hemen sonra status gecici olarak 0 (bekliyor) olabilir.
+  await sleep(1500);
+  const teslim = await waSql(serial, 'msgstore',
+    `SELECT status FROM message WHERE from_me=1 ORDER BY _id DESC LIMIT 1`).catch(() => null);
+  const teslimKodu = teslim && teslim.length ? Number(teslim[0]) : null;
+  if (teslimKodu === 20) {
+    tlog(`TESLIM EDILMEDI (msgstore status=20) → ACCOUNT_RESTRICTED`);
+    return { status: 'ACCOUNT_RESTRICTED', to, message,
+      note: '⚠️ Mesaj EKRANDA gonderildi gorundu ama WhatsApp TESLIM ETMEDI (msgstore status=20). Hesap kisitli — yeni sohbet baslatamiyor.' };
+  }
   return { status: 'SENT', to, message };
 }
 

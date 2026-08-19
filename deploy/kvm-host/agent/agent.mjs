@@ -11231,6 +11231,23 @@ async function pollWhatsappInbox(serial, busy = false) {
   // bilgisi acil bir sinyal DEGIL. Artik 6 turda bir (~30 sn) calisir; gelen mesaj
   // yolu (ucuz msgstore SQL'i) her turda kosmaya devam eder.
   if (busy) return;
+  // ★★★2026-08-19 WHATSAPP CANLI TUTMA — KAPALI WhatsApp'a MESAJ ULASMAZ.
+  // KOK: gonderim akisi bitince +HOME'a doner (cevrimici/okundu gizlensin diye);
+  // WhatsApp arka plana duser ve bir sure sonra surec OLEBILIR. O andan itibaren
+  // cihaz SESSIZCE SAGIR kalir — panelde/TG'de hicbir belirti yok, cihaz ONLINE
+  // gorunmeye devam eder ve gelen kutusu yoklamasi msgstore'u okudugu icin hata
+  // da vermez; sadece o cihaza artik mesaj DUSMEZ.
+  // CANLI KANIT: test gonderimi 23:05'te teslim edildi (status=5), operator cevap
+  // yazdi ama cihazin msgstore'unda HIC yok; `pidof com.whatsapp` BOS, ekran
+  // launcher'daydi. Olcum: filoda 2/140 cihaz bu durumdaydi.
+  // Ucuz: `pidof` ~30-50 ms ve YALNIZCA olu bulunca `am start` calisir.
+  if (_inboxTickNo % 12 === 0) {
+    const pid = await adb(serial, ['shell', 'pidof', WA_PKG]).catch(() => '');
+    if (!String(pid || '').trim()) {
+      await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`]).catch(() => undefined);
+      log(`wa canli-tutma: ${serial} WhatsApp KAPALIYDI (mesaj ulasmiyordu) -> yeniden acildi`);
+    }
+  }
   if (_inboxTickNo % 6 !== 0) return;
   try {
     const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);

@@ -19,7 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { tmpdir, loadavg, cpus as osCpus } from 'node:os';
 import { join, basename } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
@@ -10952,6 +10952,53 @@ async function pushOutgoingReceipt(serial, preNodes, preSw) {
 //   FLEET_WA_MEDIA=0 ile tamamen kapatilabilir.
 const WA_MEDIA_ENABLED = process.env.FLEET_WA_MEDIA !== '0';
 const WA_MEDIA_POS = new Map();          // serial -> son islenen message _id
+// ★★★2026-08-19 IMLEC DISKE YAZILIR — RESTART'TA MESAJ KAYBINI BITIRIR.
+// KOK: imlecler YALNIZCA bellekteydi. Ajan her yeniden baslatildiginda (deploy,
+// cokme, `Restart=always`) Map bosaliyor, ilk tur imleci "MEVCUT EN SON mesaja"
+// TOHUMLUYOR ve arada gelen her sey KALICI OLARAK atlaniyordu — panelde de TG'de
+// de hicbir iz kalmadan.
+// CANLI KANIT (2026-08-19): cihaz DB'sinde 01:56:12 "Deneme 1", 01:56:30 "2",
+// 01:57:19 FOTO, 01:58:17 "Test", 02:06:55 "Yu", 02:07:24 "W" vardi; hicbiri API'ye
+// ulasmadi. Ajan restart saatleri (01:59:41, 02:06:53) bu bosluklarla BIREBIR ortustu.
+// Artik imlecler diske yazilir ve acilista geri yuklenir: restart mesaj KAYBETTIRMEZ.
+// Yazma atomik (tmp + rename) ve borclanmali (debounce) — tur basina disk maliyeti yok.
+const WA_POS_DIR = process.env.FLEET_STATE_DIR || '/var/lib/fleet-agent';
+const WA_POS_FILE = `${WA_POS_DIR}/wa-inbox-pos.json`;
+let _posDirty = false;
+let _posTimer = null;
+function loadWaPositions() {
+  try {
+    if (!existsSync(WA_POS_FILE)) return;
+    const j = JSON.parse(readFileSync(WA_POS_FILE, 'utf8'));
+    for (const [k, v] of Object.entries(j.inbox || {})) WA_INBOX_POS.set(k, Number(v) || 0);
+    for (const [k, v] of Object.entries(j.media || {})) WA_MEDIA_POS.set(k, Number(v) || 0);
+    for (const [k, v] of Object.entries(j.trig || {})) WA_MEDIA_TRIG_POS.set(k, Number(v) || 0);
+    log(`wa-imlec: diskten yuklendi (${WA_INBOX_POS.size} cihaz) — restart mesaj kaybettirmedi`);
+  } catch (e) { log('wa-imlec: yuklenemedi:', e.message); }
+}
+function saveWaPositionsSoon() {
+  _posDirty = true;
+  if (_posTimer) return;
+  _posTimer = setTimeout(() => {
+    _posTimer = null;
+    if (!_posDirty) return;
+    _posDirty = false;
+    try {
+      mkdirSync(WA_POS_DIR, { recursive: true });
+      const j = {
+        inbox: Object.fromEntries(WA_INBOX_POS),
+        media: Object.fromEntries(WA_MEDIA_POS),
+        trig: Object.fromEntries(WA_MEDIA_TRIG_POS)
+      };
+      const tmp = `${WA_POS_FILE}.tmp`;
+      writeFileSync(tmp, JSON.stringify(j));
+      renameSync(tmp, WA_POS_FILE);   // atomik: yarim dosya okunmaz
+    } catch (e) { log('wa-imlec: yazilamadi:', e.message); }
+  }, 3000);
+  if (_posTimer.unref) _posTimer.unref();
+}
+// Rehber tetigi icin AYRI taban: yalnizca ONCEKI TURDAN BERI gelen mesajlar tetikler.
+const WA_MEDIA_TRIG_POS = new Map();
 const WA_INBOX_POS = new Map();          // serial -> son islenen (from_me=0) message._id (msgstore-tabanli inbound)
 const WA_CONTACTS_AT = new Map();        // serial -> son rehber-tamamlama zamani (throttle)
 const WA_MEDIA_MAXBYTES = Number(process.env.FLEET_WA_MEDIA_MAXBYTES || 45 * 1024 * 1024);
@@ -10964,7 +11011,12 @@ const WA_MEDIA_APPROOT = WA_MEDIA_ROOT.replace(/\/Media$/, '');
 // SecurityException verir -> izni com.android.shell'e verip su OLMADAN yaziyoruz.
 async function ensureContacts(serial, selfNumber) {
   const rows = await waSql(serial, 'msgstore',
-    `SELECT DISTINCT user FROM jid WHERE server='s.whatsapp.net' AND length(user) BETWEEN 10 AND 15`);
+    `SELECT user FROM jid WHERE server='s.whatsapp.net' AND length(user) BETWEEN 10 AND 15 `
+    // ★2026-08-19 SINIR + SIRA: her numara icin AYRI bir `content query` yapiliyor ve
+    // TANESI ~1021 ms (canli olcum). Sinirsiz liste tek cagriyi dakikalara cikariyordu.
+    // ⚠️Sirasiz LIMIT hep EN ESKI kisileri alir → yeni gonderen hic eklenmez, medyasi
+    // inmez. Bu yuzden EN YENI kayitlar once: `ORDER BY _id DESC`.
+    + `GROUP BY user ORDER BY max(_id) DESC LIMIT 25`);
   if (!rows || !rows.length) return 0;
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.WRITE_CONTACTS'], 6000).catch(() => undefined);
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.READ_CONTACTS'], 6000).catch(() => undefined);
@@ -11019,6 +11071,7 @@ async function pollWhatsappMedia(serial) {
   if (!WA_MEDIA_POS.has(serial)) {
     const seed = await waSql(serial, 'msgstore', `SELECT coalesce(max(_id),0) FROM message`);
     WA_MEDIA_POS.set(serial, seed && seed[0] ? Number(seed[0]) || 0 : 0);
+    saveWaPositionsSoon();   // ⚠️tohum da diske (bkz. inbox tohumundaki not)
     return; // ilk tur sadece seed
   }
   const pos = WA_MEDIA_POS.get(serial) || 0;
@@ -11036,16 +11089,38 @@ async function pollWhatsappMedia(serial) {
   // rehberde degil) — ancak ikinci fotosu iniyordu. Kisi "selam" yazdigi anda
   // rehbere girerse, sonra attigi foto ILK SEFERDE iner. Maliyet ayni: 3 dk
   // throttle + yalnizca yeni mesaj varsa (bos turda tek ucuz COUNT sorgusu).
+  // ★★★2026-08-19 TETIK TABANI AYRILDI — GELEN MESAJ 5 DK GECIKMESININ KOKU BUYDU.
+  // ESKI HALI: sayac `m._id > pos` kullaniyordu; `pos` ise YALNIZCA INMIS medya
+  // gonderilince ilerliyor (ustteki `if (!rows || !rows.length) return;` imleci
+  // guncellemeden cikar). Indirilmis medyasi olmayan bir cihazda `pos` HIC ilerlemez
+  // → sayac SONSUZA KADAR > 0 kalir → `ensureContacts` her cihazda 3 dakikada bir,
+  // SURESIZ calisir.
+  // MALIYET OLCUMU (canli): ensureContacts her numara icin ayri bir `content query`
+  // yapiyor ve TANESI ~1021 ms. 20 kisilik bir cihazda tek cagri ~20 sn; 140 cihaz
+  // x 3 dakikada bir = tur butcesinin KAT KAT uzeri → gelen kutusu turu geride kalir.
+  // CANLI KANIT: mesaj cihaza 02:21:53'te dustu, API'ye 02:27:03'te ulasti (5 dk 10 sn).
+  // FIX: tetik icin AYRI bir taban tutulur ve `ensureContacts` her calistiginda
+  // ILERLETILIR — yani ayni birikim bir daha tetiklemez, yalnizca YENI mesajlar tetikler.
+  // (Throttle icinde taban ILERLETILMEZ: o pencerede gelen mesaj tetigini kaybetmesin.)
+  const trigPos = WA_MEDIA_TRIG_POS.has(serial) ? WA_MEDIA_TRIG_POS.get(serial) : pos;
   const pend = await waSql(serial, 'msgstore',
-    `SELECT count(*) FROM message m LEFT JOIN message_media mm ON mm.message_row_id=m._id ` +
-    `WHERE m.from_me=0 AND m._id>${pos} ` +
+    `SELECT coalesce(max(m._id),0)||'|'||count(*) FROM message m LEFT JOIN message_media mm ON mm.message_row_id=m._id ` +
+    `WHERE m.from_me=0 AND m._id>${trigPos} ` +
     `AND (mm.message_row_id IS NULL OR mm.file_path IS NULL OR mm.file_path='')`);
-  if (pend && Number(pend[0]) > 0) {
-    const last = WA_CONTACTS_AT.get(serial) || 0;
-    if (Date.now() - last > 180000) {
-      WA_CONTACTS_AT.set(serial, Date.now());
-      const added = await ensureContacts(serial).catch(() => 0);
-      if (added) log(`wa media: ${serial} rehbere ${added} kisi eklendi (medya insin diye)`);
+  if (pend && pend[0]) {
+    const kesim = String(pend[0]).split('|');
+    const enBuyuk = Number(kesim[0]) || 0;
+    const adet = Number(kesim[1]) || 0;
+    if (adet > 0) {
+      const last = WA_CONTACTS_AT.get(serial) || 0;
+      if (Date.now() - last > 180000) {
+        WA_CONTACTS_AT.set(serial, Date.now());
+        const added = await ensureContacts(serial).catch(() => 0);
+        // Taban ancak tetik TUKETILDIKTEN sonra ilerler.
+        WA_MEDIA_TRIG_POS.set(serial, enBuyuk);
+        saveWaPositionsSoon();
+        if (added) log(`wa media: ${serial} rehbere ${added} kisi eklendi (medya insin diye)`);
+      }
     }
   }
 
@@ -11103,10 +11178,12 @@ async function pollWhatsappMedia(serial) {
       log('wa media push failed:', err.message);
       // pozisyonu ilerletme — sonraki tur tekrar dener
       WA_MEDIA_POS.set(serial, id - 1 > pos ? id - 1 : pos);
+      saveWaPositionsSoon();
       return;
     }
   }
   WA_MEDIA_POS.set(serial, maxId);
+  saveWaPositionsSoon();
 }
 
 // ★★★2026-08-15 MSGSTORE-TABANLI (root) INBOUND — eksiksiz + hizli + taş gibi.
@@ -11129,11 +11206,17 @@ async function pollWhatsappMedia(serial) {
 // Job'in uiautomator dump/screencap'i ile YARISMAZ (farkli yuzey: dosya-DB vs UI).
 // Receipt kismi ise EKRANI okur (dumpsys + scrape) — job ile GERCEKTEN carpisir.
 // Bu yuzden ikisi AYRILDI: SQL her zaman calisir, ekran isi yalnizca cihaz bostayken.
+let _inboxTickNo = 0;   // receipt taramasi icin tur sayaci (bkz. asagidaki not)
 async function pollWhatsappInbox(serial, busy = false) {
   await pollInboxFromStore(serial);
-  // Acik chat'te: giden mesajin okundu-bilgisi (receipt). EKRANA dokunur -> job
-  // calisirken ATLA (uiautomator dump/screencap ile carpisir; bkz. yukaridaki not).
+  // ★★★2026-08-19 RECEIPT AYRI TEMPOYA ALINDI — gelen mesaj gecikmesinin kalan kalemi.
+  // Asagidaki blok EKRAN okur: `dumpsys` + Conversation acikken `uiautomator dump`
+  // (CANLI OLCUM: dump ~2050 ms, dumpsys ~28 ms). Sohbet ekraninda duran her cihaz
+  // HER TURDA ~2 sn ekliyordu; tur uzadikca GELEN MESAJ gecikiyordu — oysa okundu
+  // bilgisi acil bir sinyal DEGIL. Artik 6 turda bir (~30 sn) calisir; gelen mesaj
+  // yolu (ucuz msgstore SQL'i) her turda kosmaya devam eder.
   if (busy) return;
+  if (_inboxTickNo % 6 !== 0) return;
   try {
     const top = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']);
     if (/com\.whatsapp\/\S*Conversation/.test(top)) {
@@ -11153,6 +11236,8 @@ async function pollInboxFromStore(serial) {
     const seed = await waSql(serial, 'msgstore', `SELECT coalesce(max(_id),0) FROM message`);
     if (seed === null) return;
     WA_INBOX_POS.set(serial, seed[0] ? Number(seed[0]) || 0 : 0);
+    saveWaPositionsSoon();   // ⚠️TOHUM DA DISKE YAZILMALI: yazilmazsa her restart
+                             // yeniden tohumlar ve kalicilastirma HICBIR ISE YARAMAZ.
     return;
   }
   const pos = WA_INBOX_POS.get(serial) || 0;
@@ -11165,7 +11250,7 @@ async function pollInboxFromStore(serial) {
     `FROM message m ` +
     `LEFT JOIN chat c ON c._id=m.chat_row_id LEFT JOIN jid j ON j._id=c.jid_row_id ` +
     `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid rj ON rj._id=jm.jid_row_id ` +
-    `WHERE m.from_me=0 AND m._id>${pos} AND m.text_data IS NOT NULL AND m.text_data<>'' ORDER BY m._id`);
+    `WHERE m.from_me=0 AND m._id>${pos} AND m.text_data IS NOT NULL AND m.text_data<>'' ORDER BY m._id LIMIT 200`);
   if (rows === null) return;   // root/db gecici erisilemez -> pozisyonu koru, sonraki tur dener
   if (rows.length === 0) return;
   let maxId = pos;
@@ -11198,10 +11283,12 @@ async function pollInboxFromStore(serial) {
       log('wa inbound push failed:', err.message);
       // Pozisyonu bu mesajin ONUNE al -> sonraki tur buradan devam (kayip yok, kopya yok).
       WA_INBOX_POS.set(serial, id - 1 > pos ? id - 1 : pos);
+      saveWaPositionsSoon();
       return;
     }
   }
   WA_INBOX_POS.set(serial, maxId);
+  saveWaPositionsSoon();
 }
 
 // Poll every reachable device for new WhatsApp notifications. Devices without
@@ -11216,6 +11303,7 @@ async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
   if (_inboxRunning) return; // previous tick still draining — skip this fire
   _inboxRunning = true;
+  _inboxTickNo += 1;
   try {
   // Skip the inbox poll ONLY for devices that currently have a job running. A job's
   // WhatsApp RPA (uiautomator dump / screencap / taps) and the inbox poll's own
@@ -13088,6 +13176,10 @@ async function loop() {
   const waInbox = WA_INBOX_ENABLED ? setInterval(() => { whatsappInboxTick().catch(() => undefined); }, WA_INBOX_MS) : null;
   // Media auto-capture poll (opt-in via FLEET_WA_CAPTURE=1) — reports new media files
   // the moment they land, before a view-once is opened or a message deleted.
+  // ★2026-08-19 Imlecler diskten geri yuklenir — restart mesaj KAYBETTIRMEZ.
+  // Bu cagri tickerlardan ONCE olmali: ilk tur imleci bulamazsa 'en son mesaja'
+  // tohumlar ve ajan kapaliyken gelen her sey kalici olarak atlanir.
+  loadWaPositions();
   const waCapture = WA_CAPTURE_ENABLED ? setInterval(() => { mediaCaptureTick().catch(() => undefined); }, WA_CAPTURE_MS) : null;
   // ★OTONOM WA SAĞLIK TARAMASI: ban/kısıt artık yalnızca gönderim sırasında değil,
   // kendiliğinden de yakalanır (bkz. waHealthTick). Tur başına birkaç cihaz.

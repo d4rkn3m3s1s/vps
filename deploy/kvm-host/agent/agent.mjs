@@ -4653,17 +4653,33 @@ async function whatsappSend(serial, payload) {
   // device failed until the dialog was cleared by hand. Clear the ANR INSIDE the poll
   // (press "Wait" to keep WhatsApp alive) so the chat can finish rendering.
   let chatOpened = false;
-  for (let i = 0; i < 9 && !chatOpened; i++) {
-    await h.sleep(500);
-    chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
-    // Every couple of polls, if an ANR is up, press "Wait" and give it a beat to recover.
-    if (!chatOpened && i % 2 === 1 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
-    // ★2026-08-17 ANR ile AYNI konumda: WA bilgi karti da entry'yi orter ve kendiliginden
-    // KAPANMAZ (bkz. clearWaInfoCard ustundeki canli kanit). Temizlenirse entry hemen
-    // gorunur, bu yuzden ayni turda yeniden yokla — bir tur daha beklemeye gerek yok.
-    if (!chatOpened && i % 2 === 1 && await clearWaInfoCard(serial, h).catch(() => false)) {
+  // ★★★2026-08-19 UCUZ KAPI — ama BEKLEME BUTCESI KORUNARAK.
+  // CANLI OLCUM (bu GPU'suz Waydroid host'unda):
+  //     uiautomator dump ~2050 ms   ·   dumpsys window ~35 ms   (60 KAT ucuz)
+  // Derin baglanti once ContactPicker ("Searching…") acar; Conversation ~3.6sn'de gelir.
+  // ⚠️⚠️SAYAC tabanli dongu ile ucuz kapi BIRLIKTE KULLANILAMAZ: turlar ucuzlayinca
+  // toplam bekleme butcesi de kisalir. Ilk denemede tam bunu yaptim — 9 tur x ~2.55sn
+  // (~23sn) butce, 9 tur x ~0.44sn (~8sn)'ye dustu; yavas acilan sohbetler eskiden
+  // basarilirken CHAT_NOT_OPENED'a duserdi. Bu yuzden dongu SURE tabanli.
+  // Eski davranisin worst-case'i (~23sn) aynen korunur; fark, bekleme suresinin
+  // pahali dokumlerle degil ucuz odak yoklamasiyla harcanmasi.
+  const openDeadline = Date.now() + 23000;
+  for (let i = 0; !chatOpened && Date.now() < openDeadline; i++) {
+    await h.sleep(400);
+    const foc = await adb(serial, ['shell', 'dumpsys', 'window']).catch(() => '');
+    const convFocused = /com\.whatsapp\.Conversation/i.test(foc);
+    // Pahali dokum: sohbet on plana geldiginde — ya da guvenlik agi olarak periyodik
+    // (odak beklenmedik bir sey gosterse bile eski davranis korunur).
+    if (convFocused || i % 6 === 5) {
       chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+      // ★2026-08-17: sohbet ON PLANDA ama kutu yoksa WA bilgi karti ORTUYOR olabilir;
+      // kart kendiliginden KAPANMAZ. Temizlenirse entry hemen gorunur, ayni turda yokla.
+      if (!chatOpened && convFocused && await clearWaInfoCard(serial, h).catch(() => false)) {
+        chatOpened = Boolean(await h.find('com.whatsapp:id/entry', 'id').catch(() => null));
+      }
     }
+    // ANR yalnizca WhatsApp on planda DEGILKEN anlamli — dialog odagi calar.
+    if (!chatOpened && !convFocused && i % 4 === 3 && await clearAnrDialog(serial, h, 1)) await h.sleep(700);
   }
   tlog(`chat opened (entry poll)=${chatOpened}`);
   // Last-chance recovery: if the box still never appeared, an ANR may STILL be up
@@ -12278,7 +12294,17 @@ function _readCpuTimes() {
 async function cpuBusyPct() {
   const a = _readCpuTimes();
   if (!a) { const l = (loadavg()[0] || 0) / _CPU_COUNT; return Math.min(100, Math.round(l * 100)); }
-  await sleep(250);
+  // ★★★2026-08-19 ORNEKLEME PENCERESI 250ms → 1500ms — YANLIS CPU ALARMININ KOKU.
+  // CANLI OLCUM (bu algoritmanin KENDISIYLE, 40 ornek, 80 cekirdek, load 16):
+  //     min 9 · medyan 25 · p90 54 · max 97   → 40 ornekten YALNIZCA 1'i >=90
+  // Yani CPU gercekte ~%25 mesguldu; 250ms'lik pencere ara sira ani bir tepeyi
+  // yakalayip %97 diyordu ve alarm (esik >=90) bu TEK ornekle atesliyordu —
+  // operatore 8 dakikada 6 bildirim gitti, oysa load 14/80 (%17) idi.
+  // ⚠️guest/guest_nice = 0 olarak dogrulandi, yani bilinen /proc/stat cift-sayma
+  // hatasi DEGIL; sorun tamamen ornekleme gurultusu.
+  // 1500ms ayni olcumde 13-31 araligina oturuyor (250ms'de 10-44). Kalem heartbeat
+  // basina bir kez odenir, ihmal edilebilir.
+  await sleep(1500);
   const b = _readCpuTimes();
   if (!b || b.total <= a.total) return 0;
   const idleDelta = b.idle - a.idle;

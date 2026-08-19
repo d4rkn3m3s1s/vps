@@ -202,6 +202,10 @@ async function main(): Promise<void> {
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
   // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without
   // this, those two alert triggers would never fire (nothing else marks offline).
+  // CPU doygunlugu ust uste kac turdur suruyor (host id -> sayac). Bkz. asagidaki
+  // CPU_SAT_STREAK aciklamasi: tek ornekle alarm uretilmez.
+  const CPU_SAT_STREAK = 3;
+  const cpuSatStreak = new Map<string, number>();
   setInterval(() => {
     const staleTime = new Date(Date.now() - 5 * 60 * 1000);
     Promise.all([
@@ -292,9 +296,19 @@ async function main(): Promise<void> {
           // GERÇEK meşguliyet varsa ONA bak (≥90% = gerçekten doygun). Yoksa (eski
           // agent) load'a düş — ama eşiği 0.9×cores'tan 2×cores'a çıkar: bu filoda
           // load rutin olarak cores'un yarısını aşıyor ve tek başına anlam taşımıyor.
-          const cpuSat = typeof busy === 'number'
+          // ★★★2026-08-19 TEK OLCUMLE CPU ALARMI VERME — "kurt masali"nin 3. turu.
+          // Esik dogru (>=90 gercek mesguliyet) ama TEK bir ornege bakiyordu; ajanin
+          // olcumu ara sira ani tepe yakaliyor ve alarm bosuna atesliyordu (8 dakikada
+          // 6 bildirim, o sirada load 14/80 = %17). Ajan tarafinda pencere genisletildi;
+          // burada da SUREKLILIK aranir: tur 60 sn'de bir dondugu icin CPU_SAT_STREAK=3
+          // ≈ 3 DAKIKA kesintisiz doygunluk demektir. Gercek bir doygunluk sureklidir,
+          // yakalanir; ani tepe artik operatoru uyandirmaz.
+          const cpuBusyNow = typeof busy === 'number'
             ? busy >= 90
             : cores > 0 && load >= cores * 2;
+          const satStreak = cpuBusyNow ? (cpuSatStreak.get(h.id) ?? 0) + 1 : 0;
+          cpuSatStreak.set(h.id, satStreak);
+          const cpuSat = satStreak >= CPU_SAT_STREAK;
           const diskLow = disk < 15;
           // ★★★2026-08-13 RAM TAVANI + KAPASİTE ALARMI (operatör: "filo büyürse nerede
           // patlar"). Bu blok CPU ve diski izliyordu ama RAM'i İZLEMİYORDU — oysa bu

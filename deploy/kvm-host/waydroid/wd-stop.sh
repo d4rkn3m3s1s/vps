@@ -17,7 +17,13 @@ fi
 
 # 2) kill this instance's session daemon + compositor (scoped by instance name so
 #    we never hit another instance's processes).
-pkill -f "waydroid.py --instance $INSTANCE" 2>/dev/null && log "session daemon killed" || true
+# ★★★2026-08-20 ONEK ESLESMESI DUZELTILDI — komsu cihazlari olduruyordu.
+# `--instance mi30` deseni `--instance mi300/mi304/...` hepsini yakaliyordu.
+# CANLI KANIT: gercek `wd-destroy.sh mi30` testinde ADB 140->134 dustu,
+# mi300-309 "7/7 running" -> 4/7 oldu; kuru sinamada desen 9 surec buluyordu.
+# ⚠️wd-destroy ve wd-health-watch'teki ayni hata daha once duzeltilmisti,
+# BU DOSYA GOZDEN KACMISTI (wd-destroy onu cagiriyor).
+pkill -f "waydroid\.py --instance $INSTANCE($|[^0-9])" 2>/dev/null && log "session daemon killed" || true
 pkill -f "weston .*--socket=wayland-$INSTANCE( |$)" 2>/dev/null && log "weston killed" || true
 
 # 3) clear lingering bind mounts the container left behind (umount -l = lazy).

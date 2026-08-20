@@ -12871,6 +12871,16 @@ async function dnsSelfHealTick(running) {
   const NOW = Date.now();
   for (const inst of running) {
     if (provisioningInstances.has(inst)) continue;
+    // ★★★2026-08-20 SILINMIS CIHAZI DIRILTME.
+    // CANLI KANIT: mi434 + mi440 SILINDIKTEN SONRA bu tick onlar icin 16:53 ve
+    // 17:03'te calisti ("GERCEK DHCP lease YOK") ve `wd-run.sh` ile yeniden
+    // baslatmaya ugrasti. Cihazin veri agaci artik yok oldugu icin bos yere
+    // ugrasiyordu; kotu sartlarda HAYALET bir konteyner uretebilirdi.
+    // (Ikinci diriltici systemd idi: wd-destroy'un `disable` satiri hic
+    //  calismiyordu — ayni tarihte kokten duzeltildi.)
+    // Ucuz ve kesin isaret: CANLI instance'in `lxc` dizini VARDIR; silinmis
+    // olanda yalnizca `waydroid.log` kalir.
+    if (!existsSync(`/var/lib/waydroid.${inst}/lxc`)) continue;
     const sub = await execFileAsync('bash', ['-c', `sh /opt/fleet-agent/waydroid/net-head.sh ${inst} 2>/dev/null`])
       .then((r) => String(r.stdout || '').trim()).catch(() => '');
     if (!sub) continue;

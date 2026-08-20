@@ -78,18 +78,30 @@ rm -f "/dev/anbox-binder-$INSTANCE" "/dev/anbox-hwbinder-$INSTANCE" "/dev/anbox-
 log "binderfs unmount + binder nodes cleared (leak-fix)"
 log "supervisor + redsocks + dbus sidecars killed"
 
-# 2) Disable + remove the per-instance systemd unit.
+# 2) Disable + remove the systemd unit.
+# ★★★2026-08-20 KOK DUZELTME — DISABLE HIC CALISMIYORDU.
+# Bu blogun TAMAMI `if [ -f "$UNIT" ]` icindeydi ve
+#   UNIT=/etc/systemd/system/waydroid-<inst>.service   (TIRE)
+# yani cihaz basina bir birim DOSYASI bekliyordu. Oysa bu filo SABLON birim
+# kullaniyor; gercek etkinlestirme su symlink'tir:
+#   /etc/systemd/system/multi-user.target.wants/waydroid@<inst>.service
+# Tire'li dosya HIC var olmadi -> kosul DAIMA yanlis -> `systemctl disable`
+# bir kez bile calismadi.
+# ⚠️Bu, ayni ailenin DORDUNCU kopyasi: 20 Agu'de birim ADI duzeltilmisti ama ad,
+# CALISMAYAN bir blogun icindeydi; duzeltme bu yuzden etkisiz kaldi.
+# CANLI KANIT: mi434 + mi440 silindi (DB kaydi gitti, veri dizinleri 8KB'ye
+# dustu) ama birimleri ETKIN kaldi. Iki ayri zarar:
+#   1) reboot'ta systemd artik VAR OLMAYAN cihazlari baslatmaya calisir,
+#   2) ajanin dns-heal'i de onlari surekli diriltmeye ugrasiyordu (16:53/17:03).
+# ARTIK KOSULSUZ: birim zaten etkin degilse `disable` zararsiz bir no-op'tur.
+systemctl disable --now "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+systemctl reset-failed "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+rm -f "/etc/systemd/system/multi-user.target.wants/waydroid@$INSTANCE.service" 2>/dev/null || true
+log "systemd birimi kapatildi (waydroid@$INSTANCE.service)"
+# Eski kurulumlardan kalan CIHAZ BASINA birim dosyasi varsa o da temizlensin.
 if [ -f "$UNIT" ]; then
-  # ★★★2026-08-20 BIRIM ADI DUZELTILDI — silinen cihazin birimi ETKIN kaliyordu.
-  # Gercek birim `waydroid@<inst>.service` (ET ISARETI); betik `waydroid-<inst>`
-  # (TIRE) kapatmaya calisiyordu ve o ad HIC var olmadi -> satir bosa calisiyordu.
-  # CANLI KANIT: filoda 58 "olu ama etkin" waydroid@ birimi vardi, hepsi silinmis
-  # cihazlara aitti. Reboot`ta systemd olmayan cihazi baslatmaya calisir.
-  # ⚠️Eski kurulumlar icin tire`li ad da birakildi (zararsiz, yoksa no-op).
-  systemctl disable --now "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
-  systemctl reset-failed "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
   systemctl disable --now "waydroid-$INSTANCE.service" >/dev/null 2>&1 || true
-  rm -f "$UNIT" && log "systemd unit removed"
+  rm -f "$UNIT" && log "eski tarz birim dosyasi silindi"
 fi
 
 # 3) Remove the D-Bus own policy + reload so the bus forgets the name.
@@ -103,6 +115,50 @@ fi
 [ -d "$WORK" ]      && rm -rf "$WORK"      && log "removed $WORK (images/lxc/overlay)"
 [ -d "$DATA_HOME" ] && rm -rf "$DATA_HOME" && log "removed $DATA_HOME (userdata ~2GB)"
 rm -f "$LEASES" 2>/dev/null || true
+
+# 4b) ★★★2026-08-20 IPTABLES NAT KURALLARINI TEMIZLE.
+# wd-destroy bugune kadar iptables'a HIC dokunmuyordu (`grep -c iptables` = 0).
+# Her silinen cihaz PREROUTING'de kendi subnet'ine ait RETURN + REDIRECT
+# satirlarini geride birakiyordu. CANLI OLCUM: 139 cihaz varken 141 REDIRECT
+# (silinen mi434=subnet143, mi440=subnet41 kalintisi).
+# Kalici hasar DEGIL — kurallar reboot'ta silinip `wd-proxy-restore` ile yeniden
+# kuruluyor ve port subnet'ten turedigi icin (12500+sn) ayni subnet'i alan yeni
+# cihaz dogru kurala duser. Yine de iki reboot arasinda birikiyor; olu kural
+# birakmak dogru degil.
+# GUVENLIK: yalnizca SAYISAL ve 1-254 arasindaki subnet icin, yalnizca O subnet'in
+# kendi satirlari silinir. Subnet-map satiri (5) ADIMINDA silindigi icin numarayi
+# BURADA, silinmeden ONCE okuyoruz.
+# ⚠️TAM YOL: systemd ortaminda PATH /usr/sbin icermeyebilir (bu projede
+#   "container-ici `ip` HIC calismiyordu" ayni kokten cikmisti).
+_IPT="$(command -v iptables 2>/dev/null || echo /usr/sbin/iptables)"
+_SN=$(grep -E "^$INSTANCE[[:space:]]" "$SUBNET_MAP" 2>/dev/null | awk '{print $2}' | head -1)
+case "$_SN" in
+  ''|*[!0-9]*)
+    log "iptables temizligi atlandi (subnet okunamadi)"
+    ;;
+  *)
+    if [ "$_SN" -ge 1 ] && [ "$_SN" -le 254 ] && [ -x "$_IPT" ]; then
+      _rf="/tmp/wd-ipt-$INSTANCE-$$.rules"
+      # `-A` -> `-D` cevirip AYNI kurali sil. Pipeline yerine dosya kullaniyoruz:
+      # `while read` bir pipeline icinde ALT KABUKTA calisir ve sayac kaybolur.
+      "$_IPT" -t nat -S PREROUTING 2>/dev/null \
+        | grep -F -- "-s 192.168.${_SN}.0/24" \
+        | sed 's/^-A /-D /' > "$_rf" 2>/dev/null || true
+      _n=0
+      if [ -s "$_rf" ]; then
+        while IFS= read -r _r; do
+          [ -n "$_r" ] || continue
+          # shellcheck disable=SC2086  # kural sozcuklere BOLUNMELI
+          "$_IPT" -t nat $_r 2>/dev/null && _n=$((_n+1))
+        done < "$_rf"
+      fi
+      rm -f "$_rf" 2>/dev/null || true
+      log "iptables NAT kurallari temizlendi (subnet $_SN, $_n kural)"
+    else
+      log "iptables temizligi atlandi (subnet=$_SN, ipt=$_IPT)"
+    fi
+    ;;
+esac
 
 # 5) Free the subnet-map line so net-head.sh can reuse the subnet (else the range
 #    slowly fills with dead entries from failed provisions and eventually runs out).
@@ -153,5 +209,19 @@ if ! grep -qxF "$INSTANCE" "$GRAVEYARD" 2>/dev/null; then
   log "isim emekliye ayrildi (bir daha kullanilmayacak): $INSTANCE"
 fi
 
+
+# 7) ★★★2026-08-20 SAGLIK DAMGALARINI TEMIZLE (MEZAR TASI SORUNU).
+#    Cihaz silinince /var/lib/wd-health/ altindaki durum damgalari GERIDE KALIYORDU.
+#    Canli vaka: /durum sayfasi "su an dusuk: 15 cihaz" diyordu — 15'inin de HEPSI
+#    coktan SILINMIS cihazlardi (9'unun dizini bile yoktu, damgalar 40-67 saatlik).
+#    Filo 141/141 tam ayaktayken operator "15 cihaz dusuk" goruyordu.
+#    Damgalar:
+#      down-<inst>      : dusus ani (kurtarma suresi buradan sayilir)
+#      zfail-<inst>     : zombie yoklama sayaci
+#      bootstuck-<inst> : yarim-acilmis kurtarma sogumasi (2026-08-20)
+for _st in down zfail bootstuck; do
+  rm -f "/var/lib/wd-health/${_st}-${INSTANCE}" 2>/dev/null || true
+done
+log "saglik damgalari temizlendi (down/zfail/bootstuck)"
 log "destroyed"
 echo "DESTROY_RESULT instance=$INSTANCE status=destroyed"

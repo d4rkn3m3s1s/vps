@@ -259,6 +259,27 @@ if [ "$RC" -ne 0 ]; then log "HATA: DB sorgusu başarısız (rc=$RC) — izleme 
 ROWS=$(echo "$ROWS" | grep -v '^$')
 [ -z "$ROWS" ] && { log "aktif-WA cihazı yok — atlanıyor"; exit 0; }
 
+# ★★★2026-08-20 MEZAR TASI SUPURGESI. Cihaz silinince /var/lib/wd-health/ altindaki
+# durum damgalari GERIDE KALIYORDU ve /durum sayfasi onlari "su an dusuk cihaz"
+# sayiyordu. Canli vaka: sayfa "su an dusuk: 15" diyordu — 15'inin de HEPSI coktan
+# SILINMISTI (hicbiri DB'de/enabled degildi, 9'unun dizini bile yoktu, damgalar
+# 40-67 saatlikti). Filo 141/141 TAM AYAKTAYKEN operator 15 cihazi dusuk goruyordu.
+# wd-destroy.sh artik silme aninda temizliyor; bu supurge ONCEDEN silinmislerin
+# artigini ve wd-destroy'u atlayan her yolu kapatir.
+# GUVENLIK: yalnizca ROWS (DB'deki GERCEK cihaz listesi) DOLU iken calisir --
+# DB bir an cevap vermezse tum damgalari silip kurtarma surelerini kaybetmeyelim.
+_FLEET_INSTS=$(echo "$ROWS" | cut -d'|' -f1 | grep -v '^$' | sort -u)
+if [ -n "$_FLEET_INSTS" ]; then
+  _purged=0
+  for _sf in /var/lib/wd-health/down-* /var/lib/wd-health/zfail-* /var/lib/wd-health/bootstuck-*; do
+    [ -e "$_sf" ] || continue
+    _si=$(basename "$_sf"); _si=${_si#down-}; _si=${_si#zfail-}; _si=${_si#bootstuck-}
+    printf '%s\n' "$_FLEET_INSTS" | grep -qxF "$_si" && continue
+    rm -f "$_sf" 2>/dev/null && _purged=$((_purged+1))
+  done
+  [ "$_purged" -gt 0 ] && log "🧹 silinmis cihazlardan kalan $_purged saglik damgasi temizlendi"
+fi
+
 # Bir instance'ın Android ADB adresini bul.
 #
 # ★★★2026-08-13 ".112 VARSAYIMI" SAĞLAM CİHAZLARI "ZOMBIE" SANIP YENİDEN BAŞLATIYORDU.
@@ -298,7 +319,7 @@ adb_addr_for() {
 }
 
 OK=0; LEAK=0; RECONN=0; UNREACH=0
-DEADEXIT=0; ROTFIX=0; ACCTFIX=0
+DEADEXIT=0; ROTFIX=0; ACCTFIX=0; BOOTFIX=0
 DEAD_LIST=""
 declare -A DONE
 # ★2026-08-14: TUR BASI heartbeat. Eskiden yalnizca tur SONUNDA gonderiliyordu;
@@ -615,6 +636,51 @@ while IFS='|' read -r inst meta_cc phone; do
     else
       # ★ÇIKIŞ-ÖLÜ: redsocks ayakta + ağ canlı ama çıkış yok → upstream/ülke havuzu
       # sorunu. Eskiden burada sadece "geçici olabilir" yazılıp geçiliyordu.
+      # ★★★2026-08-20 YARIM-AÇILMIŞ KONTEYNER: proxy çarelerinden ÖNCE boot kontrolü.
+      # CANLI KANIT: mi277 + mi290 saatlerce "çıkış ölü" sayılıp 10 dk'da bir sessid
+      # döndürdü — ama kök proxy DEĞİLDİ: Android açılmayı hiç bitirmemişti
+      # (sys.boot_completed=0). adbd erken kalktığı için adb "device" der; DHCP
+      # tamamlanmadığı için cihaz .112 statik yedeğinde kalır, netd resolver YOK ->
+      # isim çözülmez -> çıkış alınamaz. Bu hâlde HİÇBİR sessid/hesap rotasyonu işe
+      # yaramaz (kanıt: iki cihaz da saatlerce rotasyon yiyip düzelmedi); tek çare
+      # konteyneri yeniden başlatmak — elle doğrulandı: ikisi de ~50 sn'de boot=1 +
+      # GERÇEK DHCP adresi + TR çıkış aldı.
+      # Ölçüm ADRESTEN BAĞIMSIZ (lxc-attach) — bayat/yanlış adb ucundan etkilenmez.
+      _bc_dx=$(timeout 8 lxc-attach -n waydroid -P "/var/lib/waydroid.$inst/lxc" -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+      # Tek ölçümle karar VERME: yoğun konteynerde lxc-attach 8 sn'de dolabilir ->
+      # SAĞLAM cihaz "yarım açılmış" sanılıp boşuna yeniden başlatılır. İkinci ve
+      # daha uzun ölçüm bu yanlış pozitifi eler (yalnız başarısızlık yolunda çalışır).
+      if [ "$_bc_dx" != "1" ]; then
+        sleep 2
+        _bc_dx=$(timeout 15 lxc-attach -n waydroid -P "/var/lib/waydroid.$inst/lxc" -- /system/bin/getprop sys.boot_completed 2>/dev/null | tr -d '\r\n')
+      fi
+      if [ "$_bc_dx" != "1" ]; then
+        # ★KORUMA: SİLİNMİŞ cihazı DİRİLTME. Dizin yoksa bu instance artık yok
+        # demektir (silinen cihazdan kalan kayıt); systemctl restart onu geri
+        # getirirdi. Bu projede komşu/ölü instance'a dokunmak 3 kez ısırdı.
+        if [ ! -d "/var/lib/waydroid.$inst/lxc" ]; then
+          log "⤫ $inst: instance dizini YOK (silinmiş) — boot kurtarma atlandı"
+          continue
+        fi
+        _dxs="/var/lib/wd-health/bootstuck-$inst"
+        _dxa=999999
+        [ -f "$_dxs" ] && _dxa=$(( $(date +%s) - $(stat -c %Y "$_dxs" 2>/dev/null || echo 0) ))
+        case "$_dxa" in ''|*[!0-9]*) _dxa=999999 ;; esac
+        if [ "$_dxa" -lt "${WD_BOOTSTUCK_COOLDOWN_S:-3600}" ]; then
+          log "⏳ $inst: boot=${_bc_dx:-yok} (yarım açılmış) — son kurtarma ${_dxa} sn önce, bekleniyor"
+        else
+          mkdir -p /var/lib/wd-health 2>/dev/null || true
+          touch "$_dxs" 2>/dev/null || true
+          BOOTFIX=$((BOOTFIX+1))
+          log "🔁 $inst: ÇIKIŞ YOK ama kök proxy DEĞİL — konteyner yarım açılmış (boot=${_bc_dx:-yok}) → yeniden başlatılıyor"
+          for _P in $(pgrep -f "wd-run.sh $inst\$" 2>/dev/null); do kill -9 "$_P" 2>/dev/null || true; done
+          /opt/fleet-agent/waydroid/wd-stop.sh "$inst" >/dev/null 2>&1 || true
+          sleep 2
+          systemctl restart --no-block "waydroid@$inst.service" >/dev/null 2>&1 || true
+          notify DEVICE_BOOT_STUCK "$inst" "Konteyner yarim acilmisti (boot=${_bc_dx:-yok}) - yeniden baslatildi" true
+        fi
+        continue
+      fi
       if [ -z "$cc" ]; then
         log "? $inst: çıkış-IP alınamadı, ülke bilinmiyor → düzeltilemiyor"
       else
@@ -737,7 +803,7 @@ while IFS='|' read -r inst meta_cc phone; do
   fi
 done <<< "$ROWS"
 
-log "TAMAM: $OK sağlıklı, $LEAK sızıntı-düzeltildi, $RECONN reconnect, $UNREACH erişilemez, $DEADEXIT çıkış-ölü (rot=$ROTFIX, hesap=$ACCTFIX)"
+log "TAMAM: $OK sağlıklı, $LEAK sızıntı-düzeltildi, $RECONN reconnect, $UNREACH erişilemez, $DEADEXIT çıkış-ölü (rot=$ROTFIX, hesap=$ACCTFIX, boot-kurtarma=$BOOTFIX)"
 
 # ★FİLO EŞİĞİ: tek cihazın geçici takılması sessizce düzeltilir (yukarıda loglandı).
 # Kurtarılamayan cihaz sayısı eşiği aşarsa = SİSTEMİK arıza (ülke havuzu ölü gibi) →

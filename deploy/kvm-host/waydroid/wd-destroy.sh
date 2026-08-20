@@ -80,6 +80,14 @@ log "supervisor + redsocks + dbus sidecars killed"
 
 # 2) Disable + remove the per-instance systemd unit.
 if [ -f "$UNIT" ]; then
+  # ★★★2026-08-20 BIRIM ADI DUZELTILDI — silinen cihazin birimi ETKIN kaliyordu.
+  # Gercek birim `waydroid@<inst>.service` (ET ISARETI); betik `waydroid-<inst>`
+  # (TIRE) kapatmaya calisiyordu ve o ad HIC var olmadi -> satir bosa calisiyordu.
+  # CANLI KANIT: filoda 58 "olu ama etkin" waydroid@ birimi vardi, hepsi silinmis
+  # cihazlara aitti. Reboot`ta systemd olmayan cihazi baslatmaya calisir.
+  # ⚠️Eski kurulumlar icin tire`li ad da birakildi (zararsiz, yoksa no-op).
+  systemctl disable --now "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+  systemctl reset-failed "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
   systemctl disable --now "waydroid-$INSTANCE.service" >/dev/null 2>&1 || true
   rm -f "$UNIT" && log "systemd unit removed"
 fi

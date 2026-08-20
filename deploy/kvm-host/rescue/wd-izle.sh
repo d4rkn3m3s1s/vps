@@ -19,7 +19,25 @@ TUR=0
 # (datacenter IP -> WhatsApp bani). Bir kez olculur; degisirse servis restart'inda
 # tazelenir. Ulasilamazsa bos kalir ve sizinti sayimi 0 doner (yanlis alarm yerine
 # sessizlik -- gercek deger health-watch tarafindan da ayrica denetleniyor).
-DC_IP="$(timeout 10 curl -s https://api.ipify.org 2>/dev/null || echo '')"
+# ★★★2026-08-20 TEK DENEME YETMIYOR — SESSIZ YANLIS-GUVENLI KUSUR.
+# Canli vaka: bu servis reboot firtinasi sirasinda basladi, o an tek istek dustu
+# ve DC_IP KALICI OLARAK BOS kaldi. Sonuc: sizinti sayimi
+#   grep -c "^${DC_IP}$"  ->  grep -c "^$"
+# haline dondu, yani HICBIR SEY OLCMUYORDU; buna ragmen /durum sayfasi YESIL
+# "0 sizinti - proxy devrede" gosteriyordu. Bu tam olarak 14 Agu'de 47 cihazin
+# sizintili olup PANELDE HIC GORUNMEMESI olayinin imzasi.
+# Artik: uc ayri kaynak + duzenli YENIDEN olcum + olculemezse "0" yerine "?".
+olc_dcip(){
+  local u ip
+  for u in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+    ip=$(timeout 10 curl -s "$u" 2>/dev/null | tr -d '\r\n' \
+         | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+    [ -n "$ip" ] && { echo "$ip"; return 0; }
+  done
+  return 1
+}
+DC_IP="$(olc_dcip || echo '')"
+DC_AT=$(date +%s)
 
 dblocked(){ awk '/^procs_blocked/{print $2; exit}' /proc/stat 2>/dev/null || echo 0; }
 sc(){ timeout 6 systemctl "$@" 2>/dev/null; }
@@ -68,6 +86,13 @@ cpu_idle(){
 while true; do
   TUR=$((TUR+1))
   T=$(date +%H:%M:%S)
+  # ★2026-08-20: DC_IP bos kaldiysa VEYA 30 dk gectiyse yeniden olc. Host'un cikis
+  # IP'si degisebilir; bayat deger sizinti tespitini sessizce bozar.
+  if [ -z "$DC_IP" ] || [ $(( $(date +%s) - DC_AT )) -ge 1800 ]; then
+    _newdc=$(olc_dcip || echo '')
+    [ -n "$_newdc" ] && DC_IP="$_newdc"
+    DC_AT=$(date +%s)
+  fi
 
   ACIK=$(gercek_acik)                                   # GERCEK container (bkz. yukarisi)
   SYSD=$(sc list-units --state=running "waydroid@*" | grep -c waydroid@); SYSD=${SYSD:-?}
@@ -120,7 +145,13 @@ while true; do
       # 14 Agu gecesi reboot sonrasi 47 cihaz boyle cikti ve PANELDE GORUNMEDI;
       # health-watch tespit ediyor ama o sirada durdurulmustu. Artik sayisi
       # burada, tek bakista gorunur.
-      echo "sizinti=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -c "^${DC_IP}$")"
+      # ★2026-08-20: DC_IP olculemediyse "0" YAZMA. Sifir "guvenli" demektir ve
+      # olcum yokken yesil gostermek operatoru yanlis guvene surukler.
+      if [ -n "$DC_IP" ]; then
+        echo "sizinti=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -cxF "$DC_IP")"
+      else
+        echo "sizinti=?"
+      fi
       echo "dcip=${DC_IP}"
       echo "zaman=$T"; } > "$DETAY"
   fi

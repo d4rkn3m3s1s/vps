@@ -3,6 +3,7 @@ import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { apiRateLimiter, heavyOperationRateLimiter } from '../../middleware/rateLimit';
 import { requireWhatsappAccount } from './public.middleware';
+import { serveMediaPublicHandler } from './public.controller';
 import { listDevicesHandler, getDeviceHandler, deviceTagsHandler, deviceRenameHandler, sendHandler, bulkSendHandler, messagesHandler, conversationsHandler, threadHandler, markReadHandler, statsHandler, broadcastHandler, labelsHandler, createLabelHandler, setLabelsHandler, stateHandler, profileHandler, setNameHandler, setAvatarHandler, blockHandler, blocklistHandler, myNumberHandler, sendMediaHandler, deleteMessageHandler, clearChatHandler, receiptsHandler, mediaHandler, callsHandler, searchHandler, unreadHandler, contactsHandler, groupMembersHandler, chatSummaryHandler, accountHealthHandler, fetchMediaHandler, reactionsHandler, pollsHandler, readByHandler, starredHandler, labelsListHandler, viewOnceHandler, voiceNotesHandler, deletedHandler, linksHandler, provisionDeviceHandler, provisionBatchHandler, provisionStatusHandler, registerWhatsappHandler, registerWhatsappOtpHandler, registerWhatsappVerifyMethodHandler, registerWhatsappStatusHandler, registerWhatsappRetryHandler, jobHandler, jobWaitHandler, meHandler } from './public.controller';
 
 // External/public WhatsApp API. Authenticated by `x-api-key` ONLY (a workspace-
@@ -21,6 +22,10 @@ import { listDevicesHandler, getDeviceHandler, deviceTagsHandler, deviceRenameHa
 export const publicRouter = Router();
 
 publicRouter.use(requireApiKey);
+
+// ★2026-08-19 Yakalanan WhatsApp medyasini indir (dis entegrasyon).
+// Webhook yukundeki `mediaUrl` bu ucu gosterir; `flk_` anahtariyla korunur.
+publicRouter.get('/whatsapp/media/:deviceId/:file', asyncHandler(serveMediaPublicHandler));
 
 type Method = 'get' | 'post';
 type MountOpts = {

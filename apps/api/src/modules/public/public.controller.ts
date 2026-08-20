@@ -10,6 +10,9 @@ import { waRegisterService } from '../accounts/wa-register.service';
 import { getJob } from '../jobs/jobs.service';
 import { requirePublicWorkspace, requireScope } from './public.guards';
 import { withIdempotency, readIdempotencyKey } from './idempotency.service';
+import path from 'node:path';
+import fs from 'node:fs';
+import { prisma } from '../../db/prisma';
 import { getWhatsappState, capabilitiesOf } from '../devices/whatsappCategory';
 import { normalizePhoneInput, normalizeOtpInput } from '../../lib/phone';
 
@@ -1117,4 +1120,37 @@ export async function jobWaitHandler(req: Request, res: Response): Promise<void>
     }
     await new Promise((r) => setTimeout(r, STEP_MS));
   }
+}
+
+
+// ── ★★★2026-08-19 YAKALANAN MEDYAYI DIS SISTEME SUN ────────────────────────
+// Panel ucu (/whatsapp/media/...) JWT ister ve Caddy onu DISARIYA ACMAZ: 80
+// portunda yalnizca /public/*, /api-download/*, /health API'ye gidiyor, gerisi
+// panele. Yani webhook'a koydugumuz baglantiyi dis sistem CEKEMEZDI.
+// Bu uc `/public/*` altinda ve `flk_` API anahtariyla korunur — dis entegrasyonun
+// zaten kullandigi kimlik. Workspace anahtardan cozulur, yani baska kiracinin
+// dosyasina erisim YAPISAL olarak imkansiz.
+const WA_MEDIA_DIR_PUB = process.env.FLEET_WA_MEDIA_DIR ?? '/opt/fleet-agent/wa-media';
+
+export async function serveMediaPublicHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = requirePublicWorkspace(req);
+  const deviceId = String(req.params.deviceId ?? '');
+  const file = String(req.params.file ?? '');
+  // ⚠️YOL KACISI: dosya adi TEK segment olmali. `path.basename` esitligi ".."yi
+  // tek basina elemez (o da tek segmenttir), bu yuzden ayrica reddediliyor.
+  if (!deviceId || !file || file !== path.basename(file) || file === '..' || file.startsWith('.')) {
+    throw new AppError('Geçersiz dosya adı.', 400, 'BAD_REQUEST');
+  }
+  const device = await prisma.device
+    .findFirst({ where: { id: deviceId, workspaceId }, select: { id: true, workspaceId: true } })
+    .catch(() => null);
+  if (!device) throw new AppError('Cihaz bulunamadı.', 404, 'DEVICE_NOT_FOUND');
+
+  const abs = path.join(WA_MEDIA_DIR_PUB, device.workspaceId ?? 'default', device.id, file);
+  const kok = path.resolve(WA_MEDIA_DIR_PUB);
+  if (!path.resolve(abs).startsWith(kok + path.sep)) {
+    throw new AppError('Geçersiz yol.', 400, 'BAD_REQUEST');
+  }
+  if (!fs.existsSync(abs)) throw new AppError('Medya bulunamadı.', 404, 'MEDIA_NOT_FOUND');
+  res.sendFile(abs);
 }

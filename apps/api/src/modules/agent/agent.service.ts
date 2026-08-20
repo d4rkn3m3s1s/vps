@@ -1752,13 +1752,17 @@ export class AgentService {
     //   • dataB64              : yalnizca <= WA_WEBHOOK_B64_MAX (varsayilan 1 MB)
     // ⚠️base64 ~%33 sisirir; 7 MB'lik bir video ~9.3 MB JSON demektir. Bu yuzden
     // buyuk dosyalarda BILEREK gonderilmez — tuketici baglantidan ceker.
-    const mediaPath = `/whatsapp/media/${device.id}/${encodeURIComponent(safeName)}`;
+    // ⚠️PANEL ucu (/whatsapp/media/...) JWT ister ve Caddy onu DISARIYA ACMAZ
+    // (80 portunda yalnizca /public/*, /api-download/*, /health API'ye gider).
+    // Webhook'a konan baglanti DIS sistemden cekilebilmeli -> `/public/...` yolu
+    // ve genel adres (WEB_BASE_URL) kullanilir; `flk_` anahtariyla korunur.
+    const mediaPath = `/public/whatsapp/media/${device.id}/${encodeURIComponent(safeName)}`;
     const b64Max = Number(process.env.WA_WEBHOOK_B64_MAX ?? 1048576);
     void webhooksService.dispatch('WHATSAPP_MEDIA_CAPTURED', {
       deviceId: device.id, deviceName: device.name, msgId: input.msgId, kind,
       from: `+${numOnly}`, fileName: safeName, size: bytes.length, viewOnce: input.viewOnce, received: true,
       mediaPath,
-      mediaUrl: `${String(env.apiBaseUrl || '').replace(/\/+$/, '')}${mediaPath}`,
+      mediaUrl: `${String(env.webBaseUrl || '').replace(/\/+$/, '')}${mediaPath}`,
       ...(bytes.length <= b64Max ? { dataB64: bytes.toString('base64') } : { dataB64: null, dataB64Skipped: 'dosya buyuk — mediaUrl kullanin' })
     }, device.workspaceId ?? undefined);
 

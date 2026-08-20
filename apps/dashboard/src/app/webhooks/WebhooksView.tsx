@@ -39,7 +39,20 @@ const EVENT_OPTIONS: { value: string; label: string }[] = [
   { value: 'DEVICE_OFFLINE', label: 'Cihaz çevrimdışı' },
   { value: 'QUOTA_HIGH', label: 'Kota neredeyse dolu' },
   { value: 'ALERT_FIRED', label: 'Uyarı tetiklendi' },
-  { value: 'WHATSAPP_MESSAGE', label: 'WhatsApp mesajı geldi' }
+  { value: 'WHATSAPP_MESSAGE', label: 'WhatsApp mesajı geldi' },
+  // ★2026-08-19 EKSIK OLAYLAR EKLENDI. Prisma `WebhookEvent` enum'unda 18 deger var
+  // ama panelde yalnizca 8'i listeleniyordu — operator MEDYA (foto/video) olayini
+  // SECEMIYORDU, tek care "Tum olaylar"i secip gereksiz trafik almakti.
+  { value: 'WHATSAPP_MEDIA_CAPTURED', label: 'WhatsApp medya geldi (foto/video/ses)' },
+  { value: 'WHATSAPP_SENT', label: 'WhatsApp mesaj gönderildi' },
+  { value: 'WHATSAPP_DELIVERED', label: 'WhatsApp teslim edildi' },
+  { value: 'WHATSAPP_READ', label: 'WhatsApp okundu' },
+  { value: 'WHATSAPP_FAILED', label: 'WhatsApp gönderim başarısız' },
+  { value: 'WHATSAPP_ACCOUNT_HEALTH', label: 'WhatsApp hesap sağlığı (ban/kısıt)' },
+  { value: 'WHATSAPP_REGISTERED', label: 'WhatsApp kaydı tamamlandı' },
+  { value: 'WHATSAPP_AWAITING_OTP', label: 'WhatsApp OTP bekliyor' },
+  { value: 'WHATSAPP_REGISTER_FAILED', label: 'WhatsApp kaydı başarısız' },
+  { value: 'DEVICE_PROVISIONED', label: 'Cihaz kuruldu' }
 ];
 
 export function WebhooksView({ webhooks }: { webhooks: Webhook[] }) {

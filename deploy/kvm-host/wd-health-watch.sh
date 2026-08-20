@@ -307,6 +307,28 @@ declare -A DONE
 # dead-man's-switch mantigi bozulmadi.
 notify HEALTH_WATCH_HEARTBEAT "" "health-watch turu BASLADI" true
 
+
+# ★★★2026-08-19 TUR BASINA TEK SUREC TARAMASI (eskiden ~400 tam /proc taramasi).
+# `pgrep -f` her cagride TUM /proc'u gezer: bu makinede 14.198 surec, olcum ~1335 ms.
+# Tur basina 140 instance x 2-3 cagri = ~530 sn CPU -> 7 dakikada bir pgrep %217.
+# Simdi TEK `ps` ile indekslenir; sorgular O(1). Olcum: 1149 ms, 140+140 surec.
+# ★Onek cakismasi YAPISAL olarak imkansiz: anahtar TAM instance adi (mi30 != mi300).
+declare -A WD_RUN_PID LXC_PID
+_wd_scan_procs() {
+  WD_RUN_PID=(); LXC_PID=()
+  local pid args inst
+  while read -r pid args; do
+    case "$args" in
+      *"wd-run.sh mi"*)
+        inst=${args#*wd-run.sh }; inst=${inst%% *}
+        case "$inst" in mi[0-9]*) [ -z "${WD_RUN_PID[$inst]:-}" ] && WD_RUN_PID[$inst]=$pid ;; esac ;;
+      *"waydroid.mi"*"/lxc"*)
+        inst=${args#*waydroid.}; inst=${inst%%/lxc*}
+        case "$inst" in mi[0-9]*) [ -z "${LXC_PID[$inst]:-}" ] && LXC_PID[$inst]=$pid ;; esac ;;
+    esac
+  done < <(ps -eo pid=,args= 2>/dev/null)
+}
+_wd_scan_procs
 while IFS='|' read -r inst meta_cc phone; do
   [ -z "$inst" ] && continue
   [ -n "${DONE[$inst]:-}" ] && continue
@@ -379,7 +401,7 @@ while IFS='|' read -r inst meta_cc phone; do
       fi
       # ★★★2026-08-19 ONEK ESLESMESI DUZELTILDI — zombie karari KOMSUNUN sureciyle
       # veriliyordu: `pgrep -f "wd-run.sh mi30"` mi300'un surecini de bulur.
-      if pgrep -f "wd-run\.sh $inst($|[^0-9])" >/dev/null 2>&1 || pgrep -f "waydroid.*$inst($|[^0-9])\|lxc-start.*waydroid\.$inst($|[^0-9])" >/dev/null 2>&1; then
+      if [ -n "${WD_RUN_PID[$inst]:-}" ] || [ -n "${LXC_PID[$inst]:-}" ]; then
         # ★BOOT-GRACE (2026-07-23): bir instance BOOT ederken (henüz ~90s dolmamış) ADB'den
         # erişilemez — bu ZOMBIE DEĞİL, sadece boot bitmemiş. Onu zombie sanıp yeniden
         # başlatmak, boot eden instance'ın ÜSTÜNE İKİNCİ bir wd-run başlatır → DUPLICATE
@@ -396,7 +418,7 @@ while IFS='|' read -r inst meta_cc phone; do
         BOOT_GRACE_S="${WD_BOOT_GRACE_S:-300}"
         _now_s=$(date +%s); _boot_age=999999
         # a) wd-run sureci (hala calisiyorsa)
-        wr_pid=$(pgrep -f "wd-run.sh $inst\$" 2>/dev/null | head -1)
+        wr_pid="${WD_RUN_PID[$inst]:-}"
         if [ -n "$wr_pid" ]; then
           _a=$((_now_s - $(stat -c %Y "/proc/$wr_pid" 2>/dev/null || echo 0)))
           [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a
@@ -408,7 +430,7 @@ while IFS='|' read -r inst meta_cc phone; do
           if [ -n "$_t0" ]; then _a=$((_now_s - _t0)); [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a; fi
         fi
         # c) lxc-start sureci yasi — damga yoksa yedek
-        _lx=$(pgrep -f "waydroid\.$inst/lxc" 2>/dev/null | head -1)
+        _lx="${LXC_PID[$inst]:-}"
         if [ -n "$_lx" ]; then
           _a=$((_now_s - $(stat -c %Y "/proc/$_lx" 2>/dev/null || echo 0)))
           [ "$_a" -lt "$_boot_age" ] && _boot_age=$_a

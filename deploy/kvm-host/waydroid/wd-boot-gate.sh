@@ -38,8 +38,20 @@ case "$_up" in ''|*[!0-9]*) _up=999999 ;; esac
 if [ ! -e /run/wd-nogate ] && [ "$_up" -lt "$WD_GATE_BOOT_WINDOW_S" ]; then
   n=$(echo "$INST" | grep -oE '[0-9]+' | head -1)
   n=${n:-0}
-  # 52 dilim x 7sn = 0-357sn (~6dk). Ayni dilime en fazla 3 cihaz duser.
-  sleep $(( (n % 52) * 7 + RANDOM % 7 ))
+  # ★★★2026-08-20 YAYILIM FILO BUYUKLUGUNE gore UYARLANIR.
+  # Eski hali SABIT 52 dilim x 7 sn (0-357 sn) idi. 168 cihazda dilim basina ~3.2
+  # cihaz duser ve Android boot'u 2-4 dk surdugu icin herhangi bir anda ~35 cihaz
+  # ayni anda boot eder -> host tikanir.
+  # CANLI OLAY: cekirdek guncellemesi sonrasi reboot'ta 168 birim ayni anda kalkti;
+  # ADB 89'da TAKILDI (4.5 saat), load 1113, ama CPU %73 BOSTA / RAM 158GB bos ->
+  # kaynak sorunu DEGIL. `systemd-executor` D durumunda kilitlendi (yeni surec
+  # baslatilamaz oldu), SSH portu 22 olduve acil port 2222'den mudahale edildi.
+  # Cozum: dilim sayisi = ETKIN BIRIM SAYISI, aralik 8 sn. 168 cihaz -> yayilim
+  # ~22 dk, ayni anda ~22 cihaz boot eder. Filo buyudukce yayilim OTOMATIK uzar.
+  DILIM=$(ls /etc/systemd/system/multi-user.target.wants/ 2>/dev/null | grep -c '^waydroid@')
+  case "$DILIM" in ''|*[!0-9]*) DILIM=52 ;; esac
+  [ "$DILIM" -lt 52 ] && DILIM=52
+  sleep $(( (n % DILIM) * 8 + RANDOM % 8 ))
 fi
 
 # YUK KAPISI: sira gelse bile sistem zorlaniyorsa bekle (en fazla ~30 dk).

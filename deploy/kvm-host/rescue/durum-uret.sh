@@ -50,6 +50,20 @@ while true; do
   # -> WhatsApp'a datacenter IP'sinden gidiliyor -> BAN riski. Sifir olmali.
   SIZ=$(dg sizinti); SIZ=${SIZ:-?}
   DCIP=$(dg dcip)
+  # ★★★2026-08-20 PAYLASILAN CIKIS IP'si — kademeli.
+  # Ayni cikis IP'sinden cikan cihazlar WhatsApp tarafinda ILISKILENDIRILEBILIR;
+  # biri banlanirsa digerleri de risk altina girer. AMA mobil proxy havuzunda
+  # 2 cihazin gecici cakismasi NORMALDIR — bunu alarm yapmak gurultu olur.
+  # Kademe: <=2 sessiz/yesil · 3-4 turuncu (gorunur ama alarm yok) · >=5 kirmizi.
+  PAYMAX=$(dg paylasim_max);   PAYMAX=${PAYMAX:-0}
+  PAYKUME=$(dg paylasim_kume); PAYKUME=${PAYKUME:-0}
+  PAYCIH=$(dg paylasim_cihaz); PAYCIH=${PAYCIH:-0}
+  PAYLST=$(dg paylasim_liste)
+  case "$PAYMAX" in ''|*[!0-9]*) PAYMAX=0 ;; esac
+  if   [ "$PAYMAX" -ge 5 ]; then PAYR="#e74c3c"; PAYN="HAVUZ DARALDI — $PAYMAX cihaz ayni IP'de"
+  elif [ "$PAYMAX" -ge 3 ]; then PAYR="#e6a23c"; PAYN="$PAYKUME kumede paylasim — izle"
+  elif [ "$PAYMAX" -ge 2 ]; then PAYR="#2ecc71"; PAYN="normal (mobil havuz cakismasi)"
+  else                           PAYR="#2ecc71"; PAYN="her cihaz kendi IP'sinde"; fi
 
   # ★★★2026-08-20 EK OLCUMLER — sayfada eksik olan ve canlida ISIRAN dortlu.
   # (a) ARTIK DIZIN: silinen cihazlardan kalan /var/lib/waydroid.* dizinleri.
@@ -195,6 +209,7 @@ HEAD
     echo "<div class=\"c\"><div class=\"k\">Internet + proxy</div><div class=\"v\" style=\"color:#2ecc71\">${NET:-?}</div><div class=\"n\">disari cikabiliyor</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Proxy sizintisi</div><div class=\"v\" style=\"color:$SIZR\">${SIZ}</div><div class=\"n\">$SIZN</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Cikisi yok</div><div class=\"v\" style=\"color:$CIKR\">${CIKSIZN:-0}</div><div class=\"n\">$CIKN</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Paylasilan cikis</div><div class=\"v\" style=\"color:$PAYR\">${PAYMAX}<span class=\"s\">/IP</span></div><div class=\"n\">$PAYN</div></div>"
     echo '</div>'
     # ★2026-08-20 GORUNURLUK: sorunlu cihazlarin ADLARI. mi277 + mi290 SAATLERCE
     # "acik ama disari cikamiyor" durumundaydi ve sayfanin HICBIR yerinde
@@ -205,6 +220,12 @@ HEAD
       [ -n "$BOOTSUZ" ] && echo "<div><b style=\"color:#e74c3c\">Yarim acilmis (Android boot bitmedi):</b> $(echo "$BOOTSUZ" | esc)</div>"
       [ -n "$CIKSIZ" ] && echo "<div><b style=\"color:#e6a23c\">Cikisi yok (disari ulasamiyor):</b> $(echo "$CIKSIZ" | esc)</div>"
       echo "</div></div>"
+    fi
+    # ★2026-08-20 Paylasilan IP'lerin LISTESI — yalniz gercekten paylasim varsa.
+    # "Bilelim ama dusuklerde sorun olmasin": 2'li cakisma yesil kalir, liste
+    # yine de gorunur ki operator egilimi izleyebilsin.
+    if [ -n "$PAYLST" ] && [ "${PAYMAX:-0}" -ge 2 ]; then
+      echo "<div class=\"c\" style=\"margin-bottom:16px;border-left:4px solid $PAYR\"><div class=\"k\">Ayni cikis IP'sini paylasan cihazlar</div><div style=\"font-size:13px;margin-top:6px;line-height:1.7\">$(echo "$PAYLST" | esc)</div><div class=\"n\" style=\"margin-top:6px\">$PAYCIH cihaz &middot; $PAYKUME kume &middot; en buyuk kume $PAYMAX &middot; IP(kac cihaz) seklinde</div></div>"
     fi
     # ★★★2026-08-17 OTONOM KURTARMA OLCUMU
     # "Dusen cihaz BEN MUDAHALE ETMEDEN kac dk'da kalkiyor?" — health-watch her

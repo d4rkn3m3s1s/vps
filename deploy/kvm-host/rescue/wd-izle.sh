@@ -152,6 +152,19 @@ while true; do
       else
         echo "sizinti=?"
       fi
+      # ★★★2026-08-20 PAYLASILAN CIKIS IP'si.
+      # Ayni cikis IP'sinden cikan cihazlar WhatsApp tarafinda ILISKILENDIRILEBILIR:
+      # biri banlanirsa aynı IP'deki digerleri de risk altina girer (bu filoda
+      # "sticky-IP" mimarisi tam bu yuzden kuruldu — sessid YETMEZ, sesstime SART).
+      # Mobil proxy havuzunda 2 cihazin gecici olarak ayni IP'ye dusmesi NORMALDIR;
+      # 5+ cihaz ayni IP'de ise havuz daralmis demektir ve mudahale gerekir.
+      # Veri ZATEN saglik.out'un 6. alaninda — ek olcum maliyeti YOK.
+      _pay=$(cut -d'|' -f6 "$S" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+             | sort | uniq -c | sort -rn | awk '$1>1')
+      echo "paylasim_max=$(printf '%s\n' "$_pay" | head -1 | awk '{print $1+0}')"
+      echo "paylasim_kume=$(printf '%s\n' "$_pay" | grep -c '[0-9]')"
+      echo "paylasim_cihaz=$(printf '%s\n' "$_pay" | awk '{s+=$1} END{print s+0}')"
+      echo "paylasim_liste=$(printf '%s\n' "$_pay" | awk 'NF{printf "%s(%s) ", $2, $1}' | head -c 280)"
       echo "dcip=${DC_IP}"
       echo "zaman=$T"; } > "$DETAY"
   fi

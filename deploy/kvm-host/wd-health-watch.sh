@@ -803,6 +803,32 @@ while IFS='|' read -r inst meta_cc phone; do
   fi
 done <<< "$ROWS"
 
+# ★★★2026-08-20 PAYLASILAN CIKIS IP ALARMI — KADEMELI.
+# Ayni cikis IP'sinden cikan cihazlar WhatsApp tarafinda ILISKILENDIRILEBILIR:
+# biri banlanirsa ayni IP'deki digerleri de risk altina girer. Bu filodaki
+# "sticky-IP" mimarisi (sessid + sesstime) tam bunun icin kuruldu.
+# KADEME (operator istegi: "dusuklerde sorun olmasin ama bilelim"):
+#   2-4 cihaz -> yalnizca LOG + /durum'da gorunur, ALARM YOK (mobil havuzda
+#                gecici cakisma normaldir; alarm etmek gurultu olur),
+#   esik ve uzeri (varsayilan 5) -> havuz daralmis demektir -> ALARM.
+# Veri ZATEN wd-saglik.sh ciktisinin 6. alaninda — ek olcum maliyeti YOK.
+# TAZELIK: dosya 15 dk'dan eskiyse hic bakma (bayat veriyle alarm uretme).
+_SG=/opt/fleet-agent/state/saglik.out
+_ESIK="${WD_SHARED_EXIT_ALERT:-5}"
+if [ -f "$_SG" ] && [ "$(( $(date +%s) - $(stat -c %Y "$_SG" 2>/dev/null || echo 0) ))" -lt 900 ]; then
+  _paycnt=$(cut -d'|' -f6 "$_SG" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort | uniq -c | sort -rn | head -1)
+  _paymax=$(printf '%s\n' "$_paycnt" | awk '{print $1+0}')
+  _payip=$(printf '%s\n' "$_paycnt" | awk '{print $2}')
+  case "$_paymax" in ''|*[!0-9]*) _paymax=0 ;; esac
+  if [ "$_paymax" -ge "$_ESIK" ]; then
+    _paycih=$(awk -F'|' -v ip="$_payip" '$6==ip {printf "%s ", $1}' "$_SG" 2>/dev/null)
+    log "⚠ PAYLASILAN CIKIS: $_paymax cihaz ayni IP'de ($_payip) -> $_paycih"
+    notify PROXY_SHARED_EXIT "fleet" "$_paymax cihaz ayni cikis IP sinde ($_payip): $_paycih" false
+  elif [ "$_paymax" -ge 2 ]; then
+    log "ℹ paylasilan cikis: en buyuk kume $_paymax cihaz ($_payip) — esik $_ESIK, alarm YOK"
+  fi
+fi
 log "TAMAM: $OK sağlıklı, $LEAK sızıntı-düzeltildi, $RECONN reconnect, $UNREACH erişilemez, $DEADEXIT çıkış-ölü (rot=$ROTFIX, hesap=$ACCTFIX, boot-kurtarma=$BOOTFIX)"
 
 # ★FİLO EŞİĞİ: tek cihazın geçici takılması sessizce düzeltilir (yukarıda loglandı).

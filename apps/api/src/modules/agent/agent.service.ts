@@ -1756,7 +1756,7 @@ export class AgentService {
     // (80 portunda yalnizca /public/*, /api-download/*, /health API'ye gider).
     // Webhook'a konan baglanti DIS sistemden cekilebilmeli -> `/public/...` yolu
     // ve genel adres (WEB_BASE_URL) kullanilir; `flk_` anahtariyla korunur.
-    const mediaPath = `/public/whatsapp/media/${device.id}/${encodeURIComponent(safeName)}`;
+    const mediaPath = `/public/v1/whatsapp/media/${device.id}/${encodeURIComponent(safeName)}`;
     const b64Max = Number(process.env.WA_WEBHOOK_B64_MAX ?? 1048576);
     void webhooksService.dispatch('WHATSAPP_MEDIA_CAPTURED', {
       deviceId: device.id, deviceName: device.name, msgId: input.msgId, kind,

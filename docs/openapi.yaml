@@ -1404,6 +1404,23 @@ paths:
     post: { tags: [public:data], summary: 'Tam-metin arama (eski: /whatsapp/search)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
   /public/v1/whatsapp/data/media:
     post: { tags: [public:data], summary: 'Medya listesi (eski: /whatsapp/media)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
+  # ★2026-08-19 Webhook ile yakalanan medyayi INDIR. `fetch-media`den FARKLI:
+  #   fetch-media -> cihazdan ceker, IS olusturur (jobId doner, asenkron)
+  #   bu uc       -> sunucuda ZATEN saklanan dosyayi ANINDA verir (senkron, ham bayt)
+  # `WHATSAPP_MEDIA_CAPTURED` webhook yukundeki `mediaUrl` tam olarak bunu gosterir.
+  /public/v1/whatsapp/media/{deviceId}/{file}:
+    get:
+      tags: [public:data]
+      summary: 'Yakalanan medyayi indir (webhook mediaUrl hedefi) — ham dosya doner'
+      security: [ { apiKeyAuth: [] } ]
+      parameters:
+        - { name: deviceId, in: path, required: true, schema: { type: string } }
+        - { name: file, in: path, required: true, schema: { type: string }, description: 'Webhook yukundeki fileName' }
+      responses:
+        '200': { description: 'Dosyanin ham icerigi (image/video/audio/application)' }
+        '400': { description: 'Gecersiz dosya adi / yol' }
+        '401': { description: 'API anahtari yok veya gecersiz' }
+        '404': { description: 'Cihaz bu workspace''e ait degil ya da dosya yok' }
   /public/v1/whatsapp/data/fetch-media:
     post: { tags: [public:data], summary: 'Medya indir base64 (eski: /whatsapp/fetch-media)', x-requires-device: wa-read, security: [ { apiKeyAuth: [] } ], responses: { '200': { description: '{ data: { jobId, status } }' } } }
   /public/v1/whatsapp/data/calls:

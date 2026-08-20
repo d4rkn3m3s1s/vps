@@ -23,10 +23,6 @@ export const publicRouter = Router();
 
 publicRouter.use(requireApiKey);
 
-// ★2026-08-19 Yakalanan WhatsApp medyasini indir (dis entegrasyon).
-// Webhook yukundeki `mediaUrl` bu ucu gosterir; `flk_` anahtariyla korunur.
-publicRouter.get('/whatsapp/media/:deviceId/:file', asyncHandler(serveMediaPublicHandler));
-
 type Method = 'get' | 'post';
 type MountOpts = {
   // Eski (legacy) yol — verilirse aynı handler'a ikinci kez bağlanır.
@@ -52,6 +48,12 @@ const register = requireWhatsappAccount('register');
 // ─────────────────────────────────────────────────────────────────────────────
 // 1) Hesap & Cihazlar — her cihazda çalışır, WhatsApp durumu aranmaz.
 // ─────────────────────────────────────────────────────────────────────────────
+// ★2026-08-19 Yakalanan WhatsApp medyasini INDIR (dis entegrasyon).
+// Webhook yukundeki `mediaUrl` bu ucu gosterir. `fetch-media`den FARKLI:
+//   • /v1/whatsapp/fetch-media -> cihazdan ceker, IS olusturur (jobId doner)
+//   • bu uc                    -> sunucuda ZATEN saklanan dosyayi ANINDA verir
+// Workspace API anahtarindan cozulur; baska kiracinin dosyasi 404.
+mount('get', '/v1/whatsapp/media/:deviceId/:file', asyncHandler(serveMediaPublicHandler));
 mount('get', '/v1/me', asyncHandler(meHandler));
 mount('get', '/v1/devices', asyncHandler(listDevicesHandler));
 // Add / remove / replace a device's tags (e.g. "#test") — write scope, rate-limited.

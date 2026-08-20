@@ -25,6 +25,7 @@ import {
   createBroadcastHandler,
   listBroadcastsHandler,
   setAccountHealthManualHandler,
+  serveMediaHandler,
   rescanAccountHealthHandler,
 } from './whatsapp.controller';
 
@@ -74,5 +75,7 @@ whatsappRouter.get('/broadcast', requireApiKey, authenticateJwt, asyncHandler(li
 // set: operator beyani (kisitli/yasakli hesabi elle ACTIVE'e ceker; audit'e yazilir).
 // rescan: cihazi yeniden yoklatir (WHATSAPP_ACCOUNT_HEALTH job) — gercegi sistem soyler,
 //         hala kisitliysa damgayi otomatik GERI KOYAR (setAccountHealth monotonik).
+// ★2026-08-19 Yakalanan medyayi indir (panel + dis entegrasyon). Workspace'e gore korunur.
+whatsappRouter.get('/media/:deviceId/:file', requireApiKey, authenticateJwt, asyncHandler(serveMediaHandler));
 whatsappRouter.post('/health/set', requireApiKey, authenticateJwt, asyncHandler(setAccountHealthManualHandler));
 whatsappRouter.post('/health/rescan', requireApiKey, authenticateJwt, asyncHandler(rescanAccountHealthHandler));

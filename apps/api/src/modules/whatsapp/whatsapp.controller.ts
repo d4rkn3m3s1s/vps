@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { getWorkspaceId } from '../../lib/workspaceContext';
 import { whatsappService } from './whatsapp.service';
 import { writeAuditLog } from '../audit/audit.service';
+import path from 'node:path';
+import fs from 'node:fs';
+import { prisma } from '../../db/prisma';
 
 // ── conversation list ───────────────────────────────────────────────────────
 
@@ -293,4 +296,45 @@ export async function rescanAccountHealthHandler(req: Request, res: Response): P
     ...(workspaceId ? { workspaceId } : {})
   });
   res.json({ data: result });
+}
+
+
+// ── ★★★2026-08-19 YAKALANAN MEDYAYI SUNAN UC ────────────────────────────────
+// Ajan gelen foto/video/ses/belgeyi diske yaziyordu (agent.service: WA_MEDIA_STORE)
+// ama dosyayi SUNAN HICBIR ROTA YOKTU — panel de dis entegrasyon da erisemiyordu.
+// Kod yorumu "panel indirebilsin" diyordu ama uc hic yazilmamisti.
+// Bu uc olmadan `WHATSAPP_MEDIA_CAPTURED` webhook'u da islevsizdi: dis sisteme
+// "medya geldi" deniyor, ama icerige ulasmanin yolu yoktu.
+const WA_MEDIA_DIR = process.env.FLEET_WA_MEDIA_DIR ?? '/opt/fleet-agent/wa-media';
+
+export async function serveMediaHandler(req: Request, res: Response): Promise<void> {
+  const workspaceId = getWorkspaceId(req);
+  const deviceId = String(req.params.deviceId ?? '');
+  const file = String(req.params.file ?? '');
+  // ⚠️YOL KACISI KORUMASI: dosya adi TEK bir segment olmali. `path.basename`
+  // tek basina yetmez (".." tek segmenttir), o yuzden ayrica reddediyoruz.
+  if (!deviceId || !file || file !== path.basename(file) || file === '..' || file.startsWith('.')) {
+    res.status(400).json({ error: 'BAD_REQUEST', message: 'Geçersiz dosya adı.' });
+    return;
+  }
+  // ★COK KIRACILIK: cihaz bu workspace'e ait DEGILSE dosya da verilmez.
+  const device = await prisma.device
+    .findFirst({ where: { id: deviceId, ...(workspaceId ? { workspaceId } : {}) }, select: { id: true, workspaceId: true } })
+    .catch(() => null);
+  if (!device) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Cihaz bulunamadı.' });
+    return;
+  }
+  const abs = path.join(WA_MEDIA_DIR, device.workspaceId ?? 'default', device.id, file);
+  // Ikinci kalkan: cozulmus yol depo kokunun ALTINDA mi.
+  const kok = path.resolve(WA_MEDIA_DIR);
+  if (!path.resolve(abs).startsWith(kok + path.sep)) {
+    res.status(400).json({ error: 'BAD_REQUEST', message: 'Geçersiz yol.' });
+    return;
+  }
+  if (!fs.existsSync(abs)) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Medya bulunamadı.' });
+    return;
+  }
+  res.sendFile(abs);
 }

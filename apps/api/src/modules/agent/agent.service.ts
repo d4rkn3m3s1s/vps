@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import type { AlertTrigger, GeneratedAccountStatus, Host } from '@prisma/client';
 import { prisma } from '../../db/prisma';
+import { env } from '../../config/env';
 import { logger } from '../../lib/logger';
 import { AppError } from '../../lib/errors';
 
@@ -1741,9 +1742,24 @@ export class AgentService {
 
     // 3) Webhook fan-out (mevcut WHATSAPP_MEDIA_CAPTURED enum'unu kullaniyoruz —
     //    yeni enum degeri Prisma migration gerektirirdi; bu olay ayni sinifta.)
+    // ★★★2026-08-19 WEBHOOK YUKU ZENGINLESTIRILDI — eskiden YALNIZ USTVERI vardi.
+    // Dis sisteme "medya geldi" deniyordu ama ICERIGE ULASMANIN YOLU YOKTU:
+    // ne indirme baglantisi ne de veri. Dosya diske yaziliyor (WA_MEDIA_STORE) ama
+    // onu SUNAN ROTA DA YAZILMAMISTI — bu commit'te `/whatsapp/media/:deviceId/:file`
+    // eklendi (workspace'e gore korunur, yol kacisina karsi iki kalkan).
+    // Artik yuk hem BAGLANTI hem de KUCUK dosyalar icin base64 tasir:
+    //   • mediaUrl / mediaPath : her boyutta calisir, tek dogru yol buyuk dosyalar icin
+    //   • dataB64              : yalnizca <= WA_WEBHOOK_B64_MAX (varsayilan 1 MB)
+    // ⚠️base64 ~%33 sisirir; 7 MB'lik bir video ~9.3 MB JSON demektir. Bu yuzden
+    // buyuk dosyalarda BILEREK gonderilmez — tuketici baglantidan ceker.
+    const mediaPath = `/whatsapp/media/${device.id}/${encodeURIComponent(safeName)}`;
+    const b64Max = Number(process.env.WA_WEBHOOK_B64_MAX ?? 1048576);
     void webhooksService.dispatch('WHATSAPP_MEDIA_CAPTURED', {
       deviceId: device.id, deviceName: device.name, msgId: input.msgId, kind,
-      from: `+${numOnly}`, fileName: safeName, size: bytes.length, viewOnce: input.viewOnce, received: true
+      from: `+${numOnly}`, fileName: safeName, size: bytes.length, viewOnce: input.viewOnce, received: true,
+      mediaPath,
+      mediaUrl: `${String(env.apiBaseUrl || '').replace(/\/+$/, '')}${mediaPath}`,
+      ...(bytes.length <= b64Max ? { dataB64: bytes.toString('base64') } : { dataB64: null, dataB64Skipped: 'dosya buyuk — mediaUrl kullanin' })
     }, device.workspaceId ?? undefined);
 
     return { ok: true, tg };

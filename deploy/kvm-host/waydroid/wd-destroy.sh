@@ -223,5 +223,19 @@ for _st in down zfail bootstuck; do
   rm -f "/var/lib/wd-health/${_st}-${INSTANCE}" 2>/dev/null || true
 done
 log "saglik damgalari temizlendi (down/zfail/bootstuck)"
+
+# 8) ★2026-08-20 CIHAZIN LOG DOSYALARINI TEMIZLE.
+# /var/log/wd-<inst>-run.log ve -init.log silmede geride kaliyordu: 449 dosya /
+# 267 MB ve bunlarin 308'i COKTAN SILINMIS cihazlara aitti. Ustelik logrotate
+# kapsaminda da degillerdi (yalniz fleet-agent.log + redsocks*.log vardi) ->
+# SINIRSIZ buyuyorlardi. Bu filoda log sismesi daha once yasandi (13 GB).
+# Artik: (a) /etc/logrotate.d/fleet-wd tum wd-*.log'lari donduruyor (maxage 14),
+#        (b) silme aninda o cihazin logu dogrudan kaldiriliyor.
+# ⚠️Yol instance adiyla SINIRLI — komsu cihazin logu ASLA silinmez.
+for _lg in "/var/log/wd-${INSTANCE}-run.log" "/var/log/wd-${INSTANCE}-init.log"; do
+  [ -e "$_lg" ] && rm -f "$_lg" 2>/dev/null
+done
+rm -f "/var/log/wd-${INSTANCE}-run.log."* "/var/log/wd-${INSTANCE}-init.log."* 2>/dev/null || true
+log "cihaz log dosyalari temizlendi"
 log "destroyed"
 echo "DESTROY_RESULT instance=$INSTANCE status=destroyed"

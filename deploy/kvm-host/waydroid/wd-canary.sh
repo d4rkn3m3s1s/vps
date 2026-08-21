@@ -36,11 +36,35 @@ PW=$(grep -E '^ADMIN_PASSWORD=' "$DASH_ENV" 2>/dev/null | cut -d= -f2)
 [ -z "$AK" ] && { log "HATA: FLEET_API_KEY yok — canary calisamaz"; exit 1; }
 
 # Alarm: health-alert ucuna gonder (wd-health-watch ile ayni yol).
+# ★★★2026-08-20 HMAC IMZASI + JSON KACISI (wd-health-watch.sh ile AYNI kurgu).
+# Onceden `detail` hic kacislanmiyordu (icinde " olan her uyari bozuk JSON uretirdi)
+# ve istek IMZASIZDI. Sunucu kanonik dizesi:
+#   ${ts}.${METHOD}.${req.originalUrl}.${JSON.stringify(req.body)}   (agent.signature.ts:89)
+# ⚠️FLEET_REQUIRE_AGENT_SIGN=1 acildiginda imzasiz kalan HER cagri 401 alir — canary
+#   de health-alert kullandigi icin BURASI DA imzalanmak ZORUNDA.
+# ★★★2026-08-20 HMAC IMZASI (wd-health-watch.sh ile AYNI kurgu).
+# Onceden `detail` hic kacislanmiyordu ve istek IMZASIZDI.
+# Govdeyi NODE uretir: sunucu da JSON.stringify ile yeniden serilestirdigi icin
+# gidis-donus BIREBIR ayni olur — HMAC'in tutmasi buna bagli. Elle kacis yazmak
+# bu ortamda guvenli degil (ters bolu ikilileri diske tek olarak dusuyor).
+# ⚠️FLEET_REQUIRE_AGENT_SIGN=1 acilinca imzasiz her cagri 401 alir — canary de
+#   health-alert kullandigi icin BURASI DA imzalanmak ZORUNDA.
+NODE_BIN="${NODE_BIN:-/usr/bin/node}"
+
 notify() { # detay
   [ -z "$AK" ] && return 0
-  timeout 12 curl -s -o /dev/null -X POST "$API/agent/health-alert" \
-    -H "x-api-key: $AK" -H "x-agent-key: ${HK:-}" -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"CANARY_FAILED\",\"instance\":\"canary\",\"detail\":\"$1\",\"fixed\":false}" 2>/dev/null || true
+  local body ts sign path
+  path="/agent/health-alert"
+  body=$("$NODE_BIN" -e 'const a=process.argv.slice(1);process.stdout.write(JSON.stringify({kind:"CANARY_FAILED",instance:"canary",detail:a[0],fixed:false}))' "$1" 2>/dev/null)
+  [ -z "$body" ] && return 0
+  ts=$(date +%s%3N)
+  sign=$(printf '%s' "${ts}.POST.${path}.${body}" \
+         | openssl dgst -sha256 -hmac "${HK:-}" -r 2>/dev/null | cut -d' ' -f1)
+  timeout 12 curl -s -o /dev/null -X POST "$API$path" \
+    -H "x-api-key: $AK" -H "x-agent-key: ${HK:-}" \
+    -H "x-agent-ts: $ts" -H "x-agent-sign: $sign" \
+    -H 'Content-Type: application/json' \
+    -d "$body" 2>/dev/null || true
 }
 
 TOK=$(timeout 20 curl -s -X POST "$API/auth/login" -H "x-api-key: $AK" -H 'Content-Type: application/json' \

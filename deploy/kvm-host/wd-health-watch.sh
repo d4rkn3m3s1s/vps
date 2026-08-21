@@ -111,13 +111,65 @@ MOBILE_CCS=" $(echo "${FLEET_PROXY_MOBILE_COUNTRIES:-TR}" | tr ',' ' ' | tr '[:l
 log() { echo "$(date '+%F %T') $*" | tee -a "$LOG"; }
 is_mobile_cc() { case "$MOBILE_CCS" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# ★★★2026-08-20 HMAC IMZASI + JSON KACISI.
+#
+# ONCE: bu fonksiyon `detail`i HIC kacislamadan JSON'a gomuyordu. Icinde bir cift
+# tirnak veya satir sonu olan her uyari BOZUK JSON uretiyordu (sessizce dusuyordu).
+#
+# AYRICA imzasizdi: API her ~9 dk "[agent-sign] unsigned request ... allowed" yaziyordu.
+# Yani yalnizca api-key'e sahip biri SAHTE cihaz/saglik raporu gonderebilirdi
+# (cihazi "dustu" gostermek, sahte alarm urettirmek, gozcu kararlarini yonlendirmek).
+#
+# Sunucu tarafi (apps/api/src/modules/agent/agent.signature.ts:89):
+#     canonical = ${ts}.${METHOD}.${req.originalUrl}.${JSON.stringify(req.body)}
+#     HMAC-SHA256, anahtar = DUZ METIN agent key (x-agent-key), +-5 dk kayma toleransi
+# ⚠️Govde sunucuda YENIDEN serilestiriliyor (ham bayt degil) — bizim urettigimiz JSON
+#   Node'un JSON.stringify ciktisiyla BAYT BAYT ayni olmali: bosluksuz, ayni anahtar sirasi.
+#
+# KACIS STRATEJISI (bilerek muhafazakar): once TUM kontrol karakterleri temizlenir
+# (tab/LF/CR -> bosluk, digerleri silinir), sonra yalniz \ ve " kacislanir. Boylece
+# Node'un \u00XX / \n kisa-form kacislarini taklit etmeye calismak GEREKMEZ; gidis-donus
+# birebir ayni kalir. Detail insan metni oldugu icin kayip onemsiz.
+# ★★★2026-08-20 HMAC IMZASI + JSON GOVDESI (v2).
+#
+# ONCE: `detail` HIC kacislanmadan JSON'a gomuluyordu — icinde bir cift tirnak veya
+# satir sonu olan her uyari BOZUK JSON uretiyordu (sessizce dusuyordu). Istek ayrica
+# IMZASIZDI: API her ~9 dk "[agent-sign] unsigned request ... allowed" yaziyordu, yani
+# yalnizca api-key'e sahip biri SAHTE cihaz/saglik raporu gonderebiliyordu.
+#
+# Sunucu kanonik dizesi (apps/api/src/modules/agent/agent.signature.ts:89):
+#     ${ts}.${METHOD}.${req.originalUrl}.${JSON.stringify(req.body)}
+#     HMAC-SHA256, anahtar = DUZ METIN agent key (x-agent-key), +-5 dk kayma toleransi
+#
+# ★★★NEDEN GOVDEYI NODE URETIYOR: sunucu govdeyi PARSE EDIP JSON.stringify ile
+# YENIDEN serilestiriyor. HMAC'in tutmasi icin bizim urettigimiz baytlar Node'un
+# uretecegiyle BIREBIR ayni olmali. Elle sed/bash kacisi yazmak bunu garanti etmez
+# (ve bu ortamda ters bolu kacislari yazarken bozulabiliyor — v1 tam bundan patladi:
+#  's/\/\\/g' diye yazilan ifade diske 's/\/\/g' olarak dustu ve sed "unterminated
+#  s command" verdi; `bash -n` bunu YAKALAMAZ cunku gecerli bash dizesi).
+# Node'a urettirmek hem kacis sorununu hem gidis-donus esitligini KOKTEN cozer.
+NODE_BIN="${NODE_BIN:-/usr/bin/node}"
+build_alert_body() { # kind instance detail fixed(true|false)
+  "$NODE_BIN" -e 'const a=process.argv.slice(1);process.stdout.write(JSON.stringify({kind:a[0],instance:a[1],detail:a[2],fixed:a[3]==="true"}))' "$1" "$2" "$3" "$4" 2>/dev/null
+}
+
 # API'ye sağlık uyarısı gönder (best-effort, script'i asla bloklamaz).
 notify() { # kind instance detail fixed
   [ -z "$API_KEY" ] && return 0
-  local kind="$1" inst="$2" detail="$3" fixed="${4:-false}"
-  timeout 10 curl -s -o /dev/null -X POST "$API_URL/agent/health-alert" \
-    -H "x-api-key: $API_KEY" -H "x-agent-key: $HOST_KEY" -H 'Content-Type: application/json' \
-    -d "{\"kind\":\"$kind\",\"instance\":\"$inst\",\"detail\":\"$detail\",\"fixed\":$fixed}" 2>/dev/null || true
+  local body ts sign path fixed
+  fixed="${4:-false}"
+  case "$fixed" in true|false) ;; *) fixed=false ;; esac
+  path="/agent/health-alert"
+  body=$(build_alert_body "$1" "$2" "$3" "$fixed")
+  [ -z "$body" ] && return 0          # node yoksa/patlarsa sessizce vazgec
+  ts=$(date +%s%3N)
+  sign=$(printf '%s' "${ts}.POST.${path}.${body}" \
+         | openssl dgst -sha256 -hmac "$HOST_KEY" -r 2>/dev/null | cut -d' ' -f1)
+  timeout 10 curl -s -o /dev/null -X POST "$API_URL$path" \
+    -H "x-api-key: $API_KEY" -H "x-agent-key: $HOST_KEY" \
+    -H "x-agent-ts: $ts" -H "x-agent-sign: $sign" \
+    -H 'Content-Type: application/json' \
+    -d "$body" 2>/dev/null || true
 }
 
 

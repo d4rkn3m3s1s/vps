@@ -5,6 +5,33 @@ set -u
 INSTANCE="${1:?instance name required}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUBNET_ID="$(sh "$HERE/net-head.sh" "$INSTANCE")"
+
+# ★★★2026-08-22 KURULUM SIZINTI PENCERESI KAPATILDI (FAIL-CLOSED).
+# ONCEDEN: asagida `systemctl start waydroid@<inst>` konteyneri ACIYOR ve cihaz
+# ANINDA aga cikabiliyor; proxy (redsocks + nat REDIRECT) ise DAHA SONRA, ayri bir
+# adimda uygulaniyor. O aradaki saniyelerde cihaz trafigi host NAT'indan cikiyordu =
+# DATACENTER IP SIZINTISI. Toplu kurulumda bu pencere cihaz sayisi kadar tekrarlanir.
+# CANLI KANIT (22 Agu 01:43): operator tek bir test cihazi kurdu, /durum ANINDA
+# "⚠ PROXY SIZINTISI — ban riski · sizinti 1" gosterdi; proxy uygulaninca 01:44'te
+# 0'a dondu.
+# COZUM: subnet belli olur olmaz, konteyner ACILMADAN once FAIL-CLOSED kural koy.
+# Cihaz REDIRECT gelene kadar internetsiz kalir (zararsiz) ama SIZMAZ.
+# ⚠️BASA eklenir (-I FORWARD 1): ufw-before-forward trafigi ACCEPT edip zinciri
+#   sonlandirdigi icin sona eklenen kural hic gorulmez.
+# ⚠️Mesru trafigi ETKILEMEZ: PREROUTING REDIRECT paketi yonlendirmeden ONCE yerele
+#   cevirir, cihaz TCP'si FORWARD'a hic ugramaz (mi98'de bos-zincir sayaciyla olculdu).
+# wd-destroy silmede bu kurali temizler; wd-proxy.sh her uygulamada idempotent kurar.
+if [ "$(id -u)" = "0" ] && [ -n "${SUBNET_ID:-}" ]; then
+  case "$SUBNET_ID" in
+    ''|*[!0-9]*) : ;;
+    *) if [ "$SUBNET_ID" -ge 1 ] && [ "$SUBNET_ID" -le 254 ]; then
+         _KSNET="192.168.$SUBNET_ID.0/24"
+         iptables -C FORWARD -s "$_KSNET" -p tcp -j DROP 2>/dev/null \
+           || iptables -I FORWARD 1 -s "$_KSNET" -p tcp -j DROP 2>/dev/null \
+           && log "kill-switch kuruldu ($_KSNET) — proxy gelene kadar SIZMAZ"
+       fi ;;
+  esac
+fi
 DEV_IP="192.168.$SUBNET_ID.112"
 log(){ echo "[wd-provision:$INSTANCE] $*"; }
 MI=/opt/waydroid-mi2

@@ -1,0 +1,29 @@
+[Unit]
+# ★★★2026-08-22 BOOT SIZINTI PENCERESINI KAPATIR.
+# iptables kurallari bu makinede KALICI DEGIL (iptables-persistent yok, rules.v4 yok).
+# Her reboot'ta cihaz REDIRECT kurallari sifirlanir; cihazlar boot-gate ile 0-18 dk
+# arasinda acilir, wd-proxy-restore ise boot+90sn'de baslayip 142 cihazi ~20 dk'da
+# tarar. O ARADA cihaz trafigi host NAT'indan cikar = DATACENTER IP SIZINTISI
+# (21 Tem'de "ban salgini" olarak kayda gecen durum).
+# Bu servis, subnet haritasindaki HER subnet icin FAIL-CLOSED DROP kuralini
+# cihazlar acilmadan once kurar: REDIRECT gelene kadar cihaz internetsiz kalir
+# (zararsiz) ama SIZMAZ.
+Description=Fleet proxy sizinti kill-switch (fail-closed, boot penceresi)
+DefaultDependencies=no
+After=network.target
+Before=wd-proxy-restore.service waydroid-container.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/fleet-agent/wd-killswitch.sh
+# Ders (22 Agu): daemon baslatmasa da tutarlilik icin — servis dusunce cgroup'taki
+# hicbir seyi oldurmesin.
+KillMode=process
+TimeoutStartSec=120
+StandardOutput=append:/var/log/wd-killswitch.log
+StandardError=append:/var/log/wd-killswitch.log
+
+[Install]
+WantedBy=multi-user.target

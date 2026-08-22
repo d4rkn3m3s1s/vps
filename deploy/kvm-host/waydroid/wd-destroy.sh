@@ -154,6 +154,22 @@ case "$_SN" in
       fi
       rm -f "$_rf" 2>/dev/null || true
       log "iptables NAT kurallari temizlendi (subnet $_SN, $_n kural)"
+      # ★2026-08-22 FORWARD (filter) kurallarini da temizle.
+      # nat/PREROUTING yukarida temizleniyor ama kill-switch kurallari filter/FORWARD'da:
+      #   -s <subnet> -p tcp -j DROP   (sizinti kill-switch, 22 Agu)
+      #   -s <subnet> -p udp ! --dport 53 -j DROP  (QUIC sizinti kapatma, 24 Tem)
+      # Silinen cihazda birakilirsa birikirler; subnet yeniden kullanildiginda da
+      # cift kayit olusur. Idempotent: eslesen TUM kopyalar dusene kadar sil.
+      _fn=0
+      while "$_IPT" -C FORWARD -s "192.168.${_SN}.0/24" -p tcp -j DROP 2>/dev/null; do
+        "$_IPT" -D FORWARD -s "192.168.${_SN}.0/24" -p tcp -j DROP 2>/dev/null || break
+        _fn=$((_fn+1))
+      done
+      while "$_IPT" -C FORWARD -s "192.168.${_SN}.0/24" -p udp ! --dport 53 -j DROP 2>/dev/null; do
+        "$_IPT" -D FORWARD -s "192.168.${_SN}.0/24" -p udp ! --dport 53 -j DROP 2>/dev/null || break
+        _fn=$((_fn+1))
+      done
+      log "FORWARD kurallari temizlendi (subnet $_SN, $_fn kural)"
     else
       log "iptables temizligi atlandi (subnet=$_SN, ipt=$_IPT)"
     fi

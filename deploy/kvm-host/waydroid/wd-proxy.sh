@@ -174,6 +174,27 @@ if [ "$(id -u)" != "0" ]; then
   exit 1
 fi
 modprobe xt_REDIRECT 2>/dev/null || true
+# ★★★2026-08-22 SIZINTI KILL-SWITCH — FAIL-CLOSED.
+# Asagidaki temizlik REDIRECT kurallarini once SILIP sonra yeniden ekliyor. O bosluk
+# aninda cihaz trafigi REDIRECT'siz kalir, yonlendirilir ve host NAT'indan cikar =
+# DATACENTER IP SIZINTISI (bu filoda ban'in bilinen ana sebebi).
+# CANLI KANIT (22 Agu): filo geneli proxy yeniden uygulamasi sirasinda gozcu tur
+# basina 29-65 "sizinti-duzeltildi" saydi ve panele "Datacenter IP'ye dusmustu"
+# bildirimleri dustu.
+# COZUM: bosluktan ONCE bir DROP kurali koy. Boylece REDIRECT yoksa paket DUSER
+# (cihaz internetsiz kalir) — datacenter IP'sinden CIKMAZ. Fail-closed.
+#
+# NEDEN GUVENLI: mesru cihaz TCP'si FORWARD'a HIC ugramaz; PREROUTING REDIRECT
+# paketi yonlendirmeden ONCE yerele cevirir. CANLI OLCUM (mi98, davranis
+# degistirmeyen bos zincir sayaci): 2 gercek HTTPS isteginden sonra sayac 0 kaldi.
+# Dolayisiyla FORWARD'a dusen her cihaz TCP paketi TANIMI GEREGI sizintidir.
+#
+# ⚠️BASA EKLENIR (-I FORWARD 1), sona DEGIL: ufw-before-forward trafigi ACCEPT edip
+#   zinciri sonlandiriyor (595K paket; ufw-after-forward sayaci 0). Sona eklenen
+#   kural HIC gorulmez — asagidaki UDP kuralinin sayacinin 0 olmasinin sebebi buydu.
+iptables -C FORWARD -s "$SUBNET" -p tcp -j DROP 2>/dev/null \
+  || iptables -I FORWARD 1 -s "$SUBNET" -p tcp -j DROP 2>/dev/null \
+  && log "TCP kill-switch aktif ($SUBNET) — REDIRECT yoksa sizinti yerine DROP"
 # clean prior rules for this subnet (idempotent)
 while iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null | grep -q "$SUBNET"; do
   N=$(iptables -t nat -L PREROUTING -n --line-numbers | grep "$SUBNET" | awk '{print $1}' | sort -rn | head -1)
@@ -192,7 +213,7 @@ iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -j REDIRECT --to-ports "$RS_PO
 while iptables -C FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null; do
   iptables -D FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null || break
 done
-iptables -A FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null \
+iptables -I FORWARD 1 -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null \
   && log "UDP (non-DNS) DROP active for $SUBNET (QUIC leak closed)" \
   || log "WARN: UDP DROP rule for $SUBNET could not be added (non-fatal)"
 # VERIFY the REDIRECT rule actually landed before declaring success.

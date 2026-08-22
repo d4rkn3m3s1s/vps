@@ -14,7 +14,22 @@ tek(){
   adb=$(timeout 6 adb -s "$ip:5555" get-state 2>/dev/null | tr -d "\r\n")
   [ -z "$adb" ] && adb="yok"
   dns=$(timeout 8 lxc-attach -P "$P" -n waydroid -- /system/bin/getprop net.dns1 2>/dev/null | tr -d "\r\n")
-  cik=$(timeout 15 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 12 https://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9.]+$")
+  # ★★★2026-08-22 TEK DENEME YETMIYOR — SAHTE "CIKISI YOK" URETIYORDU.
+  # 142 cihaz `xargs -P 40` ile AYNI ANDA taraniyor; residential/mobil proxy el
+  # sikismasi + TLS bu yukte 12 sn'yi asabiliyor. Tek zaman asimi cihazi dogrudan
+  # "cikisi yok" gosteriyordu ve /durum "N cihaz disari cikamiyor" ALARMI veriyordu.
+  # CANLI KANIT: panel sirayla mi407, sonra mi396+mi401, sonra mi363+mi401 sucladi —
+  # HER TURDA FARKLI cihaz (kalici arizanin degil, zaman asiminin imzasi). Ayni
+  # cihazlar saniyeler sonra DOGRUDAN test edilince calisiyordu:
+  #   mi363 -> 176.234.134.54 · mi401 -> 31.155.244.251 · mi396 -> 78.167.121.22
+  # Maliyet yalnizca BASARISIZ olanlar icin odenir; saglam cihazlar icin 0.
+  # ⚠️`tr -d` KORUNMALI: curl ciktisinda CR olursa "$" capasi tutmaz ve yine sahte
+  #   "cikisi yok" uretilir. Regex ayrica IPv4 bicimine daraltildi (once "[0-9.]+" idi).
+  cik=$(timeout 15 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 12 https://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
+  if [ -z "$cik" ]; then
+    sleep 1
+    cik=$(timeout 20 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 17 https://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
+  fi
   echo "$inst|$ip|${boot:-0}|$adb|${dns:--}|${cik:--}"
 }
 export -f tek

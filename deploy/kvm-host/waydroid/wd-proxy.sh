@@ -102,6 +102,21 @@ case "$LOGIN" in
   *)            LOGIN="$LOGIN-sesstime-$STICKY_MIN" ;;
 esac
 
+# ★★★2026-08-21 KATMANLI SAVUNMA: redsocks yalnizca KENDI koprusune baglanir.
+# Onceden local_ip = 0.0.0.0 idi: ~142 proxy portu TUM arayuzlerde dinliyordu.
+# ufw koruyordu (12500:12600 yalniz 192.168.0.0/16) ama ufw duserse 142 ACIK PROXY
+# internete acilir. Koprunun ag gecidi IP'si = 192.168.<subnet>.1 (canli dogrulandi).
+# iptables REDIRECT zaten bu arayuzun adresine yonlendirdigi icin islevsel esdeger.
+#
+# ⚠️GEREKLILIK: net.ipv4.ip_nonlocal_bind=1 (/etc/sysctl.d/99-fleet-redsocks.conf).
+# wd-proxy-restore boot+90sn'de calisir ama boot-gate cihazlari ~18 dk'ya yayar;
+# cogu kopru henuz YOKken bind "Cannot assign requested address" ile patlardi.
+# CANLI KANIT (mi98): kopru silinmisken nonlocal_bind=0 -> HATA, =1 -> basarili;
+# kopru sonradan gelince trafik akti.
+#
+# ⚠️⚠️YORUMLAR HEREDOC'UN DISINDA DURMALI: `cat > "$CONF" <<EOF` TIRNAKSIZ heredoc'tur,
+# icindeki TERS TIRNAK komut ikamesi tetikler. Bu yorum bir kez iceri konunca
+# "local_ip: command not found" verip 138 cihazin redsocks'unu dusurdu.
 # ── 1) redsocks config (one per INSTANCE) + (re)start ────────────────────────
 cat > "$CONF" <<EOF
 base {
@@ -112,7 +127,7 @@ base {
     redirector = iptables;
 }
 redsocks {
-    local_ip = 0.0.0.0;
+    local_ip = 192.168.$SUBNET_ID.1;
     local_port = $RS_PORT;
     ip = $PIP;
     port = $PPORT;

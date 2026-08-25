@@ -1,0 +1,15 @@
+[Unit]
+Description=Fleet UDP Guard - cihazlarin QUIC ile proxy'yi atlamasini engeller
+After=network-online.target waydroid-container.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# KillMode=process: bu hostta control-group, servisin baslattigi surecleri de
+# olduruyor (22 Agu'de 141 redsocks boyle kaybedildi). Guvenli taraf.
+KillMode=process
+ExecStart=/opt/fleet-agent/waydroid/wd-udp-guard.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -184,17 +184,25 @@ for NET in 0.0.0.0/8 10.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168
   iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -d "$NET" -j RETURN
 done
 iptables -t nat -A PREROUTING -s "$SUBNET" -p tcp -j REDIRECT --to-ports "$RS_PORT"
-# ★2026-07-24: DROP the instance's UDP (except DNS 53) so QUIC / HTTP-3 (UDP 443) can't
-# bypass redsocks and exit from the DATACENTER IP — the #1 WhatsApp ban cause. iptables
-# only REDIRECTs TCP; UDP was leaving directly. WhatsApp/Chrome fall back to TCP when QUIC
-# is blocked, so this closes the leak without breaking connectivity. DNS stays (dnsmasq).
-# Idempotent: remove any prior copy for this subnet first, then add. filter/FORWARD chain.
+# ★★★2026-08-25 QUIC KORUMASI BURADAN KALDIRILDI — merkezi `FLEET-UDP` zinciri devraldi
+# (`wd-udp-guard.sh` + `fleet-udp-guard.service/.timer`). Buradaki per-cihaz kural
+# IKI AYRI SEBEPLE ETKISIZDI, ikisi de OLCULDU:
+#   1) YANLIS BACKEND. Bu hostta hem iptables-legacy hem nft tablolari var. Waydroid
+#      kendi FORWARD ACCEPT kurallarini LEGACY'ye yazar (288 kural, sayaci aktif),
+#      buradaki `iptables` ise NFT'ye yazar. nft/FORWARD'a konan 145 DROP kuralinin
+#      toplam paket sayaci TAM OLARAK 0'di — yani 24 Tem'den beri bir kez bile
+#      calismadi. Sizinti butun bu sure boyunca ACIKTI.
+#   2) O(N) BUYUME. Cihaz basina kural, 22 Agu'de zinciri 312 kurala cikarip ufw'yi
+#      170. siraya dusurdu; DHCP zamanlamasi bozuldu, cihaz kurulumu 90sn -> 412sn
+#      oldu ve 3 GUN yeni cihaz acilamadi.
+# Yeni tasarim: LEGACY backend'de TEK kural (`-s 192.168.0.0/16 -p udp -j FLEET-UDP`),
+# 53/67/68/123 muaf, geri kalan UDP `icmp-port-unreachable` ile REJECT edilir (DROP
+# degil — uygulama timeout beklemeden TCP'ye duser, TCP zaten redsocks'tan gecer).
+# Yeni cihaz icin BURADA HICBIR SEY yapmak gerekmez; /16 kurali onu da kapsar.
+# Asagidaki temizlik, eski surumlerin biraktigi olu kurallari toplamak icin KALDI.
 while iptables -C FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null; do
   iptables -D FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null || break
 done
-iptables -A FORWARD -s "$SUBNET" -p udp ! --dport 53 -j DROP 2>/dev/null \
-  && log "UDP (non-DNS) DROP active for $SUBNET (QUIC leak closed)" \
-  || log "WARN: UDP DROP rule for $SUBNET could not be added (non-fatal)"
 # VERIFY the REDIRECT rule actually landed before declaring success.
 if ! iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "-s ${SUBNET}" | grep -F -- "REDIRECT --to-ports ${RS_PORT}" >/dev/null 2>&1; then
   log "ERROR: REDIRECT rule for $SUBNET NOT present after insert"

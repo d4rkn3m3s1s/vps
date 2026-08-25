@@ -11294,6 +11294,10 @@ async function pollWhatsappMedia(serial) {
 // Bu yuzden ikisi AYRILDI: SQL her zaman calisir, ekran isi yalnizca cihaz bostayken.
 let _inboxTickNo = 0;   // receipt taramasi icin tur sayaci (bkz. asagidaki not)
 const _waIdleWhitelisted = new Set();   // pil muafiyeti verilmis cihazlar (ajan omru)
+// ★2026-08-25 arka arkaya "acilamadi" sayaci (serial -> adet). Bir cihaz surekli
+// basarisiz oluyorsa bu, log'da "kurtariliyor" gurultusu degil GERCEK bir ariza
+// sinyalidir; sayac operatorun bunu ayirt etmesini saglar.
+const _waReviveFail = new Map();
 async function pollWhatsappInbox(serial, busy = false) {
   await pollInboxFromStore(serial);
   // ★★★2026-08-19 RECEIPT AYRI TEMPOYA ALINDI — gelen mesaj gecikmesinin kalan kalemi.
@@ -11325,10 +11329,41 @@ async function pollWhatsappInbox(serial, busy = false) {
       _waIdleWhitelisted.add(serial);
       await adb(serial, ['shell', 'dumpsys', 'deviceidle', 'whitelist', `+${WA_PKG}`]).catch(() => undefined);
     }
-    const pid = await adb(serial, ['shell', 'pidof', WA_PKG]).catch(() => '');
+    // ★★★2026-08-25 "pidof BOS" IKI AYRI SEY DEMEK: (a) WhatsApp gercekten kapali,
+    // (b) ADB'ye ULASILAMIYOR. Eskiden ikisi ayrilmiyordu: hata `.catch(() => '')`
+    // ile bos string'e cevriliyor, ardindan `am start` da `.catch()` ile SESSIZCE
+    // dusuyor ve log YINE "yeniden acildi" yaziyordu -> ACMADIGI HALDE "duzelttim"
+    // diyordu. CANLI KANIT: BOZUK mi449 (kendi waydroid.log'unda D-Bus AccessDenied)
+    // icin 24 saatte 44 kez "yeniden acildi" yazildi, cihaz her 12 dk'da yine
+    // oluyordu; log'a bakan operator "kurtariliyor" saniyordu — oysa cihaz bozuktu
+    // ve sonunda silindi. ★DERS: eylemin BASARDIGINI KANITLA; `am start`'in exit
+    // kodu yetmez, sonrasinda `pidof` ile GERCEKTEN ayakta oldugunu dogrula.
+    // ("0" ile "olcemedim" ayni sey degil — ayni ders 20 Agu /durum sizinti
+    //  gostergesinde de cikmisti.)
+    let pid = '';
+    try {
+      pid = await adb(serial, ['shell', 'pidof', WA_PKG]);
+    } catch {
+      return;   // ADB yanit vermiyor: bu cihaz adb-reap / health-watch'un isi, burada ugrasma
+    }
     if (!String(pid || '').trim()) {
-      await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`]).catch(() => undefined);
-      log(`wa canli-tutma: ${serial} WhatsApp KAPALIYDI (mesaj ulasmiyordu) -> yeniden acildi`);
+      let ok = false;
+      try {
+        await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`]);
+        await new Promise((r) => setTimeout(r, 800));   // surec dogsun; maliyet YALNIZCA olu cihazda
+        const again = await adb(serial, ['shell', 'pidof', WA_PKG]).catch(() => '');
+        ok = Boolean(String(again || '').trim());
+      } catch { ok = false; }
+      if (ok) {
+        _waReviveFail.delete(serial);
+        log(`wa canli-tutma: ${serial} WhatsApp KAPALIYDI (mesaj ulasmiyordu) -> yeniden acildi (DOGRULANDI)`);
+      } else {
+        const n = (_waReviveFail.get(serial) || 0) + 1;
+        _waReviveFail.set(serial, n);
+        log(`wa canli-tutma: ${serial} WhatsApp KAPALI ve ACILAMADI (${n}. kez ust uste) — cihaz bozuk olabilir`);
+      }
+    } else if (_waReviveFail.has(serial)) {
+      _waReviveFail.delete(serial);
     }
   }
   if (_inboxTickNo % 6 !== 0) return;

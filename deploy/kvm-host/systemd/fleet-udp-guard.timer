@@ -1,0 +1,10 @@
+[Unit]
+Description=Fleet UDP Guard periyodik dogrulama (kural silinirse geri koyar)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

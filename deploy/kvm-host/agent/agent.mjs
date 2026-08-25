@@ -11344,7 +11344,16 @@ async function pollWhatsappInbox(serial, busy = false) {
     try {
       pid = await adb(serial, ['shell', 'pidof', WA_PKG]);
     } catch {
-      return;   // ADB yanit vermiyor: bu cihaz adb-reap / health-watch'un isi, burada ugrasma
+      // ★★★DIKKAT: `pidof` SUREC YOKSA exit 1 doner ve `adb()` (execFileAsync)
+      // non-zero exit'te REJECT EDER. Yani buraya dusmek "ADB bozuk" DEMEK DEGIL —
+      // tam da aradigimiz "WhatsApp olu" durumudur. Bu ayrimi atlayip dogrudan
+      // `return` etmek canli-tutma'yi TAMAMEN devre disi birakir (25 Agu'de canli
+      // olarak yasandi: yamadan sonra 90 sn boyunca olu WhatsApp'li cihaz icin
+      // TEK SATIR log uretilmedi). Gercek ADB kopuklugunu ayirmak icin AYRI ve
+      // ucuz bir yoklama yapilir.
+      pid = '';
+      const adbCanli = await adb(serial, ['shell', 'echo', 'ok']).then(() => true).catch(() => false);
+      if (!adbCanli) return;   // cihaz gercekten erisilemez: adb-reap / health-watch'un isi
     }
     if (!String(pid || '').trim()) {
       let ok = false;

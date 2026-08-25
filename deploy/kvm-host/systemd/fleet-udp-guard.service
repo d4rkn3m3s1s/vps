@@ -5,7 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
+# ★★★2026-08-25 `RemainAfterExit=yes` KULLANMA — CANLI OLARAK ISIRDI.
+# Oneshot servis RemainAfterExit ile "active (exited)" durumunda KALIR; systemd
+# zaten aktif saydigi icin `systemctl start` SESSIZCE NO-OP olur. Sonuc:
+#   • kural elle/kazayla silindiginde servis onu GERI KOYAMAZ (start hicbir sey yapmaz)
+#   • timer `OnUnitActiveSec` ile birleince HIC ATESLEMEZ (unit surekli "active")
+# CANLI KANIT: reboot simulasyonunda kural silindi, `systemctl start` calisti,
+# servis "active" dedi ama giris kurali 0 kaldi; timer da 1 saat 6 dk boyunca
+# hic tetiklenmemisti. (Ayni aile: `systemctl start` NO-OP -> `restart` gerekir.)
+# RemainAfterExit YOK -> servis calisir, biter, inactive olur; her `start` GERCEKTEN calisir.
+#
 # KillMode=process: bu hostta control-group, servisin baslattigi surecleri de
 # olduruyor (22 Agu'de 141 redsocks boyle kaybedildi). Guvenli taraf.
 KillMode=process

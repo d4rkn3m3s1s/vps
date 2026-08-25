@@ -33,11 +33,19 @@
 # TCP'ye duser — TCP zaten redsocks uzerinden DOGRU proxy IP'sinden cikar.
 # ============================================================================
 set -u
-IPT=iptables-legacy
+# TAM YOL: systemd ortaminda PATH dar olabilir. `command -v iptables-legacy`
+# bulamayip `exit 0` ile SESSIZCE cikarsa servis "basarili" gorunur ama koruma
+# HIC kurulmaz. (Ayni tuzak: container icinde /system/bin PATH'te olmadigi icin
+# `ip` cagrilari sessizce dusuyordu — 28 Tem.)
+IPT=/usr/sbin/iptables-legacy
+[ -x "$IPT" ] || IPT=$(command -v iptables-legacy 2>/dev/null || true)
 CHAIN=FLEET-UDP
 SRC=192.168.0.0/16
 
-command -v "$IPT" >/dev/null 2>&1 || { echo "$IPT yok — cikiliyor"; exit 0; }
+if [ -z "${IPT:-}" ] || [ ! -x "$IPT" ]; then
+  echo "HATA: iptables-legacy bulunamadi — QUIC korumasi KURULAMADI" >&2
+  exit 1   # exit 0 DEGIL: sessiz basarisizlik servisi "basarili" gosterir
+fi
 
 # Zinciri (yeniden) kur — idempotent
 "$IPT" -N "$CHAIN" 2>/dev/null || true
@@ -54,5 +62,12 @@ command -v "$IPT" >/dev/null 2>&1 || { echo "$IPT yok — cikiliyor"; exit 0; }
 while "$IPT" -D FORWARD -s "$SRC" -p udp -j "$CHAIN" 2>/dev/null; do :; done
 "$IPT" -I FORWARD 1 -s "$SRC" -p udp -j "$CHAIN"
 
+# ★SONUCU DOGRULA: "calistim" demek yetmez, kuralin GERCEKTEN yerinde
+# oldugunu kanitla ve degilse HATA don (yoksa servis basarili gorunur).
 N=$("$IPT" -S FORWARD 2>/dev/null | grep -c -- "-j $CHAIN")
-echo "FLEET-UDP kuruldu — giris kurali=$N (1 olmali), FORWARD toplam=$("$IPT" -S FORWARD | wc -l)"
+C=$("$IPT" -S "$CHAIN" 2>/dev/null | wc -l)
+echo "FLEET-UDP kuruldu — giris kurali=$N (1 olmali), zincir=$C kural, FORWARD toplam=$("$IPT" -S FORWARD | wc -l)"
+if [ "$N" != "1" ] || [ "$C" -lt 6 ]; then
+  echo "HATA: koruma dogrulanamadi (giris=$N zincir=$C)" >&2
+  exit 1
+fi

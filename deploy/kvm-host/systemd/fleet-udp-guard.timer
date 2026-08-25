@@ -2,9 +2,12 @@
 Description=Fleet UDP Guard periyodik dogrulama (kural silinirse geri koyar)
 
 [Timer]
-OnBootSec=3min
-OnUnitActiveSec=10min
+# ★OnCalendar kullaniliyor (OnUnitActiveSec DEGIL): takvim tabanli tetikleme
+# servisin durumundan BAGIMSIZDIR. OnUnitActiveSec, unit "active" kaldigi surece
+# hic ateslemez — bu tam olarak 25 Agu'de yasandi.
+OnCalendar=*:0/10
 Persistent=true
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target

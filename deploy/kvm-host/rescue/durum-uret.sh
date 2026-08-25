@@ -95,6 +95,32 @@ while true; do
   #     Bu hal sessizdir: cihaz "device" gorunur, DHCP tamamlanmaz, netd resolver
   #     olmaz -> isim cozulmez. Gozcu artik bunu gorup yeniden baslatiyor.
   BOOTSUZ=$(awk -F'|' '$4=="device" && $3!="1" {printf "%s ", $1}' "$S" 2>/dev/null)
+  # ★★★2026-08-25 CANARY DURUMU — 3 GUN KIRMIZI YANDI, KIMSE GORMEDI.
+  # Canary gunluk uctan uca test: cihaz kurar, DNS/cikis/WhatsApp/ulke dogrular, siler.
+  # 23-25 Agu arasi HER GUN basarisiz oldu ("kurulum tamamlanmadi") ve bu, cihaz
+  # acmanin 3 GUNDUR bozuk oldugunun TEK erken uyarisiydi.
+  # ⚠️ALARM ZATEN CALISIYORDU: her basarisizlikta "🚨 CANARY BASARISIZ" bildirimi
+  # uretildi (08-24 04:35, 08-25 04:39, 08-25 14:43). Eksik olan ALARM DEGIL,
+  # GORUNURLUKTU — bildirim yigini icinde kayboldu. Operator surekli /durum'a
+  # baktigi icin dogru yer BURASI.
+  CANLOG=/var/log/wd-canary.log
+  CANRES=$(systemctl show wd-canary -p Result --value 2>/dev/null)
+  CANLAST=$(grep -aE 'OK:|BASARISIZ' "$CANLOG" 2>/dev/null | tail -1)
+  CANTIME=$(printf '%s' "$CANLAST" | grep -oE '^[0-9-]{10} [0-9:]{8}' | cut -c6-16)
+  CANYAS=""
+  if [ -n "$CANTIME" ]; then
+    _ct=$(date -d "$(printf '%s' "$CANLAST" | grep -oE '^[0-9-]{10} [0-9:]{8}')" +%s 2>/dev/null || echo 0)
+    [ "$_ct" -gt 0 ] && CANYAS=$(( ($(date +%s) - _ct) / 3600 ))
+  fi
+  case "$CANLAST" in
+    *"OK:"*)        CANR="#2ecc71"; CANV="GECTI";     CANN="kurulum+DNS+cikis+WhatsApp+ulke dogrulandi" ;;
+    *BASARISIZ*)    CANR="#e74c3c"; CANV="BASARISIZ"; CANN="YENI CIHAZ ACILAMIYOR — acil bak" ;;
+    *)              CANR="#e6a23c"; CANV="?";         CANN="canary kaydi okunamadi" ;;
+  esac
+  # 26 saatten eski = gunluk tur hic calismamis demektir (timer bozuk olabilir)
+  if [ -n "$CANYAS" ] && [ "$CANYAS" -gt 26 ] 2>/dev/null; then
+    CANR="#e6a23c"; CANN="son tur ${CANYAS} saat once — gunluk tur CALISMIYOR olabilir"
+  fi
   BOOTSUZN=$(echo $BOOTSUZ | wc -w); BOOTSUZN=${BOOTSUZN:-0}
   if [ "$BOOTSUZN" -gt 0 ] 2>/dev/null; then BOOTR="#e74c3c"; BOOTN="$BOOTSUZN cihaz YARIM ACILMIS"
   else BOOTR="#e8e8ea"; BOOTN="boot tamamlandi"; fi
@@ -210,6 +236,7 @@ HEAD
     echo "<div class=\"c\"><div class=\"k\">Proxy sizintisi</div><div class=\"v\" style=\"color:$SIZR\">${SIZ}</div><div class=\"n\">$SIZN</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Cikisi yok</div><div class=\"v\" style=\"color:$CIKR\">${CIKSIZN:-0}</div><div class=\"n\">$CIKN</div></div>"
     echo "<div class=\"c\"><div class=\"k\">Paylasilan cikis</div><div class=\"v\" style=\"color:$PAYR\">${PAYMAX}<span class=\"s\">/IP</span></div><div class=\"n\">$PAYN</div></div>"
+    echo "<div class=\"c\"><div class=\"k\">Canary (gunluk uctan uca test)</div><div class=\"v\" style=\"color:$CANR;font-size:20px\">$CANV</div><div class=\"n\">${CANTIME:-?} &middot; $CANN</div></div>"
     echo '</div>'
     # ★2026-08-20 GORUNURLUK: sorunlu cihazlarin ADLARI. mi277 + mi290 SAATLERCE
     # "acik ama disari cikamiyor" durumundaydi ve sayfanin HICBIR yerinde

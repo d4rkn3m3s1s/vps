@@ -248,9 +248,12 @@ log "saglik damgalari temizlendi (down/zfail/bootstuck)"
 # Artik: (a) /etc/logrotate.d/fleet-wd tum wd-*.log'lari donduruyor (maxage 14),
 #        (b) silme aninda o cihazin logu dogrudan kaldiriliyor.
 # ⚠️Yol instance adiyla SINIRLI — komsu cihazin logu ASLA silinmez.
-for _lg in "/var/log/wd-${INSTANCE}-run.log" "/var/log/wd-${INSTANCE}-init.log"; do
-  [ -e "$_lg" ] && rm -f "$_lg" 2>/dev/null
-done
+# 2026-08-25 DUZELTME: init/run loglari ARTIK SILINMIYOR.
+# Bunlari silmek BASARISIZ kurulumlarin tek kanitini yok ediyordu: 25 Agu'de cihaz
+# kurulumu 3 gundur bozuktu ve teshis icin gereken /var/log/wd-<inst>-init.log her
+# teardown'da siliniyordu. Birikme riski ZATEN /etc/logrotate.d/fleet-wd ile
+# kapatildi (maxage 14) — bu silme gereksiz VE zararliydi.
+# Yalnizca DONMUS (rotate edilmis) kopyalar temizlenir; canli log dosyasi KALIR.
 rm -f "/var/log/wd-${INSTANCE}-run.log."* "/var/log/wd-${INSTANCE}-init.log."* 2>/dev/null || true
 log "cihaz log dosyalari temizlendi"
 log "destroyed"

@@ -56,11 +56,16 @@ fi
 if [ "$_ZOMBIE" = "1" ]; then
   :
 elif [ -x "$HERE/wd-stop.sh" ]; then
-  if timeout 40 bash "$HERE/wd-stop.sh" "$INSTANCE" >/dev/null 2>&1; then
+  # ★BUTCE: ajan bu betigi hostSh ile 120 s'de KESER (agent.mjs:10068); is butcesi 180 s.
+  # Kesilirse sonraki adimlar (birim/harita/lease/NAT) HIC calismaz ve kalinti kalir
+  # (canli: mi482, 154 s → symlink+harita+lease kaldi). Bekleme toplami 30 s'i gecmemeli.
+  if timeout 20 bash "$HERE/wd-stop.sh" "$INSTANCE" >/dev/null 2>&1; then
     log "session stopped"
   else
     _ZOMBIE=1
-    log "UYARI: wd-stop 40s'de bitmedi (init D-state/kilitli?) — zombi olarak birakilip temizlige devam ediliyor"
+    pkill -9 -f "wd-stop\.sh $INSTANCE($|[^0-9])" 2>/dev/null || true
+    pkill -9 -f "lxc-start.*waydroid\.$INSTANCE($|[^0-9])" 2>/dev/null || true
+    log "UYARI: wd-stop 20s'de bitmedi (init D-state/kilitli?) — zombi olarak birakilip temizlige devam ediliyor"
   fi
 fi
 
@@ -121,10 +126,10 @@ systemctl disable "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
 if [ "$_ZOMBIE" = "1" ]; then
   systemctl kill -s KILL "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
   log "zombi: birime dogrudan KILL (bekleme yok)"
-elif ! timeout 25 systemctl stop "waydroid@$INSTANCE.service" >/dev/null 2>&1; then
+elif ! timeout 10 systemctl stop "waydroid@$INSTANCE.service" >/dev/null 2>&1; then
   _ZOMBIE=1
   systemctl kill -s KILL "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
-  log "UYARI: birim 25s'de durmadi (zombi init) — KILL gonderildi, temizlik devam"
+  log "UYARI: birim 10s'de durmadi (zombi init) — KILL gonderildi, temizlik devam"
 fi
 systemctl reset-failed "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
 rm -f "/etc/systemd/system/multi-user.target.wants/waydroid@$INSTANCE.service" 2>/dev/null || true

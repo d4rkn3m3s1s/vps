@@ -162,8 +162,14 @@ SUBNET=$(sh /opt/fleet-agent/waydroid/net-head.sh $INST)
 # wd-run.sh icinde 3 kopya olustu -> fark bu satirdan cikti.
 # FIX: kendi PID'imizi (ve ust surecimizi) HARIC tut.
 _self=$$; _ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
-pkill -9 -f "wayland-$INST" 2>/dev/null
-for _p in $(pgrep -f "instance $INST" 2>/dev/null); do
+# ★★★2026-09-03 ONEK ESLESMESI — AYNI AILENIN 5. KOPYASI, BASLATMA YOLUNDA.
+# `wayland-$INST`, `instance $INST`, `dnsmasq.*waydroid-$INST` desenleri CAPASIZDI:
+# mi18 baslarken mi180-189'un weston'unu, session daemon'unu ve DHCP dnsmasq'ini
+# olduruyordu. 3 Eyl 06:55'te 144 konteyner ayni anda basladiginda bu satirlar
+# komsularin DHCP'sini kesti ("GERCEK DHCP lease YOK", "eth0 IPv4 yok" alarmlari).
+# ($|[^0-9]) ile capalandi. ⚠️Bu deseni ANCHOR'SUZ birakma.
+pkill -9 -f "wayland-$INST($|[^0-9])" 2>/dev/null
+for _p in $(pgrep -f "instance $INST($|[^0-9])" 2>/dev/null); do
   [ "$_p" = "$_self" ] && continue
   [ "$_p" = "${_ppid:-0}" ] && continue
   kill -9 "$_p" 2>/dev/null
@@ -171,7 +177,7 @@ done
 rm -rf /run/wd-$INST /run/xdg-$INST 2>/dev/null; sleep 1
 # netfix: stale network_up marker bridge yeniden kurulmasini engeller (KOK NEDEN)
 rm -f /run/waydroid-$INST-lxc/network_up 2>/dev/null  # netfix
-pkill -9 -f "dnsmasq.*waydroid-$INST" 2>/dev/null  # netfix orphan-dnsmasq (subnet cakismasi onler)
+pkill -9 -f "dnsmasq.*waydroid-$INST($|[^0-9])" 2>/dev/null  # netfix orphan-dnsmasq (subnet cakismasi onler) — ★2026-09-03 capalandi (mi18 → mi180-189 DHCP'sini olduruyordu)
 touch /var/lib/waydroid-subnets.map 2>/dev/null; chmod 666 /var/lib/waydroid-subnets.map 2>/dev/null  # netfix
 # ★2026-07-28 LEASE-TOHUMLAMA (.112 GARANTI): sistemin HER yeri cihaz IP'sini
 # 192.168.<sub>.112 varsayar (serial, heal, teshis komutlari). Ama dnsmasq adresi

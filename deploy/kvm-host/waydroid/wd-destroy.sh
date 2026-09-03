@@ -282,10 +282,10 @@ fi
 #      down-<inst>      : dusus ani (kurtarma suresi buradan sayilir)
 #      zfail-<inst>     : zombie yoklama sayaci
 #      bootstuck-<inst> : yarim-acilmis kurtarma sogumasi (2026-08-20)
-for _st in down zfail bootstuck; do
+for _st in down zfail bootstuck fwdead; do
   rm -f "/var/lib/wd-health/${_st}-${INSTANCE}" 2>/dev/null || true
 done
-log "saglik damgalari temizlendi (down/zfail/bootstuck)"
+log "saglik damgalari temizlendi (down/zfail/bootstuck/fwdead)"
 
 # 8) ★2026-08-20 CIHAZIN LOG DOSYALARINI TEMIZLE.
 # /var/log/wd-<inst>-run.log ve -init.log silmede geride kaliyordu: 449 dosya /

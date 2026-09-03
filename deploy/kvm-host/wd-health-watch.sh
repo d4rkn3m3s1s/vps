@@ -427,6 +427,46 @@ while IFS='|' read -r inst meta_cc phone; do
     _adb_up=1
     rm -f "/var/lib/wd-health/zfail-$inst" 2>/dev/null || true   # sağlıklı → sayacı temizle
     mark_up "$inst" kendiliginden   # ★dusukse sureyi kaydet (degilse no-op)
+    # ★★★2026-09-03 "FRAMEWORK OLU" TESPITI — ADB + boot_completed YETMIYOR.
+    # CANLI: mi180/mi187/mi189 saatlerce "saglikli" gorundu (adb ok, boot_completed=1)
+    # ama system_server OLMUSTU (`cmd: Can't find service: package/activity`): WhatsApp
+    # acilamiyor, canli-tutma 82x "ACILAMADI" yaziyor, hicbir gozcu restart etmiyordu.
+    # SINYAL: boot_completed=1 (framework bir kez acilmis) AMA pidof system_server BOS
+    # (sonradan olmus). Tek adb shell (~60 ms). Watchdog'un normal system_server
+    # yeniden baslatmasini (saniyeler) yanlis pozitif yapmamak icin 2 ARDISIK tur sart.
+    _fw=$(timeout 12 "$ADB" -s "$addr" shell 'getprop sys.boot_completed; pidof system_server' </dev/null 2>/dev/null | tr -d '\r' | tr '\n' ' ')
+    case "$_fw" in
+      1\ [0-9]*) rm -f "/var/lib/wd-health/fwdead-$inst" 2>/dev/null || true ;;   # boot=1 + system_server var → saglikli
+      1\ *|1)
+        mkdir -p /var/lib/wd-health 2>/dev/null
+        _fd=$(cat "/var/lib/wd-health/fwdead-$inst" 2>/dev/null || echo 0); case "$_fd" in ''|*[!0-9]*) _fd=0 ;; esac
+        _fd=$((_fd+1)); echo "$_fd" > "/var/lib/wd-health/fwdead-$inst" 2>/dev/null
+        if [ "$_fd" -lt 2 ]; then
+          log "⚠ $inst: boot_completed=1 ama system_server YOK (1. gorus) — bir tur daha bekleniyor"
+        else
+          _dstate=$(awk '/^procs_blocked/{print $2; exit}' /proc/stat 2>/dev/null || echo 0); case "$_dstate" in ''|*[!0-9]*) _dstate=0 ;; esac
+          if [ "$_dstate" -ge "${WD_DSTATE_MAX:-50}" ]; then
+            log "⏸ $inst: framework olu ama host tikali (D-state=$_dstate) → restart ERTELENDİ"
+          else
+            log "🧟 $inst: FRAMEWORK OLU (adb ok, boot=1, system_server YOK, $_fd tur) → runtime temizlenip yeniden başlatılıyor"
+            rm -f "/var/lib/wd-health/fwdead-$inst" 2>/dev/null || true
+            pkill -9 -f "wd-run.sh $inst\$" 2>/dev/null || true
+            pkill -9 -f "wayland-$inst($|[^0-9])" 2>/dev/null || true
+            pkill -9 -f "xdg-$inst($|[^0-9])" 2>/dev/null || true
+            pkill -9 -f "waydroid.*--instance $inst($|[^0-9])" 2>/dev/null || true
+            pkill -9 -f "lxc-start.*waydroid\.$inst($|[^0-9])" 2>/dev/null || true
+            pkill -9 -f "dnsmasq.*waydroid-$inst($|[^0-9])" 2>/dev/null || true
+            timeout 20 lxc-stop -n waydroid -P "/var/lib/waydroid.$inst/lxc" -k 2>/dev/null || true
+            rm -rf "/run/xdg-$inst" "/run/wd-$inst" "/run/waydroid-$inst-lxc" 2>/dev/null || true
+            sleep 3
+            setsid bash "$WD_RUN" "$inst" >/dev/null 2>&1 < /dev/null 9>&- &
+            notify AUTO_RECONNECT "$inst" "Android framework (system_server) olmustu, adb saglikli gorunuyordu - runtime temizlenip yeniden baslatildi" true
+            RECONN=$((RECONN+1))
+            continue
+          fi
+        fi ;;
+      *) : ;;   # boot_completed 0/bos → hala aciliyor; bu yol boot-stuck mantiginin isi
+    esac
   else
     _adb_up=0
   fi

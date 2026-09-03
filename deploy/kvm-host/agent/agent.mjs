@@ -12687,6 +12687,19 @@ async function orphanReaperTick() {
   const now = Date.now();
   for (const inst of running) {
     if (knownInstances.has(inst)) { orphanSince.delete(inst); continue; } // in DB → healthy
+    // ★★★2026-09-03 HAYALET KORUMASI — 13 cihazlik kesintinin ASIL TETIKLEYICISI.
+    // `running` listesi pgrep'in cmdline METNINDEN turetiliyor. Bir kurtarma sarmalayicisi
+    // (`for P in $(pgrep -f "wd-run.sh mi18$")...; wd-run.sh mi18`) veya subnet-map'teki
+    // emekli bir ad (mi16/mi17/mi18/mi27/mi29/mi185/mi414) icin uretilen herhangi bir surec,
+    // o adi "CALISIYOR" gosterir — oysa /var/lib/waydroid.<ad> DIZINI BILE YOK. 07:25'te
+    // reaper bu hayaletler icin wd-destroy cagirdi; wd-stop'un o gunku onek hatasi
+    // (mi18 → mi180-189 mount'lari) komsulari kesti → 13 konteyner ayni anda yeniden
+    // basladi → kernel 6.8 eventfs deadlock. Var olmayan bir instance ASLA "yetim" degildir.
+    if (!existsSync(`/var/lib/waydroid.${inst}/lxc`)) {
+      if (!orphanSince.has(inst)) log(`orphan-reaper: ${inst} pgrep'te gorunuyor ama instance dizini YOK (hayalet ad) — ATLANDI`);
+      orphanSince.set(inst, now); // tekrar tekrar loglamamak icin isaretle; asla destroy edilmez
+      continue;
+    }
     const since = orphanSince.get(inst);
     if (!since) { orphanSince.set(inst, now); continue; } // first sighting — start grace clock
     if (now - since < ORPHAN_GRACE_MS) continue; // still within grace — a fresh provision is safe

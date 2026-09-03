@@ -27,7 +27,15 @@ pkill -f "waydroid\.py --instance $INSTANCE($|[^0-9])" 2>/dev/null && log "sessi
 pkill -f "weston .*--socket=wayland-$INSTANCE( |$)" 2>/dev/null && log "weston killed" || true
 
 # 3) clear lingering bind mounts the container left behind (umount -l = lazy).
-for m in $(mount 2>/dev/null | awk -v p="/var/lib/waydroid.$INSTANCE" '$3 ~ p {print $3}' | sort -r); do
+# ★★★2026-09-03 ONEK ESLESMESI — AYNI AILENIN 4. KOPYASI, BU KEZ MOUNT YOLUNDA.
+# `awk '$3 ~ p'` REGEX alt-dizi eslesmesiydi: p="/var/lib/waydroid.mi18" deseni
+# /var/lib/waydroid.mi180/rootfs, .mi181/..., .mi189/... mount'larini da yakalayip
+# hepsini lazy-umount ediyordu. CANLI OLAY: orphan-reaper var olmayan mi18/mi27/mi29
+# icin wd-destroy → wd-stop cagirdi; mi18x/mi27x/mi29x'in rootfs'i cekildi, 13
+# konteyner ayni anda yeniden basladi → kernel 6.8 eventfs deadlock (101 init D).
+# (Ayni hata 20 Agu'de satir 26'da duzeltilmisti; bu satir gozden kacmisti.)
+# ANCHOR: yol ya TAM p'ye esit ya da p + "/" ile BASLAMALI.
+for m in $(mount 2>/dev/null | awk -v p="/var/lib/waydroid.$INSTANCE" '($3 == p) || (index($3, p "/") == 1) {print $3}' | sort -r); do
   umount -l "$m" 2>/dev/null && log "unmounted $m" || true
 done
 

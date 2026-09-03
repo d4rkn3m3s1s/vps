@@ -47,6 +47,24 @@ if [ ! -f "/var/lib/waydroid.$INSTANCE/waydroid.cfg" ]; then
   [ -f "/var/lib/waydroid.$INSTANCE/waydroid.cfg" ] || { log "FATAL: init failed"; tail -5 /var/log/wd-$INSTANCE-init.log; exit 1; }
 fi
 
+# ★★★2026-09-03 TRACEFS/DEBUGFS KORUMASI — init'ten HEMEN SONRA, ilk baslatmadan ONCE.
+# Linux 6.8 eventfs deadlock'u: 13 konteyner ayni anda acilinca Android init'in
+# `mount tracefs` satiri + atrace.rc chmod'lari cekirdek kilidini KALICI kilitledi
+# (101 init D-state, reboot'suz cikis yok; kilit varken acilan HER yeni cihaz da
+# kuyruga girdi → "yeni cihaz acilamiyor"). Koruma: init.rc overlay + config_nodes'tan
+# /sys/kernel/debug rbind'i kaldirma. Detay: wd-tracefs-guard.sh basligi.
+# Kritik degil ama ATLANMAMALI: basarisizsa log'a yaz, kurulum devam etsin
+# (guard yoksa cihaz yine acilir — sadece toplu-restart senaryosunda risk kalir).
+if [ -x "$(dirname "$0")/wd-tracefs-guard.sh" ]; then
+  if "$(dirname "$0")/wd-tracefs-guard.sh" "$INSTANCE" >>"/var/log/wd-$INSTANCE-init.log" 2>&1; then
+    log "tracefs/debugfs korumasi uygulandi (eventfs deadlock onlemi)"
+  else
+    log "UYARI: tracefs-guard BASARISIZ — $(tail -1 /var/log/wd-$INSTANCE-init.log 2>/dev/null)"
+  fi
+else
+  log "UYARI: wd-tracefs-guard.sh yok — cihaz tracefs korumasiz acilacak"
+fi
+
 # ★2026-07-30 BENZERSİZ MAC. Waydroid'in şablonu (/usr/lib/waydroid/data/configs/config_3)
 # MAC'i SABİT yazıyor → canlı filoda 35 instance'ın 35'i de aynı MAC'e sahipti
 # (00:16:3e:f9:d3:03, üstelik `00:16:3e` = Xen/LXC'nin bilinen OUI'si → hem "aynı makine"

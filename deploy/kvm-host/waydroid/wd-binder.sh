@@ -7,7 +7,26 @@ set -u
 INSTANCE="${1:?instance name required}"
 BFS="/dev/binderfs-$INSTANCE"
 mkdir -p "$BFS"
-mountpoint -q "$BFS" || mount -t binder binder "$BFS"
+# ★★★2026-09-03 HER BASLATMADA TAZE binderfs — eski mount'u YENIDEN KULLANMA.
+# Eskiden `mountpoint -q || mount` mevcut binderfs'i aynen kullaniyordu. Konteynerin
+# onceki init'i cekirdek kilidinde (D-state, eventfs deadlock) kalip OLDURULEMEDIGINDE
+# eski binder cihazlarina referansi surdu; yeni konteyner AYNI binderfs'i alinca
+# binder islemleri olu surece gitti: dmesg "binder_linux: undelivered transaction,
+# process died" + "binder_alloc_buf, no vma" (3 dk'da 352 satir). Belirti: Android
+# acilir gibi olur, HAL'lar kayit olamaz, system_server `StartPowerStatsService`'te
+# Watchdog WAITED_HALF ile asili kalir, boot_completed HIC gelmez.
+# CANLI KANIT (mi272): ayni config ile eski binderfs → 3 deneme asili; lazy-umount +
+# taze mount → 110 sn'de boot_completed=1, gercek DHCP IP, WhatsApp ayakta.
+# Lazy umount guvenli: zombi/onceki sureclerin fd'leri kendi referansini korur,
+# yeni mount ayri bir binder ornegidir (binderfs coklu mount destekler).
+# Ayni mekanizma 27 Tem'deki "binderfs LEAK → binder has died → boot cokme"
+# ailesini de restart yolunda kapatir (o gun yalniz wd-destroy'da duzeltilmisti).
+if mountpoint -q "$BFS"; then
+  umount -l "$BFS" 2>/dev/null || true
+fi
+rm -f "/dev/binder-$INSTANCE" "/dev/vndbinder-$INSTANCE" "/dev/hwbinder-$INSTANCE" \
+      "/dev/anbox-binder-$INSTANCE" "/dev/anbox-vndbinder-$INSTANCE" "/dev/anbox-hwbinder-$INSTANCE" 2>/dev/null || true
+mount -t binder binder "$BFS"
 
 python3 - "$BFS" "$INSTANCE" <<'PY'
 import fcntl, os, sys

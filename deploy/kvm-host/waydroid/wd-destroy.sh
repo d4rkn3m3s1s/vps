@@ -38,9 +38,30 @@ SUBNET_MAP="/var/lib/waydroid-subnets.map"
 log(){ echo "[wd-destroy:$INSTANCE] $*"; }
 
 # 1) Stop the session/container first (reuse wd-stop's scoped teardown).
-if [ -x "$HERE/wd-stop.sh" ]; then
-  bash "$HERE/wd-stop.sh" "$INSTANCE" >/dev/null 2>&1 || true
-  log "session stopped"
+# ★★★2026-09-03 ZOMBI-TOLERANS: init D-state'te (cekirdek kilidi, orn. eventfs
+# deadlock) ise lxc-stop ASLA donmez → wd-stop sonsuza kadar bekler → DEVICE_DESTROY
+# 180s'de timeout → cihaz DB'den silinir ama konteyner/birim/NAT/harita KALIR
+# (canli: mi481). Silme islemi olduremedigi sureci beklemek yerine SINIRLI bekleyip
+# temizlige devam eder; zombi surec reboot'ta gider, dizin `.zombie` ile isaretlenir.
+_ZOMBIE=0
+# On-kontrol: init zaten D-state'te ise beklemenin anlami yok (65 sn bosa gider ve
+# ajanin 180 sn DEVICE_DESTROY butcesini yer — canli olcum mi481: 152 sn). Dogrudan
+# zombi yoluna gec: monitor'u oldur, bekleme yapma.
+_IP=$(timeout 8 lxc-info -P "$WORK/lxc" -n waydroid -p -H 2>/dev/null)
+if [ -n "$_IP" ] && [ "$(awk '/^State/{print $2}' "/proc/$_IP/status" 2>/dev/null)" = "D" ]; then
+  _ZOMBIE=1
+  log "init (pid $_IP) D-state'te — cekirdek kilidi, oldurulemez; bekleme ATLANIYOR, zombi temizligi"
+  pkill -9 -f "lxc-start.*waydroid\.$INSTANCE($|[^0-9])" 2>/dev/null || true
+fi
+if [ "$_ZOMBIE" = "1" ]; then
+  :
+elif [ -x "$HERE/wd-stop.sh" ]; then
+  if timeout 40 bash "$HERE/wd-stop.sh" "$INSTANCE" >/dev/null 2>&1; then
+    log "session stopped"
+  else
+    _ZOMBIE=1
+    log "UYARI: wd-stop 40s'de bitmedi (init D-state/kilitli?) — zombi olarak birakilip temizlige devam ediliyor"
+  fi
 fi
 
 # 1b) ★2026-07-24: wd-stop tears down the Waydroid SESSION but leaves the per-instance
@@ -94,7 +115,17 @@ log "supervisor + redsocks + dbus sidecars killed"
 #   1) reboot'ta systemd artik VAR OLMAYAN cihazlari baslatmaya calisir,
 #   2) ajanin dns-heal'i de onlari surekli diriltmeye ugrasiyordu (16:53/17:03).
 # ARTIK KOSULSUZ: birim zaten etkin degilse `disable` zararsiz bir no-op'tur.
-systemctl disable --now "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+# ★2026-09-03: `--now` (= stop) init D-state'teyken ASLA donmuyordu → disable ile
+# stop AYRILDI; stop `timeout` ile sinirli. disable her durumda calisir (symlink).
+systemctl disable "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+if [ "$_ZOMBIE" = "1" ]; then
+  systemctl kill -s KILL "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+  log "zombi: birime dogrudan KILL (bekleme yok)"
+elif ! timeout 25 systemctl stop "waydroid@$INSTANCE.service" >/dev/null 2>&1; then
+  _ZOMBIE=1
+  systemctl kill -s KILL "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
+  log "UYARI: birim 25s'de durmadi (zombi init) — KILL gonderildi, temizlik devam"
+fi
 systemctl reset-failed "waydroid@$INSTANCE.service" >/dev/null 2>&1 || true
 rm -f "/etc/systemd/system/multi-user.target.wants/waydroid@$INSTANCE.service" 2>/dev/null || true
 log "systemd birimi kapatildi (waydroid@$INSTANCE.service)"
@@ -112,7 +143,18 @@ fi
 
 # 4) Remove the instance's on-disk trees (the big ones — ~4.4GB). rm -rf is bounded to
 #    the instance-scoped paths validated above; nothing else is touched.
-[ -d "$WORK" ]      && rm -rf "$WORK"      && log "removed $WORK (images/lxc/overlay)"
+# ★2026-09-03: zombi konteyner rootfs/vendor overlay'i hala mount'lu olabilir →
+# once lazy-umount (best-effort), sonra sil. Silinemeyen (mesgul) kalinti icin
+# `.zombie` isareti birak: reboot sonrasi temizlik listesine girer.
+umount -l "$WORK/rootfs/vendor/waydroid.prop" "$WORK/rootfs/vendor" "$WORK/rootfs" 2>/dev/null || true
+if [ -d "$WORK" ]; then
+  if rm -rf "$WORK" 2>/dev/null; then
+    log "removed $WORK (images/lxc/overlay)"
+  else
+    date +%FT%T > "$WORK/.zombie" 2>/dev/null || true
+    log "UYARI: $WORK tamamen silinemedi (mesgul mount/zombi init) — .zombie isaretlendi, reboot sonrasi temizlenir"
+  fi
+fi
 [ -d "$DATA_HOME" ] && rm -rf "$DATA_HOME" && log "removed $DATA_HOME (userdata ~2GB)"
 rm -f "$LEASES" 2>/dev/null || true
 

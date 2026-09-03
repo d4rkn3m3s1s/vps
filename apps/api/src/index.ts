@@ -335,7 +335,15 @@ async function main(): Promise<void> {
             ? Math.round((ramFree / ramTotal) * 100)
             : null;
           const ramLow = ramPctFree !== null && ramPctFree < 15;
-          const swapping = typeof swapPct === 'number' && swapPct >= 20;
+          // ★★★2026-09-03 YANLIŞ ALARM: swap yüzdesi TEK BAŞINA "RAM tükeniyor" demek DEĞİL.
+          // Canlı: sabahki crash_dump64 balastı (125K süreç) 8 GB swap'i doldurdu; balast
+          // temizlendi, RAM 82/250 GB BOŞ kaldı ama Linux swap'teki eski sayfaları kendiliğinden
+          // geri okumaz → swap saatlerce %99 görünür ve bu alarm her turda "YENİ CİHAZ KURMAYI
+          // DURDURUN" diye tekrar eder (operatör: "hala boyle bildirim geliyor"). Gerçek baskı
+          // işareti swap'in DOLU olması değil, swap doluyken RAM'in de darlanmasıdır; RAM'in
+          // %30'dan fazlası kullanılabilirken dolu swap = bayat swap (`swapoff -a && swapon -a`
+          // ile temizlenir), alarm üretmez. RAM ölçümü yoksa eski davranış (swap tek başına) kalır.
+          const swapping = typeof swapPct === 'number' && swapPct >= 20 && (ramPctFree === null || ramPctFree < 30);
           // Cihaz başına gerçek tüketim → daha kaç cihaz sığar. Ortalama, ölçülen
           // değerden (used/phones) türetilir; sabit bir varsayım kullanılmaz çünkü
           // cihaz başına maliyet imaja/sürüme göre değişiyor (1.3-1.5 GB aralığı).
@@ -355,7 +363,7 @@ async function main(): Promise<void> {
           }
           if (diskLow) parts.push(`boş disk ${disk}GB (kritik)`);
           if (ramLow) parts.push(`kullanılabilir RAM ${ramFree}GB / ${ramTotal}GB (%${ramPctFree} — KRİTİK)`);
-          if (swapping) parts.push(`swap %${swapPct} kullanımda (RAM tükeniyor)`);
+          if (swapping) parts.push(`swap %${swapPct} kullanımda${ramPctFree !== null ? ` ve kullanılabilir RAM yalnızca %${ramPctFree}` : ''} (RAM tükeniyor)`);
           if (capacityLow) parts.push(`yalnızca ~${fits} cihaz daha sığıyor (${phones} çalışıyor, cihaz başı ~${perDeviceGb?.toFixed(1)}GB)`);
           // ★Aksiyon cümlesi: alarmın kendisi kadar önemli. RAM/kapasite uyarısında
           // "boşta cihazı uyut" YETMEZ (sorun anlık yük değil, kalıcı tavan) — operatöre

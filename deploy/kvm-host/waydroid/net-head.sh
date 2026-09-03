@@ -27,6 +27,21 @@ if [ -n "$EXIST" ]; then
   echo "$EXIST"; exit 0
 fi
 
+# ★★★2026-09-03 HAYALET TAHSIS KORUMASI. Bu betik bir TAHSIS EDICI, ama agent.mjs
+# (4 yer: proxy-ulke fallback, eth0-heal, busy-guard, uc-kurtarma) ve wd-canary.sh onu
+# SORGU olarak cagiriyor. Haritada olmayan bir ad gecince ("mi475" gibi silinmis/yarim
+# kalmis instance; agent 1104. satirda /etc/redsocks-inst-*.conf'taki HER adi geziyor)
+# buraya dusup ona YENI subnet tahsis ediyordu. CANLI: 3 Eyl 21:49'da temizlenen 14
+# hayalet kayit 21:58'de geri geldi (2,3,4,5,6,8,11,... = "en dusuk bos subnet" dizisi),
+# 22:05'te yine silindi, 22:07'de mi475=2 / mi482=3 olarak YINE dogdu. Hayaletler
+# subnet tavanini yiyor ve /durum'da "map != dizin" tutarsizligi uretiyordu.
+# KURAL: instance dizini yoksa VE cagiran acikca NET_HEAD_ALLOC=1 demediyse tahsis YOK,
+# bos cikti + exit 3. Tek mesru "dizin henuz yok ama tahsis et" cagiran wd-provision.sh'tir.
+if [ "${NET_HEAD_ALLOC:-0}" != "1" ] && [ ! -d "/var/lib/waydroid.$INSTANCE" ]; then
+  echo "net-head: $INSTANCE haritada yok, instance dizini de yok — SORGU modunda tahsis YAPILMADI (tahsis icin NET_HEAD_ALLOC=1)" >&2
+  exit 3
+fi
+
 # ★2026-08-12 CAKISMA KOKU: burasi bos subnet'i YALNIZCA haritaya bakarak seciyordu.
 # Harita ile GERCEK durum kayabiliyor (asagidaki canli ornek), ve kaydigi anda
 # haritada "bos" gorunen bir subnet sahada DOLU olabiliyor:

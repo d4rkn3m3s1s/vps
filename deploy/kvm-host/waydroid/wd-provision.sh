@@ -4,7 +4,7 @@
 set -u
 INSTANCE="${1:?instance name required}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SUBNET_ID="$(sh "$HERE/net-head.sh" "$INSTANCE")"
+SUBNET_ID="$(NET_HEAD_ALLOC=1 sh "$HERE/net-head.sh" "$INSTANCE")"  # ★2026-09-03 dizin henuz yok; tahsis ACIKCA istenir (net-head sorgu modu)
 DEV_IP="192.168.$SUBNET_ID.112"
 log(){ echo "[wd-provision:$INSTANCE] $*"; }
 MI=/opt/waydroid-mi2

@@ -106,7 +106,8 @@ trap cleanup EXIT
 # donusumlu oldugu icin AYNI GUNUN eski kurulumundan kalma satir esleserek canary'yi
 # 5 saniyede "hazir" sandi -> cihaz daha boot ederken kontrol edildi -> YANLIS ALARM.
 # Tek dogru kaynak: is durumu API'si (jobId'ye bagli, gecmise karismaz).
-SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null)
+# ★2026-09-03 net-head cagrisi buradan 140. satira (tembel, kurulum SONRASI) tasindi:
+# kurulumdan once cagirmak canary'nin kendisine subnet TAHSIS ETTIRIYORDU (sorgu degil).
 # ★2026-08-15 IKI HATA DUZELTILDI (canary HER TUR yalanci alarm veriyordu:
 # "DNS-YOK internet-cikis(TCP=) ulke=BOS" -- oysa cihaz saglamdi):
 #  (1) ".112 VARSAYIMI": DHCP cihaza .112 DISINDA adres verebiliyor (13 Agu'da ayni
@@ -137,7 +138,7 @@ for _t in 1 2 3 4 5 6 7 8 9 10; do
   sleep 3
 done
 [ -z "$IP" ] && IP=$(awk '{print $3}' "/var/lib/misc/dnsmasq.waydroid-${INST}.leases" 2>/dev/null | tail -1)
-[ -z "$IP" ] && IP="192.168.${SUB}.112"
+if [ -z "$IP" ]; then SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$INST" 2>/dev/null); [ -n "$SUB" ] && IP="192.168.${SUB}.112"; fi
 log "canary cihaz IP=$IP (instance=$INST)"
 
 # ── DOGRULAMALAR ────────────────────────────────────────────────────────────

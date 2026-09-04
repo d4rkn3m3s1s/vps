@@ -8,6 +8,12 @@ INST="${1:?instance}"
 # container'i baslatip CIKIYOR -> surec yok -> grace ATLANIYOR -> boot eden cihaz
 # "ZOMBIE" sanilip yeniden baslatiliyordu (sonsuz dongu, cihaz hic kalkamiyordu).
 # Damga surecten BAGIMSIZ oldugu icin bu tuzagi kapatir.
+# ★★★2026-09-04 damgayi EZMEDEN ONCE oku: "bu instance'i baska bir wd-run az once
+# baslatti mi?" sorusunun tek ucuz cevabi bu. Asagidaki BOOT YARISI KORUMASI kullanir.
+_prev_boot_age=999999
+_pb=$(cat "/run/wd-boot-$INST" 2>/dev/null)
+case "$_pb" in ''|*[!0-9]*) _pb="" ;; esac
+[ -n "$_pb" ] && _prev_boot_age=$(( $(date +%s) - _pb ))
 date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
 
 # ★★★2026-08-18 GOZCU (fonksiyon). Iki yerden cagrilir:
@@ -152,6 +158,26 @@ MI=/opt/waydroid-mi2
 LXCP=/var/lib/waydroid.$INST/lxc
 export PYTHONPATH=$MI
 SUBNET=$(sh /opt/fleet-agent/waydroid/net-head.sh $INST)
+
+# ★★★2026-09-04 BOOT YARISI KORUMASI — KURULUMU KIRAN GERCEK SEBEP BUYDU.
+# Kurulumda bu betigi IKI yer baslatiyor: wd-provision.sh (`systemctl start`, gozetimi
+# systemd'ye devretmek icin) ve agent.mjs (`hostShDetached wd-run.sh`). Ikinci kopya
+# asagidaki "temizle" blogunu calistirinca BIRINCININ konteynerini/oturumunu/dnsmasq'ini
+# olduruyor; systemd `Restart=on-failure` ile ucuncu kopyayi aciyor ve zincir buyuyor.
+# CANLI KANIT (mi484, 04 Eyl 02:36): wd-mi484-run.log'da 4 WATCHDOG_START; satir 83/87
+# `kill -9 966863` + `kill -9 968864` bir onceki kopyanin container/session surecleri;
+# journal `waydroid-mi484: Link DOWN` (+8sn) — veth konteynerle birlikte gitti → DHCP
+# olustu: 9 re-kick / 142sn / statik-IP fallback → boot 360sn'de TIMEOUT (kurulum COKTU).
+# Kiyas: saglikli kurulum (mi480, 03 Eyl 04:35) DHCP lease'i 30sn'de aldi, boot 35.3sn.
+#
+# KURAL: bu instance icin baska bir wd-run AZ ONCE calistiysa VE konteyner AYAKTAYSA,
+# yikma — yalnizca gozetimi ustlen (2026-08-18'de tanimlanan "GOZETIM devralindi" yolu).
+# Gercek kurtarma yollari ETKILENMEZ: konteyner olmusse pgrep bos doner (koruma calismaz)
+# ve normal temizle/yeniden-kur akisi aynen isler; eski bir cihazda damga da eskidir.
+if [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ] && pgrep -f "waydroid[.]$INST/lxc" >/dev/null 2>&1; then
+  echo "wd-run: $INST icin baska bir kopya ${_prev_boot_age}sn once basladi ve konteyner AYAKTA — yikim ATLANDI, GOZETIM devralindi (boot yarisi korumasi)"
+  wd_watchdog_loop
+fi
 
 # 1 temizle
 # ★★★2026-08-14 `pkill -f "instance $INST"` KENDI KILIDINI OLDURUYORDU.

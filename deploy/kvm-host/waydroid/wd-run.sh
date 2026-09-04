@@ -15,6 +15,8 @@ _pb=$(cat "/run/wd-boot-$INST" 2>/dev/null)
 case "$_pb" in ''|*[!0-9]*) _pb="" ;; esac
 [ -n "$_pb" ] && _prev_boot_age=$(( $(date +%s) - _pb ))
 date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
+# ust surec pid’i (koruma kendi cagiran kabugunu "baska kopya" sanmasin diye)
+_ppid=$(awk '/^PPid:/{print $2}' "/proc/$$/status" 2>/dev/null)
 
 # ★★★2026-08-18 GOZCU (fonksiyon). Iki yerden cagrilir:
 #   (a) normal kurulum sonunda,
@@ -99,6 +101,20 @@ esac
 # birakilir (asili kalmaz). -n = bekleme, anında vazgec.
 exec 9>"/run/wd-run-$INST.lock"
 if ! flock -n 9; then
+  # ★★★2026-09-04 BOOT YARISI: kilidi tutan kopya AZ ONCE basladiysa, o hala insa
+  # ediyordur — asagidaki ADB canlilik testi o an DOGAL olarak basarisiz olur (Android
+  # henuz acilmadi) ve akis cihazi ZOMBIE sanip yikar. Olculdu (mi484/mi485): veth
+  # konteynerle birlikte gidiyor, DHCP oluyor, kurulum 360sn'de TIMEOUT.
+  # Damga TAZE ise: yikma, gozetimi ustlen. Bilinen 'olu kilit' (fd'i miras alan
+  # dbus-daemon) durumunda damga ESKIdir -> bu kontrolden gecer, eski davranis korunur.
+  # ⚠Yalnizca damga TAZE demek YETMEZ: kilidi olu bir fd tutuyorsa (dbus-daemon) ve damga
+  # taze ise cihaz sonsuza kadar gozetime dusup HIC kurulmazdi. Bu yuzden gercekten CANLI
+  # bir kardes wd-run sureci de sart. Kendi pid ve ust surecimiz haric tutulur.
+  _sib=$(pgrep -f "wd-run[.]sh $INST$" 2>/dev/null | grep -vx "$$" | grep -vx "${_ppid:-0}" | head -1)
+  if [ -n "$_sib" ] && [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ]; then
+    echo "wd-run: $INST kilidi CANLI kopyada (pid $_sib, ${_prev_boot_age}sn once basladi) — yikim ATLANDI, GOZETIM devralindi" >&2
+    wd_watchdog_loop
+  fi
   # ★2026-08-15: kilit alinamadi -- ama bu HER ZAMAN "zaten calisiyor" demek DEGIL.
   # FD 9'u miras alan uzun omurlu cocukler (dbus-daemon vb.) wd-run ciktiktan sonra
   # da kilidi tutuyor -> OLU KILIT. Canli: mi112/mi114/mi261 kilidi dbus-daemon
@@ -172,10 +188,13 @@ SUBNET=$(sh /opt/fleet-agent/waydroid/net-head.sh $INST)
 #
 # KURAL: bu instance icin baska bir wd-run AZ ONCE calistiysa VE konteyner AYAKTAYSA,
 # yikma — yalnizca gozetimi ustlen (2026-08-18'de tanimlanan "GOZETIM devralindi" yolu).
-# Gercek kurtarma yollari ETKILENMEZ: konteyner olmusse pgrep bos doner (koruma calismaz)
-# ve normal temizle/yeniden-kur akisi aynen isler; eski bir cihazda damga da eskidir.
-if [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ] && pgrep -f "waydroid[.]$INST/lxc" >/dev/null 2>&1; then
-  echo "wd-run: $INST icin baska bir kopya ${_prev_boot_age}sn once basladi ve konteyner AYAKTA — yikim ATLANDI, GOZETIM devralindi (boot yarisi korumasi)"
+# Gercek kurtarma ETKILENMEZ: gozcu once eski wd-run’u oldurup yenisini basliyor —
+# o an CANLI baska wd-run YOK, koruma calismaz, normal temizle/yeniden-kur akisi isler.
+# Kilitlenme yok: ILK kopya damgayi bos bulur (yas=999999) ve insaya devam eder;
+# yalnizca SONRADAN gelen kopya, hala calisan oncekine gozetimi birakir.
+_other_run=$(pgrep -f "wd-run[.]sh $INST$" 2>/dev/null | grep -vx "$$" | grep -vx "${_ppid:-0}" | head -1)
+if [ -n "$_other_run" ] && [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ]; then
+  echo "wd-run: $INST icin baska bir kopya ${_prev_boot_age}sn once basladi ve hala calisiyor (pid $_other_run) — yikim ATLANDI, GOZETIM devralindi (boot yarisi korumasi)"
   wd_watchdog_loop
 fi
 

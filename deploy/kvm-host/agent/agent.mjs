@@ -12978,7 +12978,14 @@ async function dnsSelfHealTick(running) {
     await execFileAsync('bash', ['-c',
       `for P in $(pgrep -f "wd-run.sh ${inst}$" 2>/dev/null); do kill -9 "$P" 2>/dev/null; done; ` +
       `/opt/fleet-agent/waydroid/wd-stop.sh ${inst} >/dev/null 2>&1; sleep 2; ` +
-      `pkill -f "dnsmasq.*waydroid-${inst}" 2>/dev/null; ` +
+      // ★★★2026-09-09 ONEK CAPASI — AYNI AILENIN 6. KOPYASI.
+      // Desen CAPASIZDI: "waydroid-mi26" kalibi mi261..mi269'un dnsmasq'ini de
+      // yakaliyordu. CANLI OLCUM (09 Eyl): capasiz desen 8 surec (mi26 + mi261,
+      // mi262, mi263, mi264, mi265, mi266, mi269), capali desen 1 surec.
+      // Vurulan komsu DHCP/DNS'siz kalir -> WhatsApp kirilir. 3 Eyl kesintisinin
+      // tetikleyicisi tam olarak bu aileydi (wd-stop.sh mount oneki, 4. kopya).
+      // ⚠️Hemen ustteki wd-run dongusu ZATEN "$" ile capaliydi; yalniz bu satir unutulmus.
+      `pkill -f "dnsmasq.*waydroid-${inst}($|[^0-9])" 2>/dev/null; ` +
       `echo "4102444800 00:16:3e:f9:d3:03 192.168.${sub}.112 Pixel-8-Pro 01:00:16:3e:f9:d3:03" > ${leaseFile}; ` +
       `nohup /opt/fleet-agent/waydroid/wd-run.sh ${inst} >/dev/null 2>&1 & true`]).catch(() => undefined);
     return;                                                      // tick basina TEK cihaz

@@ -1,0 +1,16 @@
+[Unit]
+Description=Es zamanli kurulum canary'si (iki cihaz ayni anda - yaris regresyonu yakalar)
+After=network-online.target fleet-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# ★KillMode=process: bu projede `control-group` bir kez 141 redsocks'u oldurmustu
+# (22 Agu). Betik wd-destroy cagiriyor ve o da alt surecler baslatiyor — cgroup
+# temizligi yarim kalmis silmeye yol acabilir.
+KillMode=process
+# Iki cihaz kurulumu + dogrulama + silme: normalde ~4-6 dk. 20 dk sert tavan.
+TimeoutStartSec=1200
+ExecStart=/bin/bash /opt/fleet-agent/waydroid/wd-canary-parallel.sh TR
+StandardOutput=append:/var/log/wd-canary.log
+StandardError=append:/var/log/wd-canary.log

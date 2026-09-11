@@ -1,0 +1,15 @@
+[Unit]
+Description=Es zamanli kurulum canary'si - haftalik (Carsamba 03:40)
+
+[Timer]
+# ★Gunluk canary 04:30'da kosuyor. Bu 03:40 — betikte karsilikli kilit VAR ama
+# zamanlari da ayirmak iyi: ikisi ayni ada carpip birbirinin cihazini yarim
+# kurulumda silmesin (28 Tem'de tam bu yasandi).
+# ★Carsamba: hafta ici ama yogun olmayan bir gun; filo bos oldugunda iki es
+# zamanli kurulum host'u zorlamaz.
+OnCalendar=Wed *-*-* 03:40:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

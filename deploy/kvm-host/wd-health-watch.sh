@@ -923,6 +923,59 @@ if [ -f "$_SG" ] && [ "$(( $(date +%s) - $(stat -c %Y "$_SG" 2>/dev/null || echo
 fi
 log "TAMAM: $OK sağlıklı, $LEAK sızıntı-düzeltildi, $RECONN reconnect, $UNREACH erişilemez, $DEADEXIT çıkış-ölü (rot=$ROTFIX, hesap=$ACCTFIX, boot-kurtarma=$BOOTFIX)"
 
+# ★★★2026-09-11 HOST KILITLENME DENETIMI — "sessiz korluk" panzehiri.
+#
+# NEDEN: 3 Eyl'de tracefs cekirdek kilidi 7,5 SAAT gorunmez kaldi; 11 Eyl'de ikinci bir
+# kilit sinifi (path_mount) bir HAFTA fark edilmedi. Ikisinin de ortak sebebi ayni:
+#   • `procs_blocked` bu beklemeleri GOSTERMEZ (iowait degil, duz kesintisiz bekleme)
+#   • CPU %85+ BOSTA gorunur, RAM boldur — kaynak alarmlari hicbir sey demez
+#   • systemd job kuyrugunda "start running" olarak SONSUZA kadar asili kalirlar
+# SONUC (11 Eyl olcumu): 7 timer'in NEXT'i hesaplanmadi, logrotate 1 hafta calismadi
+# (/var/log 4,1 GB), `timedatectl` yanit vermedi, kurulum 100sn -> 130sn'ye cikti.
+#
+# Bu blok UC ucuz kontrol yapar (hepsi /proc + systemctl okumasi, filoya yuk BINDIRMEZ):
+#   1) 10 dk'dan uzun "running" kalan systemd job'i
+#   2) yigininda mount/super_lock gecen D-state surec sayisi
+#   3) NEXT'i hesaplanmayan timer sayisi
+# ⚠️`kind` API'de serbest (BUYUK_HARF_SNAKE_CASE regex); bilinmeyen tur REDDEDILMEZ,
+#   genel saglik uyarisi olarak iletilir — enum/migration GEREKMEZ (agent.controller.ts:136).
+_HS_STUCK_MIN="${WD_STUCK_JOB_MIN:-10}"
+_HS_MOUNT_MAX="${WD_MOUNT_WEDGE_MAX:-3}"
+
+# (1) Takili systemd job'lari: "running" durumda olanlarin birimlerini al, her birinin
+#     ne zamandir bu durumda oldugunu ExecMainStartTimestamp ile olc.
+_hs_stuck=""
+_hs_stuck_n=0
+for _u in $(timeout 10 systemctl list-jobs --no-pager 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && $4=="running" {print $2}'); do
+  case "$_u" in wd-health-watch.service) continue ;; esac   # kendi turumuz "running" gorunur
+  _st=$(timeout 5 systemctl show "$_u" -p ExecMainStartTimestamp --value 2>/dev/null)
+  [ -z "$_st" ] && continue
+  _se=$(date -d "$_st" +%s 2>/dev/null) || continue
+  _age=$(( ( $(date +%s) - _se ) / 60 ))
+  if [ "$_age" -ge "$_HS_STUCK_MIN" ]; then
+    _hs_stuck_n=$(( _hs_stuck_n + 1 ))
+    _hs_stuck="$_hs_stuck $_u(${_age}dk)"
+  fi
+done
+
+# (2) Mount kilidinde asili surecler. TEK gecis, en fazla 400 surec okunur (maliyet ~ms).
+_hs_wedge=0
+for _p in $(grep -l '^State:.D' /proc/[0-9]*/status 2>/dev/null | head -400 | sed 's|/proc/||;s|/status||'); do
+  if grep -qE 'trace_mount|super_lock|path_mount' "/proc/$_p/stack" 2>/dev/null; then
+    _hs_wedge=$(( _hs_wedge + 1 ))
+  fi
+done
+
+# (3) NEXT'i hesaplanmayan timer'lar (takili job kuyrugunun ikincil belirtisi).
+_hs_deadtimer=$(timeout 10 systemctl list-timers --all --no-pager 2>/dev/null | awk 'NR>1 && NF>3 && $1=="-"' | wc -l)
+
+if [ "$_hs_stuck_n" -gt 0 ] || [ "$_hs_wedge" -ge "$_HS_MOUNT_MAX" ]; then
+  log "🚨 HOST KILIDI: takili-job=$_hs_stuck_n mount-kilitli-surec=$_hs_wedge olu-timer=$_hs_deadtimer ->$_hs_stuck"
+  notify HOST_STUCK_JOB "" "Host kilitlenme belirtisi: $_hs_stuck_n takili systemd job, $_hs_wedge surec mount kilidinde, $_hs_deadtimer timer NEXT'siz.$_hs_stuck | Cekirdek kilidi kodla acilmaz - kademeli reboot gerekir." false
+elif [ "$_hs_wedge" -gt 0 ] || [ "$_hs_deadtimer" -gt 4 ]; then
+  log "ℹ host: mount-kilitli=$_hs_wedge takili-job=$_hs_stuck_n olu-timer=$_hs_deadtimer (esik alti, alarm YOK)"
+fi
+
 # ★FİLO EŞİĞİ: tek cihazın geçici takılması sessizce düzeltilir (yukarıda loglandı).
 # Kurtarılamayan cihaz sayısı eşiği aşarsa = SİSTEMİK arıza (ülke havuzu ölü gibi) →
 # cihaz başına değil, TEK özet alarm. Bugünkü olayda 21 cihaz düşmüştü ve hiç alarm

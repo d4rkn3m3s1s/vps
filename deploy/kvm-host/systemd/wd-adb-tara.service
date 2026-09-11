@@ -1,0 +1,11 @@
+[Unit]
+Description=Periyodik ADB baglanti + saglik taramasi (40 paralel)
+After=network.target fleet-agent.service
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/fleet-agent/wd-adb-tara.sh
+Restart=always
+RestartSec=30
+TimeoutStartSec=0
+[Install]
+WantedBy=multi-user.target

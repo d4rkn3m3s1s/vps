@@ -1,0 +1,13 @@
+[Unit]
+Description=Acil kurtarma SSH (port 2222, PAM'siz - systemd tikaliyken calisir)
+After=network.target
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /run/sshd
+ExecStart=/usr/sbin/sshd -D -f /etc/ssh/sshd_acil_config
+Restart=always
+RestartSec=10
+Nice=-5
+OOMScoreAdjust=-500
+[Install]
+WantedBy=multi-user.target

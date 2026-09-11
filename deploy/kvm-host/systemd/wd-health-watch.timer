@@ -1,0 +1,8 @@
+[Unit]
+Description=wd-health-watch 7 dakikada bir çalıştır
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=7min
+Persistent=true
+[Install]
+WantedBy=timers.target

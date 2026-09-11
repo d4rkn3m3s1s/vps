@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet yapilandirma yedegi - haftalik (Pazar 03:10)
+
+[Timer]
+# DB yedegi 02:30'da; bu 03:10 - ayni anda disk yazmasinlar.
+OnCalendar=Sun *-*-* 03:10:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

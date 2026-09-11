@@ -1,0 +1,12 @@
+[Unit]
+Description=Reboot sonrasi otonom filo toparlama
+After=network-online.target waydroid-container.service fleet-api.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/bash -c "sleep 90"
+ExecStart=/bin/bash /opt/fleet-agent/wd-boot-toparla.sh
+TimeoutStartSec=5400
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=VPS Fleet Host Agent
+After=docker.service network-online.target fleet-api.service
+Wants=network-online.target
+[Service]
+EnvironmentFile=/opt/fleet-agent/agent.env
+ExecStart=/usr/bin/node /opt/agent.mjs
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/fleet-agent.log
+StandardError=append:/var/log/fleet-agent.log
+[Install]
+WantedBy=multi-user.target

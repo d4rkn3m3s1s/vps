@@ -1,0 +1,8 @@
+[Unit]
+Description=PostgreSQL fleet DB günlük yedek
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fleet-agent/pg-backup.sh

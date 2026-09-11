@@ -1,0 +1,12 @@
+[Unit]
+Description=Fleet yapilandirma yedegi (betikler + systemd + /etc)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+# ★KillMode=process: bu oneshot daemon BASLATMIYOR ama proje kurali geregi
+# (22 Agu: control-group 141 redsocks'u oldurmustu) tutarlilik icin process.
+KillMode=process
+ExecStart=/bin/bash /opt/fleet-agent/fleet-config-backup.sh
+StandardOutput=append:/var/log/fleet-config-backup.log
+StandardError=append:/var/log/fleet-config-backup.log

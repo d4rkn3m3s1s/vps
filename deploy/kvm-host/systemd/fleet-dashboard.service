@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet Dashboard
+After=network.target fleet-api.service
+[Service]
+WorkingDirectory=/opt/fleet/apps/dashboard
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+[Install]
+WantedBy=multi-user.target

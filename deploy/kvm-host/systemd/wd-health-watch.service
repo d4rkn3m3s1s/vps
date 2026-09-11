@@ -1,0 +1,8 @@
+[Unit]
+Description=Waydroid proaktif sağlık izleme (çıkış-IP + oto-iyileşme + alert)
+After=docker.service network-online.target fleet-api.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/fleet-proxy.env
+ExecStart=/opt/fleet-agent/wd-health-watch.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Surekli filo durum kaydi (20sn)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/fleet-agent/wd-izle.sh
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target

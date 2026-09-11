@@ -1,0 +1,11 @@
+[Unit]
+Description=Fleet API
+After=network.target docker.service
+[Service]
+WorkingDirectory=/opt/fleet/apps/api
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Systemd tikanma watchdog (kademeli otomatik kurtarma)
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/fleet-agent/wd-watchdog.sh
+Restart=always
+RestartSec=15
+Nice=-5
+OOMScoreAdjust=-500
+[Install]
+WantedBy=multi-user.target

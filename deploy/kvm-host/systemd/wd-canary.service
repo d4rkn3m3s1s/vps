@@ -1,0 +1,8 @@
+[Unit]
+Description=Fleet canary — uctan uca kurulum dogrulamasi (DNS + cikis + WhatsApp + ulke)
+After=fleet-api.service fleet-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/fleet-agent/waydroid/wd-canary.sh TR
+TimeoutStartSec=900

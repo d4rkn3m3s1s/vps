@@ -1,0 +1,26 @@
+# /etc/systemd/system/waydroid@.service
+# ★2026-07-23 (R-1): Waydroid instance TEMPLATE unit — reboot-persist for ALL cloud
+# phones. `systemctl enable waydroid@<inst>` makes each instance come up on boot;
+# wd-proxy-restore.service (ordered after) reapplies the country-matched proxy.
+# ★2026-07-24: added boot-stagger (ExecStartPre) so a reboot doesn't boot all 23
+# instances at once → CPU-storm (GPU-less surfaceflinger spikes). Delay = instance
+# number × 4s (deterministic, spreads 23 boots over ~90s). wd-run.sh already pkills
+# any stale same-instance process at start, so no duplicate risk.
+[Unit]
+Description=Waydroid instance "%i" (fleet cloud phone)
+After=network.target dbus.service waydroid-container.service
+Wants=dbus.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+UMask=0022
+ExecStartPre=/bin/bash /opt/fleet-agent/waydroid/wd-boot-gate.sh %i
+ExecStart=/bin/bash /opt/fleet-agent/waydroid/wd-run.sh %i
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

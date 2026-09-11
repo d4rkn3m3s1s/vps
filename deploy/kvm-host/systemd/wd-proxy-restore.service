@@ -1,0 +1,14 @@
+[Unit]
+Description=Waydroid cihazlarina ulke-eslesmeli proxy geri-uygula (reboot-persist)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+[Service]
+EnvironmentFile=/etc/fleet-proxy.env
+Type=oneshot
+RemainAfterExit=yes
+# Waydroid instance'lari + fleet ayaga kalksin diye acilista biraz bekle.
+ExecStartPre=/bin/sleep 90
+ExecStart=/opt/fleet-agent/wd-proxy-restore.sh
+[Install]
+WantedBy=multi-user.target

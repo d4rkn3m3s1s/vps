@@ -1,0 +1,7 @@
+[Unit]
+Description=Docker container sağlık kontrolü (PG/Redis donma tespiti)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fleet-agent/docker-health-check.sh

@@ -11298,6 +11298,17 @@ const _waIdleWhitelisted = new Set();   // pil muafiyeti verilmis cihazlar (ajan
 // basarisiz oluyorsa bu, log'da "kurtariliyor" gurultusu degil GERCEK bir ariza
 // sinyalidir; sayac operatorun bunu ayirt etmesini saglar.
 const _waReviveFail = new Map();
+// ★★★2026-09-11 EULA DONGUSU KIRICI. eula-reaper, WA kayit ekraninda takilan cihazi
+// force-stop ediyordu; ~3 dk sonra `wa canli-tutma` "WhatsApp KAPALI" deyip GERI aciyor,
+// 8 dk sonra reaper yine kapatiyor — kapali dongu. CANLI OLCUM (10 Eyl): 5 cihaz
+// (mi366/mi466/mi483/mi486/mi489) 3 saatte 312 tur, gunde ~125 soguk acilis; CPU yakiyor,
+// wd-<inst>-run.log 28 MB'a sisiyor ve o proxy IP'sinde "hic kayit olmayan cihaz" deseni
+// uretiyor. Bu cihazlarin DB'de HESABI YOK — kaydi hic baslamamis bos cihazlar.
+// ★COZUM: reaper bir cihazi kapattiginda buraya damga birakir; canli-tutma o cihazi
+// TTL boyunca ATLAR. Gercek hesabi olan cihaz etkilenmez (reaper ona hic dokunmaz).
+// ⚠️TTL bitince tekrar denenir: cihaz sonradan kaydedilirse kendiliginden normale doner.
+const _waEulaMuted = new Map();
+const WA_EULA_MUTE_MS = Number(process.env.FLEET_WA_EULA_MUTE_MS || 6 * 60 * 60 * 1000);
 async function pollWhatsappInbox(serial, busy = false) {
   await pollInboxFromStore(serial);
   // ★★★2026-08-19 RECEIPT AYRI TEMPOYA ALINDI — gelen mesaj gecikmesinin kalan kalemi.
@@ -11356,6 +11367,11 @@ async function pollWhatsappInbox(serial, busy = false) {
       if (!adbCanli) return;   // cihaz gercekten erisilemez: adb-reap / health-watch'un isi
     }
     if (!String(pid || '').trim()) {
+      // ★2026-09-11 EULA bastirma: reaper bu cihazi kayit ekraninda bulup kapattiysa
+      // GERI ACMA — yoksa reaper<->canli-tutma sonsuz donguye giriyor (bkz. _waEulaMuted).
+      const _mutedAt = _waEulaMuted.get(serial);
+      if (_mutedAt && Date.now() - _mutedAt < WA_EULA_MUTE_MS) return;
+      if (_mutedAt) _waEulaMuted.delete(serial);   // TTL doldu: bir kez daha sansi var
       let ok = false;
       try {
         await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`]);
@@ -12656,6 +12672,8 @@ async function eulaReaperTick() {
       }
       await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME'], 5000);
     } catch { /* best-effort; next tick retries */ }
+    // ★2026-09-11: kapatilan cihazi canli-tutma GERI ACMASIN (dongu kirici).
+    _waEulaMuted.set(serial, Date.now());
     eulaStuckSince.delete(serial);
   }
 }

@@ -153,7 +153,20 @@ export class AlertsService {
       if (rules.length === 0 && CRITICAL_FAILOPEN.has(trigger)) {
         void notificationsDispatch(workspaceId, { title: context.title, detail: context.detail });
       }
+      // ★★★2026-09-11 SOGUMA (cooldown) — alarm gurultusu gercek alarmi gorunmez yapiyordu.
+      // CANLI OLCUM (3 Eyl): 620 alarm olayi uretildi, 360ı DAKIKADA BIR tekrar eden AYNI
+      // swap alarmiydi. Operator alarm saymaya alisirsa izleme fiilen korlesir.
+      // AlertRule semasinda cooldown alani YOK; migration riskine girmeden mevcut
+      // `lastFiredAt` okunur (zaten yaziliyordu ama HICBIR YERDE okunmuyordu).
+      // ⚠️KRITIK tetikleyiciler (host down / filo coktu) SOGUTULMAZ — tekrar etmeleri
+      //   bilincli: operator ilk bildirimi kacirirsa ikincisini gormeli.
+      const COOLDOWN_MS = Number(process.env.FLEET_ALERT_COOLDOWN_MS || 30 * 60 * 1000);
+      const NEVER_COOLDOWN = new Set<AlertTrigger>(['HOST_OFFLINE', 'FLEET_MASS_OFFLINE']);
       for (const rule of rules) {
+        if (!NEVER_COOLDOWN.has(trigger) && rule.lastFiredAt) {
+          const sinceMs = Date.now() - new Date(rule.lastFiredAt).getTime();
+          if (sinceMs < COOLDOWN_MS) continue;   // ayni kural yakinda atesledi — tekrar etme
+        }
         // Threshold rules (QUOTA_HIGH) only fire when the value MEETS the threshold.
         // FAIL-CLOSED: a threshold rule invoked with NO numeric value can't be evaluated,
         // so it must NOT fire (previously the `typeof === 'number'` short-circuit let a

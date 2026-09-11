@@ -972,7 +972,7 @@ _hs_deadtimer=$(timeout 10 systemctl list-timers --all --no-pager 2>/dev/null | 
 if [ "$_hs_stuck_n" -gt 0 ] || [ "$_hs_wedge" -ge "$_HS_MOUNT_MAX" ]; then
   log "🚨 HOST KILIDI: takili-job=$_hs_stuck_n mount-kilitli-surec=$_hs_wedge olu-timer=$_hs_deadtimer ->$_hs_stuck"
   notify HOST_STUCK_JOB "" "Host kilitlenme belirtisi: $_hs_stuck_n takili systemd job, $_hs_wedge surec mount kilidinde, $_hs_deadtimer timer NEXT'siz.$_hs_stuck | Cekirdek kilidi kodla acilmaz - kademeli reboot gerekir." false
-elif [ "$_hs_wedge" -gt 0 ] || [ "$_hs_deadtimer" -gt 4 ]; then
+elif [ "$_hs_wedge" -gt 0 ] || [ "$_hs_deadtimer" -gt 7 ]; then
   log "ℹ host: mount-kilitli=$_hs_wedge takili-job=$_hs_stuck_n olu-timer=$_hs_deadtimer (esik alti, alarm YOK)"
 fi
 

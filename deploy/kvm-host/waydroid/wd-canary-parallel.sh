@@ -8,12 +8,22 @@
 # journal'da `Link DOWN` +8sn, DHCP oldu, boot 360sn'de TIMEOUT). Gunluk canary
 # bunu HIC goremedi — cunku tek cihaz kuruyordu. Bu betik tam o bosluğu kapatir.
 #
-# NE YAPAR: IKI cihazi AYNI ANDA kurar, ikisinin de gercekten calistigini dogrular
-# (boot + DHCP-lease + ADB + WhatsApp sureci), sonra IKISINI de siler. Herhangi biri
-# patlarsa /agent/health-alert ile alarm ureti (wd-canary.sh ile ayni yol).
+# NE YAPAR: IKI cihazi AYNI ANDA kurar, ikisinin de gercekten calistigini dogrular,
+# yaris izi arar, sonra IKISINI de siler. Herhangi biri patlarsa /agent/health-alert
+# ile alarm ureti (wd-canary.sh ile ayni yol).
 #
 # ★KURULUM DISI HICBIR SEYE DOKUNMAZ: mevcut cihazlara, NAT'a, proxy'ye, gozcuye
 #   dokunmaz. Yalnizca iki gecici cihaz acar ve siler.
+#
+# ★★★DOGRULAMA KALIBI wd-canary.sh'TEN BIREBIR ALINDI (11 Eyl'de ilk surumum uc
+# noktada yanlis olcmustu, hepsi burada duzeltildi):
+#   1) IP: lease DOSYASI canary omru boyunca OLUSMUYOR (cihaz silinince dnsmasq
+#      yazmadan gidiyor) -> tek guvenilir kaynak journal'daki DHCPACK.
+#      KANIT (wd-canary.sh notu): mi327 .65 aldi, lease'e bakan kod ".112" varsayip
+#      "DNS-YOK internet-YOK" dedi — oysa cihaz SAGLAMDI.
+#   2) `adb connect` SART: connect olmadan `adb shell` BOS doner.
+#   3) WhatsApp olcutu `pidof` DEGIL: yeni kurulan cihazda WA kurulu ama arka planda
+#      calismiyor olabilir; dogru olcut cihazdan https://web.whatsapp.com -> HTTP 200.
 #
 # Kullanim: sudo bash wd-canary-parallel.sh [ulke]     (varsayilan TR)
 # Zamanlama: haftalik systemd timer (wd-canary-parallel.timer)
@@ -89,8 +99,8 @@ set -- $INSTS
 [ $# -lt 2 ] && { log "BASARISIZ: iki kurulum birden baslatilamadi (baslayan=$#)"; notify "es-zamanli canary: iki kurulum baslatilamadi (baslayan=$#)"; }
 
 # ── Her durumda TEMIZLIK (basarili da olsa, patlasa da) ───────────────────────
-# ★KRITIK: kurulum SURERKEN silme (28 Tem dersi) — bu yuzden trap yalnizca
-#   bekleme bittikten SONRA is gorur; asagida SIL() cagrilir.
+# ★KRITIK: kurulum SURERKEN silme (28 Tem dersi) — trap yalnizca bekleme bittikten
+#   SONRA is gorur; asagida sil_hepsi acikca cagrilir.
 TEMIZLENDI=0
 sil_hepsi() {
   [ "$TEMIZLENDI" = "1" ] && return 0
@@ -109,8 +119,6 @@ while [ -n "$(echo $BEKLEYEN)" ]; do
   KALAN=""
   for J in $BEKLEYEN; do
     # ★KANITLANMIS KALIP (wd-canary.sh:122): /provision/status ucu + IKI baslik.
-    # /public/v1/jobs yolu JWT istemiyor ama provision isini bu uc daha guvenilir
-    # raporluyor (gunluk canary Temmuz'dan beri bunu kullaniyor).
     ST=$(timeout 15 curl -s "$API/provision/status/$J" -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" 2>/dev/null | grep -oE '"status":"[^"]+"' | head -1 | cut -d'"' -f4)
     case "$ST" in
       COMPLETED) : ;;                       # bitti, listeden dus
@@ -125,33 +133,58 @@ while [ -n "$(echo $BEKLEYEN)" ]; do
 done
 SURE=$(( $(date +%s) - T0 ))
 
-# ── ASIL DOGRULAMA: iki cihaz da GERCEKTEN calisiyor mu ──────────────────────
-# 4 Eyl yarisinda belirti tam olarak sudur: konteyner olur, veth duser, DHCP
-# lease HIC olusmaz, cihaz statik-IP fallback'e duser. Bu yuzden GERCEK DHCP
-# lease'ini de ariyoruz — yalnizca "adb device" demek YETMEZ.
-FAILS=""
+# ── YARIS IZI: run log SILINMEDEN once oku ───────────────────────────────────
+# ★wd-destroy run log'u da siliyor — bu yuzden olcum TEMIZLIKTEN ONCE yapilmali.
+#   (Ilk surumde silme sonrasi okumaya calistim, WATCHDOG_START hep 0 dondu.)
+# Saglikli kurulumda 1 watchdog beklenir; 2+ kopya = yaris, kill-9 = yikim.
+YARIS=""
 for I in $INSTS; do
-  SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$I" 2>/dev/null)
-  LEASE="/var/lib/misc/dnsmasq.waydroid-$I.leases"
-  # Gercek lease: agi-gecidi tohum satiri (MAC 00:16:3e:f9:d3:03) HARIC.
-  IP=$(awk '$2 != "00:16:3e:f9:d3:03" && $3 ~ /^[0-9]+\./ {print $3}' "$LEASE" 2>/dev/null | tail -1)
-  if [ -z "$IP" ]; then
-    FAILS="$FAILS $I(DHCP-lease-YOK)"
-    continue
+  L="/var/log/wd-$I-run.log"
+  if [ -f "$L" ]; then
+    W=$(grep -c 'WATCHDOG_START' "$L" 2>/dev/null); W=${W:-0}
+    K=$(grep -c 'kill -9 [0-9]' "$L" 2>/dev/null); K=${K:-0}
+    log "$I: watchdog=$W kill9=$K (koruma calisiyorsa kill9=0)"
+    [ "$W" -gt 2 ] && YARIS="$YARIS $I(YARIS:${W}xWATCHDOG)"
+    [ "$K" -gt 0 ] && YARIS="$YARIS $I(YIKIM:${K}xkill-9)"
+  else
+    log "$I: run log yok (olcum yapilamadi)"
   fi
-  BOOT=$(timeout 15 adb -s "$IP:5555" shell 'getprop sys.boot_completed' </dev/null 2>/dev/null | tr -d '\r')
-  WA=$(timeout 15 adb -s "$IP:5555" shell 'pidof com.whatsapp' </dev/null 2>/dev/null | tr -d '\r')
-  [ "$BOOT" = "1" ] || FAILS="$FAILS $I(boot=$BOOT)"
-  [ -n "$WA" ] || FAILS="$FAILS $I(WA-yok)"
-  log "$I: ip=$IP boot=${BOOT:-?} wa=${WA:+var}"
 done
 
-# ★YARIS BELIRTISI: run log'da birden fazla WATCHDOG_START = coklu wd-run kopyasi.
+# ── ASIL DOGRULAMA: iki cihaz da GERCEKTEN kullanilabilir mi ─────────────────
+FAILS="$YARIS"
 for I in $INSTS; do
-  W=$(grep -c 'WATCHDOG_START' "/var/log/wd-$I-run.log" 2>/dev/null || echo 0)
-  K=$(grep -c 'kill -9 [0-9]' "/var/log/wd-$I-run.log" 2>/dev/null || echo 0)
-  [ "${W:-0}" -gt 2 ] && FAILS="$FAILS $I(YARIS:${W}xWATCHDOG,${K}xkill)"
-  log "$I: watchdog=$W kill9=$K (yaris korumasi calisiyorsa kill9=0 olmali)"
+  # ★IP: journal'daki DHCPACK tek guvenilir kaynak (lease dosyasi canary omru
+  #   boyunca olusmuyor). wd-canary.sh ile ayni sira: journal -> lease -> .112.
+  IP=""
+  for _t in 1 2 3 4 5 6 7 8 9 10; do
+    IP=$(journalctl --since "-10 min" --no-pager 2>/dev/null \
+         | grep -oE "DHCPACK\(waydroid-${I}\) [0-9.]+" | tail -1 | awk '{print $2}')
+    [ -n "$IP" ] && break
+    sleep 3
+  done
+  [ -z "$IP" ] && IP=$(awk '{print $3}' "/var/lib/misc/dnsmasq.waydroid-${I}.leases" 2>/dev/null | tail -1)
+  if [ -z "$IP" ]; then
+    SUB=$(sh /opt/fleet-agent/waydroid/net-head.sh "$I" 2>/dev/null)
+    [ -n "$SUB" ] && IP="192.168.${SUB}.112"
+  fi
+  if [ -z "$IP" ]; then FAILS="$FAILS $I(IP-YOK)"; continue; fi
+
+  timeout 10 adb connect "$IP:5555" >/dev/null 2>&1 || true   # ★SART: connect olmadan shell BOS doner
+  sleep 2
+  adbsh() { timeout 25 adb -s "$IP:5555" shell "$1" 2>/dev/null | tr -d '\r'; }
+
+  BOOT=$(adbsh 'getprop sys.boot_completed')
+  # ★WhatsApp olcutu: `pidof` DEGIL (yeni cihazda WA arka planda calismayabilir).
+  #   Gunluk canary ile ayni: cihazdan web.whatsapp.com'a HTTP 200.
+  WA=$(adbsh "su -c 'curl -sk -o /dev/null -w %{http_code} --max-time 15 https://web.whatsapp.com'")
+  # DNS gercekten yapilandirildi mi (isim cozumunun on kosulu — 28 Tem hatasi)
+  DNS=$(adbsh "dumpsys connectivity" | grep -oE 'DnsAddresses: \[[^]]*\]' | head -1)
+
+  [ "$BOOT" = "1" ] || FAILS="$FAILS $I(boot=${BOOT:-BOS})"
+  [ "$WA" = "200" ] || FAILS="$FAILS $I(whatsapp-erisim=${WA:-BOS})"
+  case "$DNS" in *192.168*) : ;; *) FAILS="$FAILS $I(DNS-YOK)" ;; esac
+  log "$I: ip=$IP boot=${BOOT:-?} whatsapp=${WA:-?} dns=$(case "$DNS" in *192.168*) echo var ;; *) echo YOK ;; esac)"
 done
 
 if [ -n "$FAILS" ]; then

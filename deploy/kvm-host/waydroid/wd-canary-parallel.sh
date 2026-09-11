@@ -81,17 +81,21 @@ TOK=$(timeout 20 curl -s -X POST "$API/auth/login" -H "x-api-key: $AK" -H 'Conte
 
 # ── IKI CIHAZI AYNI ANDA baslat ────────────────────────────────────────────────
 # ★Ayni saniyede iki `provision/create` — 4 Eyl yarisinin tam kosulu.
-INSTS=""; JOBS=""
+INSTS=""; JOBS=""; DEVS=""
 for n in 1 2; do
   NAME="cpar-$(date +%H%M%S)-$n"
   RESP=$(timeout 30 curl -s -X POST "$API/provision/create" -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" \
          -H 'Content-Type: application/json' -d "{\"name\":\"$NAME\",\"country\":\"$CC\"}" 2>/dev/null)
   I=$(echo "$RESP" | grep -oE '"instance":"[^"]+"' | cut -d'"' -f4)
   J=$(echo "$RESP" | grep -oE '"jobId":"[^"]+"' | cut -d'"' -f4)
+  # ★★★2026-09-12 deviceId DE yakalanmali: instance'i silmek YETMIYOR, DB'deki
+  # Device satiri da silinmeli (bkz. sil_hepsi). Ilk surumde bu eksikti ve panelde
+  # 4 hayalet cihaz ("Durduruldu") birikti.
+  D=$(echo "$RESP" | grep -oE '"deviceId":"[^"]+"' | cut -d'"' -f4)
   if [ -z "$I" ]; then
     log "HATA: $n. provision baslatilamadi: $(echo "$RESP" | head -c 150)"
   else
-    INSTS="$INSTS $I"; JOBS="$JOBS $J"
+    INSTS="$INSTS $I"; JOBS="$JOBS $J"; DEVS="$DEVS $D"
     log "$n. kurulum basladi: $NAME ($I)"
   fi
 done
@@ -108,6 +112,16 @@ sil_hepsi() {
   for I in $INSTS; do
     timeout 240 bash /opt/fleet-agent/waydroid/wd-destroy.sh "$I" >/dev/null 2>&1 \
       && log "temizlendi ($I)" || log "UYARI: $I silinemedi — elle bak"
+  done
+  # ★★★2026-09-12 DB KAYDI DA SILINMELI. Ilk surum yalniz wd-destroy cagiriyordu:
+  # instance temizlendi (dizin/birim/harita/redsocks hepsi gitti) ama DB'deki Device
+  # satiri KALDI -> panelde 4 hayalet cihaz ("Durduruldu") birikti, operator sordu.
+  # Gunluk canary bunu DOGRU yapiyor (wd-canary.sh:98); ayni kalip burada da uygulanir.
+  for D in $DEVS; do
+    [ -z "$D" ] && continue
+    timeout 40 curl -s -o /dev/null -X DELETE "$API/devices/$D" \
+      -H "x-api-key: $AK" -H "Authorization: Bearer $TOK" 2>/dev/null \
+      && log "DB kaydi silindi (${D:0:12})" || log "UYARI: DB kaydi silinemedi ${D:0:12}"
   done
 }
 trap sil_hepsi EXIT

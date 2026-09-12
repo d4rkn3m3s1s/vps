@@ -32,8 +32,21 @@ S=/opt/fleet-agent/state/saglik.out
 DBO=/opt/fleet-agent/state/dbozet.txt
 
 esc(){ sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g'; }
+# ★escn: HTML NITELIGI icine giren degerler icin. esc yalnizca & < > cevirir;
+# deger data-ara="..." gibi bir niteligin icindeyse cift tirnak da kacisilmali,
+# yoksa nitelik erken kapanip onclick= enjekte edilebilir.
+escn(){ sed 's/&/\&amp;/g;s/</\&lt;/g;s/>/\&gt;/g;s/"/\&quot;/g;s/'"'"'/\&#39;/g'; }
 
+# ★★★2026-09-12 TUR SAYACI + YAVAS ADIM ONBELLEGI.
+# Dongu 10 sn'de bir doner ama bazi olcumler 10 saniyede DEGISMEZ ve pahalidir:
+#   journalctl -u ssh (x2)=689ms, ufw status=100ms, docker ps=74ms,
+#   dmesg tail 400=73ms, du -sm /var/log=61ms  ->  toplam ~1 sn + journal yuku.
+# Bunlar 30 TURDA BIR (5 dakika) olculur; arada onceki deger kullanilir.
+# Filo sayilari (acik cihaz, D-state, sizinti) HER TUR taze kalir.
+TUR=0
 while true; do
+  TUR=$((TUR+1))
+  if [ $(( (TUR-1) % 30 )) -eq 0 ]; then YAVAS=1; else YAVAS=0; fi
   # ════════════════════════════════════════════════════════════════════════
   # BÖLÜM 1 — CİHAZ KATMANI (20 sn'lik sayım turundan)
   # ════════════════════════════════════════════════════════════════════════
@@ -154,11 +167,11 @@ while true; do
   # ★ÇEKİRDEK KİLİT İZLERİ. 3 Eyl'de Linux 6.8 tracefs/eventfs deadlock'u 13
   # konteyneri kilitledi ve procs_blocked HİÇ göstermedi. 1 Eyl'de path_mount
   # kilidi vardı. İkisi de D-state sayacına YANSIMIYORDU. Tek güvenilir iz dmesg.
-  _dm=$(dmesg 2>/dev/null | tail -400)
-  HUNG=$(printf '%s' "$_dm" | grep -ciE "hung_task|blocked for more than|INFO: task.*blocked"); HUNG=${HUNG:-0}
-  OOPS=$(printf '%s' "$_dm" | grep -ciE "Oops|kernel BUG|general protection"); OOPS=${OOPS:-0}
-  OOMK=$(printf '%s' "$_dm" | grep -ci "Out of memory: Killed"); OOMK=${OOMK:-0}
-  KTOP=$((HUNG+OOPS+OOMK))
+  [ "$YAVAS" = "1" ] && _dm=$(dmesg 2>/dev/null | tail -400)
+  [ "$YAVAS" = "1" ] && { HUNG=$(printf '%s' "$_dm" | grep -ciE "hung_task|blocked for more than|INFO: task.*blocked"); HUNG=${HUNG:-0}; }
+  [ "$YAVAS" = "1" ] && { OOPS=$(printf '%s' "$_dm" | grep -ciE "Oops|kernel BUG|general protection"); OOPS=${OOPS:-0}; }
+  [ "$YAVAS" = "1" ] && { OOMK=$(printf '%s' "$_dm" | grep -ci "Out of memory: Killed"); OOMK=${OOMK:-0}; }
+  KTOP=$(( ${HUNG:-0} + ${OOPS:-0} + ${OOMK:-0} ))
   BINDN=$(grep -c binder /proc/mounts 2>/dev/null); BINDN=${BINDN:-0}
 
   # ★KAPASİTE. İlk duvar RAM (~225-233 cihaz ölçüldü), subnet tavanı 492.
@@ -184,7 +197,7 @@ while true; do
   for _s in "$S_API" "$S_PANEL" "$S_AG" "$S_GOZ" "$S_IZLE" "$S_DB"; do
     [ "$_s" = "ok" ] || S_KOTU=$((S_KOTU+1))
   done
-  DKR=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^fleet-'); DKR=${DKR:-0}
+  [ "$YAVAS" = "1" ] && { DKR=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^fleet-'); DKR=${DKR:-0}; }
   FAILED_U=$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | wc -l)
 
   # ★Yedek "var" demek yetmez — KAÇ SAATLİK olduğu önemli. Timer bozulursa
@@ -192,8 +205,10 @@ while true; do
   yedekyas(){ _f=$(ls -t $1 2>/dev/null | head -1); [ -z "$_f" ] && { echo -1; return; }
               _t=$(stat -c %Y "$_f" 2>/dev/null); [ -z "$_t" ] && { echo -1; return; }
               echo $(( ($(date +%s) - _t) / 3600 )); }
-  YDB=$(yedekyas '/opt/db-backups/*.gz');        YDBN=$(ls /opt/db-backups/*.gz 2>/dev/null | wc -l)
-  YCIH=$(yedekyas '/opt/device-backups/*.tgz');  YCIHN=$(ls /opt/device-backups/*.tgz 2>/dev/null | wc -l)
+  if [ "$YAVAS" = "1" ]; then
+    YDB=$(yedekyas '/opt/db-backups/*.gz');        YDBN=$(ls /opt/db-backups/*.gz 2>/dev/null | wc -l)
+    YCIH=$(yedekyas '/opt/device-backups/*.tgz');  YCIHN=$(ls /opt/device-backups/*.tgz 2>/dev/null | wc -l)
+  fi
 
   # ★Günlük canary: tek cihaz uçtan uca. 23-25 Ağu'de HER GÜN kırmızı yandı ve
   # bu, cihaz açmanın 3 GÜNDÜR bozuk olduğunun TEK erken uyarısıydı.
@@ -258,7 +273,10 @@ while true; do
     grep -qx "$_in" /opt/fleet-agent/state/all_inst.txt 2>/dev/null || continue
     _t0=$(cat "$_df" 2>/dev/null); case "$_t0" in ''|*[!0-9]*) continue ;; esac
     _dk=$(( (RNOW - _t0) / 60 )); DOWNN=$((DOWNN+1))
-    DOWNL="$DOWNL<span class=\"chip warn\">$_in · ${_dk}dk</span>"
+    # ★GUVENLIK: instance adi down-* DOSYA ADINDAN geliyor; ham gomulmez.
+    _inG=$(printf '%s' "$_in" | escn)
+    _dkN=$(printf '%s' "$_dk" | tr -cd '0-9'); _dkN=${_dkN:-0}
+    DOWNL="$DOWNL<span class=\"chip warn\">${_inG} · ${_dkN}dk</span>"
   done
 
   # ════════════════════════════════════════════════════════════════════════
@@ -273,12 +291,19 @@ while true; do
   IPKUME=$(awk -F'|' '{print $6}' "$S" 2>/dev/null | grep -E '^[0-9]' | cut -d. -f1-2 | sort -u | wc -l)
   IPTOP=$(awk -F'|' '{print $6}' "$S" 2>/dev/null | grep -E '^[0-9]' | sort -u | wc -l)
 
-  SSHFAIL=$(journalctl -u ssh --since "24 hours ago" --no-pager 2>/dev/null | grep -ci "failed password"); SSHFAIL=${SSHFAIL:-0}
-  SSHIP=$(journalctl -u ssh --since "24 hours ago" --no-pager 2>/dev/null | grep -i "accepted" | grep -oE "from [0-9.]+" | sort -u | wc -l); SSHIP=${SSHIP:-0}
-  UFWD=$(ufw status 2>/dev/null | head -1 | grep -c active)
+  if [ "$YAVAS" = "1" ]; then
+    # ★Tek journal taramasi, iki sonuc: eskiden AYNI sorgu iki kez kosuyordu (689 ms).
+    _ssh=$(journalctl -u ssh --since "24 hours ago" --no-pager 2>/dev/null)
+    SSHFAIL=$(printf '%s' "$_ssh" | grep -ci "failed password"); SSHFAIL=${SSHFAIL:-0}
+    SSHIP=$(printf '%s' "$_ssh" | grep -i "accepted" | grep -oE "from [0-9.]+" | sort -u | wc -l); SSHIP=${SSHIP:-0}
+    unset _ssh
+    UFWD=$(ufw status 2>/dev/null | head -1 | grep -c active)
+  fi
   SIRIZ=$(stat -c %a /opt/fleet-agent/agent.env 2>/dev/null)
-  JRNL=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1)
-  VARLOG=$(du -sm /var/log 2>/dev/null | cut -f1)
+  if [ "$YAVAS" = "1" ]; then
+    JRNL=$(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1)
+    VARLOG=$(du -sm /var/log 2>/dev/null | cut -f1)
+  fi
 
   # ════════════════════════════════════════════════════════════════════════
   # BÖLÜM 6 — GENEL KARAR
@@ -625,12 +650,12 @@ HEAD
     [ "$DBOK" = "1" ] && [ -n "$ULKE" ] && echo "<div class=\"card\"><div class=\"lbl\">Ülke dağılımı</div><div class=\"num sm\">${ULKE}</div><div class=\"sub\">proxy ülkesine göre</div></div>"
     echo "</div>"
 
-    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"$(echo "$CIKIS" | esc)\">kopyala</button></div><div class=\"body mono info\">$(echo "$CIKIS" | esc)</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
+    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"$(echo "$CIKIS" | escn)\">kopyala</button></div><div class=\"body mono info\">$(echo "$CIKIS" | esc)</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">$(printf '%s' "${DCIP:-?}" | escn)</span> — bu IP çıkarsa SIZINTI</div></div>"
     if [ -n "$PAYLST" ] && [ "${PAYMAX:-0}" -ge 2 ]; then
       echo "<div class=\"wide a-${PC}\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">$(echo "$PAYLST" | esc)</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
     fi
     if [ -n "$BOOTSUZ$CIKSIZ" ]; then
-      echo "<div class=\"wide a-bad\"><div class=\"lbl\">Dikkat isteyen cihazlar<button class=\"cp\" data-kopya=\"$(echo "$BOOTSUZ $CIKSIZ" | esc)\">kopyala</button></div><div class=\"body\">"
+      echo "<div class=\"wide a-bad\"><div class=\"lbl\">Dikkat isteyen cihazlar<button class=\"cp\" data-kopya=\"$(echo "$BOOTSUZ $CIKSIZ" | escn)\">kopyala</button></div><div class=\"body\">"
       [ -n "$BOOTSUZ" ] && echo "<div><b class=\"bad\">Yarım açılmış (Android boot bitmedi):</b> <span class=\"mono\">$(echo "$BOOTSUZ" | esc)</span></div>"
       [ -n "$CIKSIZ" ]  && echo "<div><b class=\"warn\">Çıkışı yok (dışarı ulaşamıyor):</b> <span class=\"mono\">$(echo "$CIKSIZ" | esc)</span></div>"
       echo "</div></div>"
@@ -660,7 +685,7 @@ HEAD
         # ★Sorunlu tanımı: başarısız işi olan VEYA çevrimdışı VEYA hesabı
         # banlı/kısıtlı VEYA WhatsApp kaydı eksik (adı numara değil).
         _sorun=0
-        [ "${_fail:-0}" -gt 0 ] 2>/dev/null && _sorun=1
+        [ "${_failN:-0}" -gt 0 ] 2>/dev/null && _sorun=1
         [ "$_drm" != "ONLINE" ] && _sorun=1
         # ★Hesap durumu CIHAZ sorunu DEGIL: 16 FAILED kayit denemesi saglam
         # cihazlara bagliydi ve bunlari sorunlu saymak 43 SAHTE kirmizi
@@ -675,8 +700,18 @@ HEAD
           *) _hc="dim" ;;
         esac
         if [ "${_fail:-0}" -gt 0 ] 2>/dev/null; then _fc="bad"; else _fc="dim"; fi
-        _adgor=$(printf '%s' "$_ad" | esc)
-        echo "<tr data-ara=\"${_ins} ${_adgor} ${_drm} ${_ulk} ${_hes}\" data-sorun=\"${_sorun}\"><td class=\"ad\">${_ins}</td><td class=\"ad\">${_adgor}</td><td><span class=\"tag ${_dc}\">${_drm}</span></td><td>${_ulk}</td><td data-s=\"${_is}\">${_is}</td><td data-s=\"${_fail}\" class=\"${_fc}\">${_fail}</td><td><span class=\"tag ${_hc}\">${_hes}</span></td><td class=\"dim\">${_saat}</td></tr>"
+        # ★GUVENLIK: her alan ayri ayri kacisilir. Kaynak DB ve metadata
+        # panel/API uzerinden yazilabilir; ham gommek depolanmis XSS demektir.
+        _insG=$(printf '%s' "$_ins"  | escn)
+        _adG=$(printf  '%s' "$_ad"   | escn)
+        _drmG=$(printf '%s' "$_drm"  | escn)
+        _ulkG=$(printf '%s' "$_ulk"  | escn)
+        _hesG=$(printf '%s' "$_hes"  | escn)
+        _saatG=$(printf '%s' "$_saat" | escn)
+        # Sayisal alanlar: rakam disini at (siralama data-s niteligine de girer)
+        _isN=$(printf '%s' "$_is"   | tr -cd '0-9'); _isN=${_isN:-0}
+        _failN=$(printf '%s' "$_fail" | tr -cd '0-9'); _failN=${_failN:-0}
+        echo "<tr data-ara=\"${_insG} ${_adG} ${_drmG} ${_ulkG} ${_hesG}\" data-sorun=\"${_sorun}\"><td class=\"ad\">${_insG}</td><td class=\"ad\">${_adG}</td><td><span class=\"tag ${_dc}\">${_drmG}</span></td><td>${_ulkG}</td><td data-s=\"${_isN}\">${_isN}</td><td data-s=\"${_failN}\" class=\"${_fc}\">${_failN}</td><td><span class=\"tag ${_hc}\">${_hesG}</span></td><td class=\"dim\">${_saatG}</td></tr>"
       done < "$CIHAZDOSYA"
       echo "</tbody></table></div>"
       echo "<div class=\"tbl-ft\"><span id=\"cihaz-sayac\">${CSAYI} / ${CSAYI} cihaz</span><span>en çok başarısız işi olan üstte · başlığa tıkla: sırala</span></div>"
@@ -723,7 +758,7 @@ HEAD
     [ -n "$ISTIPLER" ] && echo "<div class=\"wide\"><div class=\"lbl\">İş tipleri · tamam/başarısız</div><div class=\"body mono\">$(echo "$ISTIPLER" | esc)</div></div>"
     [ -n "$JFSEBEP" ] && [ "$JFSEBEP" != "-" ] && echo "<div class=\"wide a-warn\"><div class=\"lbl\">En sık iş hatası</div><div class=\"body\">$(echo "$JFSEBEP" | esc)</div></div>"
     if [ -n "$KAYITSIZLST" ] && [ "$KAYITSIZLST" != "-" ]; then
-      echo "<div class=\"wide a-warn\"><div class=\"lbl\">WhatsApp kaydı tamamlanmamış cihazlar<button class=\"cp\" data-kopya=\"$(echo "$KAYITSIZLST" | esc)\">kopyala</button></div><div class=\"body mono\">$(echo "$KAYITSIZLST" | esc)</div><div class=\"sub\">adı telefon numarası değil · filoda ONLINE sayılır ve iş alır, ama gönderim yapamaz</div></div>"
+      echo "<div class=\"wide a-warn\"><div class=\"lbl\">WhatsApp kaydı tamamlanmamış cihazlar<button class=\"cp\" data-kopya=\"$(echo "$KAYITSIZLST" | escn)\">kopyala</button></div><div class=\"body mono\">$(echo "$KAYITSIZLST" | esc)</div><div class=\"sub\">adı telefon numarası değil · filoda ONLINE sayılır ve iş alır, ama gönderim yapamaz</div></div>"
     fi
 
     if [ -n "$SAATLIK" ]; then

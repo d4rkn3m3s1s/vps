@@ -626,7 +626,19 @@ async function main(): Promise<void> {
       // Expired or long-revoked refresh tokens — invalid already, safe to drop.
       results.tokens = (await prisma.refreshToken.deleteMany({ where: { OR: [{ expiresAt: { lt: new Date(now) } }, { AND: [{ revokedAt: { not: null } }, { revokedAt: { lt: days(30) } }] }] } }).catch(() => ({ count: 0 }))).count;
       // Acknowledged alert events older than 30d (unacked ones stay for the operator).
-      results.alerts = (await prisma.alertEvent.deleteMany({ where: { acknowledged: true, createdAt: { lt: days(30) } } }).catch(() => ({ count: 0 }))).count;
+      // ★★★2026-09-13 ALARM RETENTION HİÇ ÇALIŞMIYORDU.
+      // Eski şart: `acknowledged: true` + 30 gün. CANLI ÖLÇÜM: 4140 alarmın
+      // 0'ı onaylanmış (operatör panelde alarm onaylamıyor — akışta böyle bir
+      // adım yok). Yani koşul HİÇBİR satırla eşleşmiyordu; en eski kayıt
+      // 23 Temmuz'dan beri duruyordu ve tablo sonsuz büyüyordu.
+      // ★İKİ KADEMELİ: onaylanmış olan 30 günde gider (eski davranış korunur);
+      // onaylanmamış olan da 90 günde gider — operatörün görmesi için uzun
+      // pencere bırakılır ama sonsuz birikim biter. Süre env ile ayarlanabilir.
+      const alertAckDays = Number(process.env.FLEET_RETAIN_ALERTS_ACK_DAYS || 30);
+      const alertAllDays = Number(process.env.FLEET_RETAIN_ALERTS_DAYS || 90);
+      results.alerts =
+        (await prisma.alertEvent.deleteMany({ where: { acknowledged: true, createdAt: { lt: days(alertAckDays) } } }).catch(() => ({ count: 0 }))).count +
+        (await prisma.alertEvent.deleteMany({ where: { createdAt: { lt: days(alertAllDays) } } }).catch(() => ({ count: 0 }))).count;
       // Audit log older than 90d (compliance-tunable via env).
       results.audit = (await prisma.auditLog.deleteMany({ where: { createdAt: { lt: days(Number(process.env.FLEET_RETAIN_AUDIT_DAYS || 90)) } } }).catch(() => ({ count: 0 }))).count;
       const total = Object.values(results).reduce((a, b) => a + b, 0);

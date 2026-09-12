@@ -2355,7 +2355,31 @@ async function pollBot(bot: { workspaceId: string; token: string; chatIds: strin
       await new Promise((r) => setTimeout(r, waitMs));
       return;
     }
+    // ★★★2026-09-13 409 CONFLICT — GERİ ÇEKİLME YOKTU, KISIR DÖNGÜ.
+    // CANLI ÖLÇÜM: 3 gün boyunca günde ~2200 hata. Telegram'ın cevabı:
+    //   "409 Conflict: terminated by other getUpdates request; make sure that
+    //    only one bot instance is running"
+    // Aynı token'la BAŞKA bir yerden de getUpdates çekiliyor. Telegram tek
+    // dinleyiciye izin verir; iki taraf birbirini koparır. Eski davranış:
+    // sadece logla + `return` → dış döngü ANINDA yeniden dener → saniyede
+    // birkaç 409. Hem Telegram'ı dövüyor hem logu boğuyordu (24 saatte 2197
+    // satır, gerçek hataları görünmez yapacak kadar).
+    // ★429'dan FARKI: 409'da Telegram "retry after" vermez, kendi beklememiz
+    // gerekir. 30 sn: iki dinleyicinin çekişmesini seyreltir ve — ikinci
+    // dinleyici kapatıldığında — normale tek turda döner.
+    if (/\b409\b|Conflict: terminated by other getUpdates/i.test(msg)) {
+      logger.warn('tg getUpdates CAKISMA (409) — ayni token baska bir yerde de dinleniyor', {
+        error: msg,
+        not: 'Tek bir bot ornegi calismali. 30sn bekleniyor.'
+      });
+      await new Promise((r) => setTimeout(r, 30_000));
+      return;
+    }
     logger.warn('tg getUpdates failed', { error: msg });
+    // ★Ağ/timeout hatasında da kısa bir soluk: eskiden hata anında dönülüyor ve
+    // döngü hemen tekrar deniyordu; geçici bir kesinti saniyede birkaç deneme
+    // üretiyordu. 3 sn, uzun-poll'un doğal ritmini bozmayacak kadar kısa.
+    await new Promise((r) => setTimeout(r, 3_000));
     return;
   }
   if (!Array.isArray(updates) || !updates.length) return;

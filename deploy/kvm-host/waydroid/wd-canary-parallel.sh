@@ -191,7 +191,15 @@ for I in $INSTS; do
   BOOT=$(adbsh 'getprop sys.boot_completed')
   # ★WhatsApp olcutu: `pidof` DEGIL (yeni cihazda WA arka planda calismayabilir).
   #   Gunluk canary ile ayni: cihazdan web.whatsapp.com'a HTTP 200.
-  WA=$(adbsh "su -c 'curl -sk -o /dev/null -w %{http_code} --max-time 15 https://web.whatsapp.com'")
+  # ★★★TEK DENEME YETMIYOR (11 Eyl 23:03: wa= BOS -> sahte BASARISIZ; ayni
+  # betik 23:22'de whatsapp=200 ile GECTI). Iki cihaz es zamanli kurulunca ag
+  # katmani 15 sn'de hazir olmuyor. 3 deneme, arada 8 sn; basarida erken cikar.
+  WA=""
+  for _wd in 1 2 3; do
+    WA=$(adbsh "su -c 'curl -sk -o /dev/null -w %{http_code} --max-time 15 https://web.whatsapp.com'")
+    [ "$WA" = "200" ] && break
+    [ "$_wd" -lt 3 ] && { log "$I: WhatsApp denemesi $_wd bos/basarisiz (wa=${WA:-BOS}), 8sn sonra tekrar"; sleep 8; }
+  done
   # DNS gercekten yapilandirildi mi (isim cozumunun on kosulu — 28 Tem hatasi)
   DNS=$(adbsh "dumpsys connectivity" | grep -oE 'DnsAddresses: \[[^]]*\]' | head -1)
 

@@ -78,7 +78,9 @@ while true; do
   CU=${CPUID:-100}
 
   # ── Derin tarama (2 dk)
-  dg(){ grep "^$1=" "$DETAY" 2>/dev/null | cut -d= -f2-; }
+  # ★dg de kacisiyor: detay.txt icindeki dcip DIS SERVISTEN geliyor
+  # (api.ipify.org / ifconfig.me / icanhazip.com) ve cikis IP listesi de oyle.
+  dg(){ grep "^$1=" "$DETAY" 2>/dev/null | cut -d= -f2- | escn; }
   IP=$(dg ip); NOIP=$(dg noip); BOOT=$(dg boot); ADBOK=$(dg adbok)
   NET=$(dg net); CIKIS=$(dg cikis); DZAMAN=$(dg zaman)
   SIZ=$(dg sizinti); SIZ=${SIZ:-?}; DCIP=$(dg dcip)
@@ -109,9 +111,15 @@ while true; do
   # ════════════════════════════════════════════════════════════════════════
   # BÖLÜM 2 — DB ÖZETİ (90 sn'de bir ayrı servis üretir)
   # ════════════════════════════════════════════════════════════════════════
-  db(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f2; }
-  db2(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f3; }
-  db3(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f4; }
+  # ★★★GUVENLIK: okuyucu KENDISI kacisiyor. DB ozeti AlertRule.name,
+  # AlertEvent.title, Device.metadata gibi YAZILABILIR alanlardan besleniyor;
+  # bu degerlerin hepsi HTML'e giriyor. Tek tek 12 kullanim yerini duzeltmek
+  # yanlis cozumdu -- 13. metrigi eklerken yine unuturdum. Okuyucu guvenli
+  # olunca HTML'e giden her DB degeri TANIM GEREGI guvenli olur.
+  # Sayisal testler bozulmaz: escape yalnizca & < > " ' cevirir.
+  db(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f2 | escn; }
+  db2(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f3 | escn; }
+  db3(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f4 | escn; }
   DBTS=$(grep '^olcum_ts=' "$DBO" 2>/dev/null | cut -d= -f2)
   DBSAAT=$(grep '^olcum_saat=' "$DBO" 2>/dev/null | cut -d= -f2)
   # ★BAYATLIK: dosya varsa ama 5 dk'dan eskiyse DEĞERLERİ GÖSTERME.
@@ -650,9 +658,9 @@ HEAD
     [ "$DBOK" = "1" ] && [ -n "$ULKE" ] && echo "<div class=\"card\"><div class=\"lbl\">Ülke dağılımı</div><div class=\"num sm\">${ULKE}</div><div class=\"sub\">proxy ülkesine göre</div></div>"
     echo "</div>"
 
-    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"$(echo "$CIKIS" | escn)\">kopyala</button></div><div class=\"body mono info\">$(echo "$CIKIS" | esc)</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">$(printf '%s' "${DCIP:-?}" | escn)</span> — bu IP çıkarsa SIZINTI</div></div>"
+    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"${CIKIS}\">kopyala</button></div><div class=\"body mono info\">${CIKIS}</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
     if [ -n "$PAYLST" ] && [ "${PAYMAX:-0}" -ge 2 ]; then
-      echo "<div class=\"wide a-${PC}\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">$(echo "$PAYLST" | esc)</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
+      echo "<div class=\"wide a-${PC}\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">${PAYLST}</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
     fi
     if [ -n "$BOOTSUZ$CIKSIZ" ]; then
       echo "<div class=\"wide a-bad\"><div class=\"lbl\">Dikkat isteyen cihazlar<button class=\"cp\" data-kopya=\"$(echo "$BOOTSUZ $CIKSIZ" | escn)\">kopyala</button></div><div class=\"body\">"
@@ -755,10 +763,10 @@ HEAD
       echo "<div class=\"card\"><div class=\"lbl\">WhatsApp kaydı eksik</div><div class=\"num sm warn\">${KAYITSIZ}</div><div class=\"sub\">ONLINE ama mesaj gönderemez</div></div>"
     fi
     echo "</div>"
-    [ -n "$ISTIPLER" ] && echo "<div class=\"wide\"><div class=\"lbl\">İş tipleri · tamam/başarısız</div><div class=\"body mono\">$(echo "$ISTIPLER" | esc)</div></div>"
-    [ -n "$JFSEBEP" ] && [ "$JFSEBEP" != "-" ] && echo "<div class=\"wide a-warn\"><div class=\"lbl\">En sık iş hatası</div><div class=\"body\">$(echo "$JFSEBEP" | esc)</div></div>"
+    [ -n "$ISTIPLER" ] && echo "<div class=\"wide\"><div class=\"lbl\">İş tipleri · tamam/başarısız</div><div class=\"body mono\">${ISTIPLER}</div></div>"
+    [ -n "$JFSEBEP" ] && [ "$JFSEBEP" != "-" ] && echo "<div class=\"wide a-warn\"><div class=\"lbl\">En sık iş hatası</div><div class=\"body\">${JFSEBEP}</div></div>"
     if [ -n "$KAYITSIZLST" ] && [ "$KAYITSIZLST" != "-" ]; then
-      echo "<div class=\"wide a-warn\"><div class=\"lbl\">WhatsApp kaydı tamamlanmamış cihazlar<button class=\"cp\" data-kopya=\"$(echo "$KAYITSIZLST" | escn)\">kopyala</button></div><div class=\"body mono\">$(echo "$KAYITSIZLST" | esc)</div><div class=\"sub\">adı telefon numarası değil · filoda ONLINE sayılır ve iş alır, ama gönderim yapamaz</div></div>"
+      echo "<div class=\"wide a-warn\"><div class=\"lbl\">WhatsApp kaydı tamamlanmamış cihazlar<button class=\"cp\" data-kopya=\"${KAYITSIZLST}\">kopyala</button></div><div class=\"body mono\">${KAYITSIZLST}</div><div class=\"sub\">adı telefon numarası değil · filoda ONLINE sayılır ve iş alır, ama gönderim yapamaz</div></div>"
     fi
 
     if [ -n "$SAATLIK" ]; then
@@ -790,7 +798,7 @@ HEAD
     echo "<div class=\"card\"><div class=\"lbl\">Gönderilemeyen</div><div class=\"num $FMC\">${MFAIL:-0}</div><div class=\"sub\">FAILED işaretli</div></div>"
     [ -n "$KONUSMA" ] && echo "<div class=\"card\"><div class=\"lbl\">Aktif sohbet</div><div class=\"num sm\">${KONUSMA}<span class=\"unit\">/${KONUSMATOP:-?}</span></div><div class=\"sub\">24 saatte güncellenen / toplam</div></div>"
     echo "</div>"
-    echo "<div class=\"wide a-warn\"><div class=\"lbl\">Teslimat izi hakkında</div><div class=\"body\">Giden mesajların durumu <span class=\"mono\">SENT</span>'te kalıyor: teslimat onayı (DELIVERED/READ) sisteme <b>işlenmiyor</b>. Yani <b>&quot;gönderildi&quot; ≠ &quot;ulaştı&quot;</b> — iş <span class=\"mono\">COMPLETED</span> dönse bile mesajın karşıya ulaştığı <u>doğrulanmış değil</u>.</div><div class=\"sub\">En sık gönderim hatası: $(echo "${MFSEBEP:--}" | esc)</div></div></div>"
+    echo "<div class=\"wide a-warn\"><div class=\"lbl\">Teslimat izi hakkında</div><div class=\"body\">Giden mesajların durumu <span class=\"mono\">SENT</span>'te kalıyor: teslimat onayı (DELIVERED/READ) sisteme <b>işlenmiyor</b>. Yani <b>&quot;gönderildi&quot; ≠ &quot;ulaştı&quot;</b> — iş <span class=\"mono\">COMPLETED</span> dönse bile mesajın karşıya ulaştığı <u>doğrulanmış değil</u>.</div><div class=\"sub\">En sık gönderim hatası: ${MFSEBEP:--}</div></div></div>"
 
     # ══════════════════════════════════════════════════════════════════════
     echo "<h2 data-sec=\"hesap\"><span class=\"caret\">▼</span>WhatsApp hesapları</h2><div class=\"sec\" id=\"sec-hesap\"><div class=\"grid\">"
@@ -920,7 +928,7 @@ HEAD
       echo "<div class=\"wide a-info\"><div class=\"lbl\">En çok tetiklenen alarm kuralları</div><div class=\"body mono\">$(echo "$KURALTOP4" | esc)</div><div class=\"sub\">son 24 saatte tetiklenen: $(echo "${KURALTAZE:-yok}" | esc)</div></div>"
     fi
     if [ "$DBOK" = "1" ] && [ -n "$ALRMZ" ] && [ "$ALRMZ" != "-" ]; then
-      echo "<div class=\"wide a-warn\"><div class=\"lbl\">Son alarm · ${ALRMZ}</div><div class=\"body\">$(echo "${ALRMB:--}" | esc)</div><div class=\"sub\">24 saatin en sıkı: $(echo "${ALRMSIK:--}" | esc)</div></div>"
+      echo "<div class=\"wide a-warn\"><div class=\"lbl\">Son alarm · ${ALRMZ}</div><div class=\"body\">${ALRMB:--}</div><div class=\"sub\">24 saatin en sıkı: ${ALRMSIK:--}</div></div>"
     fi
     echo "</div>"
 

@@ -245,6 +245,16 @@ function proxyExitCountry(metadata?: Record<string, unknown> | null): string | n
 
 const BULK_ACTIONS = ['Başlat', 'Kapat', 'Yeniden başlat', 'Taşı', 'Proxy ata', 'Uygulama yükle', 'WhatsApp Güncelle', 'WA Sağlık Tara', 'Dosya gönder', 'Sil'] as const;
 
+// ★★★2026-09-13 TOPLU WA GÜNCELLEME TAVANI.
+// Her cihaza 145 MB APK push + `pm install -r`. "Tümünü seç" ile 144 cihaz
+// seçilebiliyor ve panelde HİÇBİR sınır yoktu.
+// ⚠️16 Ağu CANLI OLAY: paralel ADB trafiği uçları doyurunca gözcünün sağlık
+//   yoklaması timeout'a düştü, SAĞLAM cihazlar "zombie" sanılıp yeniden
+//   başlatıldı. Burada risk daha büyük: 144 × 145 MB.
+// ★Telegram tarafında bu tavan zaten vardı (telegram.service.ts slice(0,50));
+//   panel bu korumadan yoksundu. Aynı sınır buraya da konuyor.
+const WA_UPDATE_MAX = 50;
+
 const BULK_ICONS: Record<string, ReactNode> = {
   'Başlat': <Power size={13} />,
   'Kapat': <Power size={13} />,
@@ -921,13 +931,24 @@ export function ProfilesView({
 
   async function updateWhatsapp() {
     if (selectionCount === 0) return;
+    // ★★★2026-09-13 TOPLU GÜNCELLEME TAVANI.
+    // Her cihaza 145 MB'lık APK push edilip `pm install -r` çalışıyor. "Tümünü
+    // seç" ile 144 cihaz seçilebiliyordu ve burada HİÇBİR sınır yoktu.
+    // ⚠️16 Ağu CANLI OLAY: paralel ADB trafiği uçları doyurunca gözcünün sağlık
+    //   yoklaması timeout'a düştü ve SAĞLAM cihazlar "zombie" sanılıp yeniden
+    //   başlatıldı. Aynı risk burada daha büyük: 144 × 145 MB.
+    // ★Telegram tarafında bu tavan zaten vardı (telegram.service.ts: slice(0,50));
+    //   panel bu korumadan yoksundu — aynı sınırı buraya da koyuyorum.
+    // Kalanlar için operatör butona tekrar basar; iş kuyruğu zaten sıraya alır.
+    const ids = Array.from(selected).slice(0, WA_UPDATE_MAX);
+    const kalan = selectionCount - ids.length;
     setBusy(true);
     setError(null);
     try {
       const res = await fetch('/api/bulk/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds: Array.from(selected), jobType: 'WA_UPDATE_APK', payload: {} })
+        body: JSON.stringify({ deviceIds: ids, jobType: 'WA_UPDATE_APK', payload: {} })
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body?.message ?? 'Güncelleme başlatılamadı');
@@ -940,6 +961,11 @@ export function ProfilesView({
       });
       setWaUpdate({ jobs, skipped: Array.isArray(data.skipped) ? data.skipped : [] });
       setSelected(new Set());
+      // ★Tavana takılan cihazlar sessizce düşmesin: operatör kaçının kaldığını
+      // görsün ve butona tekrar basarak sıradakileri alsın.
+      if (kalan > 0) {
+        setError(`ℹ️ İlk ${ids.length} cihaz sıraya alındı. Kalan ${kalan} cihaz için bitince tekrar seçip "WhatsApp Güncelle" deyin (aynı anda ${WA_UPDATE_MAX} cihazdan fazlası ADB'yi doyurur).`);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Güncelleme başlatılamadı');
     } finally {

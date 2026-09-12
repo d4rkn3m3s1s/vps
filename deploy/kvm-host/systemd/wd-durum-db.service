@@ -1,0 +1,21 @@
+[Unit]
+Description=/durum icin DB ozet ureticisi (90sn)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+# ★KillMode=process: bu projede control-group bir kez 141 redsocks'u oldurmustu
+# (22 Agu). Bu betik docker exec cagiriyor; cgroup temizligi docker'in kendi
+# sureclerine uzanmasin.
+KillMode=process
+ExecStart=/bin/bash /opt/fleet-agent/durum-db-ozet.sh
+Restart=always
+RestartSec=15
+# Sayfa uretimi bu servise BAGIMLI DEGIL -- olse bile /durum calisir, yalnizca
+# DB bolumu "olculemedi" der. Bu yuzden dusuk oncelik.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

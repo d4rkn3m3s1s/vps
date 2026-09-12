@@ -24,7 +24,21 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
   // Bulk control is a one-shot signal: each tick tells every cell to start or
   // stop. Cells also have their own Play/Stop button for per-device control, so
   // `bulk` only nudges them — it doesn't lock their individual state.
-  const [bulk, setBulk] = useState<{ cmd: 'start' | 'stop'; n: number }>({ cmd: 'stop', n: 0 });
+  // `ids` = bu komuttan ETKİLENECEK hücreler (null = hepsi). Toplu BAŞLATMA tavanı
+  // bununla uygulanır; DURDURMA her zaman hepsine gider (güvenli yön).
+  const [bulk, setBulk] = useState<{ cmd: 'start' | 'stop'; n: number; ids: string[] | null }>({ cmd: 'stop', n: 0, ids: null });
+  // ★★★2026-09-12 TOPLU BAŞLATMA TAVANI.
+  // Hücreler kendiliğinden yayın açmaz (WallCell yalnız bulk.n değişince start() der),
+  // yani duvarı AÇMAK tehlikeli değil — tehlike "Tümünü başlat" butonu: shown.length
+  // kadar hücreye aynı anda start gönderiyor. 143 cihazda ölçülen maliyet:
+  //   kare ~200ms yakalama + sharp JPEG, cihaz başına ~3 fps
+  //   → 143 × 3 × 0.06s ≈ 25-30 çekirdek (80 var) + ADB tek süreç üzerinden
+  // ⚠️16 Ağu CANLI OLAY: paralel screencap ADB'yi doyurunca gözcünün 12sn'lik sağlık
+  //   yoklaması timeout'a düştü ve SAĞLAM cihazlar "zombie" sanılıp yeniden başlatıldı
+  //   (o gün 8 cihaz düştü). Yani risk "yayın yavaşlar" değil, "filo düşer".
+  // Bu yüzden toplu başlatma bir seferde en fazla WALL_BULK_MAX hücreyi açar; fazlası
+  // için operatör grup filtresini kullanır ya da tek tek Play'e basar (o yol serbest).
+  const WALL_BULK_MAX = 16;
   const [liveCount, setLiveCount] = useState(0);
   const [syncMode, setSyncMode] = useState(false);
   const [leader, setLeader] = useState<string | null>(null);
@@ -118,8 +132,8 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
             <button type="button" className={syncMode ? 'btn-primary' : 'btn-ghost'} onClick={() => { setSyncMode((s) => !s); setLeader(null); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <Link2 size={14} /> Senkron {syncMode ? 'açık' : 'kapalı'}
             </button>
-            <button type="button" className="btn-primary" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'start', n: b.n + 1 }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} /> Hepsini başlat</button>
-            <button type="button" className="btn-ghost" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'stop', n: b.n + 1 }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Square size={14} /> Hepsini durdur</button>
+            <button type="button" className="btn-primary" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'start', n: b.n + 1, ids: shown.slice(0, WALL_BULK_MAX).map((d) => d.id) }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Play size={14} /> Hepsini başlat</button>
+            <button type="button" className="btn-ghost" disabled={shown.length === 0} onClick={() => setBulk((b) => ({ cmd: 'stop', n: b.n + 1, ids: null }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Square size={14} /> Hepsini durdur</button>
           </>
         }
       />
@@ -217,7 +231,7 @@ const WallCell = memo(function WallCell({
   onMakeLeader, onFocus, onLiveChange, onDragStart, onDragOver, onDrop, onDragEnd
 }: {
   device: WallDevice;
-  bulk: { cmd: 'start' | 'stop'; n: number };
+  bulk: { cmd: 'start' | 'stop'; n: number; ids: string[] | null };
   syncMode: boolean;
   isLeader: boolean;
   followers: string[];
@@ -240,7 +254,12 @@ const WallCell = memo(function WallCell({
   useEffect(() => {
     if (bulk.n === 0 || bulk.n === lastBulk.current) return;
     lastBulk.current = bulk.n;
-    if (bulk.cmd === 'start') void start(); else stop();
+    // ★Tavan: buton yalnız ilk WALL_BULK_MAX hücrenin id'sini gönderir.
+    // Listede olmayan hücre BAŞLAMAZ (durdurma her zaman herkese uygulanır).
+    if (bulk.cmd === 'start') {
+      if (bulk.ids && !bulk.ids.includes(device.id)) return;
+      void start();
+    } else stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bulk]);
 

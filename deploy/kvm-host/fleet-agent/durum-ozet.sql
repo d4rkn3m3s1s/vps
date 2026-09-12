@@ -154,3 +154,44 @@ select 'db_olu', coalesce(max(t.s),'-')
   from (select relname||' %'||round(100.0*n_dead_tup/nullif(n_live_tup+n_dead_tup,0)) s,
                n_dead_tup n from pg_stat_user_tables
          where n_dead_tup > 10000 order by n_dead_tup desc limit 1) t;
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- ★2026-09-12 EK METRİKLER (ikinci tur)
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- ALARM KURALLARI. ★"Onaysız alarm 4132" tek başına anlamsız bir yığın sayısı;
+-- kırılımı olmadan operatör neyin tekrar ettiğini göremez. Ölçülen dağılım:
+-- DEVICE_OFFLINE 1425 · HOST_SATURATED 959 · JOB_FAILED 801 · PROXY_UNHEALTHY 731.
+select 'kural_ozet', count(*) filter (where active), count(*), coalesce(sum("fireCount"),0)
+  from "AlertRule";
+select 'kural_top', coalesce(string_agg(t.s,' · ' order by t.n desc),'-')
+  from (select name||' ×'||"fireCount" s, "fireCount" n from "AlertRule"
+         where "fireCount" > 0 order by "fireCount" desc limit 4) t;
+-- Son 24 saatte GERÇEKTEN tetiklenen kural var mı? (fireCount kümülatif,
+-- lastFiredAt taze olan kuralı gösterir — asıl bakılması gereken bu.)
+select 'kural_taze', coalesce(string_agg(name,' · '),'yok')
+  from "AlertRule" where "lastFiredAt" > now() - interval '24 hours';
+
+-- KAYDI EKSİK CİHAZ. ★Adı telefon numarası olmayan cihaz = WhatsApp kaydı
+-- tamamlanmamış. Bunlar filoda "ONLINE" görünür, iş alır, ama mesaj GÖNDEREMEZ.
+-- Ölçülen: 6 cihaz (wa-pkv4, wa-o0tm, wa-woxb, 12, wa-grmr, wa-1lsk).
+-- ⚠️metadata->>'waRegisterStatus' GÜVENİLMEZ: 143 cihazda boş, yalnız 1'inde
+-- dolu. Ad deseni tek doğru sinyal.
+select 'kayitsiz', count(*) from "Device" where name !~ '^\+[0-9]+$';
+select 'kayitsiz_liste', coalesce(string_agg(coalesce(metadata->>'instance','?')||' ('||name||')',' · '),'-')
+  from (select metadata, name from "Device" where name !~ '^\+[0-9]+$' order by name limit 10) t;
+
+-- EMEKLİ INSTANCE. ★Silinen cihazların izi. 24 saatte ani artış = filo
+-- küçülüyor ya da silme döngüsü bozuk demektir.
+select 'emekli', count(*), count(*) filter (where "retiredAt" > now() - interval '24 hours')
+  from "RetiredInstance";
+select 'emekli_son', coalesce(to_char(max("retiredAt"),'MM-DD HH24:MI'),'-') from "RetiredInstance";
+
+-- KONUŞMA HACMİ. ★Gelen mesaj akışının canlılığı: 24 saatte kaç sohbet güncellendi.
+select 'konusma', count(*) filter (where "updatedAt" > now() - interval '24 hours'), count(*)
+  from "WhatsappConversation";
+
+-- ÜLKE DAĞILIMI (proxy ülkesine göre) — TR/AL ayrımı.
+select 'ulke', coalesce(string_agg(t.s,' · ' order by t.n desc),'-')
+  from (select coalesce(metadata->>'proxyCountry','?')||': '||count(*) s, count(*) n
+          from "Device" group by coalesce(metadata->>'proxyCountry','?')) t;

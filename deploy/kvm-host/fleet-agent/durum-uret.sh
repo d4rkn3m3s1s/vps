@@ -299,96 +299,206 @@ while true; do
   else OZS="iyi"; OZB="SİSTEM SAĞLIKLI"; OZT="kilit yok · filo ayakta · sızıntı yok"; fi
 
   # ════════════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════════════════════
+  # ★★★2026-09-12 v4 EK VERİLER
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── 24 SAATLİK FİLO TRENDİ — DB'siz, log tabanlı (ölçülen: 56 ms).
+  # ★Sayfadaki diğer grafik yalnızca son 10 dakikayı gösteriyor. Gece yaşanan
+  # bir düşüş sabah bakıldığında GÖRÜNMÜYORDU. Bu awk, wd-izle.log'un tamamını
+  # (≈3900 ölçüm) saat başına özetler: ortalama açık cihaz, D-state, load.
+  # ★DB'ye gitmiyoruz: aynı bilgiyi DeviceMetricPoint'ten almak 1246 ms sürüyor
+  # ve zaten hep 143 döndürüyor (cihaz sayısı, açık cihaz değil).
+  TREND24=$(awk -F"[ =|]+" '
+  {
+    h=substr($1,1,2)
+    for(i=1;i<=NF;i++){
+      if($i=="acik"){split($(i+1),a,"/"); s[h]+=a[1]; n[h]++}
+      if($i=="D"){d[h]+=$(i+1)}
+      if($i=="load"){l[h]+=$(i+1)}
+    }
+  }
+  END{ for(k in s) printf "%s:%d:%d:%d\n", k, s[k]/n[k], d[k]/n[k], l[k]/n[k] }
+  ' "$L" 2>/dev/null | sort | tr "\n" "," | sed 's/,$//')
+
+  # ── DB özetinden gelen v4 metrikleri
+  KAYITSIZ=$(db kayitsiz);        KAYITSIZLST=$(db kayitsiz_liste)
+  EMEKLI=$(db emekli);            EMEKLI24=$(db2 emekli)
+  EMEKLISON=$(db emekli_son)
+  KONUSMA=$(db konusma);          KONUSMATOP=$(db2 konusma)
+  ULKE=$(db ulke)
+  KURALAKTIF=$(db kural_ozet);    KURALTOP=$(db2 kural_ozet);  KURALTETIK=$(db3 kural_ozet)
+  KURALTOP4=$(db kural_top);      KURALTAZE=$(db kural_taze)
+
+  # ══════════════════════════════════════════════════════════════════════════
   # HTML
-  # ════════════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════════════════════
   {
     cat <<'HEAD'
 <!doctype html><html lang="tr"><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="10">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Filo Durumu</title><style>
-/* ── Tasarım sistemi ─────────────────────────────────────────────────────
-   Tek bir ölçek: 4px grid. Renk YALNIZCA anlam taşıdığında kullanılır —
-   her kart renkliyse hiçbiri göze batmaz, arıza anında bu öldürücüdür. */
+/* ══════════════════════════════════════════════════════════════════════════
+   TASARIM SİSTEMİ
+   Tek ölçek: 4px grid. Renk YALNIZCA anlam taşıdığında — her kart renkliyse
+   hiçbiri göze batmaz ve arıza anında bu öldürücüdür.
+   ══════════════════════════════════════════════════════════════════════════ */
 :root{
-  --bg:#0b0c0f; --card:#15171c; --card2:#1b1e25; --line:#242832;
-  --fg:#e9eaee; --fg2:#9ba1ae; --fg3:#6b7280;
-  --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --info:#60a5fa;
-  --r:14px;
+  --bg:#0a0b0e; --card:#14161b; --card2:#1a1d24; --line:#232732; --line2:#2d3240;
+  --fg:#eceef2; --fg2:#9aa1b0; --fg3:#6a7280;
+  --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --info:#60a5fa; --purple:#a78bfa;
+  --r:14px; --rs:9px;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+}
+html[data-tema="acik"]{
+  --bg:#f6f7f9; --card:#fff; --card2:#f1f3f6; --line:#e3e6ec; --line2:#d5d9e2;
+  --fg:#11131a; --fg2:#525a6b; --fg3:#78808f;
+  --ok:#059669; --warn:#b45309; --bad:#dc2626; --info:#2563eb; --purple:#7c3aed;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 8px 24px -12px rgba(16,24,40,.14);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--fg);
   font:400 14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  -webkit-font-smoothing:antialiased;padding:20px 16px 48px}
-.wrap{max-width:1180px;margin:0 auto}
+  -webkit-font-smoothing:antialiased;padding:0 16px 56px;transition:background .2s,color .2s}
+.wrap{max-width:1220px;margin:0 auto}
 
-/* Başlık */
-.top{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:18px}
-h1{font-size:20px;font-weight:650;letter-spacing:-.01em}
+/* ── Sticky üst çubuk: sayfa kayarken durum hep görünür ─────────────────── */
+.bar{position:sticky;top:0;z-index:50;margin:0 -16px 0;padding:10px 16px;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(12px);
+  border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.bar .pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:99px;
+  background:var(--card);border:1px solid var(--line);font-size:12.5px;font-weight:500;white-space:nowrap}
+.bar .pill b{font-variant-numeric:tabular-nums}
+.bar .dot{width:7px;height:7px;border-radius:99px;flex:0 0 auto}
+.bar .sp{flex:1}
+.btn{padding:5px 11px;border-radius:99px;background:var(--card);border:1px solid var(--line);
+  color:var(--fg2);font-size:12.5px;cursor:pointer;font-family:inherit;white-space:nowrap;
+  transition:background .15s,color .15s,border-color .15s}
+.btn:hover{background:var(--card2);color:var(--fg);border-color:var(--line2)}
+.btn.on{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.btn kbd{font:inherit;font-size:10.5px;opacity:.6;margin-left:4px}
+
+/* ── Başlık ────────────────────────────────────────────────────────────── */
+.top{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;
+  padding:22px 0 16px}
+h1{font-size:21px;font-weight:650;letter-spacing:-.015em}
 .meta{color:var(--fg3);font-size:12.5px;font-variant-numeric:tabular-nums}
 
-/* Karar şeridi — sayfanın tek büyük görsel öğesi */
-.verdict{border-radius:var(--r);padding:18px 20px;margin-bottom:26px;
-  display:flex;align-items:center;gap:16px;border:1px solid var(--line);background:var(--card)}
-.verdict .dot{width:10px;height:10px;border-radius:99px;flex:0 0 auto;box-shadow:0 0 0 4px rgba(255,255,255,.04)}
-.verdict .txt b{display:block;font-size:17px;font-weight:650;letter-spacing:-.01em;margin-bottom:3px}
+/* ── Karar şeridi: sayfanın tek büyük görsel öğesi ──────────────────────── */
+.verdict{border-radius:var(--r);padding:17px 20px;margin-bottom:24px;
+  display:flex;align-items:center;gap:15px;border:1px solid var(--line);
+  background:var(--card);box-shadow:var(--shadow)}
+.verdict .ring{width:11px;height:11px;border-radius:99px;flex:0 0 auto}
+.verdict .txt b{display:block;font-size:17px;font-weight:650;letter-spacing:-.012em;margin-bottom:2px}
 .verdict .txt span{color:var(--fg2);font-size:13px}
-.v-iyi{border-color:rgba(52,211,153,.28);background:linear-gradient(180deg,rgba(52,211,153,.07),transparent)}
-.v-iyi .dot{background:var(--ok)} .v-iyi b{color:var(--ok)}
-.v-uyari{border-color:rgba(251,191,36,.3);background:linear-gradient(180deg,rgba(251,191,36,.08),transparent)}
-.v-uyari .dot{background:var(--warn)} .v-uyari b{color:var(--warn)}
-.v-kritik{border-color:rgba(248,113,113,.35);background:linear-gradient(180deg,rgba(248,113,113,.1),transparent)}
-.v-kritik .dot{background:var(--bad)} .v-kritik b{color:var(--bad)}
+.v-iyi{border-color:color-mix(in srgb,var(--ok) 30%,var(--line))}
+.v-iyi .ring{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 18%,transparent)}
+.v-iyi b{color:var(--ok)}
+.v-uyari{border-color:color-mix(in srgb,var(--warn) 34%,var(--line))}
+.v-uyari .ring{background:var(--warn);box-shadow:0 0 0 4px color-mix(in srgb,var(--warn) 18%,transparent)}
+.v-uyari b{color:var(--warn)}
+.v-kritik{border-color:color-mix(in srgb,var(--bad) 38%,var(--line))}
+.v-kritik .ring{background:var(--bad);box-shadow:0 0 0 4px color-mix(in srgb,var(--bad) 20%,transparent)}
+.v-kritik b{color:var(--bad)}
 
-/* Bölüm başlığı */
+/* ── Bölüm başlığı (tıklanınca daralır) ─────────────────────────────────── */
 h2{font-size:11.5px;font-weight:600;color:var(--fg3);text-transform:uppercase;
-  letter-spacing:.09em;margin:30px 0 12px;display:flex;align-items:center;gap:10px}
+  letter-spacing:.085em;margin:28px 0 12px;display:flex;align-items:center;gap:10px;
+  cursor:pointer;user-select:none}
+h2:hover{color:var(--fg2)}
+h2 .caret{font-size:9px;transition:transform .18s;display:inline-block;opacity:.65}
+h2.kapali .caret{transform:rotate(-90deg)}
 h2::after{content:"";flex:1;height:1px;background:var(--line)}
 h2 .hint{text-transform:none;letter-spacing:0;font-weight:400;color:var(--fg3);font-size:11.5px}
+.sec{transition:opacity .15s}
+.sec.gizli{display:none}
 
-/* Kart ızgarası — sabit minimum, taşma yok */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:10px}
+/* ── Kart ızgarası ─────────────────────────────────────────────────────── */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(182px,1fr));gap:10px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
-  padding:14px 15px;min-height:104px;display:flex;flex-direction:column}
+  padding:14px 15px;min-height:106px;display:flex;flex-direction:column;
+  transition:border-color .15s,transform .15s}
+.card:hover{border-color:var(--line2)}
 .card .lbl{font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;
-  letter-spacing:.05em;line-height:1.35;min-height:15px}
-.card .num{font-size:28px;font-weight:650;letter-spacing:-.02em;line-height:1.15;
+  letter-spacing:.045em;line-height:1.35;min-height:15px}
+.card .num{font-size:28px;font-weight:650;letter-spacing:-.025em;line-height:1.12;
   margin-top:7px;font-variant-numeric:tabular-nums}
-.card .num.sm{font-size:19px;letter-spacing:-.01em}
+.card .num.sm{font-size:19px;letter-spacing:-.008em}
 .card .unit{font-size:13px;font-weight:500;color:var(--fg3);margin-left:2px}
 .card .sub{font-size:11.5px;color:var(--fg3);line-height:1.5;margin-top:auto;padding-top:7px}
-.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)} .info{color:var(--info)} .dim{color:var(--fg3)}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+.info{color:var(--info)} .dim{color:var(--fg3)} .purple{color:var(--purple)}
 
-/* İlerleme çubuğu */
-.bar{height:5px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:9px}
-.bar>i{display:block;height:100%;border-radius:99px}
+.bar-t{height:5px;border-radius:99px;background:var(--line);overflow:hidden;margin-top:9px}
+.bar-t>i{display:block;height:100%;border-radius:99px;transition:width .4s}
 
-/* Geniş kart */
-.wide{grid-column:1/-1;background:var(--card);border:1px solid var(--line);
-  border-radius:var(--r);padding:14px 16px}
-.wide.accent-warn{border-left:3px solid var(--warn)}
-.wide.accent-bad{border-left:3px solid var(--bad)}
-.wide.accent-ok{border-left:3px solid var(--ok)}
-.wide .lbl{font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em}
+/* ── Geniş kart ────────────────────────────────────────────────────────── */
+.wide{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:14px 16px;margin-top:10px}
+.wide.a-warn{border-left:3px solid var(--warn)}
+.wide.a-bad{border-left:3px solid var(--bad)}
+.wide.a-ok{border-left:3px solid var(--ok)}
+.wide.a-info{border-left:3px solid var(--info)}
+.wide .lbl{font-size:11px;font-weight:500;color:var(--fg3);text-transform:uppercase;
+  letter-spacing:.045em;display:flex;align-items:center;gap:8px}
 .wide .body{margin-top:8px;font-size:13.5px;line-height:1.65}
 .wide .sub{font-size:11.5px;color:var(--fg3);margin-top:7px;line-height:1.5}
 
-/* Grafik */
-.chart{display:flex;align-items:flex-end;gap:2px;height:74px;
+/* ── Grafik ────────────────────────────────────────────────────────────── */
+.chart{display:flex;align-items:flex-end;gap:2px;height:78px;
   background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:12px 12px 8px}
-.chart.tall{height:96px}
-.col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:4px;min-width:0}
-.col i{display:block;width:100%;border-radius:3px 3px 0 0}
+.chart.tall{height:104px}
+.col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;
+  gap:4px;min-width:0;position:relative}
+.col i{display:block;width:100%;border-radius:3px 3px 0 0;transition:opacity .15s}
+.col:hover i{opacity:.75}
 .col em{font-style:normal;font-size:9px;color:var(--fg3);font-variant-numeric:tabular-nums}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.legend{font-size:11.5px;color:var(--fg3);margin-top:7px;display:flex;gap:14px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:9px;height:9px;border-radius:2px;display:inline-block}
 
-/* Rozet */
+/* ── Rozet ─────────────────────────────────────────────────────────────── */
 .chip{display:inline-block;margin:3px 6px 3px 0;padding:3px 10px;border-radius:99px;
   background:var(--card2);border:1px solid var(--line);font-size:12px;font-variant-numeric:tabular-nums}
-.chip.warn{color:var(--warn);border-color:rgba(251,191,36,.25)}
-.chip.ok{color:var(--ok);border-color:rgba(52,211,153,.25)}
+.chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 25%,transparent)}
+.chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 25%,transparent)}
 
-/* Katlanabilir ham veri — varsayılan KAPALI, sayfayı boğmasın */
+/* ── CİHAZ TABLOSU ─────────────────────────────────────────────────────── */
+.tbl-ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+.search{flex:1;min-width:190px;position:relative}
+.search input{width:100%;padding:8px 12px 8px 32px;border-radius:var(--rs);
+  background:var(--card);border:1px solid var(--line);color:var(--fg);
+  font:inherit;font-size:13px;outline:none;transition:border-color .15s}
+.search input:focus{border-color:color-mix(in srgb,var(--info) 55%,var(--line))}
+.search::before{content:"⌕";position:absolute;left:11px;top:50%;transform:translateY(-50%);
+  color:var(--fg3);font-size:15px}
+.tbl-wrap{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  overflow:hidden}
+.tbl-scroll{max-height:420px;overflow-y:auto;overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{position:sticky;top:0;background:var(--card2);z-index:2;
+  padding:9px 11px;text-align:left;font-weight:600;font-size:10.5px;color:var(--fg3);
+  text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;cursor:pointer;
+  border-bottom:1px solid var(--line);user-select:none}
+thead th:hover{color:var(--fg2)}
+thead th .ar{opacity:.4;font-size:9px;margin-left:3px}
+thead th.srt .ar{opacity:1;color:var(--info)}
+tbody td{padding:8px 11px;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent);
+  white-space:nowrap;font-variant-numeric:tabular-nums}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--card2)}
+tbody tr.gizli{display:none}
+td.ad{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px}
+.tag{display:inline-block;padding:1.5px 7px;border-radius:99px;font-size:10.5px;font-weight:500}
+.tag.ok{background:color-mix(in srgb,var(--ok) 15%,transparent);color:var(--ok)}
+.tag.warn{background:color-mix(in srgb,var(--warn) 15%,transparent);color:var(--warn)}
+.tag.bad{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.tag.dim{background:var(--card2);color:var(--fg3)}
+.tbl-ft{padding:8px 12px;border-top:1px solid var(--line);font-size:11.5px;color:var(--fg3);
+  display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+
+/* ── Katlanabilir ham veri ─────────────────────────────────────────────── */
 details{background:var(--card);border:1px solid var(--line);border-radius:var(--r);margin-top:10px}
 summary{padding:12px 16px;cursor:pointer;font-size:12.5px;color:var(--fg2);
   list-style:none;display:flex;align-items:center;gap:8px;user-select:none}
@@ -399,28 +509,60 @@ details pre{margin:0;padding:0 16px 14px;overflow-x:auto;font-size:11.5px;line-h
   color:var(--fg2);font-family:ui-monospace,"SF Mono",Menlo,monospace}
 .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
 
+/* Kopyala */
+.cp{margin-left:auto;padding:2px 9px;border-radius:99px;background:var(--card2);
+  border:1px solid var(--line);color:var(--fg3);font-size:10.5px;cursor:pointer;font-family:inherit}
+.cp:hover{color:var(--fg);border-color:var(--line2)}
+
+/* Klavye yardımı */
+.kbd-help{position:fixed;inset:0;background:rgba(0,0,0,.66);z-index:100;
+  display:none;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(3px)}
+.kbd-help.acik{display:flex}
+.kbd-box{background:var(--card);border:1px solid var(--line2);border-radius:var(--r);
+  padding:20px 24px;max-width:340px;width:100%;box-shadow:var(--shadow)}
+.kbd-box h3{font-size:13px;font-weight:650;margin-bottom:13px}
+.kbd-row{display:flex;justify-content:space-between;gap:14px;padding:5px 0;font-size:12.5px;color:var(--fg2)}
+.kbd-row kbd{background:var(--card2);border:1px solid var(--line2);border-radius:5px;
+  padding:1px 7px;font:inherit;font-size:11.5px;color:var(--fg)}
+
 @media(max-width:760px){
-  body{padding:14px 11px 36px}
-  .grid{grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px}
-  .card{min-height:94px;padding:12px 13px}
+  body{padding:0 11px 40px}
+  .bar{margin:0 -11px;padding:9px 11px;gap:8px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+  .card{min-height:96px;padding:12px 13px}
   .card .num{font-size:24px}
   .two{grid-template-columns:1fr}
   .verdict{padding:15px 16px}
+  .tbl-scroll{max-height:340px}
 }
 </style></head><body><div class="wrap">
 HEAD
+    # ── Sticky üst çubuk: sayfa kayarken durum hep görünür ────────────────
+    case "$OZS" in iyi) BDOT="var(--ok)" ;; uyari) BDOT="var(--warn)" ;; *) BDOT="var(--bad)" ;; esac
+    echo "<div class=\"bar\">"
+    echo "<span class=\"pill\"><i class=\"dot\" style=\"background:${BDOT}\"></i>${OZB}</span>"
+    echo "<span class=\"pill\">Cihaz <b>${ACIK}/${TOP}</b></span>"
+    echo "<span class=\"pill\">D-state <b>${D}</b></span>"
+    [ "$DBOK" = "1" ] && echo "<span class=\"pill\">İş <b>%${ISORAN}</b></span>"
+    [ "$DBOK" = "1" ] && echo "<span class=\"pill\">Ban 24s <b>${BAN24:-0}</b></span>"
+    echo "<span class=\"sp\"></span>"
+    echo "<span class=\"pill dim\" id=\"sayac\">10 sn</span>"
+    echo "<button class=\"btn on\" id=\"btn-duraklat\" title=\"p\">⏸ Duraklat</button>"
+    echo "<button class=\"btn\" id=\"btn-tema\" title=\"t\">☾</button>"
+    echo "<button class=\"btn\" id=\"btn-kbd\" title=\"?\">⌨</button>"
+    echo "</div>"
 
     # ── Başlık
-    echo "<div class=\"top\"><h1>Filo Durumu</h1><div class=\"meta\">10 sn'de bir yenilenir · sayım ${SONSAAT:-?} · derin tarama ${DZAMAN:-bekleniyor} · DB özeti ${DBSAAT:-?}</div></div>"
+    echo "<div class=\"top\"><h1>Filo Durumu</h1><div class=\"meta\">sayım ${SONSAAT:-?} · derin tarama ${DZAMAN:-bekleniyor} · DB özeti ${DBSAAT:-?}</div></div>"
 
     # ── Karar şeridi
-    echo "<div class=\"verdict v-${OZS}\"><div class=\"dot\"></div><div class=\"txt\"><b>${OZB}</b><span>${OZT}</span></div></div>"
+    echo "<div class=\"verdict v-${OZS}\"><div class=\"ring\"></div><div class=\"txt\"><b>${OZB}</b><span>${OZT}</span></div></div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Filo <span class=\"hint\">20 saniyelik sayım turu</span></h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"filo\"><span class=\"caret\">▼</span>Filo <span class=\"hint\">20 saniyelik sayım turu</span></h2><div class=\"sec\" id=\"sec-filo\"><div class=\"grid\">"
     if [ "$ACIK" -ge $(( TOP * 90 / 100 )) ]; then AC=ok; elif [ "$ACIK" -ge $(( TOP * 50 / 100 )) ]; then AC=warn; else AC=bad; fi
-    ABC=$(case $AC in ok) echo "var(--ok)";; warn) echo "var(--warn)";; *) echo "var(--bad)";; esac)
-    echo "<div class=\"card\"><div class=\"lbl\">Açık cihaz</div><div class=\"num $AC\">${ACIK}<span class=\"unit\">/${TOP}</span></div><div class=\"bar\"><i style=\"width:${YUZDE}%;background:${ABC}\"></i></div><div class=\"sub\">%${YUZDE} ayakta</div></div>"
+    ABC="var(--${AC})"
+    echo "<div class=\"card\"><div class=\"lbl\">Açık cihaz</div><div class=\"num $AC\">${ACIK}<span class=\"unit\">/${TOP}</span></div><div class=\"bar-t\"><i style=\"width:${YUZDE}%;background:${ABC}\"></i></div><div class=\"sub\">%${YUZDE} ayakta</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">ADB bağlı</div><div class=\"num\">${ADB}</div><div class=\"sub\">bayat uç: ${OFF}</div></div>"
     if [ "$D" -ge 50 ]; then DC=bad; DT="TEHLİKE"; elif [ "$D" -ge 25 ]; then DC=warn; DT="dikkat"; else DC=ok; DT="normal"; fi
     echo "<div class=\"card\"><div class=\"lbl\">D-state</div><div class=\"num $DC\">${D}</div><div class=\"sub\">${DT} · I/O bekleyen · fren eşiği 50</div></div>"
@@ -433,59 +575,125 @@ HEAD
     echo "<div class=\"card\"><div class=\"lbl\">Disk</div><div class=\"num $DKC\">${DISK}<span class=\"unit\">%</span></div><div class=\"sub\">kök bölüm · boş ${DISKBOS:-?}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Sunucu ayakta</div><div class=\"num sm\">${UPTXT:-?}</div><div class=\"sub\">son yeniden başlatmadan beri</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Artık dizin</div><div class=\"num sm dim\">${ARTIK}</div><div class=\"sub\">silinmiş cihazdan kalan · sayıma girmez</div></div>"
+    if [ "$DBOK" = "1" ] && [ -n "$EMEKLI24" ]; then
+      echo "<div class=\"card\"><div class=\"lbl\">Emekli instance</div><div class=\"num sm dim\">${EMEKLI24}<span class=\"unit\">/${EMEKLI:-?}</span></div><div class=\"sub\">24 saatte / toplam · son ${EMEKLISON:-?}</div></div>"
+    fi
     echo "</div>"
 
+    # ── 24 SAATLİK FİLO TRENDİ (log tabanlı, DB'siz — 56 ms)
+    # ★Sayfadaki diğer grafik yalnızca son 10 dakikayı gösteriyordu. Gece
+    # yaşanan bir düşüş sabah bakıldığında görünmüyordu; bu grafik onu tutar.
+    if [ -n "$TREND24" ]; then
+      TBARS=""
+      for _p in $(echo "$TREND24" | tr ',' ' '); do
+        _h=$(echo "$_p" | cut -d: -f1); _a=$(echo "$_p" | cut -d: -f2)
+        _d=$(echo "$_p" | cut -d: -f3); _l=$(echo "$_p" | cut -d: -f4)
+        _hh=$(( ${_a:-0} * 64 / (TOP>0?TOP:1) )); [ "$_hh" -lt 3 ] && _hh=3; [ "$_hh" -gt 64 ] && _hh=64
+        # Tam filo yeşil, eksik olan saat turuncu — gece düşüşü tek bakışta.
+        if [ "${_a:-0}" -ge $(( TOP * 97 / 100 )) ] 2>/dev/null; then _c="var(--ok)"
+        elif [ "${_a:-0}" -ge $(( TOP * 80 / 100 )) ] 2>/dev/null; then _c="var(--warn)"
+        else _c="var(--bad)"; fi
+        TBARS="$TBARS<div class=\"col\" title=\"${_h}:00 · ${_a} cihaz açık · D=${_d} · load ${_l}\"><i style=\"background:${_c};height:${_hh}px\"></i><em>${_h}</em></div>"
+      done
+      echo "<h2 data-sec=\"trend\"><span class=\"caret\">▼</span>24 saatlik filo seyri <span class=\"hint\">saat başına ortalama</span></h2><div class=\"sec\" id=\"sec-trend\">"
+      echo "<div class=\"chart tall\">$TBARS</div>"
+      echo "<div class=\"legend\"><span><i style=\"background:var(--ok)\"></i>tam filo (%97+)</span><span><i style=\"background:var(--warn)\"></i>eksik (%80-97)</span><span><i style=\"background:var(--bad)\"></i>ciddi düşüş</span><span class=\"dim\">üstüne gel: D-state ve load</span></div></div>"
+    fi
+
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Ağ ve proxy <span class=\"hint\">2 dakikalık derin tarama</span></h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"ag\"><span class=\"caret\">▼</span>Ağ ve proxy <span class=\"hint\">2 dakikalık derin tarama</span></h2><div class=\"sec\" id=\"sec-ag\"><div class=\"grid\">"
     echo "<div class=\"card\"><div class=\"lbl\">IP almış</div><div class=\"num\">${IP:-?}</div><div class=\"sub\">IP yok: ${NOIP:-?}</div></div>"
     if [ "${BOOTSUZN:-0}" -gt 0 ] 2>/dev/null; then BC=bad; BN="$BOOTSUZN cihaz YARIM AÇILMIŞ"; else BC=ok; BN="boot tamamlandı"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Android açık</div><div class=\"num $BC\">${BOOT:-?}</div><div class=\"sub\">${BN}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">İnternet + proxy</div><div class=\"num ok\">${NET:-?}</div><div class=\"sub\">dışarı çıkabiliyor</div></div>"
-    # ★"0" ≠ "ölçemedim". DC_IP boşken yeşil "sızıntı yok" göstermek, 47 cihazın
-    # sızıntılı olduğu 14 Ağu gecesinin tekrarına davetiyedir.
     if [ "$SIZ" = "?" ] || [ -z "$DCIP" ]; then SC=warn; SN="ÖLÇÜLEMEDİ — host çıkış IP'si alınamadı"
     elif [ "${SIZ:-0}" -gt 0 ] 2>/dev/null; then SC=bad; SN="BAN RİSKİ — proxy devrede değil"
     else SC=ok; SN="proxy hepsinde devrede"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Proxy sızıntısı</div><div class=\"num $SC\">${SIZ}</div><div class=\"sub\">${SN}</div></div>"
     if [ "${CIKSIZN:-0}" -gt 0 ] 2>/dev/null; then CKC=warn; CKN="dışarı çıkamıyor — WhatsApp çalışmaz"; else CKC=ok; CKN="hepsi dışarı çıkabiliyor"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Çıkışı yok</div><div class=\"num $CKC\">${CIKSIZN:-0}</div><div class=\"sub\">${CKN}</div></div>"
-    # ★Paylaşım kademeli: 2'li çakışma mobil havuzda NORMALDİR, alarm yapmak gürültü olur.
     if   [ "$PAYMAX" -ge 5 ]; then PC=bad;  PN="HAVUZ DARALDI — ${PAYMAX} cihaz aynı IP'de"
     elif [ "$PAYMAX" -ge 3 ]; then PC=warn; PN="${PAYKUME} kümede paylaşım — izle"
     elif [ "$PAYMAX" -ge 2 ]; then PC=ok;   PN="normal (mobil havuz çakışması)"
     else                          PC=ok;   PN="her cihaz kendi IP'sinde"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Paylaşılan çıkış</div><div class=\"num $PC\">${PAYMAX}<span class=\"unit\">/IP</span></div><div class=\"sub\">${PN}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Çıkış IP çeşitliliği</div><div class=\"num sm\">${IPTOP:-?}</div><div class=\"sub\">benzersiz IP · ${IPKUME:-?} farklı /16 küme</div></div>"
-    # ★6 Eyl: 141/143 tek hesaptaydı, o havuz düşünce filo çıkışsız kaldı.
     if   [ "$PTRPCT" -ge 95 ]; then HC=warn; HN="TEK HAVUZA BAĞIMLI — düşerse filo çıkışsız"
     elif [ "$PTRPCT" -ge 80 ]; then HC=warn; HN="ağırlık tek havuzda"
     else                           HC=ok;   HN="havuzlar dengeli"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Havuz dağılımı</div><div class=\"num sm $HC\">${PTR:-?}<span class=\"unit\">/${PAL:-?}</span></div><div class=\"sub\">TR mobil / AL residential · ${HN}</div></div>"
+    [ "$DBOK" = "1" ] && [ -n "$ULKE" ] && echo "<div class=\"card\"><div class=\"lbl\">Ülke dağılımı</div><div class=\"num sm\">${ULKE}</div><div class=\"sub\">proxy ülkesine göre</div></div>"
     echo "</div>"
 
-    [ -n "$CIKIS" ] && echo "<div class=\"wide\" style=\"margin-top:10px\"><div class=\"lbl\">Proxy çıkış IP örnekleri</div><div class=\"body mono info\">$(echo "$CIKIS" | esc)</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
+    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"$(echo "$CIKIS" | esc)\">kopyala</button></div><div class=\"body mono info\">$(echo "$CIKIS" | esc)</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
     if [ -n "$PAYLST" ] && [ "${PAYMAX:-0}" -ge 2 ]; then
-      echo "<div class=\"wide accent-${PC}\" style=\"margin-top:10px\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">$(echo "$PAYLST" | esc)</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
+      echo "<div class=\"wide a-${PC}\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">$(echo "$PAYLST" | esc)</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
     fi
     if [ -n "$BOOTSUZ$CIKSIZ" ]; then
-      echo "<div class=\"wide accent-bad\" style=\"margin-top:10px\"><div class=\"lbl\">Dikkat isteyen cihazlar</div><div class=\"body\">"
+      echo "<div class=\"wide a-bad\"><div class=\"lbl\">Dikkat isteyen cihazlar<button class=\"cp\" data-kopya=\"$(echo "$BOOTSUZ $CIKSIZ" | esc)\">kopyala</button></div><div class=\"body\">"
       [ -n "$BOOTSUZ" ] && echo "<div><b class=\"bad\">Yarım açılmış (Android boot bitmedi):</b> <span class=\"mono\">$(echo "$BOOTSUZ" | esc)</span></div>"
       [ -n "$CIKSIZ" ]  && echo "<div><b class=\"warn\">Çıkışı yok (dışarı ulaşamıyor):</b> <span class=\"mono\">$(echo "$CIKSIZ" | esc)</span></div>"
       echo "</div></div>"
     fi
+    echo "</div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    # İŞ AKIŞI — DB katmanı
+    # CİHAZ TABLOSU — aranabilir / filtrelenebilir / sıralanabilir
+    # ★Sayfanın en çok istenen özelliği: "paneldeki bu numara hangi cihaz?"
+    # sorusunu tek bakışta çözer. instance ↔ numara eşlemesi
+    # Device.metadata->>'instance' üzerinden yapılır.
+    # ══════════════════════════════════════════════════════════════════════
+    CIHAZDOSYA=/opt/fleet-agent/state/cihazlar.txt
+    if [ -s "$CIHAZDOSYA" ]; then
+      CSAYI=$(grep -c '^c|' "$CIHAZDOSYA" 2>/dev/null)
+      echo "<h2 data-sec=\"cihazlar\"><span class=\"caret\">▼</span>Cihazlar <span class=\"hint\">${CSAYI} kayıt · ara, süz, sırala</span></h2><div class=\"sec\" id=\"sec-cihazlar\">"
+      echo "<div class=\"tbl-ctl\">"
+      echo "<div class=\"search\"><input type=\"text\" id=\"cihaz-ara\" placeholder=\"instance, numara, durum ara…  ( / )\" autocomplete=\"off\"></div>"
+      echo "<button class=\"btn\" id=\"btn-sorun\" title=\"s\">○ Yalnız sorunlular</button>"
+      echo "</div>"
+      echo "<div class=\"tbl-wrap\"><div class=\"tbl-scroll\"><table id=\"cihaz-tbl\"><thead><tr>"
+      echo "<th>Instance<span class=\"ar\">▼</span></th><th>Numara<span class=\"ar\">▼</span></th><th>Durum<span class=\"ar\">▼</span></th><th>Ülke<span class=\"ar\">▼</span></th><th>24s iş<span class=\"ar\">▼</span></th><th>Başarısız<span class=\"ar\">▼</span></th><th>Hesap<span class=\"ar\">▼</span></th><th>Son<span class=\"ar\">▼</span></th>"
+      echo "</tr></thead><tbody id=\"cihaz-body\">"
+      # c|instance|ad|durum|ülke|iş|fail|hesap|saat
+      while IFS='|' read -r _t _ins _ad _drm _ulk _is _fail _hes _saat; do
+        [ "$_t" = "c" ] || continue
+        # ★Sorunlu tanımı: başarısız işi olan VEYA çevrimdışı VEYA hesabı
+        # banlı/kısıtlı VEYA WhatsApp kaydı eksik (adı numara değil).
+        _sorun=0
+        [ "${_fail:-0}" -gt 0 ] 2>/dev/null && _sorun=1
+        [ "$_drm" != "ONLINE" ] && _sorun=1
+        # ★Hesap durumu CIHAZ sorunu DEGIL: 16 FAILED kayit denemesi saglam
+        # cihazlara bagliydi ve bunlari sorunlu saymak 43 SAHTE kirmizi
+        # uretiyordu. Hesap durumu kendi sutununda rozetle gosteriliyor.
+        case "$_ad" in +[0-9]*) : ;; *) _sorun=1 ;; esac
+        # Renkler
+        case "$_drm" in ONLINE) _dc="ok" ;; *) _dc="bad" ;; esac
+        case "$_hes" in
+          ACTIVE) _hc="ok" ;;
+          BANNED) _hc="bad" ;;
+          RESTRICTED|LOGGED_OUT|FAILED) _hc="warn" ;;
+          *) _hc="dim" ;;
+        esac
+        if [ "${_fail:-0}" -gt 0 ] 2>/dev/null; then _fc="bad"; else _fc="dim"; fi
+        _adgor=$(printf '%s' "$_ad" | esc)
+        echo "<tr data-ara=\"${_ins} ${_adgor} ${_drm} ${_ulk} ${_hes}\" data-sorun=\"${_sorun}\"><td class=\"ad\">${_ins}</td><td class=\"ad\">${_adgor}</td><td><span class=\"tag ${_dc}\">${_drm}</span></td><td>${_ulk}</td><td data-s=\"${_is}\">${_is}</td><td data-s=\"${_fail}\" class=\"${_fc}\">${_fail}</td><td><span class=\"tag ${_hc}\">${_hes}</span></td><td class=\"dim\">${_saat}</td></tr>"
+      done < "$CIHAZDOSYA"
+      echo "</tbody></table></div>"
+      echo "<div class=\"tbl-ft\"><span id=\"cihaz-sayac\">${CSAYI} / ${CSAYI} cihaz</span><span>en çok başarısız işi olan üstte · başlığa tıkla: sırala</span></div>"
+      echo "</div></div>"
+    fi
+
+    # ══════════════════════════════════════════════════════════════════════
+    # İŞ AKIŞI
     # ══════════════════════════════════════════════════════════════════════
     if [ "$DBOK" != "1" ]; then
-      echo "<h2>İş akışı</h2><div class=\"wide accent-warn\"><div class=\"lbl\">İş katmanı ölçülemiyor</div><div class=\"body warn\">DB özeti ${DBYAS} dk önce güncellendi — tazesi 90 sn'de bir gelmeli</div><div class=\"sub\">wd-durum-db.service çalışmıyor olabilir · aşağıdaki kartlar gösterilmiyor çünkü bayat veri, veri olmamasından tehlikelidir</div></div>"
+      echo "<h2 data-sec=\"is\"><span class=\"caret\">▼</span>İş akışı</h2><div class=\"sec\" id=\"sec-is\"><div class=\"wide a-warn\"><div class=\"lbl\">İş katmanı ölçülemiyor</div><div class=\"body warn\">DB özeti ${DBYAS} dk önce güncellendi — tazesi 90 sn'de bir gelmeli</div><div class=\"sub\">wd-durum-db.service çalışmıyor olabilir · kartlar gösterilmiyor çünkü bayat veri, veri olmamasından tehlikelidir</div></div></div>"
     else
-    echo "<h2>İş akışı <span class=\"hint\">son 24 saat · panel veritabanı</span></h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"is\"><span class=\"caret\">▼</span>İş akışı <span class=\"hint\">son 24 saat · panel veritabanı</span></h2><div class=\"sec\" id=\"sec-is\"><div class=\"grid\">"
     if   [ "$ISORAN" -ge 95 ]; then IC=ok;   IN="normal işleyiş"
     elif [ "$ISORAN" -ge 85 ]; then IC=warn; IN="başarısızlık arttı"
     else                           IC=bad;  IN="CİDDİ — işler tutmuyor"; fi
-    IBC=$(case $IC in ok) echo "var(--ok)";; warn) echo "var(--warn)";; *) echo "var(--bad)";; esac)
-    echo "<div class=\"card\"><div class=\"lbl\">İş başarı oranı</div><div class=\"num $IC\">${ISORAN}<span class=\"unit\">%</span></div><div class=\"bar\"><i style=\"width:${ISORAN}%;background:${IBC}\"></i></div><div class=\"sub\">${IS_OK:-?} tamam · ${IS_FAIL:-?} başarısız · ${IN}</div></div>"
+    echo "<div class=\"card\"><div class=\"lbl\">İş başarı oranı</div><div class=\"num $IC\">${ISORAN}<span class=\"unit\">%</span></div><div class=\"bar-t\"><i style=\"width:${ISORAN}%;background:var(--${IC})\"></i></div><div class=\"sub\">${IS_OK:-?} tamam · ${IS_FAIL:-?} başarısız · ${IN}</div></div>"
     case "${GOND:-?}" in
       ''|'?') GC=dim; GN="ölçülemedi" ;;
       *) if   [ "${GOND}" -le 20 ] 2>/dev/null; then GC=ok;   GN="hedefte (12-17 sn tipik)"
@@ -493,8 +701,6 @@ HEAD
          else GC=bad; GN="ÇOK YAVAŞ"; fi ;;
     esac
     echo "<div class=\"card\"><div class=\"lbl\">Gönderim süresi</div><div class=\"num $GC\">${GOND:-?}<span class=\"unit\">sn</span></div><div class=\"sub\">medyan · p95 ${GONP95:-?} sn · ${GN}</div></div>"
-    # ★Kuyruk AYRI ölçülür: "yavaş" şikâyetinin iki kökü var — cihaz mı yavaş,
-    # yoksa iş kuyrukta mı bekliyor? Aynı karta koymak teşhisi körleştirir.
     case "${KUYS:-?}" in
       ''|'?') KC=dim; KN="ölçülemedi" ;;
       *) if   [ "${KUYS}" -le 5 ] 2>/dev/null;  then KC=ok;   KN="kuyruk akıyor"
@@ -503,19 +709,23 @@ HEAD
     esac
     echo "<div class=\"card\"><div class=\"lbl\">Kuyruk beklemesi</div><div class=\"num $KC\">${KUYS:-?}<span class=\"unit\">sn</span></div><div class=\"sub\">iş oluşup başlayana kadar · ${KN}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Şu an işleniyor</div><div class=\"num\">${BEKL:-?}</div><div class=\"sub\">PENDING + RUNNING</div></div>"
-    # ★Bu ayrım teşhiste her şeyi değiştirir: başarısızlığın çoğu tek cihazdaysa
-    # o cihaz arızalı; filoya dağılmışsa sistemik bir sorun var.
     if [ "${IS_FAIL:-0}" -gt 0 ] 2>/dev/null && [ "${FAILCIH:-0}" -gt 0 ] 2>/dev/null; then
       FPAY=$(( FAILCIH * 100 / IS_FAIL ))
-      if [ "$FPAY" -ge 50 ]; then FN="çoğu TEK cihazda — o cihaza bak"; FC=warn
-      else FN="filoya dağılmış — sistemik olabilir"; FC=warn; fi
+      if [ "$FPAY" -ge 50 ]; then FN="çoğu TEK cihazda — o cihaza bak"; else FN="filoya dağılmış — sistemik olabilir"; fi
+      FC=warn
     else FN="başarısız iş yok"; FC=ok; fi
     echo "<div class=\"card\"><div class=\"lbl\">Başarısızlık dağılımı</div><div class=\"num sm $FC\">${FAILCIH:-0}<span class=\"unit\">/${IS_FAIL:-0}</span></div><div class=\"sub\">${FN}</div></div>"
+    # ★Kaydı eksik cihaz: ONLINE görünür, iş alır, ama mesaj GÖNDEREMEZ.
+    if [ -n "$KAYITSIZ" ] && [ "${KAYITSIZ:-0}" -gt 0 ] 2>/dev/null; then
+      echo "<div class=\"card\"><div class=\"lbl\">WhatsApp kaydı eksik</div><div class=\"num sm warn\">${KAYITSIZ}</div><div class=\"sub\">ONLINE ama mesaj gönderemez</div></div>"
+    fi
     echo "</div>"
-    [ -n "$ISTIPLER" ] && echo "<div class=\"wide\" style=\"margin-top:10px\"><div class=\"lbl\">İş tipleri · tamam/başarısız</div><div class=\"body mono\">$(echo "$ISTIPLER" | esc)</div></div>"
-    [ -n "$JFSEBEP" ] && [ "$JFSEBEP" != "-" ] && echo "<div class=\"wide accent-warn\" style=\"margin-top:10px\"><div class=\"lbl\">En sık iş hatası</div><div class=\"body\">$(echo "$JFSEBEP" | esc)</div></div>"
+    [ -n "$ISTIPLER" ] && echo "<div class=\"wide\"><div class=\"lbl\">İş tipleri · tamam/başarısız</div><div class=\"body mono\">$(echo "$ISTIPLER" | esc)</div></div>"
+    [ -n "$JFSEBEP" ] && [ "$JFSEBEP" != "-" ] && echo "<div class=\"wide a-warn\"><div class=\"lbl\">En sık iş hatası</div><div class=\"body\">$(echo "$JFSEBEP" | esc)</div></div>"
+    if [ -n "$KAYITSIZLST" ] && [ "$KAYITSIZLST" != "-" ]; then
+      echo "<div class=\"wide a-warn\"><div class=\"lbl\">WhatsApp kaydı tamamlanmamış cihazlar<button class=\"cp\" data-kopya=\"$(echo "$KAYITSIZLST" | esc)\">kopyala</button></div><div class=\"body mono\">$(echo "$KAYITSIZLST" | esc)</div><div class=\"sub\">adı telefon numarası değil · filoda ONLINE sayılır ve iş alır, ama gönderim yapamaz</div></div>"
+    fi
 
-    # ── Saatlik grafik: yoğunluk ve başarısızlık AYNI saatte mi toplanıyor?
     if [ -n "$SAATLIK" ]; then
       SMAX=1
       for _p in $(echo "$SAATLIK" | tr ',' ' '); do
@@ -524,40 +734,34 @@ HEAD
       SBARS=""
       for _p in $(echo "$SAATLIK" | tr ',' ' '); do
         _h=$(echo "$_p" | cut -d: -f1); _n=$(echo "$_p" | cut -d: -f2); _f=$(echo "$_p" | cut -d: -f3)
-        _hh=$(( ${_n:-0} * 62 / SMAX )); [ "$_hh" -lt 3 ] && _hh=3
+        _hh=$(( ${_n:-0} * 68 / SMAX )); [ "$_hh" -lt 3 ] && _hh=3
         _c="var(--info)"
         [ "${_f:-0}" -gt 0 ] 2>/dev/null && [ "${_n:-1}" -gt 0 ] 2>/dev/null && \
           [ $(( _f * 100 / _n )) -ge 5 ] 2>/dev/null && _c="var(--bad)"
         SBARS="$SBARS<div class=\"col\" title=\"${_h}:00 · ${_n} iş · ${_f} başarısız\"><i style=\"background:${_c};height:${_hh}px\"></i><em>${_h}</em></div>"
       done
-      echo "<h2>Saatlik iş yoğunluğu <span class=\"hint\">24 saat</span></h2><div class=\"chart tall\">$SBARS</div>"
-      echo "<div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-top:7px\">mavi: normal · <span class=\"bad\">kırmızı</span>: o saatte başarısızlık %5'i geçti · en yoğun saat ${SMAX} iş</div>"
+      echo "<div style=\"margin-top:14px\"><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-bottom:6px\">Saatlik iş yoğunluğu</div><div class=\"chart tall\">$SBARS</div>"
+      echo "<div class=\"legend\"><span><i style=\"background:var(--info)\"></i>normal</span><span><i style=\"background:var(--bad)\"></i>başarısızlık %5+</span><span class=\"dim\">en yoğun saat ${SMAX} iş</span></div></div>"
     fi
+    echo "</div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    # MESAJ TESLİMATI  ★İŞİN "COMPLETED" DÖNMESİ TESLİMAT DEMEK DEĞİL
-    # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Mesaj teslimatı <span class=\"hint\">son 24 saat</span></h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"teslimat\"><span class=\"caret\">▼</span>Mesaj teslimatı <span class=\"hint\">son 24 saat</span></h2><div class=\"sec\" id=\"sec-teslimat\"><div class=\"grid\">"
     echo "<div class=\"card\"><div class=\"lbl\">Giden / gelen</div><div class=\"num sm\">${MOUT:-?}<span class=\"unit\"> / ${MIN:-?}</span></div><div class=\"sub\">OUT / IN mesaj</div></div>"
-    # ★ÖLÇÜLEN GERÇEK: statusAt hiç güncellenmiyor, OUT mesajların neredeyse
-    # tamamı SENT'te donuyor. "SENT" burada "gönderildi" DEĞİL, "teslim onayı
-    # hiç işlenmedi" demek. Bunu gizlemek 24 Ağu körlüğünü tekrar üretir.
-    if [ "${MDEL:-0}" -gt 0 ] 2>/dev/null; then TC=ok; TN="teslim onayı geliyor"
-    else TC=warn; TN="teslim onayı İŞLENMİYOR"; fi
+    if [ "${MDEL:-0}" -gt 0 ] 2>/dev/null; then TC=ok; TN="teslim onayı geliyor"; else TC=warn; TN="teslim onayı İŞLENMİYOR"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Teslim onayı</div><div class=\"num $TC\">${MDEL:-0}<span class=\"unit\">/${MOUT:-0}</span></div><div class=\"sub\">${TN}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Onay bekleyen</div><div class=\"num warn\">${MSENT:-0}</div><div class=\"sub\">SENT durumunda · medyan yaş ${SENTYAS:-?} dk</div></div>"
     if [ "${MFAIL:-0}" -gt 0 ] 2>/dev/null; then FMC=warn; else FMC=ok; fi
     echo "<div class=\"card\"><div class=\"lbl\">Gönderilemeyen</div><div class=\"num $FMC\">${MFAIL:-0}</div><div class=\"sub\">FAILED işaretli</div></div>"
+    [ -n "$KONUSMA" ] && echo "<div class=\"card\"><div class=\"lbl\">Aktif sohbet</div><div class=\"num sm\">${KONUSMA}<span class=\"unit\">/${KONUSMATOP:-?}</span></div><div class=\"sub\">24 saatte güncellenen / toplam</div></div>"
     echo "</div>"
-    echo "<div class=\"wide accent-warn\" style=\"margin-top:10px\"><div class=\"lbl\">Teslimat izi hakkında</div><div class=\"body\">Giden mesajların durumu <span class=\"mono\">SENT</span>'te kalıyor: teslimat onayı (DELIVERED/READ) sisteme <b>işlenmiyor</b>. Yani <b>\"gönderildi\" ≠ \"ulaştı\"</b> — iş <span class=\"mono\">COMPLETED</span> dönse bile mesajın karşıya ulaştığı <u>doğrulanmış değil</u>.</div><div class=\"sub\">En sık gönderim hatası: $(echo "${MFSEBEP:--}" | esc)</div></div>"
+    echo "<div class=\"wide a-warn\"><div class=\"lbl\">Teslimat izi hakkında</div><div class=\"body\">Giden mesajların durumu <span class=\"mono\">SENT</span>'te kalıyor: teslimat onayı (DELIVERED/READ) sisteme <b>işlenmiyor</b>. Yani <b>&quot;gönderildi&quot; ≠ &quot;ulaştı&quot;</b> — iş <span class=\"mono\">COMPLETED</span> dönse bile mesajın karşıya ulaştığı <u>doğrulanmış değil</u>.</div><div class=\"sub\">En sık gönderim hatası: $(echo "${MFSEBEP:--}" | esc)</div></div></div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>WhatsApp hesapları</h2><div class=\"grid\">"
-    echo "<div class=\"card\"><div class=\"lbl\">Aktif hesap</div><div class=\"num ok\">${HACT:-?}</div><div class=\"bar\"><i style=\"width:${HORAN}%;background:var(--ok)\"></i></div><div class=\"sub\">kullanılabilir oran %${HORAN}</div></div>"
+    echo "<h2 data-sec=\"hesap\"><span class=\"caret\">▼</span>WhatsApp hesapları</h2><div class=\"sec\" id=\"sec-hesap\"><div class=\"grid\">"
+    echo "<div class=\"card\"><div class=\"lbl\">Aktif hesap</div><div class=\"num ok\">${HACT:-?}</div><div class=\"bar-t\"><i style=\"width:${HORAN}%;background:var(--ok)\"></i></div><div class=\"sub\">kullanılabilir oran %${HORAN}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Banlı</div><div class=\"num bad\">${HBAN:-?}</div><div class=\"sub\">kalıcı kayıp</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Kısıtlı</div><div class=\"num warn\">${HKIS:-?}</div><div class=\"sub\">yeni sohbet açamaz</div></div>"
-    # ★4 Ağu'de hesapların %39'u BİR GECEDE yandı; tek erken sinyal "son 24
-    # saatte kaç ban" idi ve hiçbir yerde görünmüyordu.
     if   [ "${BAN24:-0}" -ge 6 ] 2>/dev/null; then BC2=bad;  BN2="BAN DALGASI — acil incele"
     elif [ "${BAN24:-0}" -ge 3 ] 2>/dev/null; then BC2=warn; BN2="ban hızlandı"
     elif [ "${BAN24:-0}" -ge 1 ] 2>/dev/null; then BC2=warn; BN2="normal seyir"
@@ -575,15 +779,16 @@ HEAD
       BBARS=""
       for _p in $(echo "$BANSERI" | tr ',' ' '); do
         _d=$(echo "$_p" | cut -d: -f1); _n=$(echo "$_p" | cut -d: -f2)
-        _hh=$(( ${_n:-0} * 44 / BMAX )); [ "$_hh" -lt 4 ] && _hh=4
+        _hh=$(( ${_n:-0} * 48 / BMAX )); [ "$_hh" -lt 4 ] && _hh=4
         BBARS="$BBARS<div class=\"col\" title=\"ayın ${_d}'i · ${_n} ban\"><i style=\"background:var(--bad);height:${_hh}px\"></i><em>${_d}</em></div>"
       done
-      echo "<div class=\"chart\" style=\"margin-top:10px\">$BBARS</div><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-top:7px\">günlük ban serisi (7 gün) · ani sıçrama = dalga başlangıcı</div>"
+      echo "<div style=\"margin-top:12px\"><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-bottom:6px\">Günlük ban serisi (7 gün) · ani sıçrama = dalga başlangıcı</div><div class=\"chart\">$BBARS</div></div>"
     fi
+    echo "</div>"
     fi   # DBOK
 
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Dayanıklılık <span class=\"hint\">servis · yedek · uçtan uca test</span></h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"dayanik\"><span class=\"caret\">▼</span>Dayanıklılık <span class=\"hint\">servis · yedek · uçtan uca test</span></h2><div class=\"sec\" id=\"sec-dayanik\"><div class=\"grid\">"
     if [ "$S_KOTU" -eq 0 ] && [ "$DKR" -ge 2 ]; then SVC=ok; SVV="hepsi ayakta"; else SVC=bad; SVV="${S_KOTU} sorunlu"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Servisler</div><div class=\"num sm $SVC\">${SVV}</div><div class=\"sub\">api ${S_API} · panel ${S_PANEL} · ajan ${S_AG} · gözcü ${S_GOZ} · container ${DKR}/2</div></div>"
     if [ "${FAILED_U:-0}" -eq 0 ] 2>/dev/null; then FUC=ok; else FUC=bad; fi
@@ -606,7 +811,6 @@ HEAD
     echo "<div class=\"card\"><div class=\"lbl\">Canary — günlük</div><div class=\"num sm $CC2\">${CANV}</div><div class=\"sub\">${CANTIME:-?} · ${CANN}</div></div>"
     case "$CPV" in GEÇTİ) CC3=ok ;; BAŞARISIZ) CC3=bad ;; *) CC3=dim ;; esac
     echo "<div class=\"card\"><div class=\"lbl\">Canary — eş zamanlı</div><div class=\"num sm $CC3\">${CPV}</div><div class=\"sub\">${CPTIME:-haftalık} · ${CPN}</div></div>"
-    # ★11 Eyl: panelde 4 hayalet cihaz vardı (instance silinmiş, DB kaydı kalmış).
     if [ -n "$DBCIH" ] && [ "$DBOK" = "1" ]; then
       HAYALET=$(( DBCIH - TOP )); [ "$HAYALET" -lt 0 ] && HAYALET=0
       if [ "$HAYALET" -gt 0 ]; then HC2=warn; HN2="${HAYALET} kayıt fazla — silinmiş cihazın DB izi"
@@ -615,22 +819,20 @@ HEAD
     echo "<div class=\"card\"><div class=\"lbl\">Panel / sistem</div><div class=\"num sm $HC2\">${DBCIH:-?}<span class=\"unit\">/${TOP}</span></div><div class=\"sub\">${HN2}</div></div>"
     echo "</div>"
 
-    # ── Otonom kurtarma
     if [ "$RN" = "0" ]; then RC=dim; elif [ "$RAVGDK" -lt 5 ]; then RC=ok; elif [ "$RAVGDK" -lt 15 ]; then RC=warn; else RC=bad; fi
-    echo "<h2>Otonom kurtarma <span class=\"hint\">son 24 saat · müdahalesiz</span></h2><div class=\"grid\">"
+    echo "<div style=\"margin-top:14px\"><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-bottom:8px\">Otonom kurtarma · son 24 saat · müdahalesiz</div><div class=\"grid\">"
     echo "<div class=\"card\"><div class=\"lbl\">Ortalama kalkış</div><div class=\"num $RC\">${RAVGDK}<span class=\"unit\">dk</span></div><div class=\"sub\">${RAVG} sn · kendiliğinden toparlanma</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Medyan</div><div class=\"num\">${RMEDDK}<span class=\"unit\">dk</span></div><div class=\"sub\">tipik cihaz · ${RMED} sn</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">En kötü</div><div class=\"num\">${RMAXDK}<span class=\"unit\">dk</span></div><div class=\"sub\">en uzun süren kurtarma</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Kurtarma sayısı</div><div class=\"num\">${RN}</div><div class=\"sub\">reconnect ${RREC} · restart ${RZOM} · kendi ${RKEN}</div></div>"
     if [ "$DOWNN" = "0" ]; then DWC=ok; else DWC=warn; fi
     echo "<div class=\"card\"><div class=\"lbl\">Şu an düşük</div><div class=\"num $DWC\">${DOWNN}</div><div class=\"sub\">kurtarılmayı bekliyor</div></div>"
+    echo "</div></div>"
+    [ -n "$DOWNL" ] && echo "<div class=\"wide a-warn\"><div class=\"lbl\">Şu an düşük cihazlar</div><div class=\"body\">${DOWNL}</div><div class=\"sub\">gözcü 7 dk'da bir tarar · D-state eşiği aşılmadıkça beklemez</div></div>"
     echo "</div>"
-    [ -n "$DOWNL" ] && echo "<div class=\"wide accent-warn\" style=\"margin-top:10px\"><div class=\"lbl\">Şu an düşük cihazlar</div><div class=\"body\">${DOWNL}</div><div class=\"sub\">gözcü 7 dk'da bir tarar · D-state eşiği aşılmadıkça beklemez</div></div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Donanım ve çekirdek <span class=\"hint\">derin sinyaller</span></h2><div class=\"grid\">"
-    # ★PSI, D-state'ten hassas: D-state anlık sayımdır, PSI "son 10 sn'de ne kadar
-    # beklenildi" der — kısa ama tekrarlayan takılmaları yakalar.
+    echo "<h2 data-sec=\"donanim\"><span class=\"caret\">▼</span>Donanım ve çekirdek <span class=\"hint\">derin sinyaller</span></h2><div class=\"sec\" id=\"sec-donanim\"><div class=\"grid\">"
     _pi=${PSI_IO%%.*}
     if   [ "${_pi:-0}" -ge 20 ] 2>/dev/null; then PC2=bad;  PN2="I/O KİLİDİ — süreçler bekliyor"
     elif [ "${_pi:-0}" -ge 5 ] 2>/dev/null;  then PC2=warn; PN2="I/O baskısı artıyor"
@@ -642,7 +844,6 @@ HEAD
     elif [ "$TMAX" -gt 0 ];  then TC2=ok;   TN2="normal · ${TAD}"
     else                          TC2=dim;  TN2="sensör okunamadı"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Sıcaklık</div><div class=\"num $TC2\">${TMAX}<span class=\"unit\">°C</span></div><div class=\"sub\">${TN2} · 85°C üzeri throttle</div></div>"
-    # ★3 Eyl tracefs/eventfs deadlock'u procs_blocked'a HİÇ yansımamıştı.
     if [ "$KTOP" -gt 0 ]; then KC=bad; KV="UYARI"; KN="hung=${HUNG} oops=${OOPS} oom=${OOMK} — dmesg'e bak"
     else KC=ok; KV="temiz"; KN="son 400 satırda kilit/oops/OOM izi yok"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Çekirdek izleri</div><div class=\"num sm $KC\">${KV}</div><div class=\"sub\">${KN}</div></div>"
@@ -658,10 +859,10 @@ HEAD
     elif [ "${VARLOG:-0}" -ge 4000 ] 2>/dev/null; then LC=warn; LN="büyüyor"
     else                                               LC=ok;   LN="normal"; fi
     echo "<div class=\"card\"><div class=\"lbl\">Log boyutu</div><div class=\"num sm $LC\">${VARLOG:-?}<span class=\"unit\">MB</span></div><div class=\"sub\">${LN} · journal ${JRNL:-?}</div></div>"
-    echo "</div>"
+    echo "</div></div>"
 
     # ══════════════════════════════════════════════════════════════════════
-    echo "<h2>Güvenlik ve veritabanı</h2><div class=\"grid\">"
+    echo "<h2 data-sec=\"guvenlik\"><span class=\"caret\">▼</span>Güvenlik · alarm · veritabanı</h2><div class=\"sec\" id=\"sec-guvenlik\"><div class=\"grid\">"
     if   [ "$SSHFAIL" -ge 20 ]; then SEC=bad;  SEN="${SSHFAIL} başarısız giriş — tarama olabilir"
     elif [ "$SSHFAIL" -ge 1 ];  then SEC=warn; SEN="${SSHFAIL} başarısız deneme"
     elif [ "$SSHIP" -gt 1 ];    then SEC=warn; SEN="${SSHIP} farklı IP giriş yaptı"
@@ -673,16 +874,21 @@ HEAD
     if [ "$DBOK" = "1" ]; then
       if [ "${ALRMONAY:-0}" -ge 1000 ] 2>/dev/null; then AC2=warn; else AC2=dim; fi
       echo "<div class=\"card\"><div class=\"lbl\">Onaysız alarm</div><div class=\"num sm $AC2\">${ALRMONAY:-?}</div><div class=\"sub\">birikmiş · 24 saatte ${ALRM24:-?} yeni</div></div>"
+      [ -n "$KURALAKTIF" ] && echo "<div class=\"card\"><div class=\"lbl\">Alarm kuralı</div><div class=\"num sm\">${KURALAKTIF}<span class=\"unit\">/${KURALTOP:-?}</span></div><div class=\"sub\">aktif · toplam ${KURALTETIK:-?} tetikleme</div></div>"
       echo "<div class=\"card\"><div class=\"lbl\">Veritabanı</div><div class=\"num sm\">${DBBOY:-?}</div><div class=\"sub\">en büyük: ${DBENB:-?}</div></div>"
       echo "<div class=\"card\"><div class=\"lbl\">Ölü satır</div><div class=\"num sm dim\">${DBOLU:-?}</div><div class=\"sub\">autovacuum eşiği %20 · altındaysa temizlenmez</div></div>"
     fi
     echo "</div>"
-    if [ "$DBOK" = "1" ] && [ -n "$ALRMZ" ] && [ "$ALRMZ" != "-" ]; then
-      echo "<div class=\"wide accent-warn\" style=\"margin-top:10px\"><div class=\"lbl\">Son alarm · ${ALRMZ}</div><div class=\"body\">$(echo "${ALRMB:--}" | esc)</div><div class=\"sub\">24 saatin en sıkı: $(echo "${ALRMSIK:--}" | esc)</div></div>"
+    # ★Alarm kırılımı: "4132 onaysız" tek başına anlamsız bir yığın; hangi
+    # kuralın tekrar ettiğini görmeden neyi düzelteceğini bilemezsin.
+    if [ "$DBOK" = "1" ] && [ -n "$KURALTOP4" ] && [ "$KURALTOP4" != "-" ]; then
+      echo "<div class=\"wide a-info\"><div class=\"lbl\">En çok tetiklenen alarm kuralları</div><div class=\"body mono\">$(echo "$KURALTOP4" | esc)</div><div class=\"sub\">son 24 saatte tetiklenen: $(echo "${KURALTAZE:-yok}" | esc)</div></div>"
     fi
+    if [ "$DBOK" = "1" ] && [ -n "$ALRMZ" ] && [ "$ALRMZ" != "-" ]; then
+      echo "<div class=\"wide a-warn\"><div class=\"lbl\">Son alarm · ${ALRMZ}</div><div class=\"body\">$(echo "${ALRMB:--}" | esc)</div><div class=\"sub\">24 saatin en sıkı: $(echo "${ALRMSIK:--}" | esc)</div></div>"
+    fi
+    echo "</div>"
 
-    # ══════════════════════════════════════════════════════════════════════
-    # Seyir grafikleri + katlanabilir ham veri
     # ══════════════════════════════════════════════════════════════════════
     BARS=""
     while read -r v; do
@@ -697,21 +903,213 @@ HEAD
       if [ "$v" -ge 50 ]; then C="var(--bad)"; elif [ "$v" -ge 25 ]; then C="var(--warn)"; else C="var(--ok)"; fi
       DBARS="$DBARS<div class=\"col\" title=\"D=${v}\"><i style=\"background:${C};height:${H}px\"></i></div>"
     done < <(tail -30 "$L" 2>/dev/null | grep -oE " D=[0-9]+" | cut -d= -f2)
-    echo "<h2>Son 10 dakika</h2><div class=\"two\">"
+    echo "<h2 data-sec=\"son10\"><span class=\"caret\">▼</span>Son 10 dakika</h2><div class=\"sec\" id=\"sec-son10\"><div class=\"two\">"
     echo "<div><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-bottom:6px\">Açık cihaz seyri</div><div class=\"chart\">$BARS</div></div>"
     echo "<div><div class=\"sub\" style=\"color:var(--fg3);font-size:11.5px;margin-bottom:6px\">D-state seyri</div><div class=\"chart\">$DBARS</div></div>"
-    echo "</div>"
+    echo "</div></div>"
 
-    # ★Ham veri KAPALI gelir. Eskiden sayfanın yarısını yiyordu ve gerçek
-    # uyarıları aşağı itiyordu — arıza anında görünürlüğü öldüren şey buydu.
     SORUN=$(awk -F'|' '$2=="NOIP" || ($2 ~ /^19|^10/ && $6=="-") {printf "%s ", $1}' "$S" 2>/dev/null | fold -w 100 -s | head -4 | esc)
     [ -z "$SORUN" ] && SORUN="(sorunlu cihaz yok)"
     FRENLOG=$(tail -8 /var/log/wd-fren.log 2>/dev/null | tac | esc)
     [ -z "$FRENLOG" ] && FRENLOG="(şişme kaydı yok — sistem hiç zorlanmadı)"
-    echo "<h2>Ham veri</h2>"
+    echo "<h2 data-sec=\"ham\"><span class=\"caret\">▼</span>Ham veri</h2><div class=\"sec\" id=\"sec-ham\">"
     echo "<details><summary>Sorunlu cihaz listesi</summary><pre>${SORUN}</pre></details>"
     echo "<details><summary>Fren kaydı (şişme oldu mu)</summary><pre>${FRENLOG}</pre></details>"
     echo "<details><summary>Son 30 ölçüm turu</summary><pre>$(tail -30 "$L" 2>/dev/null | tac | esc)</pre></details>"
+    echo "</div>"
+
+    # ── Klavye yardım kutusu
+    echo "<div class=\"kbd-help\" id=\"kbd\"><div class=\"kbd-box\"><h3>Klavye kısayolları</h3>"
+    echo "<div class=\"kbd-row\"><span>Cihaz ara</span><kbd>/</kbd></div>"
+    echo "<div class=\"kbd-row\"><span>Yalnız sorunlular</span><kbd>s</kbd></div>"
+    echo "<div class=\"kbd-row\"><span>Yenilemeyi duraklat</span><kbd>p</kbd></div>"
+    echo "<div class=\"kbd-row\"><span>Şimdi yenile</span><kbd>r</kbd></div>"
+    echo "<div class=\"kbd-row\"><span>Açık / koyu tema</span><kbd>t</kbd></div>"
+    echo "<div class=\"kbd-row\"><span>Bu pencere</span><kbd>?</kbd></div>"
+    echo "<div class=\"kbd-row dim\"><span>Bölüm başlığına tıkla: daralt</span><kbd>Esc</kbd></div>"
+    echo "</div></div>"
+
+    # ── JS: arama/filtre/sıralama, yenileme kontrolü, tema, kısayollar
+    # ★Sayfa JS OLMADAN DA tam çalışır; buradaki her şey ek kolaylık.
+    cat <<'JSBLOK'
+<script>
+/* ══════════════════════════════════════════════════════════════════════════
+   /durum — istemci tarafı etkileşim
+   ★TASARIM KURALI: sayfa JS OLMADAN DA tam çalışır. Buradaki her şey ek
+   kolaylık; hiçbir veri JS ile üretilmez. Arıza anında tarayıcı eklentisi
+   JS'i bozsa bile operatör tüm sayıları görebilmeli.
+   ══════════════════════════════════════════════════════════════════════════ */
+(function(){
+  var LS = {
+    get: function(k,d){ try{ var v=localStorage.getItem('durum.'+k); return v===null?d:v; }catch(e){ return d; } },
+    set: function(k,v){ try{ localStorage.setItem('durum.'+k,v); }catch(e){} }
+  };
+
+  /* ── TEMA ────────────────────────────────────────────────────────────── */
+  var tema = LS.get('tema','koyu');
+  if(tema==='acik') document.documentElement.setAttribute('data-tema','acik');
+  function temaDegis(){
+    tema = (tema==='koyu') ? 'acik' : 'koyu';
+    if(tema==='acik') document.documentElement.setAttribute('data-tema','acik');
+    else document.documentElement.removeAttribute('data-tema');
+    LS.set('tema',tema);
+    var b=document.getElementById('btn-tema'); if(b) b.textContent = tema==='koyu'?'☾':'☀';
+  }
+
+  /* ── OTOMATİK YENİLEME ────────────────────────────────────────────────
+     ★meta refresh YERİNE JS: meta refresh durdurulamaz. Operatör bir tabloyu
+     incelerken sayfanın altından kayması, bu sayfanın en can sıkıcı yanıydı.
+     Duraklat bilgisi localStorage'da tutulur — yenilemeden sonra da korunur. */
+  var SURE = 10, kalan = SURE, duraklat = LS.get('duraklat','0')==='1', timer=null;
+  function tik(){
+    if(duraklat) return;
+    kalan--;
+    var el=document.getElementById('sayac'); if(el) el.textContent = kalan+' sn';
+    if(kalan<=0) location.reload();
+  }
+  function duraklatDegis(){
+    duraklat=!duraklat; LS.set('duraklat',duraklat?'1':'0');
+    var b=document.getElementById('btn-duraklat');
+    if(b){ b.textContent = duraklat?'▶ Devam':'⏸ Duraklat'; b.className = 'btn'+(duraklat?'':' on'); }
+    var el=document.getElementById('sayac');
+    if(el) el.textContent = duraklat ? 'duraklatıldı' : kalan+' sn';
+    if(!duraklat){ kalan=SURE; }
+  }
+
+  /* ── BÖLÜM DARALTMA ──────────────────────────────────────────────────── */
+  function bolumKur(){
+    var hs = document.querySelectorAll('h2[data-sec]');
+    for(var i=0;i<hs.length;i++){
+      (function(h){
+        var id = h.getAttribute('data-sec');
+        var sec = document.getElementById('sec-'+id);
+        if(LS.get('sec.'+id,'acik')==='kapali'){ h.className='kapali'; if(sec) sec.className='sec gizli'; }
+        h.addEventListener('click', function(){
+          var kapali = h.className.indexOf('kapali')<0;
+          h.className = kapali?'kapali':'';
+          if(sec) sec.className = 'sec'+(kapali?' gizli':'');
+          LS.set('sec.'+id, kapali?'kapali':'acik');
+        });
+      })(hs[i]);
+    }
+  }
+
+  /* ── CİHAZ TABLOSU: arama + filtre + sıralama ────────────────────────── */
+  var tbody, satirlar=[], sadeceSorun=false, sonSutun=-1, sonYon=1;
+  function tabloKur(){
+    tbody = document.getElementById('cihaz-body');
+    if(!tbody) return;
+    satirlar = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+    var inp = document.getElementById('cihaz-ara');
+    if(inp) inp.addEventListener('input', suz);
+    var f = document.getElementById('btn-sorun');
+    if(f) f.addEventListener('click', function(){
+      sadeceSorun=!sadeceSorun;
+      f.className='btn'+(sadeceSorun?' on':'');
+      f.textContent = sadeceSorun?'● Yalnız sorunlular':'○ Yalnız sorunlular';
+      suz();
+    });
+    var ths = document.querySelectorAll('#cihaz-tbl thead th');
+    for(var i=0;i<ths.length;i++){
+      (function(th,idx){
+        th.addEventListener('click', function(){ sirala(idx,th,ths); });
+      })(ths[i],i);
+    }
+  }
+  function suz(){
+    var q = (document.getElementById('cihaz-ara')||{}).value || '';
+    q = q.toLowerCase().trim();
+    var gorunen=0;
+    for(var i=0;i<satirlar.length;i++){
+      var tr = satirlar[i];
+      var metin = (tr.getAttribute('data-ara')||'').toLowerCase();
+      var sorunlu = tr.getAttribute('data-sorun')==='1';
+      var gec = (!q || metin.indexOf(q)>=0) && (!sadeceSorun || sorunlu);
+      tr.className = gec?'':'gizli';
+      if(gec) gorunen++;
+    }
+    var s=document.getElementById('cihaz-sayac');
+    if(s) s.textContent = gorunen+' / '+satirlar.length+' cihaz';
+  }
+  function sirala(idx,th,ths){
+    if(sonSutun===idx) sonYon=-sonYon; else { sonYon=1; sonSutun=idx; }
+    for(var i=0;i<ths.length;i++){ ths[i].className=''; }
+    th.className='srt';
+    var ar = th.querySelector('.ar'); if(ar) ar.textContent = sonYon>0?'▼':'▲';
+    var kopya = satirlar.slice();
+    kopya.sort(function(a,b){
+      var x=a.children[idx], y=b.children[idx];
+      var xa=(x.getAttribute('data-s')!==null?x.getAttribute('data-s'):x.textContent).trim();
+      var ya=(y.getAttribute('data-s')!==null?y.getAttribute('data-s'):y.textContent).trim();
+      var xn=parseFloat(xa), yn=parseFloat(ya);
+      if(!isNaN(xn) && !isNaN(yn)) return (xn-yn)*sonYon;
+      return xa.localeCompare(ya,'tr')*sonYon;
+    });
+    for(var j=0;j<kopya.length;j++) tbody.appendChild(kopya[j]);
+  }
+
+  /* ── KOPYALA ─────────────────────────────────────────────────────────── */
+  function kopyaKur(){
+    var bs = document.querySelectorAll('[data-kopya]');
+    for(var i=0;i<bs.length;i++){
+      (function(b){
+        b.addEventListener('click', function(e){
+          e.stopPropagation();
+          var t = b.getAttribute('data-kopya');
+          var eski = b.textContent;
+          function tamam(){ b.textContent='✓ kopyalandı'; setTimeout(function(){ b.textContent=eski; },1400); }
+          if(navigator.clipboard && navigator.clipboard.writeText){
+            navigator.clipboard.writeText(t).then(tamam, function(){});
+          } else {
+            var ta=document.createElement('textarea'); ta.value=t;
+            document.body.appendChild(ta); ta.select();
+            try{ document.execCommand('copy'); tamam(); }catch(err){}
+            document.body.removeChild(ta);
+          }
+        });
+      })(bs[i]);
+    }
+  }
+
+  /* ── KLAVYE KISAYOLLARI ──────────────────────────────────────────────── */
+  function kisayol(e){
+    var t = e.target.tagName;
+    if(t==='INPUT'||t==='TEXTAREA'){
+      if(e.key==='Escape'){ e.target.value=''; suz(); e.target.blur(); }
+      return;
+    }
+    if(e.key==='/'){ e.preventDefault(); var i=document.getElementById('cihaz-ara'); if(i){ i.focus(); i.select(); } }
+    else if(e.key==='p'||e.key==='P'){ duraklatDegis(); }
+    else if(e.key==='r'||e.key==='R'){ location.reload(); }
+    else if(e.key==='t'||e.key==='T'){ temaDegis(); }
+    else if(e.key==='s'||e.key==='S'){ var f=document.getElementById('btn-sorun'); if(f) f.click(); }
+    else if(e.key==='?'){ var h=document.getElementById('kbd'); if(h) h.className='kbd-help acik'; }
+    else if(e.key==='Escape'){ var h2=document.getElementById('kbd'); if(h2) h2.className='kbd-help'; }
+  }
+
+  /* ── BAŞLAT ──────────────────────────────────────────────────────────── */
+  document.addEventListener('DOMContentLoaded', function(){
+    bolumKur(); tabloKur(); kopyaKur();
+    var bt=document.getElementById('btn-tema');
+    if(bt){ bt.textContent = tema==='koyu'?'☾':'☀'; bt.addEventListener('click',temaDegis); }
+    var bd=document.getElementById('btn-duraklat');
+    if(bd){
+      bd.textContent = duraklat?'▶ Devam':'⏸ Duraklat';
+      bd.className = 'btn'+(duraklat?'':' on');
+      bd.addEventListener('click',duraklatDegis);
+    }
+    var el=document.getElementById('sayac');
+    if(el) el.textContent = duraklat?'duraklatıldı':kalan+' sn';
+    var kb=document.getElementById('kbd');
+    if(kb) kb.addEventListener('click', function(){ kb.className='kbd-help'; });
+    var kbb=document.getElementById('btn-kbd');
+    if(kbb) kbb.addEventListener('click', function(){ if(kb) kb.className='kbd-help acik'; });
+    document.addEventListener('keydown', kisayol);
+    timer = setInterval(tik,1000);
+  });
+})();
+</script>
+JSBLOK
 
     echo '</div></body></html>'
   } > "$OUT.tmp" && mv "$OUT.tmp" "$OUT"

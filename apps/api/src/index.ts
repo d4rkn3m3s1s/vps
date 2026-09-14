@@ -3,6 +3,9 @@ import { createApp } from './app';
 import { env } from './config/env';
 import { logger } from './lib/logger';
 import { prisma } from './db/prisma';
+// ★2026-09-15: housekeeping'de Job.result'ı JSON NULL'a çekmek için gerekiyor
+// (Prisma'da JSON alanı için `null` ile `DbNull` ayrı anlamlar taşır).
+import { Prisma } from '@prisma/client';
 import { ensureBootstrapIdentity } from './modules/auth/auth.service';
 import { ensureDefaultWorkspace } from './modules/workspace/workspace.bootstrap';
 import { deviceHub } from './modules/devices/device.hub';
@@ -623,6 +626,28 @@ async function main(): Promise<void> {
       // Terminal jobs older than 30d — register history lives on GeneratedAccount.registerLog,
       // so deleting the Job row doesn't lose panel history. Frees the biggest TOAST bloat.
       results.jobs = (await prisma.job.deleteMany({ where: { status: { in: ['COMPLETED', 'FAILED'] }, createdAt: { lt: days(Number(process.env.FLEET_RETAIN_JOBS_DAYS || 30)) } } }).catch(() => ({ count: 0 }))).count;
+      // ★★★2026-09-15 TOAST ŞİŞMESİ — satırı silmeden SADECE `result`'ı boşalt.
+      // ÖLÇÜM: Job tablosu 707 MB ama veri yalnız 44 MB; 643 MB'ı TOAST.
+      // Kaynak: REGISTER_WHATSAPP işlerinin `result`'ı (154 iş = 118 MB, en
+      // büyüğü 1.35 MB — kayıt akışının ekran görüntüleri).
+      // ★Neden satırı silmiyoruz: iş kaydının kendisi (tip/durum/süre) panelde
+      // ve metriklerde kullanılıyor; 30 günlük kural onu zaten süresi gelince
+      // siliyor. Burada yalnız AĞIR yük (`result`) erken boşaltılıyor.
+      // ★Panel geçmişi KAYBOLMAZ: kayıt akışının log'u GeneratedAccount.
+      // registerLog'da duruyor (ölçüldü: 394/406 hesapta dolu, toplam 652 kB).
+      // ★Neden 7 gün: 7 günden eski bir işin ekran görüntüsüne bakılmıyor;
+      // ölçülen kazanç 121 MB. Süre env ile ayarlanabilir.
+      const jobResultDays = Number(process.env.FLEET_RETAIN_JOB_RESULT_DAYS || 7);
+      results.jobResults = (await prisma.job
+        .updateMany({
+          where: {
+            status: { in: ['COMPLETED', 'FAILED'] },
+            createdAt: { lt: days(jobResultDays) },
+            NOT: { result: { equals: Prisma.DbNull } }
+          },
+          data: { result: Prisma.DbNull }
+        })
+        .catch(() => ({ count: 0 }))).count;
       // Expired or long-revoked refresh tokens — invalid already, safe to drop.
       results.tokens = (await prisma.refreshToken.deleteMany({ where: { OR: [{ expiresAt: { lt: new Date(now) } }, { AND: [{ revokedAt: { not: null } }, { revokedAt: { lt: days(30) } }] }] } }).catch(() => ({ count: 0 }))).count;
       // ★★★2026-09-13 TOKEN BİRİKİMİ. CANLI ÖLÇÜM: 693 refresh token, hepsi TEK

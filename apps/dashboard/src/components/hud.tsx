@@ -28,7 +28,7 @@ export function Holo3D({
   const rotY = useSpring(useTransform(px, [0, 1], [-max, max]), { stiffness: 230, damping: 22 });
   const gx = useTransform(px, [0, 1], ['0%', '100%']);
   const gy = useTransform(py, [0, 1], ['0%', '100%']);
-  const glow = useTransform([gx, gy], ([x, y]) => `radial-gradient(420px circle at ${x} ${y}, rgba(239,35,60,0.16), transparent 60%)`);
+  const glow = useTransform([gx, gy], ([x, y]) => `radial-gradient(420px circle at ${x} ${y}, rgba(255,255,255,0.055), transparent 60%)`); // v5: nötr imleç ışığı (eskiden sabit kırmızıydı)
 
   function move(e: PointerEvent<HTMLDivElement>) {
     if (e.pointerType !== 'mouse') return;

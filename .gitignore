@@ -16,3 +16,10 @@ apps/api/storage/logs/
 # build cache
 *.tsbuildinfo
 .audit-host-snapshot/
+
+# Telegram /wakayit oturum durumu (sifreli, calisma aninda uretilir)
+.tg-wakayit.json
+.tg-wakayit.json.tmp
+
+# Playwright MCP ciktilari (ekran goruntuleri, gecici oturum betikleri — token icerebilir)
+.playwright-mcp/

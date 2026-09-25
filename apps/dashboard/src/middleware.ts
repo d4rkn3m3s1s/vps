@@ -3,23 +3,42 @@ import type { NextRequest } from 'next/server';
 
 const PUBLIC_PATHS = ['/login', '/welcome', '/api/auth/login'];
 
-// Hafif oturum doğrulaması (Edge runtime).
-// fleet_session backend'in JWT access token'ıdır. Edge'de JWT secret'ı olmadan
-// imza doğrulaması yapmak yerine (over-engineering) token'ın yapısal geçerliliğini
-// ve süresini kontrol ederiz: 3 parçalı JWT + exp claim'i gelecekte mi. Gerçek
-// yetki her API çağrısında backend tarafından zaten doğrulanıyor; bu kontrol
-// sadece salt-varlık kontrolünün yerine geçen ucuz ve etkili bir ön kapıdır.
-function isSessionValid(token: string | undefined): boolean {
-  if (!token) return false;
+// Oturum doğrulaması (Edge runtime).
+//
+// ★2026-09-26 GÜVENLİK: fleet_session backend'in HS256 JWT access token'ıdır ve artık
+// İMZASI doğrulanır (JWT_ACCESS_SECRET, backend ile aynı anahtar). Panelin /api/*
+// rotaları backend'e kullanıcının token'ıyla DEĞİL servis kimliğiyle gider; bu yüzden
+// panel tarafındaki bu kapı tek yetki kontrolüdür ve yalnız yapı/süre kontrolü yetmez.
+// Anahtar tanımlı değilse hiçbir oturum kabul edilmez (fail-closed).
+const JWT_SECRET = process.env.JWT_ACCESS_SECRET ?? '';
+
+function b64urlToBytes(s: string): Uint8Array<ArrayBuffer> {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
+  const bin = atob(b64);
+  const out = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+let keyPromise: Promise<CryptoKey> | null = null;
+function hmacKey(): Promise<CryptoKey> {
+  keyPromise ??= crypto.subtle.importKey('raw', new TextEncoder().encode(JWT_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+  return keyPromise;
+}
+
+async function isSessionValid(token: string | undefined): Promise<boolean> {
+  if (!token || !JWT_SECRET) return false;
   const parts = token.split('.');
-  if (parts.length !== 3 || !parts[1]) return false;
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return false;
   try {
-    // base64url payload decode (atob Edge'de mevcut).
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const payload = JSON.parse(atob(b64)) as { exp?: number };
-    if (typeof payload.exp !== 'number') return false;
-    // exp saniye cinsinden; süresi geçmişse geçersiz.
-    return payload.exp * 1000 > Date.now();
+    const header = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0]))) as { alg?: string };
+    if (header.alg !== 'HS256') return false;
+    const ok = await crypto.subtle.verify('HMAC', await hmacKey(), b64urlToBytes(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
+    if (!ok) return false;
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as { exp?: number; typ?: string };
+    if (typeof payload.exp !== 'number' || payload.exp * 1000 <= Date.now()) return false;
+    if (payload.typ && payload.typ !== 'access') return false;
+    return true;
   } catch {
     return false;
   }
@@ -50,10 +69,10 @@ function externalUrl(request: NextRequest, path: string): URL {
   return url;
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const rawSession = request.cookies.get('fleet_session')?.value;
-  const session = isSessionValid(rawSession);
+  const session = await isSessionValid(rawSession);
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 

@@ -1,6 +1,8 @@
 import type { Metadata, Viewport } from 'next';
 import { cookies } from 'next/headers';
 import './globals.css';
+// Tasarım katmanı v5 (2026-09-26) — globals.css'in ÜZERİNE yazar; geri almak için bu satırı silin.
+import './design-v5.css';
 import { AppChrome } from '../components/AppChrome';
 import { I18nProvider } from '../lib/i18n';
 import { LiveProvider } from '../lib/live';

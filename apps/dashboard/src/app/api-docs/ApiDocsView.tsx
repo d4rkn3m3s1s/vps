@@ -347,7 +347,10 @@ export function ApiDocsView() {
   const [q, setQ] = useState('');
   // The API is reachable at the same origin the dashboard is served from (Caddy
   // proxies /public/* to the API). Fall back to a placeholder during SSR.
-  const [baseUrl] = useState<string>(() => (typeof window !== 'undefined' ? window.location.origin : 'https://alan-adiniz'));
+  // İlk çizimde sunucu ile AYNI değer (yoksa React #418 hydration hatası); gerçek adres
+  // sayfa tarayıcıda açıldıktan sonra yazılır.
+  const [baseUrl, setBaseUrl] = useState<string>('https://alan-adiniz');
+  useEffect(() => { setBaseUrl(window.location.origin); }, []);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();

@@ -1,4 +1,5 @@
 import { serverFetch } from '../../lib/serverFetch';
+import { pickDevices } from '../../lib/pickDevice';
 import { ImagesView, type Snapshot, type ImgDevice, type ImgGroup } from './ImagesView';
 
 export const metadata = { title: 'İmaj Pazarı · VPS Fleet' };
@@ -16,7 +17,7 @@ export default async function ImagesPage() {
     <ImagesView
       snapshots={snapsRes?.data ?? []}
       market={marketRes?.data ?? []}
-      devices={devicesRes?.data ?? []}
+      devices={pickDevices(devicesRes?.data, ['id', 'name']) as ImgDevice[]}
       groups={groupsRes?.data ?? []}
     />
   );

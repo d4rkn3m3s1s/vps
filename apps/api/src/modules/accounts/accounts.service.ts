@@ -40,22 +40,25 @@ export class AccountsService {
     mail: { ok: boolean; detail: string };
     identity: { ok: boolean; detail: string };
   }> {
+    // ★2026-09-26 PARALEL: üç dış sağlayıcı birbirinden bağımsız; eskiden ART ARDA
+    // bekleniyordu ve Hesap Fabrikası sayfası açılmadan önce ~1.2 sn bekletiyordu.
+    // Artık süre en yavaşı kadar. Her biri kendi hatasını yakalar (sonuç anlamı aynı).
     const cfg = smsCfg();
-    const smsStatus = cfg.apiKey
-      ? await sms
+    const smsP = cfg.apiKey
+      ? sms
           .getBalance(cfg)
           .then((b) => ({ ok: true, detail: `bakiye ${b.balance}` }))
           .catch((e: Error) => ({ ok: false, detail: e.message }))
-      : { ok: false, detail: 'SMS_BUS_API_KEY tanımlı değil' };
+      : Promise.resolve({ ok: false, detail: 'SMS_BUS_API_KEY tanımlı değil' });
 
-    const mailStatus = await mail
+    const mailP = mail
       .listMessages(mailCfg(), mail.makeAddress(mailCfg(), 'healthcheck'))
       .then(() => ({ ok: true, detail: 'erişilebilir' }))
       .catch((e: Error) => ({ ok: false, detail: e.message }));
 
     // Identity is offline-first (local generator) so it is always available;
     // the detail notes whether a network source is also configured.
-    const idStatus = await identity
+    const idP = identity
       .generateIdentity(identityCfg())
       .then((id) => ({
         ok: true,
@@ -63,6 +66,7 @@ export class AccountsService {
       }))
       .catch(() => ({ ok: true, detail: 'yerel üretici (çevrimdışı)' }));
 
+    const [smsStatus, mailStatus, idStatus] = await Promise.all([smsP, mailP, idP]);
     return { sms: smsStatus, mail: mailStatus, identity: idStatus };
   }
 

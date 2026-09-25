@@ -1,4 +1,5 @@
 import { serverFetch } from '../../lib/serverFetch';
+import { pickDevices } from '../../lib/pickDevice';
 import { RpaView, type RpaFlow, type RpaDevice } from './RpaView';
 
 export const metadata = { title: 'RPA Stüdyo · VPS Fleet' };
@@ -10,5 +11,5 @@ export default async function RpaPage() {
     serverFetch<RpaDevice[]>('/devices')
   ]);
 
-  return <RpaView flows={flowsRes?.data ?? []} devices={devicesRes?.data ?? []} />;
+  return <RpaView flows={flowsRes?.data ?? []} devices={pickDevices(devicesRes?.data, ['id', 'name']) as RpaDevice[]} />;
 }

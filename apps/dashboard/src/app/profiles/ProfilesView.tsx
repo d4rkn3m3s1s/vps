@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { LoadMore } from '../../components/LoadMore';
 import { useRouter } from 'next/navigation';
 import { useFleetEvents, useLive } from '../../lib/live';
 import { useConfirm } from '../../components/ConfirmDialog';
@@ -491,6 +492,17 @@ export function ProfilesView({
   }, [devices, groupId, query, tagFilter]);
 
   const allSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.id));
+
+  // ★2026-09-26 KADEMELİ ÇİZİM. 168 kartın hepsi birden çiziliyordu: sayfa 2.1 MB HTML,
+  // masaüstünde 29 bin, mobilde 54 bin piksel. Artık ilk RENDER_STEP kart çizilir, aşağı
+  // kaydırıldıkça sonraki parti kendiliğinden eklenir. Seçim/filtre/toplu işlem TÜM
+  // `filtered` listesi üzerinde çalışmaya devam eder — yalnız ekrana çizilen kısım sınırlı.
+  const RENDER_STEP = 48;
+  const [renderLimit, setRenderLimit] = useState(RENDER_STEP);
+  useEffect(() => { setRenderLimit(RENDER_STEP); }, [groupId, query, tagFilter, mode]);
+  const shown = useMemo(() => filtered.slice(0, renderLimit), [filtered, renderLimit]);
+  const hiddenCount = filtered.length - shown.length;
+  const showMore = useCallback(() => setRenderLimit((n) => n + RENDER_STEP), []);
 
   function toggle(id: string) {
     setSelected((prev) => {
@@ -1475,7 +1487,7 @@ export function ProfilesView({
               </button>
             </Holo3D>
 
-            {filtered.map((device) => {
+            {shown.map((device) => {
               const isSelected = selected.has(device.id);
               return (
                 <Holo3D key={device.id} className={`holo-card profile-card${isSelected ? ' profile-card-selected' : ''}`} max={6}>
@@ -1733,6 +1745,7 @@ export function ProfilesView({
               );
             })}
           </div>
+          {hiddenCount > 0 ? <LoadMore hidden={hiddenCount} onMore={showMore} /> : null}
         </Reveal>
       ) : (
         <Reveal delay={0.1}>
@@ -1754,7 +1767,7 @@ export function ProfilesView({
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((device) => {
+                  {shown.map((device) => {
                     const isSelected = selected.has(device.id);
                     return (
                       <tr key={device.id} className={isSelected ? 'row-selected' : ''}>
@@ -1784,6 +1797,7 @@ export function ProfilesView({
                 </tbody>
               </table>
             </div>
+            {hiddenCount > 0 ? <LoadMore hidden={hiddenCount} onMore={showMore} /> : null}
           </HoloPanel>
         </Reveal>
       )}

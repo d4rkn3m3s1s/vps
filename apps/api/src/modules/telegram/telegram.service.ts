@@ -30,6 +30,7 @@ import {
   renderDailyDigest
 } from './ops.service';
 import { splitLeadingPhone } from '../../lib/phone';
+import { tgRegister } from './tg-register.service';
 
 const deviceService = new DeviceService();
 
@@ -47,6 +48,8 @@ type TgMessage = {
   message_id: number; from?: TgUser; chat: TgChat; text?: string;
   photo?: TgPhotoSize[];
   document?: { file_id: string; mime_type?: string; file_size?: number };
+  // ★2026-09-26 /wakayit: OTP istemine verilen yanıt (kod) bu alanla eşleştirilir.
+  reply_to_message?: { message_id: number; text?: string; caption?: string };
 };
 type TgCallbackQuery = { id: string; from: TgUser; message?: TgMessage; data?: string };
 type TgUpdate = {
@@ -223,6 +226,8 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   // ★2026-07-29: /kayit dispatcher'da vardı ama palette/menüde YOKTU → operatör
   // komutun varlığını keşfedemiyordu. (Kendisi panele yönlendirir; bu bilinçli.)
   { command: 'kayit', description: '📝 Yarım kalan kayıtlar + kalan bekletme süreleri' },
+  // ★2026-09-26 Telegram'dan uçtan uca kayıt (bkz. tg-register.service.ts).
+  ...tgRegister.commands,
   { command: 'hesaplar', description: '💬 WhatsApp hesapları + sağlık rozeti' },
   { command: 'banlar', description: '⚠️ Son 7 günün ban/kısıt dalgası' },
   // 📂 Kayıt okuma
@@ -410,6 +415,8 @@ function isCmd(lower: string, ...names: string[]): boolean {
 // ── Command / callback handling ─────────────────────────────────────────────
 
 const MAIN_MENU: InlineButton[][] = [
+  // ★2026-09-26 Numara ile otomatik WhatsApp kaydı (cihaz açar, logu canlı gösterir, kodu sorar).
+  [{ text: '📲 WA Kayıt (numara ile)', callback_data: 'wr:new' }, { text: '📋 Kayıt sırası', callback_data: 'wr:list' }],
   [{ text: '💬 Sohbetler', callback_data: 'chats' }, { text: '🔎 Ara', callback_data: 'search' }],
   [{ text: '🔵 Okunmamış', callback_data: 'q:unread' }, { text: '⭐ Favoriler', callback_data: 'q:favorite' }],
   [{ text: '✉️ Mesaj Gönder', callback_data: 'send' }, { text: '📢 Toplu Test', callback_data: 'broadcast' }],
@@ -480,6 +487,12 @@ function menuText(): string {
     '• <b>/adver</b> — cihaz adını değiştir <i>(cihazı seçtirir, sonra adı sorar)</i>',
     '• <b>/sil</b> &lt;cihaz&gt; — cihaz sil (korumalıysa reddedilir)',
     '   <i>hızlı yol: <code>/kur 3 TR</code> · <code>/etiket watest52 #test</code></i>',
+    '',
+    '<b>📲 Otomatik WhatsApp kaydı</b>',
+    '• <b>/wakayit</b> — numarayı yazın; boşta cihaz yoksa yeni cihaz açılır, adımlar canlı gösterilir',
+    '   <i>kısayol: numarayı doğrudan yazmanız da yeterli (her satıra bir numara)</i>',
+    '• Kod gelince ekran görüntüsü gelir — <b>o mesaja yanıt olarak</b> kodu yazın · <b>/kod</b> 123456',
+    '• <b>/sira</b> — Telegram kayıt sırası ve durumları',
     '',
     '<b>💬 WA hesap-sağlık</b>',
     '• <b>/hesaplar</b> — WhatsApp hesapları + sağlık rozeti',
@@ -1183,6 +1196,11 @@ async function handleCommand(
     }
   }
 
+  // ★2026-09-26 /wakayit akışı (numara → isim → sıra) ve OTP kısayolları. Kendi
+  // taslağını tutar; botun diğer adım-adım akışlarından biri açıksa (chatIdle=false)
+  // o akışın girdisine DOKUNMAZ.
+  if (await tgRegister.handleText({ token, workspaceId, chatId }, cmd, state.mode === 'idle')) return;
+
   // If we're mid-compose (send flow), interpret the text as number then message.
   if (state.mode === 'awaiting_number') {
     const to = cmd.replace(/[^\d]/g, '');
@@ -1880,6 +1898,11 @@ async function handleCallback(
   const data = cb.data ?? '';
   await answerCallback(token, cb.id);
   const state = getChatState(bot, chatId);
+  if (data.startsWith('wr:')) {
+    // /wakayit butonları (isim/yöntem/kod ekranı/iptal/tekrar dene).
+    await tgRegister.handleCallback({ token, workspaceId, chatId }, data);
+    return;
+  }
 
   if (data === 'menu' || data === 'help') {
     if (data === 'help') { await sendMessage(token, chatId, menuText(), MAIN_MENU); return; }
@@ -2400,6 +2423,12 @@ async function pollBot(bot: { workspaceId: string; token: string; chatIds: strin
           await sendMessage(bot.token, chatId, '⛔️ Bu bot yalnızca yetkili sohbete yanıt verir.');
           continue;
         }
+        // ★2026-09-26 OTP istemine yanıt → kod doğrudan o kayda gider.
+        if (u.message.reply_to_message && await tgRegister.handleReply(
+          { token: bot.token, workspaceId: bot.workspaceId, chatId },
+          u.message.reply_to_message,
+          u.message.text
+        )) continue;
         await handleCommand(bot.token, bot.workspaceId, chatId, state, u.message.text);
       } else if (u.callback_query) {
         const chatId = String(u.callback_query.message?.chat.id ?? u.callback_query.from.id);
@@ -2438,6 +2467,7 @@ export function startTelegramBot(): void {
   running = true;
   stopped = false;
   logger.info('telegram bot loop starting');
+  tgRegister.start();
 
   const loop = async () => {
     while (!stopped) {

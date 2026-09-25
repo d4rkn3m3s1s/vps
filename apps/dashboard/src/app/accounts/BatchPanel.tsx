@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus, MessageCircle, X, Send, Inbox } from 'lucide-react';
 import { useFleetEvents } from '../../lib/live';
+import { LoadMore } from '../../components/LoadMore';
 
 type Account = {
   id: string;
@@ -59,6 +60,10 @@ export function BatchPanel() {
   const [count, setCount] = useState(5);
   const [country, setCountry] = useState('US');
   const [accounts, setAccounts] = useState<Account[]>([]);
+  // ★2026-09-26 KADEMELİ ÇİZİM: 478 hesabın hepsi birden çiziliyordu (mobilde 115 bin piksel).
+  const ACC_STEP = 50;
+  const [accLimit, setAccLimit] = useState(ACC_STEP);
+  const moreAccounts = useCallback(() => setAccLimit((n) => n + ACC_STEP), []);
   const [devices, setDevices] = useState<DeviceLite[]>([]);
   const [device, setDevice] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -287,7 +292,7 @@ export function BatchPanel() {
           <tbody>
             {accounts.length === 0 ? (
               <tr><td colSpan={8}><div className="table-empty"><span>Henüz hesap yok — yukarıdan bir batch oluşturun.</span></div></td></tr>
-            ) : accounts.map((a) => (
+            ) : accounts.slice(0, accLimit).map((a) => (
               <tr key={a.id}>
                 <td><span className="status-chip"><span className={statusDot(a.status)} />{STATUS_LABEL[a.status] ?? a.status}</span>
                   {a.error ? <div className="helper live-err" style={{ fontSize: '0.7rem' }}>{a.error}</div> : null}
@@ -323,6 +328,7 @@ export function BatchPanel() {
           </tbody>
         </table>
       </div>
+      {accounts.length > accLimit ? <LoadMore hidden={accounts.length - accLimit} onMore={moreAccounts} unit="hesap" /> : null}
 
       {/* WhatsApp messaging modal */}
       {waChat ? (

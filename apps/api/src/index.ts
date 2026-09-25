@@ -346,7 +346,14 @@ async function main(): Promise<void> {
           // işareti swap'in DOLU olması değil, swap doluyken RAM'in de darlanmasıdır; RAM'in
           // %30'dan fazlası kullanılabilirken dolu swap = bayat swap (`swapoff -a && swapon -a`
           // ile temizlenir), alarm üretmez. RAM ölçümü yoksa eski davranış (swap tek başına) kalır.
-          const swapping = typeof swapPct === 'number' && swapPct >= 20 && (ramPctFree === null || ramPctFree < 30);
+          // ★★2026-09-26 EŞİK YENİDEN AYARLANDI (operatör: "sürekli swap uyarısı var").
+          // Swap 8→32 GB büyütüldü ve swappiness 10 yapıldı; eski eşik (swap ≥%20 VE RAM <%30)
+          // bu 250 GB'lık makinede "75 GB'tan az boş RAM + 6.5 GB swap" demek. Canlı ölçüm:
+          // 56 GB boş RAM, PSI bellek baskısı 0.00 iken bile 30 dakikada bir "YENİ CİHAZ KURMAYI
+          // DURDURUN" üretiyordu — üstelik sert kapasite kilidi (provision.service assertCapacity)
+          // aynı anda "34 cihazlık yer var" diyordu; iki sinyal ÇELİŞİYORDU. Gerçek baskı: swap'in
+          // YARISI dolmuş VE boş RAM %20'nin altında. RAM ölçümü yoksa eski davranış korunur.
+          const swapping = typeof swapPct === 'number' && (ramPctFree === null ? swapPct >= 20 : swapPct >= 50 && ramPctFree < 20);
           // Cihaz başına gerçek tüketim → daha kaç cihaz sığar. Ortalama, ölçülen
           // değerden (used/phones) türetilir; sabit bir varsayım kullanılmaz çünkü
           // cihaz başına maliyet imaja/sürüme göre değişiyor (1.3-1.5 GB aralığı).

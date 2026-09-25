@@ -1,4 +1,5 @@
 import { serverFetch } from '../../lib/serverFetch';
+import { pickDevices } from '../../lib/pickDevice';
 import { SchedulerView, type ScheduledTask, type SchedulerDevice } from './SchedulerView';
 
 export const metadata = { title: 'Zamanlayıcı · VPS Fleet' };
@@ -10,5 +11,5 @@ export default async function SchedulerPage() {
     serverFetch<SchedulerDevice[]>('/devices')
   ]);
 
-  return <SchedulerView tasks={tasksRes?.data ?? []} devices={devicesRes?.data ?? []} />;
+  return <SchedulerView tasks={tasksRes?.data ?? []} devices={pickDevices(devicesRes?.data, ['id', 'name']) as SchedulerDevice[]} />;
 }

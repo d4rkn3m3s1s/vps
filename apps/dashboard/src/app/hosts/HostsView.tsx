@@ -206,7 +206,7 @@ export function HostsView({ hosts }: { hosts: Host[] }) {
                   })()}
                   <div className="row">
                     <span className="helper" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                      <MapPin size={11} /> {h.region ?? 'kendi sunucunuz'} · son görülme {h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString('tr-TR') : 'hiç'}
+                      <MapPin size={11} /> {h.region ?? 'kendi sunucunuz'} · son görülme {h.lastSeenAt ? new Date(h.lastSeenAt).toLocaleTimeString('tr-TR', { timeZone: 'Europe/Istanbul' }) : 'hiç'}
                     </span>
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <button

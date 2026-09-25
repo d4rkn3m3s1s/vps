@@ -1,0 +1,235 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   TASARIM KATMANI v5 — "Graphite" (2026-09-26)
+   ───────────────────────────────────────────────────────────────────────────
+   globals.css'ten SONRA yüklenir ve onun üzerine yazar. Geri almak için
+   layout.tsx'teki `import './design-v5.css'` satırını silmek yeterlidir.
+
+   Neden: eski "RED NOIR" tema her yüzeyi kırmızıya boyuyordu — zemin kırmızı
+   parıltılı, kartlar yarı saydam olduğu için o parıltı içlerinden sızıyordu,
+   başlıklar kırmızı gradyanlı ve büyük harf, panel köşelerinde nişangâh süsleri
+   vardı. Kırmızı her yerde olunca hiçbir şeyi öne çıkarmıyordu.
+
+   İlke:
+   • Zemin ve yüzeyler NÖTR grafit. Kırmızı yalnız anlam taşıdığı yerde kalır:
+     birincil düğme, aktif menü, seçili öğe, kritik/hata.
+   • Sayılar kod fontuyla değil, görüntü yazı tipinde hizalı rakamla (tabular).
+   • Başlıklar normal yazım (BÜYÜK HARF değil), düz renk, sıkı harf aralığı.
+   • Mobilde dokunma hedefleri ≥ 38px, sekme/segment düğmeleri tek satır.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: #0c0c0e;
+  --bg-soft: rgba(18, 18, 21, 0.86);
+  --panel: rgba(255, 255, 255, 0.028);
+  --panel-2: rgba(255, 255, 255, 0.05);
+  --panel-border: rgba(255, 255, 255, 0.075);
+  --panel-border-hover: rgba(255, 255, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.07);
+  --hover-fill: rgba(255, 255, 255, 0.045);
+
+  /* Marka kırmızısı korunur; biraz yumuşatıldı (daha az çiğ, göz yormuyor). */
+  --accent: #e5484d;
+  --accent-2: #d13c41;
+  --accent-3: #ff6b70;
+  --accent-soft: rgba(229, 72, 77, 0.13);
+  --accent-line: rgba(229, 72, 77, 0.85);
+
+  /* En hafif iki kırmızı dolgu NÖTRE çevrildi: bunlar giriş kutusu ve hover satırı
+     gibi "anlamı olmayan" yüzeylerde kullanılıyordu. Seçili/aktif dolgular kırmızı kalır. */
+  --fill-accent-faint: rgba(255, 255, 255, 0.03);
+  --fill-accent-subtle: rgba(255, 255, 255, 0.05);
+  --fill-accent-soft: rgba(229, 72, 77, 0.12);
+  --fill-accent-med: rgba(229, 72, 77, 0.16);
+  --fill-accent-strong: rgba(229, 72, 77, 0.22);
+  --border-accent: rgba(229, 72, 77, 0.38);
+  --border-accent-strong: rgba(229, 72, 77, 0.6);
+  --glow-accent: rgba(229, 72, 77, 0.18);
+
+  --gradient-accent: linear-gradient(180deg, #ec5a5f 0%, #e5484d 55%, #d13c41 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(229, 72, 77, 0.14), rgba(209, 60, 65, 0.08));
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 12px 32px -14px rgba(0, 0, 0, 0.7);
+  --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 14px 34px -14px rgba(0, 0, 0, 0.75);
+  --shadow-pop: 0 4px 14px rgba(0, 0, 0, 0.55), 0 20px 48px -14px rgba(0, 0, 0, 0.7);
+  --surface-elevated: linear-gradient(180deg, #17171a, #121215);
+  --scrim: rgba(6, 6, 8, 0.72);
+  --bezel: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ── Zemin: düz grafit + üstte çok hafif nötr ışık (kırmızı parıltı yok) ── */
+html, body {
+  background: #0c0c0e;
+  background-color: #0c0c0e;
+}
+body {
+  background:
+    radial-gradient(120% 60% at 50% -10%, rgba(255, 255, 255, 0.035), transparent 60%),
+    #0c0c0e;
+}
+body::before { opacity: 0 !important; animation: none !important; }
+html::after { opacity: 0 !important; animation: none !important; }
+
+/* ── Paneller ve istatistik kartları: yarı saydamlık/bulanıklık kaldırıldı ──
+   (arkadaki renk sızmasın; ayrıca 168 kartlık sayfada backdrop-filter pahalıdır) */
+.holo-panel,
+.holo-stat {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015)), #121215;
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--bezel), 0 1px 2px rgba(0, 0, 0, 0.4);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.holo-panel::before { background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent); opacity: 1; }
+.holo-panel::after,
+.holo-stat::after { display: none; }
+.holo-corner,
+.holo-scan { display: none; }
+
+/* ── Başlıklar ── */
+.holo-title {
+  text-transform: none;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+  font-size: clamp(1.6rem, 2.3vw, 2.15rem);
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--text);
+  animation: none;
+}
+.holo-eyebrow {
+  color: var(--text-2);
+  letter-spacing: 0.14em;
+  font-weight: 600;
+}
+.holo-eyebrow-dot { background: var(--accent); box-shadow: none; animation: none; }
+.holo-subtitle { max-width: 72ch; line-height: 1.55; text-wrap: pretty; }
+
+.holo-panel-title {
+  text-transform: none;
+  letter-spacing: -0.005em;
+  font-size: 0.98rem;
+  font-weight: 600;
+}
+.holo-panel-ico {
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* ── İstatistik değerleri: kod fontu yerine hizalı rakamlı görüntü yazı tipi ── */
+.holo-stat-value {
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+.holo-stat .holo-stat-top .holo-stat-label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 550;
+}
+.holo-stat:hover { border-color: var(--panel-border-hover); }
+/* Bileşenler sayıyı `.mono` içine koyuyor; değer kutusunda görüntü yazı tipi kazansın. */
+.holo-stat-value .mono { font-family: inherit; font-variant-numeric: tabular-nums; }
+
+/* `.mono` kimlik/IP gibi değerler için doğru; ama düz metin etiketlerinde ve yer
+   tutucu yazılarda yanlış kullanılmış ("Tümünü seç", "Profil adı" kod fontundaydı). */
+.status-chip > .mono { font-family: var(--font-sans); }
+input.mono::placeholder,
+textarea.mono::placeholder { font-family: var(--font-sans); }
+
+/* ── Segment/sekme düğmeleri: mobilde harf harf kırılmasın ── */
+.holo-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
+}
+.holo-tabs::-webkit-scrollbar { display: none; }
+.holo-tab { flex: 0 0 auto; white-space: nowrap; }
+.holo-tab-label { white-space: nowrap; }
+
+/* Dar ekranda panel başlığı + sağdaki sekmeler tek satıra sığmıyordu ("Liste" → "List"
+   kırpılıyordu). Başlık satırı sarsın ve sekmeler alta tam genişlikte insin. */
+@media (max-width: 560px) {
+  .holo-panel-head { flex-wrap: wrap; }
+  .holo-panel-head .holo-panel-actions,
+  .holo-panel-head .holo-tabs { width: 100%; }
+  .holo-panel-head .holo-tab { flex: 1 1 auto; justify-content: center; }
+}
+
+/* ── Eski PageHeader başlığı (ana sayfa vb.): pembe gradyan + BÜYÜK HARF yerine düz ── */
+.page-title {
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: -0.025em;
+  animation: none;
+}
+
+/* ── Tablolar: kırmızı başlık gradyanı ve kırmızı hover yerine nötr ── */
+.profile-table thead th {
+  background: #16161a;
+  color: var(--text-2);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--divider);
+}
+.profile-table tbody tr:hover,
+.health-table .health-row:not(.health-head):hover { background: rgba(255, 255, 255, 0.035); }
+.profile-table tbody tr.row-selected { background: var(--accent-soft); }
+.img-card-thumb {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+  color: var(--text-2);
+}
+
+/* ── Kaydırma çubukları nötr ── */
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); background-clip: content-box; }
+.nav:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.18); }
+
+/* ── "Yeni profil" kartı: kırmızı dolgu yerine nötr kesik çerçeve, vurgu yalnız ikon/CTA'da ── */
+.create-card {
+  border: 1px dashed rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.015);
+}
+.create-card:hover { border-color: var(--border-accent); }
+.create-card-btn:hover { background: rgba(255, 255, 255, 0.03); }
+.create-art { background: var(--accent-soft); color: var(--accent-3); }
+
+/* ── Kademeli çizim: "daha fazla göster" satırı ── */
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding: 1.25rem 0 0.5rem;
+}
+.load-more-row .btn-ghost { min-width: 240px; justify-content: center; }
+
+/* ── Klavye odağı her yerde görünür (erişilebilirlik) ── */
+:where(a, button, input, select, textarea, [role="tab"], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent-3);
+  outline-offset: 2px;
+}
+
+/* ── Dokunmatik ekranlar: parmakla basılabilir hedefler ──
+   Ölçüm (390px): /profiles'ta 505, /fingerprints'te 170 hedef 28px'ten küçüktü. */
+@media (pointer: coarse) {
+  button,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  .btn,
+  [role="tab"] {
+    min-height: 38px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+}

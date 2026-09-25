@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { HoloHeader, HoloPanel, HoloStat, Holo3D } from '../../components/hud';
 import { PageMotion } from '../../components/Motion';
+import { LoadMore } from '../../components/LoadMore';
 import { useDeviceStream } from './useDeviceStream';
 
 export type WallDevice = { id: string; name: string; status: string; groupId?: string | null; group?: { id: string; name: string } | null };
@@ -79,6 +80,16 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
     });
   }, [filtered, order]);
   const shownIds = shown.map((d) => d.id);
+
+  // ★2026-09-26 KADEMELİ ÇİZİM: 168 hücre birden çiziliyordu (28 bin piksel). Yalnız ÇİZİM
+  // sınırlanır; sürükle-sırala, senkron takipçileri ve toplu başlat/durdur hâlâ `shown`
+  // (tam liste) üzerinden çalışır. Toplu başlatma ilk WALL_BULK_MAX (16) hücreyi açar —
+  // bunlar ilk partide (24) zaten çizili.
+  const WALL_RENDER_STEP = 24;
+  const [renderLimit, setRenderLimit] = useState(WALL_RENDER_STEP);
+  useEffect(() => { setRenderLimit(WALL_RENDER_STEP); }, [groupFilter]);
+  const rendered = useMemo(() => shown.slice(0, renderLimit), [shown, renderLimit]);
+  const showMore = useCallback(() => setRenderLimit((n) => n + WALL_RENDER_STEP), []);
 
   // When sync mode is on with a leader, followers are every other shown device.
   const followers = syncMode && leader ? shownIds.filter((id) => id !== leader) : [];
@@ -191,7 +202,7 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
           actions={<span className="status-chip"><span className="dot dot-live" /> {liveCount} canlı · {shown.length} cihaz</span>}
         >
           <div className="wall-grid" style={{ ['--wall-cols' as string]: cols }}>
-            {shown.map((d) => (
+            {rendered.map((d) => (
               <WallCell
                 key={d.id}
                 device={d}
@@ -210,6 +221,7 @@ export function WallView({ devices, groups }: { devices: WallDevice[]; groups: W
               />
             ))}
           </div>
+          {shown.length > rendered.length ? <LoadMore hidden={shown.length - rendered.length} onMore={showMore} /> : null}
         </HoloPanel>
       )}
 

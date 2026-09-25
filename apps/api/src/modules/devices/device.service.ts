@@ -22,6 +22,11 @@ function toDate(value?: string | Date): Date | undefined {
   return value instanceof Date ? value : new Date(value);
 }
 
+// ★2026-09-26 GÜVENLİK: cihazla birlikte gelen host nesnesinde `agentKeyHash` (sunucu ajanının
+// kimlik anahtarının özeti) panel üzerinden TARAYICIYA gidiyordu (/profiles sayfasına 168 kez
+// gömülü). hosts.service zaten toPublic() ile gizliyordu; cihaz sorguları unutmuştu.
+const HOST_PUBLIC = { omit: { agentKeyHash: true } } as const;
+
 export class DeviceService {
   // All reads/writes accept an optional workspaceId. When provided (every
   // interactive call), results are strictly scoped to that workspace so one
@@ -38,7 +43,7 @@ export class DeviceService {
         ...(q ? { name: { contains: q, mode: 'insensitive' as const } } : {})
       },
       orderBy: { createdAt: 'desc' },
-      include: { group: true, fingerprint: true, host: true }
+      include: { group: true, fingerprint: true, host: HOST_PUBLIC }
     });
     // Decrypt each fingerprint's identity fields so the profiles list + the
     // fingerprint modal show real IMEI/MAC/serial/androidId/phone, not ciphertext.
@@ -76,7 +81,7 @@ export class DeviceService {
   async getDevice(id: string, workspaceId?: string) {
     const device = await prisma.device.findFirst({
       where: { id, ...(workspaceId ? { workspaceId } : {}) },
-      include: { group: true, fingerprint: true, host: true }
+      include: { group: true, fingerprint: true, host: HOST_PUBLIC }
     });
     // Decrypt the eager-loaded fingerprint's identity fields (IMEI/MAC/serial/
     // androidId/phone) so the detail panel shows real values, not ciphertext.
@@ -246,7 +251,7 @@ export class DeviceService {
     return prisma.device.update({
       where: { id },
       data,
-      include: { group: true, host: true }
+      include: { group: true, host: HOST_PUBLIC }
     });
   }
 

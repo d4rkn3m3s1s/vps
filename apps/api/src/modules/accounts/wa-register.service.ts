@@ -66,6 +66,17 @@ function stepFor(key: string): WaStep {
   return WA_REGISTER_STEPS.find((s) => s.key === key) ?? WA_REGISTER_STEPS[0]!;
 }
 
+// ★2026-09-26 TELEGRAM CANLI EKRANI. Ajan kayıt boyunca ~5 sn'de bir küçük bir kare
+// gönderiyor; bu kare yalnızca WS'e basılıyor ve (bilinçli olarak) DB'ye yazılmıyor.
+// Telegram kayıt yöneticisi WS dinlemediği için her hesabın SON karesi burada bellekte
+// tutulur: hesap başına tek kare, en fazla 300 hesap (≈300 × 15 kB). API yeniden
+// başlarsa boşalır; ajan 5 sn içinde yenisini gönderir.
+const LIVE_SHOT_MAX = 300;
+const liveShots = new Map<string, { shot: string; ts: number; label: string; note: string }>();
+export function getLiveRegisterShot(accountId: string): { shot: string; ts: number; label: string; note: string } | null {
+  return liveShots.get(accountId) ?? null;
+}
+
 export class WaRegisterService {
   async reportProgress(
     input: {
@@ -99,6 +110,15 @@ export class WaRegisterService {
       ...(input.shot ? { shot: input.shot } : {})
     };
     this.broadcast(event, workspaceId);
+    if (input.shot && input.accountId) {
+      // Yeniden ekle → Map sırası "en son güncellenen sonda" olur; taşarsa en eskisi düşer.
+      liveShots.delete(input.accountId);
+      liveShots.set(input.accountId, { shot: input.shot, ts: Date.now(), label: st.label, note: input.note ?? '' });
+      if (liveShots.size > LIVE_SHOT_MAX) {
+        const oldest = liveShots.keys().next().value;
+        if (oldest !== undefined) liveShots.delete(oldest);
+      }
+    }
     // Persist WITHOUT the (large) shot so the account row stays small; the live
     // screenshot is only pushed over the WS, not stored.
     const { shot: _omit, ...persisted } = event;

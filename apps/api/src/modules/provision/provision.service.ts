@@ -138,6 +138,47 @@ class ProvisionService {
     return { totalFits, hosts: list };
   }
 
+  // ★★★2026-09-26 SERT KAPASITE KİLİDİ (operatör isteği: "belirli bir şeyden
+  // sonra izin verme ki sistem patlamasın").
+  //
+  // NEDEN GEREKLİ: `capacity()` ve index.ts'teki `capacityLow` yalnızca ALARM
+  // üretiyordu — hiçbir şey yeni kurulumu DURDURMUYORDU. Canlı ölçüm (25 Eyl):
+  // 168 cihaz → RAM 201/250 GB, swap %100 doldu, "Sunucu kaynağı kritik" alarmı
+  // 48 kez tekrarlandı ve kurulum yine de açıktı. RAM tamamen biterse OOM killer
+  // rastgele cihazları öldürür — kayıtlı WhatsApp oturumları gider. Bu yüzden
+  // artık kurulum, yer kalmadığında REDDEDİLİR.
+  //
+  // TASARIM KARARLARI:
+  //  ★ `capacity()` ile AYNI hesabı kullanır (disk 8GB + RAM 1.5GB/cihaz). Ayrı bir
+  //    formül yazılmadı: iki yer ayrışırsa panel "5 sar" der, kurulum reddeder →
+  //    operatör neye inanacağını bilemez.
+  //  ★ FAIL-OPEN: host metriği yoksa/ölçülemiyorsa ENGELLEMEZ. Bozuk bir heartbeat
+  //    yüzünden tüm kurulumun durması, dolu diskten daha büyük bir arızadır.
+  //  ★ EŞIK ENV'DEN: FLEET_PROVISION_MIN_FITS (varsayılan 3). `0` yazılırsa kilit
+  //    TAMAMEN kapanır — acil çıkış, deploy gerektirmez.
+  //  ★ Toplu kurulumda `createBatch` bu hatayı yakalayıp döngüye devam eder, yani
+  //    20'lik bir parti yer bittiği anda zarifçe durur ve kalanı `failed`e yazar.
+  private async assertCapacity(hostId: string, workspaceId?: string): Promise<void> {
+    const MIN_FITS = Number(process.env.FLEET_PROVISION_MIN_FITS ?? 3);
+    if (!Number.isFinite(MIN_FITS) || MIN_FITS <= 0) return; // kilit kapalı
+    const cap = await this.capacity(workspaceId).catch(() => null);
+    if (!cap) return; // ölçülemedi → engelleme (fail-open)
+    const host = cap.hosts.find((h) => h.id === hostId);
+    if (!host) return; // bu host metrikte yok → engelleme
+    // Metrik hiç gelmemişse (ikisi de null) karar veremeyiz → engelleme.
+    if (host.ramFreeGb === null && host.diskFreeGb === null) return;
+    if (host.fits >= MIN_FITS) return;
+    throw new AppError(
+      `Sunucu kapasitesi doldu — yeni cihaz kurulumu durduruldu. ` +
+        `Şu an ${host.runningPhones} cihaz çalışıyor, yalnızca ~${host.fits} cihazlık yer kaldı ` +
+        `(boş RAM ${host.ramFreeGb ?? '?'}GB, boş disk ${host.diskFreeGb ?? '?'}GB). ` +
+        `RAM tamamen biterse çekirdek rastgele cihazları öldürür ve WhatsApp oturumları kaybolur. ` +
+        `Çözüm: birkaç cihazı uyutun/silin ya da sunucuya RAM ekleyin.`,
+      409,
+      'HOST_CAPACITY_EXHAUSTED'
+    );
+  }
+
   // CPU pressure per host + the sleepable ("idle-candidate") devices on hot hosts.
   // The dashboard uses this to warn "CPU yüksek — boşta cihazları uyut?" and offer
   // a manual bulk-sleep. We deliberately do NOT auto-sleep (an operator decides):
@@ -343,6 +384,10 @@ class ProvisionService {
       select: { id: true }
     });
     if (!host) throw new AppError('No online KVM host available for provisioning', 409, 'NO_ONLINE_HOST');
+
+    // ★SERT KAPASİTE KONTROLÜ — yer yoksa buradan öteye geçilmez (bkz. assertCapacity).
+    // Device satırı AÇILMADAN ÖNCE: böylece reddedilen kurulum DB'de yetim kayıt bırakmaz.
+    await this.assertCapacity(host.id, workspaceId);
 
     // Race guard: two concurrent one-click provisions on the same host must not
     // allocate the same instance name/subnet (nextInstanceName is check-then-act

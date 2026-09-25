@@ -219,7 +219,8 @@ function InfraMeters({ metrics }: { metrics: DeckMetric[] }) {
 /* ── terminal-style ops log ── */
 function OpsConsole({ jobs }: { jobs: DeckJob[] }) {
   const fmt = (iso: string) => {
-    try { return new Date(iso).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+    // Sabit saat dilimi: sunucu (UTC) ile tarayıcı aynı metni üretsin — yoksa React #418 (hydration).
+    try { return new Date(iso).toLocaleTimeString('tr-TR', { timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
     catch { return '--:--:--'; }
   };
   return (

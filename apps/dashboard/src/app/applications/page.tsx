@@ -1,4 +1,5 @@
 import { serverFetch } from '../../lib/serverFetch';
+import { pickDevices } from '../../lib/pickDevice';
 import { ApplicationsView, type AppDevice, type BundledApk } from './ApplicationsView';
 
 export const metadata = { title: 'Uygulamalar · VPS Fleet' };
@@ -12,7 +13,7 @@ export default async function ApplicationsPage() {
 
   return (
     <ApplicationsView
-      devices={devicesRes?.data ?? []}
+      devices={pickDevices(devicesRes?.data, ['id', 'name']) as AppDevice[]}
       bundledApks={apksRes?.data ?? []}
     />
   );

@@ -81,6 +81,34 @@ export type AgentJob = {
 };
 
 export class AgentService {
+  // ★★★2026-09-28 MEŞGUL CİHAZ KALKANI — sessiz mesaj kaybının kökü.
+  // Agent bir cihazda iş çalışırken aynı cihaz için gelen ikinci işi bekletiyor, ÜÇÜNCÜYÜ
+  // ise hiç çalıştırmadan ÇÖPE atıyordu ("reaper re-queue eder" varsayımıyla, agent.mjs
+  // sameDeviceWaiters). Oysa reaper RUNNING bir gönderimi yeniden kuyruğa ALMAZ (çift
+  // teslim riski) — 6 dk sonra FAILED yapar → mesaj KALICI kayıp. CANLI ÖLÇÜM: 8 günde
+  // 208 gönderim (%6-7) + yüzlerce okundu-bilgisi işi böyle düştü; hepsi claimedAt dolu,
+  // agent logunda izi yok. Agent yorumu "API'nin tekil iş kalkanı meşgul cihaza ikinci iş
+  // vermez" diyordu ama öyle bir kalkan HİÇ yoktu. Burada kuruluyor: bu host'ta RUNNING
+  // işi olan cihaza yeni iş VERİLMEZ; iş PENDING kalır → cihaz boşalınca alınır, olmazsa
+  // PENDING reaper gönderimi GÜVENLE yeniden kuyruğa alır (hiç sahiplenilmediği için).
+  // Takılı RUNNING işler reaper'ın 6/15 dk sınırıyla zaten temizlenir → cihaz sonsuza kilitlenmez.
+  private async busyDeviceIds(hostId: string, deviceIds: string[]): Promise<Set<string>> {
+    const running = await prisma.job.findMany({
+      where: {
+        status: 'RUNNING',
+        claimedByHostId: hostId,
+        OR: [{ deviceId: { in: deviceIds } }, { emulatorId: { in: deviceIds } }]
+      },
+      select: { deviceId: true, emulatorId: true }
+    });
+    const busy = new Set<string>();
+    for (const r of running) {
+      const id = r.deviceId ?? r.emulatorId;
+      if (id) busy.add(id);
+    }
+    return busy;
+  }
+
   // Atomically claims the oldest PENDING job belonging to a device assigned to
   // this host. updateMany with a status guard makes the claim race-safe: only
   // one agent can flip a given job from PENDING to RUNNING.
@@ -121,6 +149,7 @@ export class AgentService {
       orderBy: { createdAt: 'asc' },
       take: 25
     });
+    const busyDevices = await this.busyDeviceIds(host.id, deviceIds);
 
     for (const job of candidates) {
       const payload = (job.payload as Record<string, unknown>) ?? {};
@@ -142,6 +171,8 @@ export class AgentService {
         return { id: job.id, type: job.type, payload: this.materializePayload(payload), serial: null };
       }
       if (!deviceId || !deviceIds.includes(deviceId)) continue;
+      // Busy-device shield (see busyDeviceIds).
+      if (busyDevices.has(deviceId)) continue;
 
       // Cross-tenant guard: refuse to run a job on a device that belongs to a
       // different workspace than the job. (Jobs created without a workspace —
@@ -221,7 +252,9 @@ export class AgentService {
     });
 
     const claimedJobs: AgentJob[] = [];
-    const claimedDevices = new Set<string>();
+    // Seeded with devices that ALREADY run a job on this host (busy-device shield, see
+    // busyDeviceIds) — so "one job per device" now spans in-flight work, not just this batch.
+    const claimedDevices = await this.busyDeviceIds(host.id, deviceIds);
     for (const job of candidates) {
       if (claimedJobs.length >= cap) break;
       const payload = (job.payload as Record<string, unknown>) ?? {};

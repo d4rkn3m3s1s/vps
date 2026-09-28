@@ -364,14 +364,18 @@ export class BatchService {
       select: { id: true, status: true, error: true }
     });
     if (!acc) throw new AppError('Hesap bulunamadı', 404, 'ACCOUNT_NOT_FOUND');
-    // The register job folds accountId into its payload; find the latest one.
-    const jobs = await prisma.job.findMany({
-      where: { type: 'REGISTER_WHATSAPP', ...(workspaceId ? { workspaceId } : {}) },
+    // The register job folds accountId into its payload; match it IN the DB.
+    // ★2026-09-28: eskiden son 30 kayıt işini (kareleriyle birlikte) çekip bellekte
+    // arıyordu → 30'dan fazla kayıtlık toplu işte eski hesabın kareleri boş geliyordu.
+    const job = await prisma.job.findFirst({
+      where: {
+        type: 'REGISTER_WHATSAPP',
+        payload: { path: ['accountId'], equals: id },
+        ...(workspaceId ? { workspaceId } : {})
+      },
       orderBy: { createdAt: 'desc' },
-      take: 30,
-      select: { id: true, payload: true, result: true, status: true, error: true, createdAt: true }
+      select: { id: true, result: true, status: true }
     });
-    const job = jobs.find((j) => (j.payload as { accountId?: string } | null)?.accountId === id);
     const result = (job?.result ?? {}) as { shots?: Array<{ label: string; ts: string; png: string }>; status?: string; note?: string };
     return {
       accountId: id,

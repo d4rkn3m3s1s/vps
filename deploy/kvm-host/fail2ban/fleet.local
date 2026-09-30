@@ -1,0 +1,22 @@
+# ★2026-10-01 FLEET fail2ban — yalnız SSH (22 + acil 2222).
+# Neden: günde ~2400 kaba kuvvet denemesi (768 Invalid user, 519 preauth kapanış/24s).
+# Parola girişi zaten kapalı (yalnız anahtar) → bu, zarar değil gürültü/yük kesme önlemi.
+# ★TASARIM: ban kuralları AYRI nftables tablosunda (nftables-multiport). Waydroid'in
+#   iptables-LEGACY kurallarına / FORWARD zincirine DOKUNMAZ (kurulum hızını O(N) kural
+#   şişmesi yavaşlatmıştı — 22 Ağu dersi). Yalnız INPUT'ta SSH portları.
+# ★Kendini kilitleme yok: bizim girişler "Accepted publickey" — filtre saymaz; iç ağlar muaf.
+[DEFAULT]
+banaction = nftables-multiport
+banaction_allports = nftables-allports
+backend = systemd
+ignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 192.168.0.0/16 172.16.0.0/12 176.88.125.248
+bantime = 1h
+bantime.increment = true
+bantime.maxtime = 1w
+findtime = 10m
+maxretry = 5
+
+[sshd]
+enabled = true
+port = 22,2222
+mode = aggressive

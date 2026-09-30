@@ -279,7 +279,10 @@ async function readWaConversations(serial, limit = 50) {
 // (jid_map.lid_row_id → the real number jid). Each helper returns null on root/db
 // failure so callers can fall back. status codes (VERIFIED LIVE across mi2/4/8/11):
 //   5 = SENT (single tick) · 6 = DELIVERED (double grey) · 13 = READ (blue).
-const WA_MSG_STATUS = { 5: 'SENT', 6: 'DELIVERED', 13: 'READ' };
+// ★★2026-10-01 DÜZELTİLDİ — eski eşleme {5:SENT, 6:DELIVERED} YANLIŞTI. Canlı ölçüm (mi407 +
+// mi418, 3 gün, giden): 13/metin=okundu · 5/metin=teslim · 4/metin=tek tik · 6 YALNIZ
+// message_type=7 (metinsiz SİSTEM satırı). 20 = teslim EDİLMEDİ (kısıtlı hesap, 19 Ağu notu).
+const WA_MSG_STATUS = { 4: 'SENT', 5: 'DELIVERED', 13: 'READ', 20: 'UNDELIVERED' };
 function waStatusName(code) { return WA_MSG_STATUS[Number(code)] || 'PENDING'; }
 
 // A reusable "chat_row_id for this number" sub-select — LID path UNION direct path.
@@ -11704,9 +11707,9 @@ async function mediaCaptureTick() {
 // 1058 OUT mesajın HİÇBİRİ DELIVERED/READ olmadı. Tek tik yolu (pushOutgoingReceipt)
 // yalnızca sohbet EKRANDA AÇIKKEN UI'dan okuyor; gönderim bitince sohbet kapandığı
 // için pratikte hiç tetiklenmiyordu. Oysa WhatsApp durumu kendi DB'sine yazıyor
-// (msgstore.message.status: 5 gönderildi · 6 teslim · 13 okundu — mi2/4/8/11'de doğrulandı).
+// (msgstore.message.status: 4 tek tik · 5 teslim · 13 okundu · 20 teslim EDİLMEDİ; 6 = sistem satırı — 1 Eki ölçüldü).
 // NASIL: 15 dk'da bir her boştaki cihazda TEK salt-okur SQL (mi407'de 0.2 sn, ekran YOK →
-// ban yüzeyi sıfır), son 48 saatin 6/13'lü giden mesajları. Yalnız DEĞİŞENLER API'ye
+// ban yüzeyi sıfır), son 48 saatin 5/13/20'li giden mesajları (20 → API kısıt uyarısı). Yalnız DEĞİŞENLER API'ye
 // gider (cihaz başına bellekte son durum); API her tiki kendi mesajına eşler (numara +
 // zaman ±15 dk + metin başı) ve monoton ilerletir. Kapatma: FLEET_WA_RECEIPT_SWEEP=0.
 const WA_RECEIPT_SWEEP_ENABLED = process.env.FLEET_WA_RECEIPT_SWEEP !== '0';
@@ -11714,18 +11717,23 @@ const WA_RECEIPT_SWEEP_MS = Math.max(300000, Number(process.env.FLEET_WA_RECEIPT
 const waReceiptSeen = new Map(); // serial -> Map("to|ts" -> status)
 let _receiptSweepRunning = false;
 
-async function readWaOutboundTicks(serial) {
+// İlk tur (açılış) 7 gün geriye bakar → agent kapalıyken/düzeltmeden önce kaçan tikler yakalanır;
+// sonraki turlar 48 saat. (★2026-10-01: yanlış eşlemeyle yazılan DELIVERED'lar sıfırlandı,
+// ilk tur onların gerçek durumunu yeniden yazar.)
+let _receiptFirstRun = true;
+async function readWaOutboundTicks(serial, windowSec = 172800, limit = 400) {
   const sql =
     `SELECT COALESCE(jn.user, j.user), m.timestamp, m.status, ` +
     `replace(replace(substr(m.text_data,1,60),char(10),' '),char(13),' ') ` +
     `FROM message m JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
     `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
-    `WHERE m.from_me=1 AND m.status IN (6,13) AND m.timestamp>(strftime('%s','now')-172800)*1000 ` +
+    // ★2026-10-01 5=teslim (6 DEĞİL — 6 sistem satırı) · 13=okundu · 20=teslim EDİLMEDİ (kısıt sinyali).
+    `WHERE m.from_me=1 AND m.status IN (5,13,20) AND m.timestamp>(strftime('%s','now')-${Number(windowSec) | 0})*1000 ` +
     // ★2026-10-01 message_type 7 = SİSTEM satırı (gerçek mesaj değil). 30 Eyl 21:13:30'da WA
     // 34 cihazda aynı saniyede from_me=1 bir sistem satırı (action 67) üretti → 47 boş tik
     // gönderildi, hiçbiri eşleşmedi. Ayrıca '0@s.whatsapp.net' gibi numara olmayan jid'ler.
     `AND m.message_type!=7 AND length(COALESCE(jn.user,j.user))>=7 ` +
-    `AND COALESCE(jn.server,j.server)='s.whatsapp.net' ORDER BY m.timestamp DESC LIMIT 400`;
+    `AND COALESCE(jn.server,j.server)='s.whatsapp.net' ORDER BY m.timestamp DESC LIMIT ${Number(limit) | 0}`;
   const rows = await waSql(serial, 'msgstore', sql);
   if (rows === null) return null;
   const out = [];
@@ -11735,7 +11743,8 @@ async function readWaOutboundTicks(serial) {
     const to = (p[0] || '').replace(/[^\d]/g, '');
     const ts = Number(p[1]) || 0;
     if (!to || !ts) continue;
-    out.push({ to, ts, status: p[2] === '13' ? 'READ' : 'DELIVERED', text: p.slice(3).join('|') });
+    const status = p[2] === '13' ? 'READ' : p[2] === '20' ? 'UNDELIVERED' : 'DELIVERED';
+    out.push({ to, ts, status, text: p.slice(3).join('|') });
   }
   return out;
 }
@@ -11743,14 +11752,15 @@ async function readWaOutboundTicks(serial) {
 async function receiptSweepTick() {
   if (!WA_RECEIPT_SWEEP_ENABLED || _receiptSweepRunning) return;
   _receiptSweepRunning = true;
-  let sent = 0, advanced = 0, devs = 0;
+  const first = _receiptFirstRun;
+  let sent = 0, advanced = 0, devs = 0, undelivered = 0;
   try {
     const serials = await reachableSerials();
     // 6'lı küçük paralel: inbox turuyla (12'li) üst üste binse bile ADB'yi doyurmasın.
     for (let i = 0; i < serials.length; i += 6) {
       await Promise.all(serials.slice(i, i + 6).map(async (serial) => {
         if (busyDevices.has(serial)) return; // iş süren cihaz bir sonraki tura kalır
-        const ticks = await readWaOutboundTicks(serial).catch(() => null);
+        const ticks = await (first ? readWaOutboundTicks(serial, 604800, 2000) : readWaOutboundTicks(serial)).catch(() => null);
         if (!ticks) return;
         const prev = waReceiptSeen.get(serial) || new Map();
         const cur = new Map();
@@ -11762,19 +11772,25 @@ async function receiptSweepTick() {
         }
         if (!changed.length) { waReceiptSeen.set(serial, cur); return; }
         try {
-          const { data } = await api('/agent/whatsapp/receipts', {
-            method: 'POST',
-            body: JSON.stringify({ serial, items: changed.slice(0, 500) }),
-          }, { timeoutMs: 20000 });
+          // API şeması parça başına ≤500 tik kabul eder (ilk 7 günlük turda daha fazlası olabilir).
+          for (let k = 0; k < changed.length; k += 500) {
+            const { data } = await api('/agent/whatsapp/receipts', {
+              method: 'POST',
+              body: JSON.stringify({ serial, items: changed.slice(k, k + 500) }),
+            }, { timeoutMs: 30000 });
+            advanced += Number(data && data.advanced) || 0;
+            undelivered += Number(data && data.undelivered) || 0;
+          }
           // Yalnız BAŞARILI gönderimde hatırla → API düşükse bir sonraki tur tekrar dener.
           waReceiptSeen.set(serial, cur);
-          devs++; sent += changed.length; advanced += Number(data && data.advanced) || 0;
+          devs++; sent += changed.length;
         } catch (err) {
           if (!/->\s*404\b/.test(String(err && err.message))) log(`receipt sweep ${serial} failed:`, err.message);
         }
       }));
     }
-    if (sent) log(`receipt sweep: ${devs} cihaz, ${sent} tik gönderildi, ${advanced} mesaj ilerledi`);
+    if (sent) log(`receipt sweep${first ? ' (ilk tur, 7 gün)' : ''}: ${devs} cihaz, ${sent} tik gönderildi, ${advanced} mesaj ilerledi${undelivered ? `, ${undelivered} TESLİM EDİLMEDİ` : ''}`);
+    _receiptFirstRun = false;
   } catch (err) {
     log('receipt sweep tick failed:', err.message);
   } finally {

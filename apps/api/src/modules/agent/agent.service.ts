@@ -1844,20 +1844,21 @@ export class AgentService {
   // Monotonluk + webhook advanceOutboundReceipt'te (READ geri DELIVERED'a düşmez).
   async recordWhatsappReceiptBatch(
     host: Host,
-    input: { serial: string; items: Array<{ to: string; ts: number; status: 'DELIVERED' | 'READ'; text?: string | undefined }> }
-  ): Promise<{ matched: number; advanced: number; unmatched: number }> {
+    input: { serial: string; items: Array<{ to: string; ts: number; status: 'DELIVERED' | 'READ' | 'UNDELIVERED'; text?: string | undefined }> }
+  ): Promise<{ matched: number; advanced: number; unmatched: number; undelivered: number }> {
     const devices = await prisma.device.findMany({
       where: { hostId: host.id },
-      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true }
+      select: { id: true, name: true, ipAddress: true, adbPort: true, workspaceId: true, metadata: true }
     });
     const device = devices.find((d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial);
-    if (!device || !input.items.length) return { matched: 0, advanced: 0, unmatched: input.items.length };
+    if (!device || !input.items.length) return { matched: 0, advanced: 0, unmatched: input.items.length, undelivered: 0 };
 
     const oldest = Math.min(...input.items.map((i) => i.ts)) - 20 * 60 * 1000;
     const cands = await prisma.whatsappMessage.findMany({
       where: { deviceId: device.id, direction: 'OUT', status: { in: ['SENT', 'DELIVERED'] }, createdAt: { gte: new Date(oldest) } },
-      select: { id: true, peer: true, body: true, waTimestamp: true, createdAt: true }
+      select: { id: true, peer: true, body: true, waTimestamp: true, createdAt: true, status: true }
     });
+    const statusOf = new Map(cands.map((c) => [c.id, c.status]));
     // Metin karşılaştırması: boşluk/satır sonu tek boşluk, ilk 24 kod noktası.
     // (sqlite substr karakter sayar, JS slice UTF-16 birimi — emoji'de kaymasın diye
     // Array.from ile kod noktası bazında kesilir ve kısa bir önek yeterli sayılır.)
@@ -1871,7 +1872,7 @@ export class AgentService {
       byPeer.set(c.peer, list);
     }
     const used = new Set<string>();
-    let matched = 0, advanced = 0, unmatched = 0;
+    let matched = 0, advanced = 0, unmatched = 0, undelivered = 0;
     // Eskiden yeniye uygula → sohbet listesindeki tik en son mesajın durumunda kalır.
     for (const it of [...input.items].sort((a, b) => a.ts - b.ts)) {
       const list = (byPeer.get(normalizePeer(it.to)) ?? []).filter((c) => !used.has(c.id) && Math.abs(c.at - it.ts) <= 15 * 60 * 1000);
@@ -1883,6 +1884,18 @@ export class AgentService {
       const best = pool.reduce((a, b) => (Math.abs(a.at - it.ts) <= Math.abs(b.at - it.ts) ? a : b));
       used.add(best.id);
       matched++;
+      if (it.status === 'UNDELIVERED') {
+        // ★2026-10-01 msgstore status=20: WhatsApp mesajı TESLİM ETMEDİ (kısıtlı hesabın en
+        // erken sinyali — ekranda "gönderildi" görünür, alıcıya hiçbir şey gitmez). Yalnız hâlâ
+        // SENT olanı FAILED yap (teslim/okundu görmüş bir mesajı asla geri çekme).
+        if (statusOf.get(best.id) === 'SENT') {
+          await prisma.whatsappMessage
+            .update({ where: { id: best.id }, data: { status: 'FAILED', statusAt: new Date(), failReason: 'Teslim edilemedi (WhatsApp status=20) — hesap kısıtlı olabilir' } })
+            .then(() => { undelivered++; })
+            .catch(() => undefined);
+        }
+        continue;
+      }
       const r = await whatsappService.advanceOutboundReceipt({
         deviceId: device.id,
         workspaceId: device.workspaceId ?? null,
@@ -1892,7 +1905,35 @@ export class AgentService {
       }).catch(() => ({ advanced: false }));
       if (r.advanced) advanced++;
     }
-    return { matched, advanced, unmatched };
+    if (undelivered > 0) await this.warnUndelivered(device).catch(() => undefined);
+    return { matched, advanced, unmatched, undelivered };
+  }
+
+  // ★2026-10-01 KISITLI HESAP ERKEN UYARISI. Son 24 saatte bu cihazdan ≥2 mesaj WhatsApp
+  // tarafından teslim edilmediyse (status=20) operatörü uyar. Hesap durumuna DOKUNMAZ
+  // (otomatik RESTRICTED parka alma yanlış pozitifte sağlam hesabı durdurur — 19 Ağu dersi);
+  // yalnız haber verir. Cihaz başına 12 saatte en fazla bir uyarı.
+  private readonly undeliveredWarned = new Map<string, number>();
+  private async warnUndelivered(device: { id: string; name: string; workspaceId: string | null; metadata: unknown }): Promise<void> {
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const [fails, ok] = await Promise.all([
+      prisma.whatsappMessage.count({ where: { deviceId: device.id, direction: 'OUT', status: 'FAILED', failReason: { startsWith: 'Teslim edilemedi (WhatsApp status=20)' }, statusAt: { gte: since } } }),
+      prisma.whatsappMessage.count({ where: { deviceId: device.id, direction: 'OUT', status: { in: ['DELIVERED', 'READ'] }, createdAt: { gte: since } } })
+    ]);
+    if (fails < 2) return;
+    const last = this.undeliveredWarned.get(device.id) ?? 0;
+    if (Date.now() - last < 12 * 3600 * 1000) return;
+    this.undeliveredWarned.set(device.id, Date.now());
+    const inst = String((device.metadata as { instance?: string } | null)?.instance ?? '');
+    const acc = await prisma.generatedAccount
+      .findFirst({ where: { deviceId: device.id, platform: 'whatsapp', status: 'ACTIVE' }, select: { phoneNumber: true } })
+      .catch(() => null);
+    const who = [inst || device.name, acc?.phoneNumber].filter(Boolean).join(' · ');
+    const title = `⚠️ Kısıtlı olabilir: ${who}`;
+    const detail = `Son 24 saatte ${fails} mesaj WhatsApp tarafından TESLİM EDİLMEDİ (ekranda gönderildi görünse de alıcıya gitmedi; msgstore status=20). Aynı sürede ${ok} mesaj teslim/okundu. Bu, hesap kısıtlamasının en erken işaretidir — bu cihazdan yeni sohbet başlatmayı durdurun ve /hesaplar ile kontrol edin.`;
+    logger.warn('wa undelivered warning', { deviceId: device.id, instance: inst, fails, ok });
+    void alertsService.evaluate(device.workspaceId ?? undefined, 'ACCOUNT_BANNED', { title, detail });
+    void notificationsService.dispatch(device.workspaceId ?? '', { title, detail }).catch(() => undefined);
   }
 
   // Proactive health-watch alert from the host-side wd-health-watch.sh script: a

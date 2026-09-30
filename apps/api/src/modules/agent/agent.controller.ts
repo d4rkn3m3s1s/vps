@@ -123,7 +123,7 @@ const whatsappReceiptBatchSchema = z.object({
   items: z.array(z.object({
     to: z.string().min(1).max(40),
     ts: z.coerce.number().int().positive(),
-    status: z.enum(['DELIVERED', 'READ']),
+    status: z.enum(['DELIVERED', 'READ', 'UNDELIVERED']),
     text: z.string().max(400).optional()
   })).max(500)
 });

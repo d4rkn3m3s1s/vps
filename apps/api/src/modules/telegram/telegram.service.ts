@@ -31,6 +31,7 @@ import {
 } from './ops.service';
 import { splitLeadingPhone } from '../../lib/phone';
 import { tgRegister } from './tg-register.service';
+import { renderFleetHealthV2, renderStatusV2, renderDevicesV2, renderAccountsV2, renderBanWaveV2 } from './tg-health';
 
 const deviceService = new DeviceService();
 
@@ -432,6 +433,19 @@ const MAIN_MENU: InlineButton[][] = [
 
 // Operasyon (teşhis/onarım) ekranlarının altındaki menü — buradan hızlıca diğer
 // operasyon komutlarına geçilebilsin, her seferinde /menu'ye dönmek gerekmesin.
+// /cihazlar ekranının altı.
+const DEVICES_MENU: InlineButton[][] = [
+  [{ text: '🔄 Yenile', callback_data: 'devices' }, { text: '🩺 Sağlık', callback_data: 'health' }],
+  [{ text: '🔧 Kurtar', callback_data: 'ops:fix' }, { text: '🏠 Ana menü', callback_data: 'menu' }]
+];
+
+// /saglik ekranının altı: tek dokunuşla yenile + en sık bakılan ilgili ekranlar.
+const HEALTH_MENU: InlineButton[][] = [
+  [{ text: '🔄 Yenile', callback_data: 'health' }, { text: '🌐 Proxy', callback_data: 'ops:proxy' }],
+  [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🔧 Kurtar', callback_data: 'ops:fix' }],
+  [{ text: '🏠 Ana menü', callback_data: 'menu' }]
+];
+
 const OPS_MENU: InlineButton[][] = [
   [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🌐 Proxy', callback_data: 'ops:proxy' }],
   [{ text: '🔧 Kurtar', callback_data: 'ops:fix' }, { text: '☀️ Özet', callback_data: 'ops:digest' }],
@@ -660,6 +674,12 @@ async function renderThread(
 }
 
 async function listDevicesText(workspaceId: string): Promise<{ text: string; buttons: InlineButton[][] }> {
+  // ★2026-09-30 v2 (tg-health.ts): sorunlular üstte + WA/internet durumu + kompakt tam liste.
+  try {
+    return { text: await renderDevicesV2(workspaceId), buttons: DEVICES_MENU };
+  } catch (e) {
+    logger.warn('tg /cihazlar v2 failed, falling back', { error: String(e) });
+  }
   const devices = await deviceService.listDevices(workspaceId);
   if (!devices.length) return { text: 'Bu çalışma alanında cihaz yok.', buttons: MAIN_MENU };
   const lines = devices.map((d) => {
@@ -737,6 +757,11 @@ async function renderLabels(workspaceId: string): Promise<{ text: string; button
 
 // One-glance status: device online counts + total unread across all devices.
 async function renderStatus(workspaceId: string): Promise<string> {
+  try {
+    return await renderStatusV2(workspaceId);
+  } catch (e) {
+    logger.warn('tg /durum v2 failed, falling back', { error: String(e) });
+  }
   const devices = await deviceService.listDevices(workspaceId);
   const online = devices.filter((d) => d.status === 'ONLINE').length;
   // Sum unread across ALL of this workspace's devices in ONE grouped query instead
@@ -812,6 +837,13 @@ async function findDeviceByRef(
 // Grup 1 — /saglik: fleet-health özeti (cihaz online/offline/error + WA hesap
 // sağlık dağılımı + host yük). Panelin canlı sağlık panelinin metin karşılığı.
 async function renderFleetHealth(workspaceId: string): Promise<string> {
+  // ★2026-09-30: v2 (tg-health.ts) — yalnız YAŞAYAN filo + proxy/kota + bekçi + mesaj + uyarılar.
+  // Eski gövde aşağıda yedek olarak duruyor; v2 patlarsa ona düşülür (rapor asla boş dönmez).
+  try {
+    return await renderFleetHealthV2(workspaceId);
+  } catch (e) {
+    logger.warn('tg /saglik v2 failed, falling back', { error: String(e) });
+  }
   const h = await fleetHealthService.health(workspaceId);
   const d = h.devices;
   const w = h.waAccounts;
@@ -862,6 +894,11 @@ async function deviceNameMap(workspaceId: string, deviceIds: Array<string | null
 // Grup 3 — /hesaplar: tüm WhatsApp hesapları + sağlık rozeti (cihaz + numara).
 // Health lives on GeneratedAccount.status (RESTRICTED/BANNED/LOGGED_OUT/ACTIVE…).
 async function renderWaAccounts(workspaceId: string): Promise<string> {
+  try {
+    return await renderAccountsV2(workspaceId);
+  } catch (e) {
+    logger.warn('tg /hesaplar v2 failed, falling back', { error: String(e) });
+  }
   const accounts = await prisma.generatedAccount.findMany({
     where: { platform: 'whatsapp', ...(workspaceId ? { workspaceId } : {}) },
     select: { phoneNumber: true, status: true, deviceId: true },
@@ -972,6 +1009,11 @@ async function renderPendingRegistrations(workspaceId: string): Promise<string> 
 
 // Grup 3 — /banlar: son ban/kısıt dalgası (son 7 gün, BANNED/RESTRICTED/LOGGED_OUT).
 async function renderBanWave(workspaceId: string): Promise<string> {
+  try {
+    return await renderBanWaveV2(workspaceId);
+  } catch (e) {
+    logger.warn('tg /banlar v2 failed, falling back', { error: String(e) });
+  }
   const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const bad = await prisma.generatedAccount.findMany({
     where: {
@@ -1579,7 +1621,7 @@ async function handleCommand(
     lines.push('', '<i>2 GB altına düşünce otomatik uyarı gelir.</i>');
     await sendMessage(token, chatId, lines.join(String.fromCharCode(10)), MAIN_MENU);
   } else if (lower === '/saglik' || lower === 'saglik' || lower === '/sağlık' || lower === '/health') {
-    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), MAIN_MENU);
+    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), HEALTH_MENU);
   } else if (lower === '/uyandir' || lower.startsWith('/uyandir ') || lower.startsWith('uyandir ')) {
     const ref = cmd.replace(/^\/?uyandir\s*/i, '').trim();
     if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/uyandir &lt;cihaz&gt;</code> (isim / numara).', MAIN_MENU); return; }
@@ -1926,7 +1968,7 @@ async function handleCallback(
       await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
     }
   } else if (data === 'health') {
-    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), OPS_MENU);
+    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), HEALTH_MENU);
   } else if (data === 'ops:diag') {
     await sendMessage(token, chatId, await renderDiagnostics(workspaceId), OPS_MENU);
   } else if (data === 'ops:proxy') {

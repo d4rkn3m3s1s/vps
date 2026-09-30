@@ -581,6 +581,16 @@ while IFS='|' read -r inst meta_cc phone; do
         # Artık N ardışık başarısız restart'tan sonra pes edip cihazı DEGRADED
         # işaretliyoruz: TEK bildirim gider, restart durur, operatör bakar.
         # Sayaç, cihaz ADB'ye geri döndüğünde sıfırlanır (aşağıda, başarı yolunda).
+        # ★★2026-09-30 SİLİNMİŞ CİHAZI DİRİLTME HATASI. Tur 7-12 dk sürüyor ve cihaz listesi
+        # TUR BAŞINDA alınıyor; tur ortasında silinen cihaz listede kalıyor, ADB'ye ulaşılamayınca
+        # "zombie" sanılıp wd-run ile yeniden başlatılıyordu → konteyner yok ama weston+dbus+
+        # binderfs DİRİLİYOR ve öyle kalıyordu (CANLI: mi408 21:44 silindi→21:49 diriltildi, 6 gün
+        # boşa çalıştı; mi273 20:56→21:01). wd-destroy proxy config'ini VE konteyner dizinini siler;
+        # ikisi birden yoksa cihaz SİLİNMİŞTİR → dokunma. (Temkinli: yalnız İKİSİ de yoksa atla.)
+        if [ ! -f "/etc/redsocks-inst-$inst.conf" ] && [ ! -d "/var/lib/waydroid.$inst/lxc" ]; then
+          log "⏭ $inst: tur sırasında SİLİNMİŞ (proxy config + konteyner yok) — zombie-restart ATLANDI"
+          continue
+        fi
         ZFAIL_MAX="${WD_ZOMBIE_FAIL_MAX:-6}"
         ZF_DIR=/var/lib/wd-health; mkdir -p "$ZF_DIR" 2>/dev/null
         ZF_FILE="$ZF_DIR/zfail-$inst"

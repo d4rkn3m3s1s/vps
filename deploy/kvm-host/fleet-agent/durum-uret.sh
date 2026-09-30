@@ -292,8 +292,12 @@ while true; do
   # ════════════════════════════════════════════════════════════════════════
   # ★6 Eyl: 141/143 cihaz TEK proxy hesabına bağlıydı; o hesap düşünce filonun
   # tamamı çıkışsız kaldı. Tek hesaba bağımlılık SESSİZ bir tekil arıza noktası.
-  PTR=$(grep -l "port = 9999" /etc/redsocks-inst-*.conf 2>/dev/null | wc -l)
-  PAL=$(grep -l "port = 5555" /etc/redsocks-inst-*.conf 2>/dev/null | wc -l)
+  # ★30 Eyl: port rolleri 27 Eyl'de TERS döndü (mobil 5555, residential 9999) ve sabit
+  # "9999=TR mobil" varsayımı sayacı yanlış gösteriyordu (0/155). Portlar artık env'den.
+  MPORT=$(grep -oP '^FLEET_PROXY_MOBILE_PORT=\K[0-9]+' /etc/fleet-proxy.env 2>/dev/null); MPORT=${MPORT:-5555}
+  RPORT=$(grep -oP '^FLEET_PROXY_PORT=\K[0-9]+' /etc/fleet-proxy.env 2>/dev/null); RPORT=${RPORT:-9999}
+  PTR=$(grep -lE "^[[:space:]]*port = ${MPORT};" /etc/redsocks-inst-*.conf 2>/dev/null | wc -l)
+  PAL=$(grep -lE "^[[:space:]]*port = ${RPORT};" /etc/redsocks-inst-*.conf 2>/dev/null | wc -l)
   PTOP=$((PTR + PAL))
   if [ "$PTOP" -gt 0 ]; then PTRPCT=$(( PTR * 100 / PTOP )); else PTRPCT=0; fi
   IPKUME=$(awk -F'|' '{print $6}' "$S" 2>/dev/null | grep -E '^[0-9]' | cut -d. -f1-2 | sort -u | wc -l)
@@ -654,11 +658,11 @@ HEAD
     if   [ "$PTRPCT" -ge 95 ]; then HC=warn; HN="TEK HAVUZA BAĞIMLI — düşerse filo çıkışsız"
     elif [ "$PTRPCT" -ge 80 ]; then HC=warn; HN="ağırlık tek havuzda"
     else                           HC=ok;   HN="havuzlar dengeli"; fi
-    echo "<div class=\"card\"><div class=\"lbl\">Havuz dağılımı</div><div class=\"num sm $HC\">${PTR:-?}<span class=\"unit\">/${PAL:-?}</span></div><div class=\"sub\">TR mobil / AL residential · ${HN}</div></div>"
+    echo "<div class=\"card\"><div class=\"lbl\">Havuz dağılımı</div><div class=\"num sm $HC\">${PTR:-?}<span class=\"unit\">/${PAL:-?}</span></div><div class=\"sub\">mobil / residential · ${HN}</div></div>"
     [ "$DBOK" = "1" ] && [ -n "$ULKE" ] && echo "<div class=\"card\"><div class=\"lbl\">Ülke dağılımı</div><div class=\"num sm\">${ULKE}</div><div class=\"sub\">proxy ülkesine göre</div></div>"
     echo "</div>"
 
-    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"${CIKIS}\">kopyala</button></div><div class=\"body mono info\">${CIKIS}</div><div class=\"sub\">TR residential olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
+    [ -n "$CIKIS" ] && echo "<div class=\"wide\"><div class=\"lbl\">Proxy çıkış IP örnekleri<button class=\"cp\" data-kopya=\"${CIKIS}\">kopyala</button></div><div class=\"body mono info\">${CIKIS}</div><div class=\"sub\">TR/AL mobil olmalı · host IP <span class=\"mono\">${DCIP:-?}</span> — bu IP çıkarsa SIZINTI</div></div>"
     if [ -n "$PAYLST" ] && [ "${PAYMAX:-0}" -ge 2 ]; then
       echo "<div class=\"wide a-${PC}\"><div class=\"lbl\">Aynı çıkış IP'sini paylaşan cihazlar</div><div class=\"body mono\">${PAYLST}</div><div class=\"sub\">${PAYCIH} cihaz · ${PAYKUME} küme · en büyük küme ${PAYMAX} · IP(kaç cihaz) biçiminde</div></div>"
     fi

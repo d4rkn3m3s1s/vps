@@ -583,8 +583,15 @@ async function waHealthProbe(serial) {
   // ayni cihazda yiginda 23 BanAppeal kaydi vardi.
   const acts = await adb(serial, ['shell', 'dumpsys', 'activity', 'activities']).catch(() => '');
   // 1) YASAKLI — ban ekrani / ban metni / gorev yigininda ban aktivitesi
+  // ★★★2026-09-30 SOHBET ÖNİZLEMESİ BAN SANILIYORDU. Genel kelimeler (banned/suspended/
+  // yasakl/askıya) ekranın TAMAMINDA aranıyordu → sohbet listesindeki bir mesaj önizlemesi
+  // ("Yasaklı site diyor") sağlam mi189'u BANNED yaptı; BANNED monotonik olduğu için kalıcı
+  // parka düştü. Artık: kesin ban ifadeleri her zaman geçerli; genel kelimeler yalnız
+  // odak ana ekran/sohbet DEĞİLKEN (orada metin kullanıcı içeriğidir) dikkate alınır.
+  const onUserContent = /com\.whatsapp\/[\w.]*(HomeActivity|Conversation)/i.test(foc);
   if (/BanAppeal|userban/i.test(foc) || /BanAppeal|userban/i.test(acts)
-      || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz|banned|suspended|yasakl|askıya/i.test(scr)) {
+      || /can.?t use whatsapp|account can.?t use|hesab\w* whatsapp'?ı kullanamaz/i.test(scr)
+      || (!onUserContent && /banned|suspended|yasakl|askıya/i.test(scr))) {
     return { state: 'BANNED', evidence: (/BanAppeal|userban/i.test(acts) && !/BanAppeal|userban/i.test(foc)
       ? 'gorev yiginda BanAppealActivity (on planda bayat sohbet) | ' : '') + scr.slice(0, 260) };
   }

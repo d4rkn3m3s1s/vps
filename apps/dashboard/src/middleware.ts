@@ -26,22 +26,57 @@ function hmacKey(): Promise<CryptoKey> {
   return keyPromise;
 }
 
-async function isSessionValid(token: string | undefined): Promise<boolean> {
-  if (!token || !JWT_SECRET) return false;
+type Session = { sub?: string; role?: string; workspaceId?: string; workspaceRole?: string };
+
+// İmzası ve süresi doğrulanmış oturumun içeriğini döndürür; geçersizse null.
+async function readSession(token: string | undefined): Promise<Session | null> {
+  if (!token || !JWT_SECRET) return null;
   const parts = token.split('.');
-  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return false;
+  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return null;
   try {
     const header = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0]))) as { alg?: string };
-    if (header.alg !== 'HS256') return false;
+    if (header.alg !== 'HS256') return null;
     const ok = await crypto.subtle.verify('HMAC', await hmacKey(), b64urlToBytes(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`));
-    if (!ok) return false;
-    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as { exp?: number; typ?: string };
-    if (typeof payload.exp !== 'number' || payload.exp * 1000 <= Date.now()) return false;
-    if (payload.typ && payload.typ !== 'access') return false;
-    return true;
+    if (!ok) return null;
+    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1]))) as Session & { exp?: number; typ?: string };
+    if (typeof payload.exp !== 'number' || payload.exp * 1000 <= Date.now()) return null;
+    if (payload.typ && payload.typ !== 'access') return null;
+    return payload;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// ── ★2026-10-01 PANEL ROL AYRIMI ──────────────────────────────────────────────
+// Panelin /api/* rotaları backend'e SERVİS (admin) kimliğiyle gider; backend'in
+// requireRole/requireAdmin kapıları bu yüzden panel kullanıcısını HİÇ görmez. Rol,
+// imzası doğrulanmış oturum token'ından (backend'in verdiği) burada uygulanır.
+// Etkin rol: platform rolü 'admin' ise admin; değilse aktif workspace'teki üye rolü
+// (admin | operator | viewer); bilinmiyorsa en düşük (viewer) — fail-closed.
+// ★Admin için HİÇBİR ŞEY değişmez (bugün tek kullanıcı admin).
+function effectiveRole(s: Session): 'admin' | 'operator' | 'viewer' {
+  if (s.role === 'admin') return 'admin';
+  const r = s.workspaceRole ?? '';
+  return r === 'admin' || r === 'operator' ? r : 'viewer';
+}
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+// Salt-okur kullanıcının da yapabilmesi gereken yazma işlemleri (kendi oturumu).
+const SELF_SERVICE = ['/api/auth/logout', '/api/auth/2fa', '/api/workspaces/switch'];
+// Yalnız admin: kullanıcı/yetki/anahtar/fatura/yedek yönetimi (backend'de de requireAdmin).
+const ADMIN_ONLY = ['/api/users', '/api/api-keys', '/api/permissions', '/api/billing', '/api/backups'];
+// Operatör OKUYABİLİR ama değiştiremez: altyapı ve entegrasyon ayarları.
+const ADMIN_WRITE = ['/api/hosts', '/api/vast', '/api/webhooks', '/api/workspaces', '/api/audit'];
+const under = (path: string, list: string[]) => list.some((p) => path === p || path.startsWith(`${p}/`));
+
+// null = izin var; string = ret sebebi.
+function denyReason(path: string, method: string, role: 'admin' | 'operator' | 'viewer'): string | null {
+  if (role === 'admin' || !path.startsWith('/api/')) return null;
+  if (under(path, SELF_SERVICE)) return null;
+  if (under(path, ADMIN_ONLY)) return 'Bu bölüm yalnız yöneticiye açık.';
+  if (READ_METHODS.has(method)) return null;
+  if (role === 'viewer') return 'Salt-okur hesap: değişiklik yapamazsınız.';
+  if (under(path, ADMIN_WRITE)) return 'Bu ayarı yalnız yönetici değiştirebilir.';
+  return null;
 }
 
 // Ters-proxy (Caddy → 127.0.0.1:3000) arkasında `request.url` iç dinleme
@@ -72,7 +107,8 @@ function externalUrl(request: NextRequest, path: string): URL {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const rawSession = request.cookies.get('fleet_session')?.value;
-  const session = await isSessionValid(rawSession);
+  const sess = await readSession(rawSession);
+  const session = sess !== null;
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
@@ -105,6 +141,25 @@ export async function middleware(request: NextRequest) {
     const res = NextResponse.redirect(target);
     if (rawSession) res.cookies.set('fleet_session', '', { httpOnly: true, path: '/', maxAge: 0 });
     return res;
+  }
+
+  if (sess) {
+    const role = effectiveRole(sess);
+    // Workspace çerezi oturumun workspace'iyle uyuşmalı (admin hariç). Uyuşmazsa çerez
+    // elle değiştirilmiş demektir (meşru geçiş /api/workspaces/switch ile oturumu da
+    // yeniler) → başka kiracının verisine geçişi engelle, çerezi temizle.
+    const wsCookie = request.cookies.get('fleet_workspace')?.value;
+    if (role !== 'admin' && wsCookie && sess.workspaceId && wsCookie !== sess.workspaceId) {
+      const res = pathname.startsWith('/api/')
+        ? NextResponse.json({ error: 'FORBIDDEN', message: 'Bu çalışma alanına erişiminiz yok.' }, { status: 403 })
+        : NextResponse.redirect(externalUrl(request, pathname));
+      res.cookies.set('fleet_workspace', '', { httpOnly: true, path: '/', maxAge: 0 });
+      return res;
+    }
+    const why = denyReason(pathname, request.method.toUpperCase(), role);
+    if (why) {
+      return NextResponse.json({ error: why, code: 'FORBIDDEN' }, { status: 403 });
+    }
   }
 
   return NextResponse.next();

@@ -233,3 +233,54 @@ textarea.mono::placeholder { font-family: var(--font-sans); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
 }
+
+
+/* ★2026-10-01 MODAL EKRANIN ALTINDA AÇILIYORDU.
+   `backdrop-filter`, `transform` veya `filter` taşıyan bir ata, içindeki `position: fixed`
+   öğelerin referansını EKRANDAN O ATAYA kaydırır (CSS containing block kuralı). `.panel`
+   bulanık cam (backdrop-filter) + hover'da transform taşıdığı için panel İÇİNDE açılan her
+   modal (Hesap Üretici → Mesaj / Kareler ...) 5000 px'lik panelin ortasına, görünür alanın
+   çok altına düşüyordu (ölçüldü: modal y=2244, ekran 900). Modal açıkken yalnız o atanın
+   efektleri kapatılır — karartma zaten üstünü örttüğü için görsel fark yoktur.
+   (Etkenler: backdrop-filter, transform, filter, transform-style:preserve-3d, perspective.) */
+.panel:has(.modal-overlay),
+.hero-card:has(.modal-overlay),
+.holo-panel:has(.modal-overlay),
+.deck-kpi:has(.modal-overlay),
+.metric:has(.modal-overlay),
+.holo-stat:has(.modal-overlay),
+.holo-tilt-wrap:has(.modal-overlay) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transform: none !important;
+  filter: none !important;
+  /* holo-panel 3B eğim için preserve-3d taşıyor — o da containing block yaratır (ölçüldü). */
+  transform-style: flat !important;
+  perspective: none !important;
+}
+
+/* ★2026-10-01 HESAP TABLOSU OKUNAKSIZDI: uzun hata metni "Durum" sütununu genişletip
+   "whatsapp"ı 3, telefon numarasını 4 satıra bölüyordu. Kısa alanlar tek satır kalır,
+   hata metni kendi sütununda sarılır. (Yalnız Hesap Üretici tablosu: .acc-table) */
+.acc-table td { vertical-align: middle; }
+.acc-table td.acc-status { min-width: 220px; max-width: 360px; white-space: normal; }
+.acc-table td.acc-status .live-err { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.acc-table td.acc-nowrap { white-space: nowrap; }
+.acc-table thead th { white-space: nowrap; }
+.acc-table td strong.mono { white-space: nowrap; letter-spacing: 0.04em; } /* 6 haneli OTP ikiye bölünmesin */
+
+/* ★2026-10-01 MOBİL TAŞMALAR (400 px ölçümü): WhatsApp kenar çubuğu 18 px taşıyor (grid
+   çocuğunun min-width:auto'su içeriğe göre genişliyor), Çiftlik sekmeleri ekrana sığmayınca
+   kırpılıyordu. Sekmeler artık yatay kayar; grid çocukları taşmaz. */
+@media (max-width: 900px) {
+  .wa-web > * { min-width: 0; }
+  .wa-sidebar { max-width: 100%; }
+}
+@media (max-width: 640px) {
+  .holo-tabs {
+    display: flex; max-width: 100%;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .holo-tabs::-webkit-scrollbar { display: none; }
+  .holo-tab { flex: 0 0 auto; }
+}

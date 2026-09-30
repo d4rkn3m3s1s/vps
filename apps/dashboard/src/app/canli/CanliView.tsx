@@ -68,6 +68,25 @@ function hhmmss(iso: string): string {
   return Number.isNaN(d.getTime()) ? '--:--:--' : d.toLocaleTimeString('tr-TR', { hour12: false });
 }
 
+// ★2026-10-01 İş türü sütunu "WHAT…" diye kesiliyordu (WHATSAPP_SEND gibi uzun kodlar).
+const JOB_TYPE_TR: Record<string, string> = {
+  WHATSAPP_SEND: 'WA gönder',
+  WHATSAPP_SEND_MEDIA: 'WA medya',
+  WHATSAPP_READ: 'WA oku',
+  WHATSAPP_RECEIPTS: 'WA tik',
+  WHATSAPP_HEALTH: 'WA sağlık',
+  REGISTER_WHATSAPP: 'WA kayıt',
+  REGISTER_INSTAGRAM: 'IG kayıt',
+  DEVICE_WAKE: 'Uyandır',
+  DEVICE_REBOOT: 'Yeniden başlat',
+  PROVISION_DEVICE: 'Cihaz kurulum'
+};
+function jobTypeLabel(t: string): string {
+  if (JOB_TYPE_TR[t]) return JOB_TYPE_TR[t]!;
+  const s = t.replace(/^WHATSAPP_/, 'WA ').replace(/^INSTAGRAM_/, 'IG ').replace(/_/g, ' ').toLowerCase();
+  return s.replace(/^(wa|ig) /, (m) => m.toUpperCase());
+}
+
 export function CanliView() {
   const [requests, setRequests] = useState<OpsRequest[]>([]);
   const [jobs, setJobs] = useState<JobEvent[]>([]);
@@ -192,7 +211,7 @@ export function CanliView() {
   }
 
   return (
-    <PageMotion>
+    <PageMotion className="page">
       <HoloHeader
         eyebrow="CANLI OPERASYON"
         title="Canlı Akış"
@@ -324,7 +343,7 @@ export function CanliView() {
                   jobs.map((j) => (
                     <tr key={j.key}>
                       <td className="mono helper">{hhmmss(j.at)}</td>
-                      <td className="mono canli-path" title={j.type}>{j.type}</td>
+                      <td className="canli-path" title={j.type}>{jobTypeLabel(j.type)}</td>
                       <td>{JOB_STATUS_TR[j.status] ?? j.status}</td>
                     </tr>
                   ))

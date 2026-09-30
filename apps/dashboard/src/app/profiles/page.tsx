@@ -23,7 +23,13 @@ export default async function ProfilesPage() {
     serverFetch<AppOption[]>('/catalog/apps')
   ]);
 
-  const devices = devicesRes?.data ?? [];
+  // ★2026-10-01 SAYFA 911 kB → hafif: /devices her cihaza tam `host` nesnesini (aynı sunucu,
+  // 155 kez, ~88 kB) ekliyordu ve bu görünüm onu HİÇ kullanmıyor. TS tipi çalışma zamanında
+  // alan ATMAZ (26 Eyl dersi) → açıkça çıkarılır. fingerprint/metadata kullanılıyor, kalır.
+  const devices = (devicesRes?.data ?? []).map((d) => {
+    const { host: _host, ...rest } = d as DeviceProfile & { host?: unknown };
+    return rest as DeviceProfile;
+  });
   const groups = groupsRes?.data ?? [];
   const countries = countriesRes?.data ?? [];
   const proxies = proxiesRes?.data ?? [];

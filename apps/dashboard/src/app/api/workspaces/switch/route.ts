@@ -1,26 +1,38 @@
 import { NextResponse } from 'next/server';
-import { apiCall } from '../../../../lib/apiClient';
+import { cookies } from 'next/headers';
+
+const BASE_URL = process.env.API_BASE_URL ?? 'http://localhost:4000';
+const API_KEY = process.env.DEFAULT_API_KEY ?? '';
 
 // Sets the active workspace cookie. Server components + apiClient read this to
-// scope all data to the chosen workspace. Membership is validated by attempting
-// a real token switch through the service identity BEFORE writing the cookie —
-// if the backend rejects the switch, we refuse and never persist the workspace.
+// scope all data to the chosen workspace.
+//
+// ★2026-10-01 GÜVENLİK: üyelik eskiden SERVİS kimliğiyle (panelin admin hesabı) doğrulanıyordu
+// → admin her workspace'e geçebildiği için kontrol HER ZAMAN geçiyordu ve herhangi bir panel
+// kullanıcısı başka bir kiracının verisine geçebiliyordu. Artık KULLANICININ KENDİ oturum
+// token'ıyla (fleet_session) backend'de switch denenir: backend üyeliği gerçekten doğrular.
+// Başarılıysa dönen yeni token (o workspace'e + oradaki role kapsamlı) oturum çerezine yazılır,
+// böylece middleware'in rol kontrolü de doğru workspace rolünü görür.
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const workspaceId = (body as { workspaceId?: string }).workspaceId;
   if (!workspaceId) return NextResponse.json({ error: 'workspaceId required' }, { status: 400 });
 
-  // Gerçek üyelik kontrolü: backend'de switch dene. Başarısızsa cookie'yi YAZMA.
-  const switched = await apiCall(`/workspaces/${encodeURIComponent(workspaceId)}/switch`, {
+  const session = (await cookies()).get('fleet_session')?.value;
+  if (!session) return NextResponse.json({ error: 'Oturum yok' }, { status: 401 });
+
+  const res = await fetch(`${BASE_URL}/workspaces/${encodeURIComponent(workspaceId)}/switch`, {
     method: 'POST',
-    auth: true
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': API_KEY, Authorization: `Bearer ${session}` }
   });
-  if (!switched.ok) {
+  if (!res.ok) {
     return NextResponse.json(
       { error: 'Bu workspace\'e erişiminiz yok.' },
-      { status: switched.status === 401 ? 401 : 403 }
+      { status: res.status === 401 ? 401 : 403 }
     );
   }
+  const json = (await res.json().catch(() => ({}))) as { data?: { accessToken?: string } };
 
   const response = NextResponse.json({ ok: true });
   response.cookies.set('fleet_workspace', workspaceId, {
@@ -29,5 +41,14 @@ export async function POST(request: Request) {
     path: '/',
     maxAge: 60 * 60 * 24 * 30
   });
+  if (json.data?.accessToken) {
+    // Login rotasıyla aynı çerez ayarları (token ömrünün altında).
+    response.cookies.set('fleet_session', json.data.accessToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 2 - 300
+    });
+  }
   return response;
 }

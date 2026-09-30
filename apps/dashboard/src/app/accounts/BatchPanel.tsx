@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus, MessageCircle, X, Send, Inbox } from 'lucide-react';
+import { Layers, Loader2, Play, Trash2, RefreshCw, Copy, Check, UserPlus, MessageCircle, X, Send, Inbox, Camera } from 'lucide-react';
 import { useFleetEvents } from '../../lib/live';
 import { LoadMore } from '../../components/LoadMore';
+import { ShotsModal } from './ShotsModal';
 
 type Account = {
   id: string;
@@ -30,12 +31,16 @@ const STATUS_LABEL: Record<string, string> = {
   AWAITING_OTP: 'OTP bekleniyor',
   REGISTERING: 'Kaydediliyor',
   ACTIVE: 'Aktif',
-  FAILED: 'Başarısız'
+  FAILED: 'Başarısız',
+  AWAITING_MANUAL: 'Elle adım bekliyor',
+  RESTRICTED: 'Kısıtlı',
+  BANNED: 'Banlı',
+  LOGGED_OUT: 'Oturum kapandı'
 };
 
 function statusDot(s: string): string {
   if (s === 'ACTIVE') return 'dot dot-online';
-  if (s === 'FAILED') return 'dot dot-error';
+  if (s === 'FAILED' || s === 'BANNED') return 'dot dot-error';
   if (s === 'PENDING') return 'dot dot-offline';
   return 'dot dot-busy';
 }
@@ -76,6 +81,7 @@ export function BatchPanel() {
   const [waRead, setWaRead] = useState<string[] | null>(null);
   const [waBusy, setWaBusy] = useState<'send' | 'read' | null>(null);
   const [waErr, setWaErr] = useState<string | null>(null);
+  const [shotsFor, setShotsFor] = useState<Account | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -283,7 +289,7 @@ export function BatchPanel() {
       {err ? <p className="field-error" style={{ marginTop: 10 }}>{err}</p> : null}
 
       <div className="profile-table-wrap" style={{ marginTop: 14 }}>
-        <table className="profile-table">
+        <table className="profile-table acc-table">
           <thead>
             <tr>
               <th>Durum</th><th>Platform</th><th>Ad</th><th>Doğum</th><th>E-posta</th><th>Numara</th><th>OTP</th><th>İşlem</th>
@@ -294,14 +300,14 @@ export function BatchPanel() {
               <tr><td colSpan={8}><div className="table-empty"><span>Henüz hesap yok — yukarıdan bir batch oluşturun.</span></div></td></tr>
             ) : accounts.slice(0, accLimit).map((a) => (
               <tr key={a.id}>
-                <td><span className="status-chip"><span className={statusDot(a.status)} />{STATUS_LABEL[a.status] ?? a.status}</span>
-                  {a.error ? <div className="helper live-err" style={{ fontSize: '0.7rem' }}>{a.error}</div> : null}
+                <td className="acc-status"><span className="status-chip"><span className={statusDot(a.status)} />{STATUS_LABEL[a.status] ?? a.status}</span>
+                  {a.error ? <div className="helper live-err" style={{ fontSize: '0.7rem' }} title={a.error}>{a.error}</div> : null}
                 </td>
-                <td>{a.platform}</td>
+                <td className="acc-nowrap">{a.platform}</td>
                 <td>{a.fullName ?? <span className="helper">—</span>}{a.gender ? <div className="helper" style={{ fontSize: '0.7rem' }}>{a.gender}</div> : null}</td>
-                <td className="mono helper">{a.birthDate ?? '—'}</td>
-                <td><Copyable value={a.emailAddress} /></td>
-                <td><Copyable value={a.phoneNumber} /></td>
+                <td className="mono helper acc-nowrap">{a.birthDate ?? '—'}</td>
+                <td className="acc-nowrap"><Copyable value={a.emailAddress} /></td>
+                <td className="acc-nowrap"><Copyable value={a.phoneNumber} /></td>
                 <td>{a.otpCode ? <strong className="mono">{a.otpCode}</strong> : a.status === 'AWAITING_OTP' ? <button type="button" className="btn-ghost btn-xs" disabled={busy === a.id} onClick={() => pollOtp(a.id)}>OTP çek</button> : <span className="helper">—</span>}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>
                   {a.status === 'PENDING' || a.status === 'IDENTITY_READY' || a.status === 'CONTACT_READY' ? (
@@ -321,6 +327,12 @@ export function BatchPanel() {
                       <MessageCircle size={11} /> Mesaj
                     </button>
                   ) : null}
+                  {/* Kayıt işinin adım adım ekran görüntüleri (hangi ekranda takıldı?). */}
+                  {a.platform === 'whatsapp' && a.status !== 'PENDING' && a.status !== 'IDENTITY_READY' ? (
+                    <button type="button" className="btn-ghost btn-xs" onClick={() => setShotsFor(a)} title="Kayıt ekran görüntüleri">
+                      <Camera size={11} /> Kareler
+                    </button>
+                  ) : null}
                   <button type="button" className="btn-ghost btn-xs" disabled={busy === a.id} onClick={() => remove(a.id)} title="Sil"><Trash2 size={11} /></button>
                 </td>
               </tr>
@@ -329,6 +341,10 @@ export function BatchPanel() {
         </table>
       </div>
       {accounts.length > accLimit ? <LoadMore hidden={accounts.length - accLimit} onMore={moreAccounts} unit="hesap" /> : null}
+
+      {shotsFor ? (
+        <ShotsModal accountId={shotsFor.id} title={shotsFor.phoneNumber || shotsFor.fullName || shotsFor.id} onClose={() => setShotsFor(null)} />
+      ) : null}
 
       {/* WhatsApp messaging modal */}
       {waChat ? (

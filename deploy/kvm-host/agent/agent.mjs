@@ -11721,6 +11721,10 @@ async function readWaOutboundTicks(serial) {
     `FROM message m JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
     `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
     `WHERE m.from_me=1 AND m.status IN (6,13) AND m.timestamp>(strftime('%s','now')-172800)*1000 ` +
+    // ★2026-10-01 message_type 7 = SİSTEM satırı (gerçek mesaj değil). 30 Eyl 21:13:30'da WA
+    // 34 cihazda aynı saniyede from_me=1 bir sistem satırı (action 67) üretti → 47 boş tik
+    // gönderildi, hiçbiri eşleşmedi. Ayrıca '0@s.whatsapp.net' gibi numara olmayan jid'ler.
+    `AND m.message_type!=7 AND length(COALESCE(jn.user,j.user))>=7 ` +
     `AND COALESCE(jn.server,j.server)='s.whatsapp.net' ORDER BY m.timestamp DESC LIMIT 400`;
   const rows = await waSql(serial, 'msgstore', sql);
   if (rows === null) return null;

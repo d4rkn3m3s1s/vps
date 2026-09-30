@@ -1,0 +1,71 @@
+# ★2026-10-01 postrotate GERI EKLENDI: 17 Agu ozellestirmesinde dusmustu -> rsyslog HUP almiyor,
+# yeniden adlandirilan syslog.1e yazmaya devam ediyordu (933 MB, 300M siniri devre disi) ve
+# auth.log silinmis dosyaya akiyordu. Ubuntu standardi: sharedscripts + rsyslog-rotate.
+# ★2026-08-17 GIRIS IZLERI vs KRIZ LOGLARI AYRIMI.
+# Kullanici: giris IP izleri saatte bir silinsin AMA kriz/hata loglari (teshis) DURSUN.
+# Analiz: auth.log = sadece giris (sshd/sudo, IP var, teshis degeri YOK) -> SAATLIK sil.
+#         fleet-agent.log = kriz teshisi (ZOMBIE/error/cihaz-dustu, IP YOK) -> UZUN TUT.
+#         syslog/journal = karisik -> asagida journal-tarafinda sshd giris satirlari
+#         ayri silinir, kriz satirlari (kernel/oom/failed) 3 gun tutulur.
+
+# --- GIRIS LOGLARI: saatte bir sil (IP izi, teshis yok) ---
+/var/log/auth.log
+{
+	su root adm
+	hourly
+	rotate 1
+	maxsize 50M
+	missingok
+	notifempty
+	compress
+	nodelaycompress
+	sharedscripts
+	postrotate
+		/usr/lib/rsyslog/rsyslog-rotate
+	endscript
+}
+
+# --- KRIZ/TESHIS LOGLARI: 3 gun tut (cihaz dusmesi/hata analizi icin) ---
+/var/log/syslog
+/var/log/kern.log
+/var/log/user.log
+/var/log/cron.log
+/var/log/mail.log
+{
+	su root adm
+	daily
+	rotate 3
+	maxsize 300M
+	missingok
+	notifempty
+	compress
+	delaycompress
+	sharedscripts
+	postrotate
+		/usr/lib/rsyslog/rsyslog-rotate
+	endscript
+}
+
+/var/log/fleet-agent.log
+{
+	su root adm
+	daily
+	rotate 3
+	maxsize 200M
+	missingok
+	notifempty
+	compress
+	copytruncate
+}
+
+/var/log/redsocks-inst-*.log
+{
+	su root adm
+	daily
+	rotate 1
+	maxsize 20M
+	missingok
+	notifempty
+	compress
+	copytruncate
+}

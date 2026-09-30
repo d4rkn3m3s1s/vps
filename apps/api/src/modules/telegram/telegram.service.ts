@@ -31,7 +31,7 @@ import {
 } from './ops.service';
 import { splitLeadingPhone } from '../../lib/phone';
 import { tgRegister } from './tg-register.service';
-import { renderFleetHealthV2, renderStatusV2, renderDevicesV2, renderAccountsV2, renderBanWaveV2 } from './tg-health';
+import { renderFleetHealthV2, renderStatusV2, renderDevicesV2, renderAccountsV2, renderBanWaveV2, renderBalanceV2 } from './tg-health';
 
 const deviceService = new DeviceService();
 
@@ -119,6 +119,143 @@ async function sendMessage(
       logger.warn('tg sendMessage failed', { error: String(e), chunk: `${i + 1}/${chunks.length}` })
     );
   }
+}
+
+// ── ★2026-09-30 ANİMASYONLU RAPOR ────────────────────────────────────────────
+// Ağır raporlar (sağlık/cihazlar/hesaplar/banlar/durum) önce "taranıyor" kartı olarak
+// gelir, aşamalar sırayla işaretlenir, sonra AYNI mesaj rapora dönüşür. Telegram sohbet
+// başına saniyede ~1 düzenlemeye izin verir → kareler 700 ms arayla, en fazla 5 kare.
+// Her adım best-effort: düzenleme başarısız olursa rapor normal mesaj olarak gider —
+// animasyon hiçbir durumda raporu engellemez ya da kaybettirmez.
+const ANIM_STAGES = ['📱 cihazlar', '🌐 internet', '💬 WhatsApp', '✉️ mesajlar', '🖥 sunucu'];
+const STAGES = {
+  proxy: ['📦 paketler', '🌍 ülkeler', '🔎 çıkış IP\'leri', '🛡 sızıntı', '💳 kota'],
+  diag: ['🛡 bekçi', '📱 cihazlar', '🌐 internet', '✉️ gönderimler', '🔔 alarmlar'],
+  digest: ['📊 karne', '📨 mesajlar', '⛔️ banlar', '💳 kota', '✨ öneriler'],
+  balance: ['💳 bakiye', '📊 günlük kullanım', '📡 filo dağılımı']
+};
+const SPIN = ['🌑', '🌒', '🌓', '🌔', '🌕', '🌖', '🌗', '🌘'];
+const ANIM_TIPS = [
+  '💡 /saglik → 📡 Canlı: pano 10 dk kendini günceller',
+  '💡 /tani her bulgunun yanında ne yapılacağını söyler',
+  '💡 /ozet sabah karnesi: A+ hedefimiz 🏆',
+  '💡 /proxy gerçek çıkış IP\'lerini bekçinin taramasından okur',
+  '💡 /banlar yalnız yaşayan cihazları sayar',
+  '💡 /bakiye son 7 günün proxy kullanımını çizer'
+];
+function animFrame(title: string, step: number, stages: string[] = ANIM_STAGES, tip = ''): string {
+  const n = stages.length;
+  const bar = '▰'.repeat(Math.min(step + 1, n) * 2) + '▱'.repeat(Math.max(n - step - 1, 0) * 2);
+  const rows = stages.map((s, i) => (i < step ? `✅ ${s}` : i === step ? `${SPIN[step % SPIN.length]} <b>${s}…</b>` : `▫️ <i>${s}</i>`));
+  return [`${SPIN[(step * 3) % SPIN.length]} <b>${title}</b>`, `<code>${bar}</code> ${Math.round(((step + 1) * 100) / (n + 1))}%`, '', ...rows, ...(tip ? ['', `<i>${tip}</i>`] : [])].join('\n');
+}
+
+async function renderAnimated(
+  token: string,
+  chatId: string | number,
+  title: string,
+  build: () => Promise<string>,
+  buttons?: InlineButton[][],
+  editMessageId?: number,
+  stages: string[] = ANIM_STAGES
+): Promise<void> {
+  let msgId: number | null = editMessageId ?? null;
+  const tip = ANIM_TIPS[Math.floor(Math.random() * ANIM_TIPS.length)] ?? '';
+  const frame = (step: number) => animFrame(title, step, stages, tip);
+  const edit = (text: string, withButtons: boolean) =>
+    tgCall(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: msgId,
+      text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...(withButtons && buttons?.length ? { reply_markup: { inline_keyboard: buttons } } : {})
+    });
+  try {
+    if (msgId === null) {
+      const r = (await tgCall(token, 'sendMessage', { chat_id: chatId, text: frame(0), parse_mode: 'HTML' })) as { message_id?: number };
+      msgId = r?.message_id ?? null;
+    } else {
+      await edit(frame(0), false);
+    }
+  } catch {
+    msgId = null;
+  }
+  if (msgId === null) { await sendMessage(token, chatId, await build(), buttons); return; }
+
+  // Rapor arka planda hazırlanırken aşamalar ilerler (en az 2 kare görünsün diye).
+  const started = Date.now();
+  let result: string | null = null;
+  let failed: unknown = null;
+  const job = build().then((t) => { result = t; }, (e) => { failed = e; });
+  for (let step = 1; step < stages.length; step++) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.race([job, new Promise((r) => setTimeout(r, 700))]);
+    if ((result !== null || failed) && Date.now() - started >= 1400) break;
+    // eslint-disable-next-line no-await-in-loop
+    await edit(frame(step), false).catch(() => undefined);
+  }
+  await job;
+  const text = failed ? `⚠️ Rapor hazırlanamadı: ${esc(String(failed instanceof Error ? failed.message : failed))}` : (result ?? '');
+  if (text.length > 3900) {
+    // Tek mesaja sığmıyor → kartı sil, parçalı gönder.
+    await tgCall(token, 'deleteMessage', { chat_id: chatId, message_id: msgId }).catch(() => undefined);
+    await sendMessage(token, chatId, text, buttons);
+    return;
+  }
+  await edit(text, true).catch(async (e) => {
+    // "message is not modified" = içerik aynı → sorun değil; diğer hatalarda yeni mesaj.
+    if (!/not modified/i.test(String(e))) await sendMessage(token, chatId, text, buttons);
+  });
+}
+
+// ── ★2026-09-30 CANLI PANO (/saglik) ─────────────────────────────────────────
+// "📡 Canlı" → mesaj 10 dk boyunca 30 sn'de bir kendini günceller; "⏹ Durdur" kapatır.
+// Aynı anda en fazla 3 canlı pano (Telegram hız sınırı + gereksiz DB yükü olmasın).
+const LIVE_MS = 10 * 60 * 1000;
+const LIVE_EVERY_MS = 30 * 1000;
+const livePanels = new Map<string, { timer: NodeJS.Timeout; msgId: number; until: number }>();
+
+function stopLivePanel(chatId: string | number): boolean {
+  const key = String(chatId);
+  const p = livePanels.get(key);
+  if (!p) return false;
+  clearInterval(p.timer);
+  livePanels.delete(key);
+  return true;
+}
+
+async function startLivePanel(token: string, workspaceId: string, chatId: string | number, msgId: number): Promise<string | null> {
+  const key = String(chatId);
+  stopLivePanel(key);
+  if (livePanels.size >= 3) return 'Aynı anda en fazla 3 canlı pano açık olabilir.';
+  const until = Date.now() + LIVE_MS;
+  const stopBtn: InlineButton[][] = [[{ text: '⏹ Canlıyı durdur', callback_data: 'health:stop' }]];
+  const paint = async (final: boolean) => {
+    const body = await renderFleetHealth(workspaceId);
+    const at = new Date().toLocaleTimeString('tr-TR', { timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const left = Math.max(0, Math.ceil((until - Date.now()) / 60000));
+    const head = final
+      ? `⏹ <i>Canlı pano kapandı · son güncelleme ${at}</i>`
+      : `📡 <b>CANLI</b> · ${at} · 30 sn'de bir · ${left} dk kaldı`;
+    await tgCall(token, 'editMessageText', {
+      chat_id: chatId,
+      message_id: msgId,
+      text: `${head}\n\n${body}`,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: final ? HEALTH_MENU : stopBtn }
+    }).catch(() => undefined);
+  };
+  const timer = setInterval(() => {
+    const done = Date.now() >= until;
+    if (done) stopLivePanel(key);
+    void paint(done).catch(() => undefined);
+  }, LIVE_EVERY_MS);
+  timer.unref?.();
+  livePanels.set(key, { timer, msgId, until });
+  await paint(false);
+  return null;
 }
 
 async function answerCallback(token: string, callbackId: string, text?: string): Promise<void> {
@@ -433,6 +570,13 @@ const MAIN_MENU: InlineButton[][] = [
 
 // Operasyon (teşhis/onarım) ekranlarının altındaki menü — buradan hızlıca diğer
 // operasyon komutlarına geçilebilsin, her seferinde /menu'ye dönmek gerekmesin.
+// /durum · /hesaplar · /banlar ekranlarının altı: aralarında tek dokunuşla gezinme.
+const STATUS_MENU: InlineButton[][] = [
+  [{ text: '📊 Durum', callback_data: 'status' }, { text: '🩺 Sağlık', callback_data: 'health' }],
+  [{ text: '💬 Hesaplar', callback_data: 'accounts' }, { text: '⚠️ Banlar', callback_data: 'bans' }],
+  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: '🏠 Ana menü', callback_data: 'menu' }]
+];
+
 // /cihazlar ekranının altı.
 const DEVICES_MENU: InlineButton[][] = [
   [{ text: '🔄 Yenile', callback_data: 'devices' }, { text: '🩺 Sağlık', callback_data: 'health' }],
@@ -441,7 +585,8 @@ const DEVICES_MENU: InlineButton[][] = [
 
 // /saglik ekranının altı: tek dokunuşla yenile + en sık bakılan ilgili ekranlar.
 const HEALTH_MENU: InlineButton[][] = [
-  [{ text: '🔄 Yenile', callback_data: 'health' }, { text: '🌐 Proxy', callback_data: 'ops:proxy' }],
+  [{ text: '🔄 Yenile', callback_data: 'health' }, { text: '📡 Canlı (10 dk)', callback_data: 'health:live' }],
+  [{ text: '📱 Cihazlar', callback_data: 'devices' }, { text: '🌐 Proxy', callback_data: 'ops:proxy' }],
   [{ text: '🔍 Teşhis', callback_data: 'ops:diag' }, { text: '🔧 Kurtar', callback_data: 'ops:fix' }],
   [{ text: '🏠 Ana menü', callback_data: 'menu' }]
 ];
@@ -1438,8 +1583,7 @@ async function handleCommand(
   if (lower === '/start' || lower === '/menu' || lower === 'menu') {
     await sendMessage(token, chatId, menuText(), MAIN_MENU);
   } else if (lower === '/cihazlar' || lower === 'cihazlar') {
-    const { text: t, buttons } = await listDevicesText(workspaceId);
-    await sendMessage(token, chatId, t, buttons);
+    await renderAnimated(token, chatId, '📱 Cihazlar taranıyor', async () => (await listDevicesText(workspaceId)).text, DEVICES_MENU);
   } else if (lower === '/gonder' || lower === 'gonder' || lower === '/send') {
     if (!(await hasAnyWhatsappDevice(workspaceId))) {
       await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.\nÖnce panelden bir cihaza WhatsApp kaydı yapın; mesaj yalnızca WhatsApp\'lı cihazdan gönderilebilir.', MAIN_MENU);
@@ -1538,9 +1682,9 @@ async function handleCommand(
     await sendMessage(token, chatId, t, buttons);
   } else if (lower === '/tani' || lower === 'tani' || lower === '/teshis' || lower === '/diag') {
     // ★2026-07-29: operatör dışarıdayken "neyin bozuk olduğunu" SSH'sız görebilsin.
-    await sendMessage(token, chatId, await renderDiagnostics(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '🔍 Derin teşhis', () => renderDiagnostics(workspaceId), OPS_MENU, undefined, STAGES.diag);
   } else if (lower === '/proxy' || lower === 'proxy') {
-    await sendMessage(token, chatId, await renderProxyStatus(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '🌐 Proxy taranıyor', () => renderProxyStatus(workspaceId), OPS_MENU, undefined, STAGES.proxy);
   } else if (lower === '/kurtar' || lower === 'kurtar' || lower === '/onar') {
     // Uzun sürebilir → önce "başladı" de, sonra sonucu gönder (Telegram 60sn timeout).
     await sendMessage(token, chatId, '🔧 Kurtarma başlatıldı, kontrol ediliyor…');
@@ -1548,11 +1692,11 @@ async function handleCommand(
   } else if (lower === '/acil' || lower === 'acil' || lower === '/emergency') {
     await sendMessage(token, chatId, renderEmergencyHelp(), OPS_MENU);
   } else if (lower === '/ozet' || lower === 'ozet' || lower === '/rapor') {
-    await sendMessage(token, chatId, await renderDailyDigest(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '📊 Günün karnesi hazırlanıyor', () => renderDailyDigest(workspaceId), OPS_MENU, undefined, STAGES.digest);
   } else if (lower === '/istatistik' || lower === 'istatistik' || lower === '/stats') {
     await sendMessage(token, chatId, await renderStats(workspaceId), MAIN_MENU);
   } else if (lower === '/durum' || lower === 'durum' || lower === '/status') {
-    await sendMessage(token, chatId, await renderStatus(workspaceId), MAIN_MENU);
+    await renderAnimated(token, chatId, '📊 Durum hazırlanıyor', () => renderStatus(workspaceId), STATUS_MENU);
   } else if (lower === '/engellenenler' || lower === 'engellenenler' || lower === '/blocked') {
     // Show blocked contacts. If a device is already in context, trigger a fresh
     // on-device scrape + show what we know; otherwise ask to open a chat first.
@@ -1601,6 +1745,12 @@ async function handleCommand(
   // ── Grup 1: Acil müdahale ──────────────────────────────────────────────────
   } else if (lower === '/bakiye' || lower === 'bakiye' || lower === '/kota') {
     // Proxy kotasi bitince cihaz datacenter-IP'ye duser (ban riski) — anlik bakiye.
+    // ★2026-09-30 v2: 7 günlük kullanım grafiği + filo dağılımı; okunamazsa eski yol.
+    const v2 = await renderBalanceV2().catch(() => null);
+    if (v2 && !v2.startsWith('⚠️')) {
+      await renderAnimated(token, chatId, '💳 Bakiye sorgulanıyor', async () => v2, MAIN_MENU, undefined, STAGES.balance);
+      return;
+    }
     const svc = new ProxyService();
     const accounts: Array<{ label: string; token: string }> = [
       { label: 'residential', token: process.env.FLEET_THORDATA_TOKEN || '' },
@@ -1621,7 +1771,7 @@ async function handleCommand(
     lines.push('', '<i>2 GB altına düşünce otomatik uyarı gelir.</i>');
     await sendMessage(token, chatId, lines.join(String.fromCharCode(10)), MAIN_MENU);
   } else if (lower === '/saglik' || lower === 'saglik' || lower === '/sağlık' || lower === '/health') {
-    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), HEALTH_MENU);
+    await renderAnimated(token, chatId, '🩺 Filo sağlığı taranıyor', () => renderFleetHealth(workspaceId), HEALTH_MENU);
   } else if (lower === '/uyandir' || lower.startsWith('/uyandir ') || lower.startsWith('uyandir ')) {
     const ref = cmd.replace(/^\/?uyandir\s*/i, '').trim();
     if (!ref) { await sendMessage(token, chatId, 'ℹ️ Kullanım: <code>/uyandir &lt;cihaz&gt;</code> (isim / numara).', MAIN_MENU); return; }
@@ -1886,9 +2036,9 @@ async function handleCommand(
     }
   // ── Grup 3: WA hesap-sağlık ────────────────────────────────────────────────
   } else if (lower === '/hesaplar' || lower === 'hesaplar' || lower === '/accounts') {
-    await sendMessage(token, chatId, await renderWaAccounts(workspaceId), MAIN_MENU);
+    await renderAnimated(token, chatId, '💬 Hesaplar taranıyor', () => renderWaAccounts(workspaceId), STATUS_MENU);
   } else if (lower === '/banlar' || lower === 'banlar' || lower === '/bans') {
-    await sendMessage(token, chatId, await renderBanWave(workspaceId), MAIN_MENU);
+    await renderAnimated(token, chatId, '⚠️ Ban geçmişi taranıyor', () => renderBanWave(workspaceId), STATUS_MENU);
   } else if (lower === '/kayit' || lower.startsWith('/kayit ') || lower === '/kayıt') {
     // ★2026-07-30: sabit yönlendirme metni yerine GERÇEK durum — yarım kalan kayıtlar
     // ve kalan bekletme süreleri. Kaydın kendisi hâlâ panelden başlatılır (ban-riski
@@ -1950,8 +2100,7 @@ async function handleCallback(
     if (data === 'help') { await sendMessage(token, chatId, menuText(), MAIN_MENU); return; }
     await sendMessage(token, chatId, menuText(), MAIN_MENU);
   } else if (data === 'devices') {
-    const { text: t, buttons } = await listDevicesText(workspaceId);
-    await sendMessage(token, chatId, t, buttons);
+    await renderAnimated(token, chatId, '📱 Cihazlar taranıyor', async () => (await listDevicesText(workspaceId)).text, DEVICES_MENU, cb.message?.message_id);
   } else if (data === 'send') {
     if (!(await hasAnyWhatsappDevice(workspaceId))) {
       await sendMessage(token, chatId, '⚠️ Bu çalışma alanında <b>WhatsApp hesabı olan</b> cihaz yok.\nÖnce panelden bir cihaza WhatsApp kaydı yapın; mesaj yalnızca WhatsApp\'lı cihazdan gönderilebilir.', MAIN_MENU);
@@ -1968,17 +2117,25 @@ async function handleCallback(
       await sendMessage(token, chatId, '📢 <b>Toplu Test Mesajı</b>\nMesaj <b>TÜM WhatsApp\'lı cihazlardan</b> gönderilecek.\nÖnce hedef <b>numarayı</b> yazın (ülke kodu ile, örn. 905551112233):');
     }
   } else if (data === 'health') {
-    await sendMessage(token, chatId, await renderFleetHealth(workspaceId), HEALTH_MENU);
+    stopLivePanel(chatId);
+    await renderAnimated(token, chatId, '🩺 Filo sağlığı taranıyor', () => renderFleetHealth(workspaceId), HEALTH_MENU, cb.message?.message_id);
+  } else if (data === 'health:live') {
+    const msgId = cb.message?.message_id;
+    const err = msgId ? await startLivePanel(token, workspaceId, chatId, msgId) : 'Mesaj bulunamadı';
+    if (err) await answerCallback(token, cb.id, err);
+  } else if (data === 'health:stop') {
+    stopLivePanel(chatId);
+    await renderAnimated(token, chatId, '🩺 Filo sağlığı', () => renderFleetHealth(workspaceId), HEALTH_MENU, cb.message?.message_id);
   } else if (data === 'ops:diag') {
-    await sendMessage(token, chatId, await renderDiagnostics(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '🔍 Derin teşhis', () => renderDiagnostics(workspaceId), OPS_MENU, undefined, STAGES.diag);
   } else if (data === 'ops:proxy') {
-    await sendMessage(token, chatId, await renderProxyStatus(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '🌐 Proxy taranıyor', () => renderProxyStatus(workspaceId), OPS_MENU, undefined, STAGES.proxy);
   } else if (data === 'ops:fix') {
     // Kritik alarm mesajlarındaki "🔧 Kurtarmayı başlat" butonu da buraya düşer.
     await sendMessage(token, chatId, '🔧 Kurtarma başlatıldı, kontrol ediliyor…');
     await sendMessage(token, chatId, await runRecovery(workspaceId), OPS_MENU);
   } else if (data === 'ops:digest') {
-    await sendMessage(token, chatId, await renderDailyDigest(workspaceId), OPS_MENU);
+    await renderAnimated(token, chatId, '📊 Günün karnesi hazırlanıyor', () => renderDailyDigest(workspaceId), OPS_MENU, undefined, STAGES.digest);
   } else if (data === 'ops:emergency') {
     await sendMessage(token, chatId, renderEmergencyHelp(), OPS_MENU);
   } else if (data === 'menu') {
@@ -1993,7 +2150,11 @@ async function handleCallback(
     const { text: t, buttons } = await renderLabels(workspaceId);
     await sendMessage(token, chatId, t, buttons);
   } else if (data === 'status') {
-    await sendMessage(token, chatId, await renderStatus(workspaceId), MAIN_MENU);
+    await renderAnimated(token, chatId, '📊 Durum hazırlanıyor', () => renderStatus(workspaceId), STATUS_MENU, cb.message?.message_id);
+  } else if (data === 'accounts') {
+    await renderAnimated(token, chatId, '💬 Hesaplar taranıyor', () => renderWaAccounts(workspaceId), STATUS_MENU, cb.message?.message_id);
+  } else if (data === 'bans') {
+    await renderAnimated(token, chatId, '⚠️ Ban geçmişi taranıyor', () => renderBanWave(workspaceId), STATUS_MENU, cb.message?.message_id);
   } else if (data === 'stats') {
     await sendMessage(token, chatId, await renderStats(workspaceId), MAIN_MENU);
   } else if (data === 'search') {

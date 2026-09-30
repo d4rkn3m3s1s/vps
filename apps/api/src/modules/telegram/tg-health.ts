@@ -33,6 +33,15 @@ function fmtAge(ms: number): string {
 function pct(n: number, d: number): number {
   return d > 0 ? Math.round((n * 100) / d) : 0;
 }
+// Görsel ilerleme çubuğu: ▰▰▰▰▰▰▱▱▱▱ (10 hücre, sabit genişlik için <code> içinde).
+function bar(p: number | null, width = 10): string {
+  if (p === null || !Number.isFinite(p)) return `<code>${'▱'.repeat(width)}</code>`;
+  const n = Math.max(0, Math.min(width, Math.round((p / 100) * width)));
+  return `<code>${'▰'.repeat(n)}${'▱'.repeat(width - n)}</code>`;
+}
+// Doluluk (kötü = yüksek) ve sağlık (iyi = yüksek) için renk noktası.
+const fillDot = (p: number | null, warn: number, crit: number) => (p === null ? '⚪️' : p >= crit ? '🔴' : p >= warn ? '🟡' : '🟢');
+const goodDot = (p: number | null, warn: number, crit: number) => (p === null ? '⚪️' : p <= crit ? '🔴' : p <= warn ? '🟡' : '🟢');
 
 // ── yardımcı okumalar ────────────────────────────────────────────────────────
 async function readText(path: string): Promise<string | null> {
@@ -64,7 +73,7 @@ async function envValue(key: string): Promise<string | null> {
 }
 
 // ── thordata kota (15 dk önbellek) ───────────────────────────────────────────
-type Quota = { balanceGb: number; expiration: string; yesterdayGb: number | null; avg3Gb: number | null };
+type Quota = { balanceGb: number; expiration: string; yesterdayGb: number | null; avg3Gb: number | null; days: Array<{ date: string; gb: number }> };
 let quotaCache: { at: number; value: Quota | null } | null = null;
 
 async function thordataQuota(): Promise<Quota | null> {
@@ -74,7 +83,7 @@ async function thordataQuota(): Promise<Quota | null> {
   if (token) {
     try {
       const today = new Date();
-      const from = new Date(today.getTime() - 4 * 86400000).toISOString().slice(0, 10);
+      const from = new Date(today.getTime() - 8 * 86400000).toISOString().slice(0, 10);
       const to = today.toISOString().slice(0, 10);
       const [balRes, useRes] = await Promise.all([
         fetch(`https://openapi.thordata.com/api/account/traffic-balance?token=${encodeURIComponent(token)}`, { signal: AbortSignal.timeout(12000) }),
@@ -92,7 +101,8 @@ async function thordataQuota(): Promise<Quota | null> {
           balanceGb: bal.data.traffic_balance / 1024, // traffic-balance ucu MB döner
           expiration: String(bal.data.expiration_time ?? '?'),
           yesterdayGb: last ? last.usage_traffic / GB_KB : null,
-          avg3Gb: last3.length ? last3.reduce((a, r) => a + r.usage_traffic, 0) / last3.length / GB_KB : null
+          avg3Gb: last3.length ? last3.reduce((a, r) => a + r.usage_traffic, 0) / last3.length / GB_KB : null,
+          days: rows.map((r) => ({ date: r.date, gb: r.usage_traffic / GB_KB }))
         };
       }
     } catch {
@@ -104,23 +114,36 @@ async function thordataQuota(): Promise<Quota | null> {
 }
 
 // ── proxy hesap dağılımı (config'ten) ────────────────────────────────────────
-async function proxySplit(): Promise<{ mobile: number; residential: number; other: number } | null> {
+// Cihaz başına: hangi paket (port'tan) + hangi ülke (login'deki -country-XX).
+// Şifre/login'in KENDİSİ asla dışarı çıkmaz — yalnız sınıflandırma.
+type ProxyConf = { kind: 'mobil' | 'residential' | 'diğer'; cc: string };
+async function proxyConfigs(): Promise<Map<string, ProxyConf> | null> {
   try {
     const mport = (await envValue('FLEET_PROXY_MOBILE_PORT')) ?? '5555';
     const rport = (await envValue('FLEET_PROXY_PORT')) ?? '9999';
     const files = (await readdir('/etc')).filter((f) => /^redsocks-inst-.+\.conf$/.test(f));
-    let mobile = 0, residential = 0, other = 0;
+    const out = new Map<string, ProxyConf>();
     for (const f of files) {
       const t = (await readText(`/etc/${f}`)) ?? '';
       const port = t.match(/^\s*port = (\d+);/m)?.[1];
-      if (port === mport) mobile++;
-      else if (port === rport) residential++;
-      else other++;
+      const cc = (t.match(/-country-([a-z]{2})/i)?.[1] ?? '??').toUpperCase();
+      out.set(f.replace(/^redsocks-inst-|\.conf$/g, ''), { kind: port === mport ? 'mobil' : port === rport ? 'residential' : 'diğer', cc });
     }
-    return { mobile, residential, other };
+    return out;
   } catch {
     return null;
   }
+}
+async function proxySplit(): Promise<{ mobile: number; residential: number; other: number } | null> {
+  const confs = await proxyConfigs();
+  if (!confs) return null;
+  let mobile = 0, residential = 0, other = 0;
+  for (const c of confs.values()) {
+    if (c.kind === 'mobil') mobile++;
+    else if (c.kind === 'residential') residential++;
+    else other++;
+  }
+  return { mobile, residential, other };
 }
 
 // ── bekçi (wd-health-watch) ──────────────────────────────────────────────────
@@ -157,7 +180,7 @@ async function deepScan(liveInstances: Set<string>): Promise<{ boot: number; adb
   return { boot, adb, exit, leak, scanned, ageMs: Date.now() - st.mtimeMs };
 }
 
-async function hostVitals(): Promise<{ load1: number | null; cores: number; ramFreeGb: number | null; swapUsedPct: number | null; diskFreeGb: number | null; diskUsedPct: number | null }> {
+async function hostVitals(): Promise<{ load1: number | null; cores: number; ramFreeGb: number | null; ramTotalGb: number | null; swapUsedPct: number | null; diskFreeGb: number | null; diskUsedPct: number | null }> {
   const [loadavg, meminfo, fsst] = await Promise.all([
     readText('/proc/loadavg'),
     readText('/proc/meminfo'),
@@ -176,6 +199,7 @@ async function hostVitals(): Promise<{ load1: number | null; cores: number; ramF
     load1: loadavg ? Number(loadavg.split(' ')[0]) : null,
     cores: cpus().length,
     ramFreeGb: avail !== null ? avail / 1048576 : null,
+    ramTotalGb: kb('MemTotal') !== null ? kb('MemTotal')! / 1048576 : null,
     swapUsedPct: swT && swF !== null && swT > 0 ? Math.round(((swT - swF) * 100) / swT) : null,
     diskFreeGb,
     diskUsedPct
@@ -207,10 +231,7 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
       where: { platform: 'whatsapp', deviceId: { in: liveIds }, status: { in: ['ACTIVE', 'RESTRICTED', 'LOGGED_OUT', 'BANNED'] } },
       select: { deviceId: true, status: true }
     }),
-    prisma.job.findMany({
-      where: { ...wsFilter, type: 'WHATSAPP_SEND', createdAt: { gte: since24 }, status: { in: ['COMPLETED', 'FAILED'] } },
-      select: { status: true, startedAt: true, finishedAt: true, updatedAt: true }
-    }),
+    sendStats(workspaceId, since24),
     prisma.whatsappMessage.count({ where: { ...wsFilter, direction: 'IN', createdAt: { gte: since24 } } }),
     prisma.whatsappMessage.count({ where: { ...wsFilter, direction: 'OUT', createdAt: { gte: since24 } } }),
     // GERÇEK yeni ban: yalnız YAŞAYAN cihazların hesapları (silinen cihaz kayıtları hariç).
@@ -229,13 +250,8 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
   for (const s of best.values()) wa[s] = (wa[s] ?? 0) + 1;
   const noAccount = live.length - best.size;
 
-  const sendOk = sends.filter((s) => s.status === 'COMPLETED');
-  const sendFail = sends.length - sendOk.length;
-  const durs = sendOk
-    .map((s) => (s.startedAt ? ((s.finishedAt ?? s.updatedAt).getTime() - s.startedAt.getTime()) / 1000 : null))
-    .filter((x): x is number => x !== null && x >= 0 && x < 900)
-    .sort((a, b) => a - b);
-  const median = durs.length ? durs[Math.floor(durs.length / 2)]! : null;
+  const sendFail = sends.fail;
+  const median = sends.medianSec;
 
   const online = live.filter((d) => d.status === 'ONLINE').length;
   const offline = live.length - online;
@@ -264,7 +280,11 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
   }
   if (bans24 >= 3) crit.push(`son 24 saatte ${bans24} yeni ban → /banlar`);
   else if (bans24 > 0) warn.push(`son 24 saatte ${bans24} yeni ban → /banlar`);
-  if (sends.length >= 20 && pct(sendFail, sends.length) >= 5) warn.push(`gönderim başarısızlığı %${pct(sendFail, sends.length)}`);
+  if (sends.total >= 20 && pct(sendFail, sends.total) >= 15) {
+    const top = sends.reasons[0];
+    (pct(sendFail, sends.total) >= 35 ? crit : warn).push(`gitmeyen gönderim: %${pct(sendFail, sends.total)}${top ? ` (en çok: ${reasonLabel(top[0])})` : ''}${sends.peakFail && sends.peakFail.n >= sendFail * 0.3 ? ` · yoğunluk ${sends.peakFail.hour}` : ''}`);
+  }
+  if (sends.lastHourFail >= 10) crit.push(`son 1 saatte ${sends.lastHourFail} gönderim başarısız — şu an sürüyor`);
   if (vitals.ramFreeGb !== null && vitals.ramFreeGb < 20) crit.push(`boş RAM düşük: ${vitals.ramFreeGb.toFixed(0)} GB`);
   if (vitals.diskUsedPct !== null && vitals.diskUsedPct >= 85) warn.push(`disk %${vitals.diskUsedPct} dolu`);
 
@@ -283,22 +303,31 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
 
   // Cihazlar
   L.push('', '<b>📱 Cihazlar</b>');
-  L.push(`${offline ? '🟡' : '🟢'} <b>${online}</b>/${live.length} açık${offline ? ` · ⚪️ ${offline} kapalı` : ''}`);
+  const onPct = pct(online, live.length);
+  L.push(`${goodDot(onPct, 97, 80)} Açık    ${bar(onPct)} <b>${online}</b>/${live.length}${offline ? ` · ⚪️ ${offline} kapalı` : ''}`);
   if (scan) {
-    L.push(`${scan.exit === scan.scanned ? '🟢' : '🔴'} İnternet: <b>${scan.exit}</b>/${scan.scanned} çıkıyor · sızıntı <b>${scan.leak}</b>`);
-    L.push(`   Android açık ${scan.boot} · ADB ${scan.adb} · tarama ${fmtAge(scan.ageMs)}`);
+    const exPct = pct(scan.exit, scan.scanned);
+    L.push(`${goodDot(exPct, 97, 80)} İnternet ${bar(exPct)} <b>${scan.exit}</b>/${scan.scanned}`);
+    L.push(`${scan.leak ? '🔴' : '🛡'} Sızıntı <b>${scan.leak}</b> · Android ${scan.boot} · ADB ${scan.adb} · tarama ${fmtAge(scan.ageMs)}`);
   }
 
   // WhatsApp
   L.push('', '<b>💬 WhatsApp</b> <i>(yaşayan cihazlar)</i>');
-  L.push(`✅ ${wa.ACTIVE} aktif${wa.RESTRICTED ? ` · 🟡 ${wa.RESTRICTED} kısıtlı` : ''}${wa.LOGGED_OUT ? ` · 🟠 ${wa.LOGGED_OUT} çıkış` : ''}${wa.BANNED ? ` · 🔴 ${wa.BANNED} banlı` : ''}${noAccount ? ` · ⚪️ ${noAccount} hesapsız` : ''}`);
+  const waPct = pct(wa.ACTIVE ?? 0, live.length);
+  L.push(`${goodDot(waPct, 90, 70)} Aktif   ${bar(waPct)} <b>${wa.ACTIVE}</b>/${live.length}`);
+  const waBad = [wa.RESTRICTED ? `🟡 ${wa.RESTRICTED} kısıtlı` : '', wa.LOGGED_OUT ? `🟠 ${wa.LOGGED_OUT} çıkış` : '', wa.BANNED ? `⛔️ ${wa.BANNED} banlı` : '', noAccount ? `🔘 ${noAccount} hesapsız` : ''].filter(Boolean);
+  if (waBad.length) L.push(`   ${waBad.join(' · ')}`);
   L.push(`${bans24 ? '🔴' : '🟢'} Son 24 saat yeni ban: <b>${bans24}</b>`);
 
   // Mesaj
   L.push('', '<b>✉️ Mesajlar</b> <i>(24 saat)</i>');
-  if (sends.length) {
-    const okRate = ((sendOk.length * 100) / sends.length).toFixed(1).replace('.', ',').replace(/,0$/, '');
-    L.push(`${pct(sendFail, sends.length) >= 5 ? '🟡' : '🟢'} Gönderim: <b>${sendOk.length}</b> başarılı · ${sendFail} başarısız (%${okRate})`);
+  if (sends.total) {
+    const okPct = pct(sends.ok, sends.total);
+    L.push(`${goodDot(okPct, 90, 75)} Teslim  ${bar(okPct)} <b>${sends.ok}</b>/${sends.total} <i>(%${sends.rate})</i>`);
+    if (sends.reasons.length) {
+      L.push(`   Gitmeyen: ${sends.reasons.slice(0, 3).map(([c, n]) => `${esc(reasonLabel(c))} <b>${n}</b>`).join(' · ')}`);
+      if (sends.peakFail && sends.peakFail.n >= 5) L.push(`   <i>En kötü saat: ${esc(sends.peakFail.hour)} (${sends.peakFail.n} başarısız) · son 1 saat: ${sends.lastHourFail}</i>`);
+    }
   } else {
     L.push('⚪️ Gönderim yok');
   }
@@ -325,8 +354,11 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
   // Sunucu
   L.push('', '<b>🖥 Sunucu</b>');
   const sat = vitals.load1 !== null && vitals.cores ? Math.round((vitals.load1 / vitals.cores) * 100) : null;
-  L.push(`${sat !== null && sat > 90 ? '🔴' : '🟢'} Yük ${vitals.load1?.toFixed(1) ?? '?'} / ${vitals.cores} çekirdek${sat !== null ? ` (%${sat})` : ''}`);
-  L.push(`${vitals.ramFreeGb !== null && vitals.ramFreeGb < 20 ? '🔴' : '🟢'} RAM ${vitals.ramFreeGb?.toFixed(0) ?? '?'} GB boş · swap %${vitals.swapUsedPct ?? '?'} · disk %${vitals.diskUsedPct ?? '?'} (${vitals.diskFreeGb?.toFixed(0) ?? '?'} GB boş)`);
+  L.push(`${fillDot(sat, 70, 90)} CPU     ${bar(sat)} %${sat ?? '?'} <i>(yük ${vitals.load1?.toFixed(1) ?? '?'}/${vitals.cores})</i>`);
+  const ramUsedPct = vitals.ramFreeGb !== null && vitals.ramTotalGb ? Math.round(100 - (vitals.ramFreeGb * 100) / vitals.ramTotalGb) : null;
+  L.push(`${fillDot(ramUsedPct, 85, 92)} RAM     ${bar(ramUsedPct)} ${vitals.ramFreeGb?.toFixed(0) ?? '?'} GB boş`);
+  L.push(`${fillDot(vitals.diskUsedPct, 80, 90)} Disk    ${bar(vitals.diskUsedPct)} %${vitals.diskUsedPct ?? '?'} · ${vitals.diskFreeGb?.toFixed(0) ?? '?'} GB boş`);
+  L.push(`${vitals.swapUsedPct !== null && vitals.swapUsedPct >= 95 && ramUsedPct !== null && ramUsedPct >= 85 ? '🔴' : '⚪️'} Swap    ${bar(vitals.swapUsedPct)} %${vitals.swapUsedPct ?? '?'} <i>(RAM boşken sorun değil)</i>`);
   if (watch) {
     const age = Date.now() - watch.at.getTime();
     L.push(`${age > 25 * 60000 ? '🔴' : '🟢'} Bekçi: son tur ${fmtAge(age)} · ${watch.healthy} sağlıklı${watch.deadExit ? ` · ${watch.deadExit} çıkış-ölü` : ''}${watch.unreachable ? ` · ${watch.unreachable} erişilemez` : ''}`);
@@ -334,6 +366,72 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
   if (base?.hosts?.some((h) => h.monitorStale)) L.push('🔴 Sunucu izleme sinyali bayat');
 
   return L.join('\n');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★2026-09-30 GÖNDERİM İSTATİSTİĞİ — iş durumu COMPLETED ≠ "mesaj gitti".
+// Agent işi her zaman COMPLETED bitirir; gerçek sonuç result.status'tadır
+// (CANLI 24 saat: 712 işin 711'i COMPLETED ama yalnız 524'ü SENT → gerçek %74,
+// eski ekran "%99,9" diyordu). Başarı yalnız SENT/OK/DELIVERED.
+// ════════════════════════════════════════════════════════════════════════════
+const SEND_OK = new Set(['SENT', 'OK', 'DELIVERED', 'READ']);
+export const SEND_REASON_TR: Record<string, string> = {
+  CONNECTION_FAILED: 'bağlantı kurulamadı',
+  CHAT_NOT_OPENED: 'sohbet açılamadı',
+  INVALID_RECIPIENT: 'numara WhatsApp\'ta yok',
+  ACCOUNT_BANNED: 'hesap banlı',
+  ACCOUNT_RESTRICTED: 'hesap kısıtlı',
+  COMPOSE_FAILED: 'mesaj yazılamadı',
+  NOT_REGISTERED: 'hesap kayıtlı değil',
+  DEVICE_OFFLINE: 'cihaz kapalı',
+  TIMEOUT: 'zaman aşımı',
+  FAILED: 'iş çöktü'
+};
+export type SendStats = { total: number; ok: number; fail: number; rate: string; reasons: Array<[string, number]>; medianSec: number | null; lastHourFail: number; peakFail: { hour: string; n: number } | null };
+export async function sendStats(workspaceId: string, since: Date): Promise<SendStats> {
+  const wsFilter = workspaceId ? { workspaceId } : {};
+  const jobs = await prisma.job.findMany({
+    where: { ...wsFilter, type: 'WHATSAPP_SEND', createdAt: { gte: since }, status: { in: ['COMPLETED', 'FAILED'] } },
+    select: { status: true, result: true, createdAt: true, startedAt: true, finishedAt: true, updatedAt: true },
+    take: 20000
+  });
+  let ok = 0;
+  let lastHourFail = 0;
+  const hourAgo = Date.now() - 3600_000;
+  const reasons = new Map<string, number>();
+  const durs: number[] = [];
+  const failByHour = new Map<string, number>();
+  const hourKey = (d: Date) => d.toLocaleString('tr-TR', { timeZone: 'Europe/Istanbul', day: '2-digit', month: '2-digit', hour: '2-digit' }).replace(/\s+/g, ' ') + ':00';
+  for (const j of jobs) {
+    const st = String((j.result as { status?: unknown } | null)?.status ?? (j.status === 'FAILED' ? 'FAILED' : 'UNKNOWN')).toUpperCase();
+    if (j.status === 'COMPLETED' && SEND_OK.has(st)) {
+      ok++;
+      if (j.startedAt) {
+        const d = ((j.finishedAt ?? j.updatedAt).getTime() - j.startedAt.getTime()) / 1000;
+        if (d >= 0 && d < 900) durs.push(d);
+      }
+    } else {
+      reasons.set(st, (reasons.get(st) ?? 0) + 1);
+      if (j.createdAt.getTime() >= hourAgo) lastHourFail++;
+      const hk = hourKey(j.createdAt);
+      failByHour.set(hk, (failByHour.get(hk) ?? 0) + 1);
+    }
+  }
+  durs.sort((a, b) => a - b);
+  const total = jobs.length;
+  return {
+    total,
+    ok,
+    fail: total - ok,
+    rate: total ? ((ok * 100) / total).toFixed(1).replace('.', ',').replace(/,0$/, '') : '—',
+    reasons: [...reasons.entries()].sort((a, b) => b[1] - a[1]),
+    medianSec: durs.length ? durs[Math.floor(durs.length / 2)]! : null,
+    lastHourFail,
+    peakFail: [...failByHour.entries()].sort((a, b) => b[1] - a[1]).map(([hour, n]) => ({ hour, n }))[0] ?? null
+  };
+}
+export function reasonLabel(code: string): string {
+  return SEND_REASON_TR[code] ?? code.toLowerCase().replace(/_/g, ' ');
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -421,7 +519,7 @@ export async function renderStatusV2(workspaceId: string): Promise<string> {
   const [live, watch, sends, msgIn, unread] = await Promise.all([
     collectLive(workspaceId),
     lastWatchRun().catch(() => null),
-    prisma.job.groupBy({ by: ['status'], where: { ...wsFilter, type: 'WHATSAPP_SEND', createdAt: { gte: since24 }, status: { in: ['COMPLETED', 'FAILED'] } }, _count: { _all: true } }),
+    sendStats(workspaceId, since24),
     prisma.whatsappMessage.count({ where: { ...wsFilter, direction: 'IN', createdAt: { gte: since24 } } }),
     prisma.whatsappConversation.aggregate({ where: { ...wsFilter, archived: false, unreadCount: { gt: 0 } }, _sum: { unreadCount: true }, _count: { _all: true } }).catch(() => null)
   ]);
@@ -430,9 +528,7 @@ export async function renderStatusV2(workspaceId: string): Promise<string> {
   const exit = scanned.filter((d) => d.exitIp).length;
   const active = live.filter((d) => d.account === 'ACTIVE').length;
   const problems = live.filter((d) => problemOf(d)).length;
-  const ok = sends.find((s) => s.status === 'COMPLETED')?._count._all ?? 0;
-  const fail = sends.find((s) => s.status === 'FAILED')?._count._all ?? 0;
-  const rate = ok + fail ? ((ok * 100) / (ok + fail)).toFixed(1).replace('.', ',').replace(/,0$/, '') : '—';
+  const { ok, total, rate } = sends;
   const watchAge = watch ? Date.now() - watch.at.getTime() : null;
   const bad = online < live.length || (scanned.length && exit < scanned.length) || (watchAge !== null && watchAge > 25 * 60000);
   const head = bad ? '🔴' : problems ? '🟡' : '🟢';
@@ -441,7 +537,7 @@ export async function renderStatusV2(workspaceId: string): Promise<string> {
     '',
     `📱 Cihaz <b>${online}</b>/${live.length} açık · 🌐 <b>${exit}</b>/${scanned.length} internette`,
     `💬 WhatsApp <b>${active}</b> aktif${problems ? ` · ⚠️ ${problems} sorunlu cihaz` : ''}`,
-    `✉️ 24 saat: <b>${ok}</b> gönderim (%${rate}) · ${msgIn} gelen`,
+    `✉️ 24 saat: <b>${ok}</b>/${total} mesaj gitti (%${rate}) · ${msgIn} gelen`,
     `🔵 Okunmamış: <b>${unread?._sum.unreadCount ?? 0}</b> mesaj · ${unread?._count._all ?? 0} sohbet`,
     watch ? `🛡 Bekçi: ${fmtAge(watchAge ?? 0)} · ${watch.healthy} sağlıklı` : '🛡 Bekçi: okunamadı',
     '',
@@ -531,5 +627,207 @@ export async function renderBanWaveV2(workspaceId: string): Promise<string> {
     }
   }
   if (gone > 0) L.push('', `<i>ℹ️ Ayrıca ${gone} kayıt silinmiş cihazlara ait — sayıma katılmadı.</i>`);
+  return L.join('\n');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★2026-09-30 /proxy · /tani · /ozet · /bakiye v2
+// Eskileri: /proxy yalnız metadata'daki ülkeyi sayıyordu (gerçek çıkışı hiç
+// görmüyordu), /tani ve /ozet TÜM ZAMANLARIN hesaplarını sayıyordu (silinmiş
+// cihazlar dahil). Hepsi artık yaşayan filo + bekçinin derin taraması + gerçek
+// gönderim sonucu üzerinden.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Filo karnesi: 4 ana eksenin ortalaması → harf notu (tek bakışta "bugün nasıl").
+function fleetGrade(parts: Array<number | null>): { score: number; grade: string } {
+  const xs = parts.filter((x): x is number => x !== null && Number.isFinite(x));
+  const score = xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : 0;
+  const grade = score >= 95 ? '🏆 A+' : score >= 90 ? '🌟 A' : score >= 80 ? '👍 B' : score >= 65 ? '😐 C' : '🚨 D';
+  return { score, grade };
+}
+
+// /proxy — cihazlar hangi pakette/ülkede, GERÇEKTEN internete çıkıyor mu, IP paylaşan var mı.
+export async function renderProxyV2(workspaceId: string): Promise<string> {
+  const [live, confs, quota, watch] = await Promise.all([collectLive(workspaceId), proxyConfigs(), thordataQuota(), lastWatchRun().catch(() => null)]);
+  if (!live.length) return 'Cihaz yok.';
+  const host = publicIPv4s();
+  const L: string[] = ['<b>🌐 Proxy</b> <i>(bekçinin gerçek çıkış taraması)</i>', ''];
+
+  // Paket × ülke tablosu, her hücrede "çıkan/toplam".
+  const grid = new Map<string, { total: number; exit: number }>();
+  for (const d of live) {
+    const c = confs?.get(d.inst);
+    const key = `${c?.kind ?? 'config yok'}|${c?.cc ?? '—'}`;
+    const cell = grid.get(key) ?? { total: 0, exit: 0 };
+    cell.total++;
+    if (d.exitIp) cell.exit++;
+    grid.set(key, cell);
+  }
+  L.push('<b>📦 Paket · ülke</b>');
+  for (const [key, c] of [...grid.entries()].sort((a, b) => b[1].total - a[1].total)) {
+    const [kind = '', cc = ''] = key.split('|');
+    const p = pct(c.exit, c.total);
+    L.push(`${goodDot(p, 97, 80)} ${kind === 'mobil' ? '📡' : kind === 'residential' ? '🏠' : '❔'} ${esc(kind)} <b>${esc(cc)}</b>  ${bar(p, 8)} ${c.exit}/${c.total}`);
+  }
+
+  // Çıkış sağlığı
+  const scanned = live.filter((d) => d.scanned);
+  const noExit = scanned.filter((d) => !d.exitIp);
+  const leaks = scanned.filter((d) => d.exitIp && host.has(d.exitIp));
+  const ipCount = new Map<string, number>();
+  for (const d of scanned) if (d.exitIp) ipCount.set(d.exitIp, (ipCount.get(d.exitIp) ?? 0) + 1);
+  const shared = [...ipCount.entries()].filter(([, n]) => n > 1);
+  L.push('', '<b>🔎 Çıkış</b>');
+  L.push(`${noExit.length ? '🔴' : '🟢'} İnternette <b>${scanned.length - noExit.length}</b>/${scanned.length}${live.length > scanned.length ? ` · ${live.length - scanned.length} taranmadı` : ''}`);
+  L.push(`${leaks.length ? '🔴' : '🛡'} Sunucu IP'siyle çıkan (sızıntı): <b>${leaks.length}</b>`);
+  L.push(`${shared.length ? '🟡' : '🟢'} Farklı çıkış IP: <b>${ipCount.size}</b>${shared.length ? ` · ⚠️ ${shared.length} IP birden çok cihazda` : ' · hepsi tekil'}`);
+  if (noExit.length) L.push(`   Çıkışsız: ${noExit.slice(0, 10).map((d) => `<code>${esc(d.inst)}</code>`).join(' ')}${noExit.length > 10 ? ' …' : ''}`);
+  if (leaks.length) L.push(`   Sızıntı: ${leaks.slice(0, 10).map((d) => `<code>${esc(d.inst)}</code>`).join(' ')}`);
+  if (watch) L.push(`🛡 Bekçi: son tur ${fmtAge(Date.now() - watch.at.getTime())}${watch.deadExit ? ` · ${watch.deadExit} çıkış-ölü onarımda` : ''}`);
+
+  L.push('', '<b>💳 Kota</b>');
+  L.push(quota ? `🏠 Residential: <b>${quota.balanceGb.toFixed(1)} GB</b> · bitiş ${esc(quota.expiration)}` : '⚪️ Residential kota okunamadı');
+  L.push('📡 <i>Mobil paket kotası bu token\'da görünmüyor → Thordata paneli</i>');
+  L.push('', '<i>Geçmiş kullanım: /bakiye · onarım: /kurtar</i>');
+  return L.join('\n');
+}
+
+// /tani — "neyin bozuk olduğunu" tek mesajda + ne yapılmalı önerisi.
+export async function renderDiagnosticsV2(workspaceId: string): Promise<string> {
+  const wsFilter = workspaceId ? { workspaceId } : {};
+  const since24 = new Date(Date.now() - 24 * 3600 * 1000);
+  const [live, watch, vitals, sends, alerts, stuck, base] = await Promise.all([
+    collectLive(workspaceId),
+    lastWatchRun().catch(() => null),
+    hostVitals(),
+    sendStats(workspaceId, since24),
+    prisma.alertEvent.findMany({
+      where: { ...wsFilter, createdAt: { gte: new Date(Date.now() - 6 * 3600 * 1000) } },
+      orderBy: { createdAt: 'desc' },
+      take: 6,
+      select: { title: true, createdAt: true }
+    }),
+    prisma.job.count({ where: { ...wsFilter, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } } }),
+    fleetHealthService.health(workspaceId).catch(() => null)
+  ]);
+  const hm = (d: Date) => d.toLocaleTimeString('tr-TR', { timeZone: 'Europe/Istanbul', hour: '2-digit', minute: '2-digit' });
+  const online = live.filter((d) => d.online).length;
+  const scanned = live.filter((d) => d.scanned);
+  const exit = scanned.filter((d) => d.exitIp).length;
+  const active = live.filter((d) => d.account === 'ACTIVE').length;
+  const watchAge = watch ? Date.now() - watch.at.getTime() : null;
+  const watchOk = watchAge !== null && watchAge <= 25 * 60000;
+
+  // Her bulgu → önerilen adım. Operatör "şimdi ne yapayım" sorusunun cevabını görsün.
+  const findings: Array<[string, string, string]> = []; // [nokta, bulgu, öneri]
+  if (!watchOk) findings.push(['🔴', watchAge !== null ? `Bekçi ${fmtAge(watchAge)} tur atmadı` : 'Bekçi turu okunamadı', 'otomatik onarım durmuş olabilir → geliştiriciye bildir']);
+  if (base?.hosts?.some((h) => h.monitorStale)) findings.push(['🔴', 'Sunucu izleme sinyali bayat', 'agent çalışıyor mu kontrol edilmeli']);
+  if (online < live.length) findings.push([live.length - online >= 5 ? '🔴' : '🟡', `${live.length - online} cihaz kapalı`, '/kurtar ile uyandır']);
+  if (scanned.length && exit < scanned.length) findings.push([scanned.length - exit >= 10 ? '🔴' : '🟡', `${scanned.length - exit} cihaz internetsiz`, 'bekçi ~7 dk içinde onarır; sürerse /proxy']);
+  if (stuck) findings.push(['🟡', `${stuck} iş 10+ dk takılı`, '/kurtar takılı işleri temizler']);
+  if (sends.total >= 20 && sends.ok / sends.total < 0.85 && sends.lastHourFail < 10) {
+    const peak = sends.peakFail ? ` · en yoğun ${sends.peakFail.hour} (${sends.peakFail.n})` : '';
+    findings.push(['🟡', `24 saatte gönderimlerin %${pct(sends.fail, sends.total)} kadarı gitmedi (şu an sakin)`, `en sık: ${sends.reasons[0] ? reasonLabel(sends.reasons[0][0]) : '?'}${peak}`]);
+  }
+  if (sends.lastHourFail >= 10) findings.push(['🔴', `son 1 saatte ${sends.lastHourFail} gönderim gitmedi`, `en sık: ${sends.reasons[0] ? reasonLabel(sends.reasons[0][0]) : '?'}`]);
+  if (vitals.ramFreeGb !== null && vitals.ramFreeGb < 20) findings.push(['🔴', `boş RAM ${vitals.ramFreeGb.toFixed(0)} GB`, 'yeni cihaz açma']);
+  if (vitals.diskUsedPct !== null && vitals.diskUsedPct >= 85) findings.push(['🟡', `disk %${vitals.diskUsedPct}`, 'log/yedek temizliği']);
+
+  const L: string[] = ['<b>🔍 Derin Teşhis</b>', ''];
+  if (!findings.length) L.push('✅ <b>Her şey yolunda</b> — müdahale gerekmiyor.');
+  for (const [dot, what, todo] of findings) L.push(`${dot} <b>${esc(what)}</b>\n   👉 ${esc(todo)}`);
+
+  L.push('', '<b>📋 Kontrol listesi</b>');
+  const chk = (ok: boolean, s: string) => L.push(`${ok ? '✅' : '❌'} ${s}`);
+  chk(watchOk, `Bekçi${watchAge !== null ? ` (${fmtAge(watchAge)})` : ''}`);
+  chk(online === live.length, `Cihazlar açık ${online}/${live.length}`);
+  chk(!scanned.length || exit === scanned.length, `İnternet çıkışı ${exit}/${scanned.length}`);
+  chk(active >= live.length * 0.9, `WhatsApp aktif ${active}/${live.length}`);
+  chk(stuck === 0, `Takılı iş ${stuck}`);
+  chk(sends.total === 0 || sends.ok / sends.total >= 0.85, `Gönderim %${sends.rate} (${sends.ok}/${sends.total})`);
+  const sat = vitals.load1 !== null && vitals.cores ? Math.round((vitals.load1 / vitals.cores) * 100) : null;
+  chk(sat === null || sat < 90, `CPU %${sat ?? '?'} · RAM ${vitals.ramFreeGb?.toFixed(0) ?? '?'} GB boş · disk %${vitals.diskUsedPct ?? '?'}`);
+
+  if (sends.reasons.length) {
+    L.push('', '<b>✉️ Gitmeyen mesaj sebepleri</b> <i>(24 sa)</i>');
+    for (const [c, n] of sends.reasons.slice(0, 4)) L.push(`• ${esc(reasonLabel(c))}: <b>${n}</b>`);
+  }
+  L.push('', alerts.length ? '<b>🔔 Son 6 saat</b>' : '🔕 Son 6 saatte alarm yok.');
+  for (const a of alerts) L.push(`• <code>${hm(a.createdAt)}</code> ${esc(a.title).slice(0, 70)}`);
+  return L.join('\n');
+}
+
+// /ozet — sabah raporu: karne + 24 saatin hikâyesi.
+export async function renderDailyDigestV2(workspaceId: string): Promise<string> {
+  const wsFilter = workspaceId ? { workspaceId } : {};
+  const since24 = new Date(Date.now() - 24 * 3600 * 1000);
+  const live = await collectLive(workspaceId);
+  const liveIds = live.map((d) => d.id);
+  const [sends, msgIn, alerts, newBans, newRegs, watch, quota] = await Promise.all([
+    sendStats(workspaceId, since24),
+    prisma.whatsappMessage.count({ where: { ...wsFilter, direction: 'IN', createdAt: { gte: since24 } } }),
+    prisma.alertEvent.count({ where: { ...wsFilter, createdAt: { gte: since24 } } }),
+    prisma.generatedAccount.count({ where: { platform: 'whatsapp', status: 'BANNED', deviceId: { in: liveIds }, updatedAt: { gte: since24 } } }),
+    prisma.generatedAccount.count({ where: { ...wsFilter, platform: 'whatsapp', status: 'ACTIVE', createdAt: { gte: since24 } } }),
+    lastWatchRun().catch(() => null),
+    thordataQuota()
+  ]);
+  const online = live.filter((d) => d.online).length;
+  const scanned = live.filter((d) => d.scanned);
+  const exit = scanned.filter((d) => d.exitIp).length;
+  const active = live.filter((d) => d.account === 'ACTIVE').length;
+  const { score, grade } = fleetGrade([
+    pct(online, live.length),
+    scanned.length ? pct(exit, scanned.length) : null,
+    pct(active, live.length),
+    sends.total ? pct(sends.ok, sends.total) : null
+  ]);
+  const hour = Number(new Date().toLocaleString('en-GB', { timeZone: 'Europe/Istanbul', hour: '2-digit', hour12: false }));
+  const hello = hour < 6 ? '🌙 İyi geceler' : hour < 12 ? '☀️ Günaydın' : hour < 18 ? '🌤 İyi günler' : '🌆 İyi akşamlar';
+  const tenth = Math.round(score / 10);
+
+  const L: string[] = [`<b>${hello}!</b> Filo karnesi: <b>${grade}</b> <i>(${score}/100)</i>`, `<code>${'█'.repeat(tenth)}${'░'.repeat(10 - tenth)}</code>`, ''];
+  L.push(`📱 Cihaz    ${bar(pct(online, live.length), 8)} <b>${online}</b>/${live.length}`);
+  if (scanned.length) L.push(`🌐 İnternet ${bar(pct(exit, scanned.length), 8)} <b>${exit}</b>/${scanned.length}`);
+  L.push(`💬 WA aktif ${bar(pct(active, live.length), 8)} <b>${active}</b>/${live.length}`);
+  if (sends.total) L.push(`✉️ Teslim   ${bar(pct(sends.ok, sends.total), 8)} <b>${sends.ok}</b>/${sends.total} (%${sends.rate})`);
+
+  L.push('', '<b>📖 Son 24 saat</b>');
+  L.push(`📨 ${msgIn} gelen mesaj · 🆕 ${newRegs} yeni hesap · ${newBans ? `⛔️ ${newBans} yeni ban` : '🛡 yeni ban yok'}`);
+  if (sends.reasons.length) L.push(`↳ gitmeyenler: ${sends.reasons.slice(0, 3).map(([c, n]) => `${esc(reasonLabel(c))} ${n}`).join(' · ')}`);
+  L.push(`🔔 ${alerts} alarm${watch ? ` · 🛡 bekçi ${fmtAge(Date.now() - watch.at.getTime())}` : ' · 🔴 bekçi okunamadı'}`);
+  if (quota) L.push(`💳 Residential ${quota.balanceGb.toFixed(1)} GB${quota.yesterdayGb !== null ? ` · dün ${quota.yesterdayGb.toFixed(1)} GB` : ''}`);
+
+  const tips: string[] = [];
+  if (online < live.length) tips.push(`${live.length - online} kapalı cihaz → /kurtar`);
+  if (newBans) tips.push('yeni banlar → /banlar');
+  if (sends.total && sends.ok / sends.total < 0.85) tips.push('gönderim oranı düşük → /tani');
+  L.push('', tips.length ? `👉 ${tips.join(' · ')}` : '✨ Müdahale gereken bir şey yok. İyi çalışmalar!');
+  return L.join('\n');
+}
+
+// /bakiye — kota + son 7 günün kullanım grafiği.
+export async function renderBalanceV2(): Promise<string> {
+  const [quota, split] = await Promise.all([thordataQuota(), proxySplit()]);
+  if (!quota) return '⚠️ Thordata kota bilgisi okunamadı (token yok ya da API cevap vermedi — 15 dk sonra tekrar deneyin).';
+  const daysLeftExp = Math.ceil((new Date(`${quota.expiration}T23:59:59Z`).getTime() - Date.now()) / 86400000);
+  const dot = quota.balanceGb < 10 || daysLeftExp <= 3 ? '🔴' : quota.balanceGb < 30 || daysLeftExp <= 7 ? '🟡' : '🟢';
+  const L: string[] = ['<b>💳 Proxy Bakiyesi</b> <i>(Thordata)</i>', ''];
+  L.push(`${dot} 🏠 Residential: <b>${quota.balanceGb.toFixed(2)} GB</b>`);
+  L.push(`📅 Bitiş: ${esc(quota.expiration)} <i>(${daysLeftExp} gün)</i>`);
+  const days = quota.days.slice(-7);
+  if (days.length) {
+    const max = Math.max(...days.map((d) => d.gb), 0.01);
+    L.push('', '<b>📊 Günlük kullanım</b>');
+    for (const d of days) {
+      const n = Math.round((d.gb / max) * 12);
+      L.push(`<code>${d.date.slice(5)} ${'▇'.repeat(n)}${' '.repeat(12 - n)} ${d.gb.toFixed(2).padStart(6)} GB</code>`);
+    }
+    const rate = quota.yesterdayGb;
+    if (split && split.residential === 0) L.push('💤 Filo şu an residential kullanmıyor → bu kota yalnız bitiş tarihine kadar bekliyor');
+    else if (rate && rate > 0.05) L.push(`⏳ Dün ${rate.toFixed(2)} GB → bu hızla ~${Math.floor(quota.balanceGb / rate)} gün yeter`);
+  }
+  if (split) L.push('', `📡 Filo: mobil <b>${split.mobile}</b> · residential <b>${split.residential}</b> cihaz`);
+  L.push('<i>Mobil paket kotası bu token\'da görünmüyor → Thordata paneli.</i>');
   return L.join('\n');
 }

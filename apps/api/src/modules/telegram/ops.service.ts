@@ -3,6 +3,7 @@ import { logger } from '../../lib/logger';
 import { fleetHealthService } from '../fleet-health/fleet-health.service';
 import { createJobRecord } from '../jobs/jobs.service';
 import type { JobPayload } from '../jobs/job.types';
+import { renderDiagnosticsV2, renderProxyV2, renderDailyDigestV2 } from './tg-health';
 
 // ── OPERASYON KOMUTLARI (Telegram) ──────────────────────────────────────────
 //
@@ -62,6 +63,12 @@ function proxyCountryOf(d: DeviceRow): string {
 // "Neyin bozuk olduğunu" tek mesajda gösterir: servis/izleme canlılığı, cihaz
 // durumu, WhatsApp hesap sağlığı, proxy ülke dağılımı, son alarmlar.
 export async function renderDiagnostics(workspaceId: string): Promise<string> {
+  // ★2026-09-30 v2 (yaşayan filo + gerçek çıkış + gerçek gönderim); hata olursa eski gövde.
+  try {
+    return await renderDiagnosticsV2(workspaceId);
+  } catch (e) {
+    logger.warn('renderDiagnostics v2 failed, falling back', { error: (e as Error).message });
+  }
   // ★2026-07-29 — YALANCI SAĞLIK RAPORU TEHLİKESİ:
   // Aşağıdaki sorguların hepsi `.catch(() => boş)` ile korunuyor. Bu, tek bir sorgu
   // patladığında raporun yine de üretilmesini sağlar AMA veritabanı TAMAMEN çökerse
@@ -181,6 +188,12 @@ export async function renderDiagnostics(workspaceId: string): Promise<string> {
 // Hangi cihaz hangi ülkede, kaçı sağlıklı. Asıl amaç: "bir ülke havuzu mu öldü,
 // yoksa tek cihaz mı takıldı" ayrımını operatörün SSH'sız görebilmesi.
 export async function renderProxyStatus(workspaceId: string): Promise<string> {
+  // ★2026-09-30 v2 (yaşayan filo + gerçek çıkış + gerçek gönderim); hata olursa eski gövde.
+  try {
+    return await renderProxyV2(workspaceId);
+  } catch (e) {
+    logger.warn('renderProxyStatus v2 failed, falling back', { error: (e as Error).message });
+  }
   const devices = await prisma.device
     .findMany({
       where: { workspaceId },
@@ -299,6 +312,12 @@ export function renderEmergencyHelp(): string {
 // Sabah tek mesaj: gece ne oldu, şu an durum ne. "Sessizlik = arıza mı, huzur mu"
 // belirsizliğini bitirir — sistem sağlıklıysa da mesaj gelir.
 export async function renderDailyDigest(workspaceId: string): Promise<string> {
+  // ★2026-09-30 v2 (yaşayan filo + gerçek çıkış + gerçek gönderim); hata olursa eski gövde.
+  try {
+    return await renderDailyDigestV2(workspaceId);
+  } catch (e) {
+    logger.warn('renderDailyDigest v2 failed, falling back', { error: (e as Error).message });
+  }
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const [health, alerts, jobs, notifs] = await Promise.all([
     fleetHealthService.health(workspaceId).catch(() => null),

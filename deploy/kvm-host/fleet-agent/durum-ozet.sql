@@ -195,3 +195,39 @@ select 'konusma', count(*) filter (where "updatedAt" > now() - interval '24 hour
 select 'ulke', coalesce(string_agg(t.s,' · ' order by t.n desc),'-')
   from (select coalesce(metadata->>'proxyCountry','?')||': '||count(*) s, count(*) n
           from "Device" group by coalesce(metadata->>'proxyCountry','?')) t;
+
+-- ══════════════════════════════════════════════════════════════════════════
+-- ★2026-09-30 YAŞAYAN FİLO + GERÇEK TESLİM
+-- Eski 'is24' iş DURUMUNU sayıyordu: agent WHATSAPP_SEND'i hep COMPLETED bitirir,
+-- mesajın gidip gitmediği result.status'tadır (canlı: %99 görünüyordu, gerçek %74).
+-- Eski 'hesap'/'ban24' TÜM ZAMANLARIN kayıtlarını sayıyordu (silinmiş cihazlar
+-- dahil: "24s ban 14" derken yaşayan filoda 1'di).
+-- ══════════════════════════════════════════════════════════════════════════
+select 'teslim24',
+       count(*) filter (where status='COMPLETED' and upper(coalesce(result->>'status','')) in ('SENT','OK','DELIVERED','READ')),
+       count(*),
+       coalesce((select string_agg(x.k||' '||x.n, ' · ' order by x.n desc) from (
+          select coalesce(nullif(result->>'status',''), status::text) k, count(*) n
+            from "Job" where type='WHATSAPP_SEND' and status in ('COMPLETED','FAILED')
+             and "createdAt" > now() - interval '24 hours'
+             and not (status='COMPLETED' and upper(coalesce(result->>'status','')) in ('SENT','OK','DELIVERED','READ'))
+           group by 1 order by 2 desc limit 3) x), '-')
+  from "Job" where type='WHATSAPP_SEND' and status in ('COMPLETED','FAILED')
+   and "createdAt" > now() - interval '24 hours';
+-- Yaşayan cihaz başına EN İYİ hesap: aktif|banlı|kısıtlı|çıkış|hesapsız|toplam
+select 'hesap_canli',
+       count(*) filter (where b='ACTIVE'), count(*) filter (where b='BANNED'),
+       count(*) filter (where b='RESTRICTED'), count(*) filter (where b='LOGGED_OUT'),
+       count(*) filter (where b is null), count(*)
+  from (select (select g.status::text from "GeneratedAccount" g
+                 where g."deviceId"=d.id and g.platform='whatsapp'
+                   and g.status in ('ACTIVE','RESTRICTED','LOGGED_OUT','BANNED')
+                 order by case g.status when 'ACTIVE' then 4 when 'RESTRICTED' then 3
+                                        when 'LOGGED_OUT' then 2 else 1 end desc limit 1) b
+          from "Device" d where d.metadata ? 'instance') t;
+-- Yaşayan cihazda ban (24s | 7g) — cihazda sonradan aktif hesap açıldıysa sayılmaz.
+select 'ban_canli',
+       count(*) filter (where g."updatedAt" > now() - interval '24 hours'), count(*)
+  from "GeneratedAccount" g join "Device" d on d.id=g."deviceId" and d.metadata ? 'instance'
+ where g.status='BANNED' and g."updatedAt" > now() - interval '7 days'
+   and not exists (select 1 from "GeneratedAccount" a where a."deviceId"=g."deviceId" and a.status='ACTIVE');

@@ -25,7 +25,10 @@ tek(){
   # Maliyet yalnizca BASARISIZ olanlar icin odenir; saglam cihazlar icin 0.
   # ⚠️`tr -d` KORUNMALI: curl ciktisinda CR olursa "$" capasi tutmaz ve yine sahte
   #   "cikisi yok" uretilir. Regex ayrica IPv4 bicimine daraltildi (once "[0-9.]+" idi).
-  cik=$(timeout 15 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 12 https://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
+  # ★2026-09-30 ILK DENEME HTTP: HTTPS el sikismasi ~5 KB x 155 cihaz x 576 tur/gun = ~0.45 GB/gun MOBIL
+  #   KOTADAN gidiyordu; duz HTTP ~0.5 KB (%90 az). Cikis IP ayni (mi100/mi11 ile olculdu).
+  #   Ikinci deneme HTTPS kalir (HTTP 80 bir gun engellenirse sahte "cikisi yok" olmasin).
+  cik=$(timeout 15 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 12 http://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
   if [ -z "$cik" ]; then
     sleep 1
     cik=$(timeout 20 lxc-attach -P "$P" -n waydroid -- /system/bin/curl -s --max-time 17 https://api.ipify.org 2>/dev/null | tr -d "\r\n" | grep -oE "^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")

@@ -120,6 +120,7 @@ while true; do
   db(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f2 | escn; }
   db2(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f3 | escn; }
   db3(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f4 | escn; }
+  dbn(){ grep "^$1|" "$DBO" 2>/dev/null | head -1 | cut -d'|' -f"$2" | escn; }
   DBTS=$(grep '^olcum_ts=' "$DBO" 2>/dev/null | cut -d= -f2)
   DBSAAT=$(grep '^olcum_saat=' "$DBO" 2>/dev/null | cut -d= -f2)
   # ★BAYATLIK: dosya varsa ama 5 dk'dan eskiyse DEĞERLERİ GÖSTERME.
@@ -144,10 +145,23 @@ while true; do
   DBCIH=$(db db_cihaz); DBONL=$(db db_online); DBBAYAT=$(db db_bayat)
   DBBOY=$(db db_boyut); DBENB=$(db db_enbuyuk); DBOLU=$(db db_olu)
 
+  # ★2026-09-30 YAŞAYAN FİLO + GERÇEK TESLİM (durum-ozet.sql'deki açıklamaya bak).
+  # Yeni satırlar yoksa (eski DB özeti) eski tüm-zamanlar sayılarına düşülür.
+  TES_OK=$(dbn teslim24 2); TES_TOP=$(dbn teslim24 3); TES_SEB=$(dbn teslim24 4)
+  if [ -n "$TES_TOP" ] && [ "$TES_TOP" -gt 0 ] 2>/dev/null; then TESORAN=$(( TES_OK * 100 / TES_TOP )); else TESORAN=""; fi
+  HC_TOP=$(dbn hesap_canli 7)
+  if [ -n "$HC_TOP" ] && [ "$HC_TOP" -gt 0 ] 2>/dev/null; then
+    HACT=$(dbn hesap_canli 2); HBAN=$(dbn hesap_canli 3); HKIS=$(dbn hesap_canli 4)
+    HOUT=$(dbn hesap_canli 5); HYOK=$(dbn hesap_canli 6)
+  fi
+  BAN24C=$(dbn ban_canli 2); BAN7C=$(dbn ban_canli 3)
+  [ -n "$BAN24C" ] && { BAN24=$BAN24C; BAN7=$BAN7C; }
+
   ISTOP=$(( ${IS_OK:-0} + ${IS_FAIL:-0} ))
   if [ "$ISTOP" -gt 0 ] 2>/dev/null; then ISORAN=$(( ${IS_OK:-0} * 100 / ISTOP )); else ISORAN=100; fi
   HTOP=$(( ${HACT:-0} + ${HBAN:-0} + ${HKIS:-0} ))
   if [ "$HTOP" -gt 0 ] 2>/dev/null; then HORAN=$(( ${HACT:-0} * 100 / HTOP )); else HORAN=0; fi
+  [ -n "$HC_TOP" ] && [ "$HC_TOP" -gt 0 ] 2>/dev/null && HORAN=$(( ${HACT:-0} * 100 / HC_TOP ))
 
   # ════════════════════════════════════════════════════════════════════════
   # BÖLÜM 3 — DONANIM / ÇEKİRDEK (PSI, sıcaklık, kapasite)
@@ -562,6 +576,47 @@ details pre{margin:0;padding:0 16px 14px;overflow-x:auto;font-size:11.5px;line-h
 .kbd-row kbd{background:var(--card2);border:1px solid var(--line2);border-radius:5px;
   padding:1px 7px;font:inherit;font-size:11.5px;color:var(--fg)}
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ★2026-09-30 CANLILIK KATMANI — yalnız görsel; veri JS'siz de aynı.
+   Sayfa 10 sn'de bir yenilenir: sayılar ÖNCEKİ değerden yeniye akar, değişen
+   kart kısa bir parıltı + ▲/▼ farkıyla kendini belli eder. Hareket hassasiyeti
+   ayarı açık olan tarayıcıda hepsi kapanır.
+   ══════════════════════════════════════════════════════════════════════════ */
+.bar{overflow:hidden}
+.bar .tik{position:absolute;left:0;bottom:-1px;height:2px;width:100%;transform-origin:left;
+  background:linear-gradient(90deg,var(--info),var(--purple));opacity:.75;transform:scaleX(0)}
+.bar .tik.run{animation:tik 10s linear forwards}
+@keyframes tik{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.verdict .ring{position:relative}
+.verdict .ring::after{content:"";position:absolute;inset:0;border-radius:99px;background:inherit}
+.v-iyi .ring::after{animation:nefes 3.2s ease-out infinite}
+.v-uyari .ring::after{animation:nefes 1.8s ease-out infinite}
+.v-kritik .ring::after{animation:nefes 1s ease-out infinite}
+@keyframes nefes{0%{transform:scale(1);opacity:.7}100%{transform:scale(3.4);opacity:0}}
+.bar .dot{position:relative}
+.bar .dot::after{content:"";position:absolute;inset:0;border-radius:99px;background:inherit;animation:nefes 2.4s ease-out infinite}
+.card,.wide{position:relative}
+.card.degisti{animation:parilti 1.6s ease-out}
+@keyframes parilti{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--info) 55%,transparent);border-color:var(--info)}
+  100%{box-shadow:0 0 0 10px transparent}}
+.fark{position:absolute;top:10px;right:11px;font-size:10.5px;font-weight:650;padding:1px 6px;
+  border-radius:99px;font-variant-numeric:tabular-nums;animation:farkUcu 3.5s ease-out forwards}
+.fark.up{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent)}
+.fark.dn{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent)}
+@keyframes farkUcu{0%{opacity:0;transform:translateY(4px)}12%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0}}
+.ilk .card,.ilk .wide,.ilk .chart{animation:giris .5s cubic-bezier(.2,.8,.2,1) backwards}
+@keyframes giris{from{opacity:0;transform:translateY(8px) scale(.985)}to{opacity:1;transform:none}}
+.card:hover{transform:translateY(-2px)}
+.bar-t>i{transition:width .9s cubic-bezier(.2,.8,.2,1)}
+.col i{transform-origin:bottom}
+.ilk .col i{animation:kolon .7s cubic-bezier(.2,.8,.2,1) backwards}
+@keyframes kolon{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.saat{font-variant-numeric:tabular-nums;color:var(--fg2)}
+.konfeti{position:fixed;top:-12px;width:8px;height:12px;border-radius:2px;z-index:90;pointer-events:none;
+  animation:dus linear forwards}
+@keyframes dus{to{transform:translateY(105vh) rotate(720deg);opacity:.2}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
 @media(max-width:760px){
   body{padding:0 11px 40px}
   .bar{margin:0 -11px;padding:9px 11px;gap:8px}
@@ -580,7 +635,8 @@ HEAD
     echo "<span class=\"pill\"><i class=\"dot\" style=\"background:${BDOT}\"></i>${OZB}</span>"
     echo "<span class=\"pill\">Cihaz <b>${ACIK}/${TOP}</b></span>"
     echo "<span class=\"pill\">D-state <b>${D}</b></span>"
-    [ "$DBOK" = "1" ] && echo "<span class=\"pill\">İş <b>%${ISORAN}</b></span>"
+    if [ "$DBOK" = "1" ] && [ -n "$TESORAN" ]; then echo "<span class=\"pill\">Teslim <b>%${TESORAN}</b></span>"
+    elif [ "$DBOK" = "1" ]; then echo "<span class=\"pill\">İş <b>%${ISORAN}</b></span>"; fi
     [ "$DBOK" = "1" ] && echo "<span class=\"pill\">Ban 24s <b>${BAN24:-0}</b></span>"
     echo "<span class=\"sp\"></span>"
     echo "<span class=\"pill dim\" id=\"sayac\">10 sn</span>"
@@ -740,7 +796,13 @@ HEAD
     if   [ "$ISORAN" -ge 95 ]; then IC=ok;   IN="normal işleyiş"
     elif [ "$ISORAN" -ge 85 ]; then IC=warn; IN="başarısızlık arttı"
     else                           IC=bad;  IN="CİDDİ — işler tutmuyor"; fi
-    echo "<div class=\"card\"><div class=\"lbl\">İş başarı oranı</div><div class=\"num $IC\">${ISORAN}<span class=\"unit\">%</span></div><div class=\"bar-t\"><i style=\"width:${ISORAN}%;background:var(--${IC})\"></i></div><div class=\"sub\">${IS_OK:-?} tamam · ${IS_FAIL:-?} başarısız · ${IN}</div></div>"
+    if [ -n "$TESORAN" ]; then
+      if   [ "$TESORAN" -ge 90 ]; then TC=ok;   TN="mesajlar gidiyor"
+      elif [ "$TESORAN" -ge 75 ]; then TC=warn; TN="gitmeyen arttı"
+      else                             TC=bad;  TN="CİDDİ — mesajlar gitmiyor"; fi
+      echo "<div class=\"card\"><div class=\"lbl\">Mesaj teslim</div><div class=\"num $TC\">${TESORAN}<span class=\"unit\">%</span></div><div class=\"bar-t\"><i style=\"width:${TESORAN}%;background:var(--${TC})\"></i></div><div class=\"sub\">${TES_OK}/${TES_TOP} gitti · ${TN}<br>gitmeyen: ${TES_SEB:--}</div></div>"
+    fi
+    echo "<div class=\"card\"><div class=\"lbl\">İş başarı oranı</div><div class=\"num $IC\">${ISORAN}<span class=\"unit\">%</span></div><div class=\"bar-t\"><i style=\"width:${ISORAN}%;background:var(--${IC})\"></i></div><div class=\"sub\">${IS_OK:-?} tamam · ${IS_FAIL:-?} başarısız · ${IN} · <i>iş çalıştı mı (mesaj gitti mi değil)</i></div></div>"
     case "${GOND:-?}" in
       ''|'?') GC=dim; GN="ölçülemedi" ;;
       *) if   [ "${GOND}" -le 20 ] 2>/dev/null; then GC=ok;   GN="hedefte (12-17 sn tipik)"
@@ -806,7 +868,7 @@ HEAD
 
     # ══════════════════════════════════════════════════════════════════════
     echo "<h2 data-sec=\"hesap\"><span class=\"caret\">▼</span>WhatsApp hesapları</h2><div class=\"sec\" id=\"sec-hesap\"><div class=\"grid\">"
-    echo "<div class=\"card\"><div class=\"lbl\">Aktif hesap</div><div class=\"num ok\">${HACT:-?}</div><div class=\"bar-t\"><i style=\"width:${HORAN}%;background:var(--ok)\"></i></div><div class=\"sub\">kullanılabilir oran %${HORAN}</div></div>"
+    echo "<div class=\"card\"><div class=\"lbl\">Aktif hesap</div><div class=\"num ok\">${HACT:-?}</div><div class=\"bar-t\"><i style=\"width:${HORAN}%;background:var(--ok)\"></i></div><div class=\"sub\">kullanılabilir oran %${HORAN}${HC_TOP:+ · ${HC_TOP} yaşayan cihaz${HYOK:+, ${HYOK} hesapsız}}</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Banlı</div><div class=\"num bad\">${HBAN:-?}</div><div class=\"sub\">kalıcı kayıp</div></div>"
     echo "<div class=\"card\"><div class=\"lbl\">Kısıtlı</div><div class=\"num warn\">${HKIS:-?}</div><div class=\"sub\">yeni sohbet açamaz</div></div>"
     if   [ "${BAN24:-0}" -ge 6 ] 2>/dev/null; then BC2=bad;  BN2="BAN DALGASI — acil incele"
@@ -1009,7 +1071,7 @@ HEAD
      Duraklat bilgisi localStorage'da tutulur — yenilemeden sonra da korunur. */
   var SURE = 10, kalan = SURE, duraklat = LS.get('duraklat','0')==='1', timer=null;
   function tik(){
-    if(duraklat) return;
+    if(duraklat || document.hidden) return;
     kalan--;
     var el=document.getElementById('sayac'); if(el) el.textContent = kalan+' sn';
     if(kalan<=0) location.reload();
@@ -1021,6 +1083,9 @@ HEAD
     var el=document.getElementById('sayac');
     if(el) el.textContent = duraklat ? 'duraklatıldı' : kalan+' sn';
     if(!duraklat){ kalan=SURE; }
+    var tk=document.querySelector('.bar .tik');
+    if(tk && tk.parentNode) tk.parentNode.removeChild(tk);
+    if(!duraklat){ var br=document.querySelector('.bar'); if(br){ var n=document.createElement('i'); n.className='tik run'; br.appendChild(n); } }
   }
 
   /* ── BÖLÜM DARALTMA ──────────────────────────────────────────────────── */
@@ -1134,9 +1199,85 @@ HEAD
     else if(e.key==='Escape'){ var h2=document.getElementById('kbd'); if(h2) h2.className='kbd-help'; }
   }
 
+  /* ── ★2026-09-30 CANLILIK: önceki değerden akış + değişim parıltısı ─────
+     Önceki turun sayıları sessionStorage'da; sayfa yenilenince her kart eski
+     değerden yenisine sayar, değişen kart parlar ve ▲/▼ farkını gösterir.
+     İlk ziyarette kartlar sırayla belirir ve sayılar 0'dan yükselir. */
+  var SS = {
+    get: function(k){ try{ return sessionStorage.getItem('durum.'+k); }catch(e){ return null; } },
+    set: function(k,v){ try{ sessionStorage.setItem('durum.'+k,v); }catch(e){} }
+  };
+  var AZ = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function say(el, from, to){
+    if(AZ || from===to){ return; }
+    var t0=null, dur=Math.min(1200, 380+Math.abs(to-from)*14);
+    function adim(t){
+      if(t0===null) t0=t;
+      var p=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-p,3);
+      el.nodeValue = String(Math.round(from+(to-from)*e));
+      if(p<1) requestAnimationFrame(adim);
+    }
+    el.nodeValue=String(from); requestAnimationFrame(adim);
+  }
+  function canlilik(){
+    var ilk = SS.get('gordu')!=='1';
+    if(ilk && !AZ){ document.body.className+=' ilk'; SS.set('gordu','1');
+      var kart=document.querySelectorAll('.card,.wide,.chart');
+      for(var k=0;k<kart.length && k<60;k++) kart[k].style.animationDelay=(k*28)+'ms';
+    }
+    var onceki={}; try{ onceki=JSON.parse(SS.get('sayilar')||'{}'); }catch(e){}
+    var simdi={};
+    var cards=document.querySelectorAll('.card');
+    for(var i=0;i<cards.length;i++){
+      var c=cards[i], num=c.querySelector('.num'), lbl=c.querySelector('.lbl');
+      if(!num||!lbl) continue;
+      var tn=num.firstChild;
+      if(!tn || tn.nodeType!==3 || !/^\s*-?\d+\s*$/.test(tn.nodeValue)) continue;
+      var anahtar=lbl.textContent.trim()+'#'+i, deger=parseInt(tn.nodeValue,10);
+      simdi[anahtar]=deger;
+      var eski = (anahtar in onceki) ? onceki[anahtar] : (ilk ? 0 : deger);
+      say(tn, eski, deger);
+      if(!ilk && eski!==deger){
+        c.className+=' degisti';
+        var f=document.createElement('span'), d=deger-eski;
+        f.className='fark '+(d>0?'up':'dn'); f.textContent=(d>0?'▲ ':'▼ ')+Math.abs(d);
+        c.appendChild(f);
+      }
+    }
+    SS.set('sayilar', JSON.stringify(simdi));
+    // Kusursuz filo → oturum başına bir kez küçük bir kutlama.
+    var v=document.querySelector('.verdict.v-iyi');
+    if(v && !AZ && SS.get('kutlandi')!=='1'){
+      SS.set('kutlandi','1');
+      var renk=['#34d399','#60a5fa','#a78bfa','#fbbf24','#f472b6'];
+      for(var q=0;q<42;q++){
+        var p=document.createElement('i'); p.className='konfeti';
+        p.style.left=(Math.random()*100)+'vw';
+        p.style.background=renk[q%renk.length];
+        p.style.animationDuration=(1.6+Math.random()*1.6)+'s';
+        p.style.animationDelay=(Math.random()*0.5)+'s';
+        document.body.appendChild(p);
+        (function(el){ setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); }, 4200); })(p);
+      }
+    }
+    if(!document.querySelector('.verdict.v-iyi')) SS.set('kutlandi','0');
+    // Yenileme ilerleme çizgisi + canlı saat
+    var bar=document.querySelector('.bar');
+    if(bar && !duraklat){ var tk=document.createElement('i'); tk.className='tik run'; bar.appendChild(tk); }
+    var meta=document.querySelector('.top .meta');
+    if(meta){
+      var s=document.createElement('span'); s.className='saat';
+      meta.insertBefore(s, meta.firstChild); meta.insertBefore(document.createTextNode(' · '), s.nextSibling);
+      var saatYaz=function(){ s.textContent='🕒 '+new Date().toLocaleTimeString('tr-TR',{timeZone:'Europe/Istanbul'}); };
+      saatYaz(); setInterval(saatYaz,1000);
+    }
+  }
+  // Sekme arka plandayken sayaç durur (tik() document.hidden'da çıkar) → boşuna yenileme yok.
+
   /* ── BAŞLAT ──────────────────────────────────────────────────────────── */
   document.addEventListener('DOMContentLoaded', function(){
     bolumKur(); tabloKur(); kopyaKur();
+    try{ canlilik(); }catch(e){}
     var bt=document.getElementById('btn-tema');
     if(bt){ bt.textContent = tema==='koyu'?'☾':'☀'; bt.addEventListener('click',temaDegis); }
     var bd=document.getElementById('btn-duraklat');

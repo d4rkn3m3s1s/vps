@@ -117,6 +117,17 @@ const whatsappReceiptSchema = z.object({
   ts: z.coerce.number().int().nonnegative().optional()
 });
 
+// ★2026-09-30 toplu tik (agent msgstore taraması) — bkz. recordWhatsappReceiptBatch.
+const whatsappReceiptBatchSchema = z.object({
+  serial: z.string().min(1).max(64),
+  items: z.array(z.object({
+    to: z.string().min(1).max(40),
+    ts: z.coerce.number().int().positive(),
+    status: z.enum(['DELIVERED', 'READ']),
+    text: z.string().max(400).optional()
+  })).max(500)
+});
+
 const healthAlertSchema = z.object({
   // ★2026-07-23 (Faz-4): + PROXY_DEAD (dead redsocks — health-watch already emits it) and
   // HEALTH_WATCH_HEARTBEAT (dead-man's-switch ping). Without these the API 400'd them.
@@ -272,6 +283,12 @@ export async function whatsappReceiptHandler(req: Request, res: Response): Promi
   const host = requireHost(req);
   const input = whatsappReceiptSchema.parse(req.body);
   res.json({ data: await agentService.recordWhatsappReceipt(host, input) });
+}
+
+export async function whatsappReceiptBatchHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = whatsappReceiptBatchSchema.parse(req.body);
+  res.json({ data: await agentService.recordWhatsappReceiptBatch(host, input) });
 }
 
 // Proactive health-watch alert (wd-health-watch.sh → here). Reports a proxy leak

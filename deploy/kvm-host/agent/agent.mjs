@@ -11699,6 +11699,85 @@ async function mediaCaptureTick() {
   }
 }
 
+// ── ★2026-09-30 TİK TARAMASI (teslim ✓✓ / okundu 🔵) ─────────────────────────
+// NEDEN: panelde giden mesajlar SONSUZA DEK "SENT" kalıyordu — canlı ölçüm: 3 günde
+// 1058 OUT mesajın HİÇBİRİ DELIVERED/READ olmadı. Tek tik yolu (pushOutgoingReceipt)
+// yalnızca sohbet EKRANDA AÇIKKEN UI'dan okuyor; gönderim bitince sohbet kapandığı
+// için pratikte hiç tetiklenmiyordu. Oysa WhatsApp durumu kendi DB'sine yazıyor
+// (msgstore.message.status: 5 gönderildi · 6 teslim · 13 okundu — mi2/4/8/11'de doğrulandı).
+// NASIL: 15 dk'da bir her boştaki cihazda TEK salt-okur SQL (mi407'de 0.2 sn, ekran YOK →
+// ban yüzeyi sıfır), son 48 saatin 6/13'lü giden mesajları. Yalnız DEĞİŞENLER API'ye
+// gider (cihaz başına bellekte son durum); API her tiki kendi mesajına eşler (numara +
+// zaman ±15 dk + metin başı) ve monoton ilerletir. Kapatma: FLEET_WA_RECEIPT_SWEEP=0.
+const WA_RECEIPT_SWEEP_ENABLED = process.env.FLEET_WA_RECEIPT_SWEEP !== '0';
+const WA_RECEIPT_SWEEP_MS = Math.max(300000, Number(process.env.FLEET_WA_RECEIPT_SWEEP_MS || 900000));
+const waReceiptSeen = new Map(); // serial -> Map("to|ts" -> status)
+let _receiptSweepRunning = false;
+
+async function readWaOutboundTicks(serial) {
+  const sql =
+    `SELECT COALESCE(jn.user, j.user), m.timestamp, m.status, ` +
+    `replace(replace(substr(m.text_data,1,60),char(10),' '),char(13),' ') ` +
+    `FROM message m JOIN chat c ON c._id=m.chat_row_id JOIN jid j ON j._id=c.jid_row_id ` +
+    `LEFT JOIN jid_map jm ON jm.lid_row_id=c.jid_row_id LEFT JOIN jid jn ON jn._id=jm.jid_row_id ` +
+    `WHERE m.from_me=1 AND m.status IN (6,13) AND m.timestamp>(strftime('%s','now')-172800)*1000 ` +
+    `AND COALESCE(jn.server,j.server)='s.whatsapp.net' ORDER BY m.timestamp DESC LIMIT 400`;
+  const rows = await waSql(serial, 'msgstore', sql);
+  if (rows === null) return null;
+  const out = [];
+  for (const line of rows) {
+    const p = line.split('|');
+    if (p.length < 3) continue;
+    const to = (p[0] || '').replace(/[^\d]/g, '');
+    const ts = Number(p[1]) || 0;
+    if (!to || !ts) continue;
+    out.push({ to, ts, status: p[2] === '13' ? 'READ' : 'DELIVERED', text: p.slice(3).join('|') });
+  }
+  return out;
+}
+
+async function receiptSweepTick() {
+  if (!WA_RECEIPT_SWEEP_ENABLED || _receiptSweepRunning) return;
+  _receiptSweepRunning = true;
+  let sent = 0, advanced = 0, devs = 0;
+  try {
+    const serials = await reachableSerials();
+    // 6'lı küçük paralel: inbox turuyla (12'li) üst üste binse bile ADB'yi doyurmasın.
+    for (let i = 0; i < serials.length; i += 6) {
+      await Promise.all(serials.slice(i, i + 6).map(async (serial) => {
+        if (busyDevices.has(serial)) return; // iş süren cihaz bir sonraki tura kalır
+        const ticks = await readWaOutboundTicks(serial).catch(() => null);
+        if (!ticks) return;
+        const prev = waReceiptSeen.get(serial) || new Map();
+        const cur = new Map();
+        const changed = [];
+        for (const t of ticks) {
+          const k = `${t.to}|${t.ts}`;
+          cur.set(k, t.status);
+          if (prev.get(k) !== t.status) changed.push(t);
+        }
+        if (!changed.length) { waReceiptSeen.set(serial, cur); return; }
+        try {
+          const { data } = await api('/agent/whatsapp/receipts', {
+            method: 'POST',
+            body: JSON.stringify({ serial, items: changed.slice(0, 500) }),
+          }, { timeoutMs: 20000 });
+          // Yalnız BAŞARILI gönderimde hatırla → API düşükse bir sonraki tur tekrar dener.
+          waReceiptSeen.set(serial, cur);
+          devs++; sent += changed.length; advanced += Number(data && data.advanced) || 0;
+        } catch (err) {
+          if (!/->\s*404\b/.test(String(err && err.message))) log(`receipt sweep ${serial} failed:`, err.message);
+        }
+      }));
+    }
+    if (sent) log(`receipt sweep: ${devs} cihaz, ${sent} tik gönderildi, ${advanced} mesaj ilerledi`);
+  } catch (err) {
+    log('receipt sweep tick failed:', err.message);
+  } finally {
+    _receiptSweepRunning = false;
+  }
+}
+
 // Host-level disk + RAM so the dashboard can show "how many more devices fit"
 // (each Waydroid instance ≈ 8GB disk + 1.5GB RAM). Best-effort; returns {} on any
 // failure so the heartbeat never breaks.
@@ -13400,6 +13479,10 @@ async function loop() {
   const waHealth = WA_HEALTH_ENABLED ? setInterval(() => { waHealthTick().catch(() => undefined); }, WA_HEALTH_MS) : null;
   // ★OTP-WATCH ticker: keeps the panel's live thumbnail fresh for devices parked at OTP_WAIT.
   const otpWatchT = setInterval(() => { otpWatchTick().catch(() => undefined); }, OTP_WATCH_MS);
+  // ★TİK TARAMASI (teslim/okundu, msgstore'dan, ekran yok). İlk tur açılıştan 3 dk sonra
+  // (restart anında zaten yoğun olan ADB'ye binmesin), sonra 15 dk'da bir.
+  const receiptSweepT = WA_RECEIPT_SWEEP_ENABLED ? setInterval(() => { receiptSweepTick().catch(() => undefined); }, WA_RECEIPT_SWEEP_MS) : null;
+  if (WA_RECEIPT_SWEEP_ENABLED) setTimeout(() => { receiptSweepTick().catch(() => undefined); }, 180000).unref?.();
   // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA
   // screen (60fps software spinner = 3-4 wasted cores each). Skips devices with a live job.
   const eulaReaperT = setInterval(() => { eulaReaperTick().catch(() => undefined); }, EULA_REAPER_MS);
@@ -13493,6 +13576,7 @@ async function loop() {
   if (waInbox) clearInterval(waInbox);
   if (waCapture) clearInterval(waCapture);
   clearInterval(otpWatchT);
+  if (receiptSweepT) clearInterval(receiptSweepT);
   clearInterval(eulaReaperT);
   clearInterval(orphanReaperT);
   clearInterval(adbRecoveryT);

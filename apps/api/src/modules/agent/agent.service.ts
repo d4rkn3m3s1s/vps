@@ -1835,6 +1835,66 @@ export class AgentService {
     });
   }
 
+  // ★2026-09-30 TOPLU TİK HATTI. Agent 15 dk'da bir her cihazın msgstore.db'sinden
+  // (ekran YOK, salt-okur SQL) son 48 saatte gönderilen mesajların tik durumunu okur
+  // ve buraya yollar. Tekil /receipt ucu "thread'deki EN SON OUT mesaj"ı ilerletiyordu
+  // ve yalnız sohbet ekranda açıkken tetikleniyordu → canlıda 3 günde 1058 OUT'un
+  // HİÇBİRİ DELIVERED/READ olmadı. Burada her tik KENDİ mesajına eşlenir:
+  // aynı cihaz + numara, WA zaman damgasına ±15 dk, metin başı tutan en yakın mesaj.
+  // Monotonluk + webhook advanceOutboundReceipt'te (READ geri DELIVERED'a düşmez).
+  async recordWhatsappReceiptBatch(
+    host: Host,
+    input: { serial: string; items: Array<{ to: string; ts: number; status: 'DELIVERED' | 'READ'; text?: string | undefined }> }
+  ): Promise<{ matched: number; advanced: number; unmatched: number }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, ipAddress: true, adbPort: true, workspaceId: true }
+    });
+    const device = devices.find((d) => d.ipAddress && d.adbPort && `${d.ipAddress}:${d.adbPort}` === input.serial);
+    if (!device || !input.items.length) return { matched: 0, advanced: 0, unmatched: input.items.length };
+
+    const oldest = Math.min(...input.items.map((i) => i.ts)) - 20 * 60 * 1000;
+    const cands = await prisma.whatsappMessage.findMany({
+      where: { deviceId: device.id, direction: 'OUT', status: { in: ['SENT', 'DELIVERED'] }, createdAt: { gte: new Date(oldest) } },
+      select: { id: true, peer: true, body: true, waTimestamp: true, createdAt: true }
+    });
+    // Metin karşılaştırması: boşluk/satır sonu tek boşluk, ilk 24 kod noktası.
+    // (sqlite substr karakter sayar, JS slice UTF-16 birimi — emoji'de kaymasın diye
+    // Array.from ile kod noktası bazında kesilir ve kısa bir önek yeterli sayılır.)
+    const norm = (s: string) => Array.from(s.replace(/\s+/g, ' ').trim()).slice(0, 24).join('');
+    const byPeer = new Map<string, Array<{ id: string; at: number; text: string | null }>>();
+    for (const c of cands) {
+      let text: string | null = null;
+      try { text = norm(decryptString(c.body)); } catch { text = null; }
+      const list = byPeer.get(c.peer) ?? [];
+      list.push({ id: c.id, at: c.waTimestamp.getTime(), text });
+      byPeer.set(c.peer, list);
+    }
+    const used = new Set<string>();
+    let matched = 0, advanced = 0, unmatched = 0;
+    // Eskiden yeniye uygula → sohbet listesindeki tik en son mesajın durumunda kalır.
+    for (const it of [...input.items].sort((a, b) => a.ts - b.ts)) {
+      const list = (byPeer.get(normalizePeer(it.to)) ?? []).filter((c) => !used.has(c.id) && Math.abs(c.at - it.ts) <= 15 * 60 * 1000);
+      const want = it.text ? norm(it.text) : '';
+      const textHit = want ? list.filter((c) => c.text !== null && (c.text.startsWith(want) || want.startsWith(c.text))) : [];
+      // Metin tutan varsa en yakını; yoksa YALNIZ ±3 dk içinde tek aday varsa (belirsizlikte yazma).
+      const pool = textHit.length ? textHit : list.filter((c) => Math.abs(c.at - it.ts) <= 3 * 60 * 1000);
+      if (!pool.length || (!textHit.length && pool.length > 1)) { unmatched++; continue; }
+      const best = pool.reduce((a, b) => (Math.abs(a.at - it.ts) <= Math.abs(b.at - it.ts) ? a : b));
+      used.add(best.id);
+      matched++;
+      const r = await whatsappService.advanceOutboundReceipt({
+        deviceId: device.id,
+        workspaceId: device.workspaceId ?? null,
+        peer: it.to,
+        status: it.status,
+        messageId: best.id
+      }).catch(() => ({ advanced: false }));
+      if (r.advanced) advanced++;
+    }
+    return { matched, advanced, unmatched };
+  }
+
   // Proactive health-watch alert from the host-side wd-health-watch.sh script: a
   // device's real exit IP drifted to the datacenter (proxy leak, imminent ban) or a
   // device went unreachable and was auto-reconnected. We surface it through the SAME

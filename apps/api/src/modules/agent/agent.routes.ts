@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../../lib/asyncHandler';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { requireHostAgent } from '../../middleware/requireHostAgent';
-import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, abandonClaimedHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappHealthProbeHandler, mediaCapturedHandler, mediaReceivedHandler, whatsappReceiptHandler } from './agent.controller';
+import { agentHeartbeatHandler, agentProgressHandler, claimNextJobHandler, claimJobsBatchHandler, abandonClaimedHandler, completeJobHandler, healthAlertHandler, updateDeviceMetricsHandler, visionAnalyzeHandler, whatsappInboundHandler, whatsappHealthProbeHandler, mediaCapturedHandler, mediaReceivedHandler, whatsappReceiptHandler, whatsappReceiptBatchHandler } from './agent.controller';
 import { verifyAgentSignature } from './agent.signature';
 
 // Endpoints consumed by the KVM host agent. They require BOTH the platform API
@@ -35,5 +35,7 @@ agentRouter.post('/whatsapp/media', asyncHandler(mediaReceivedHandler));
 // Outbound delivery receipt (✓✓ delivered / blue-tick read). Agent-side tick read
 // is a TODO; the endpoint exists so the webhook/enum half is deployable now.
 agentRouter.post('/whatsapp/receipt', asyncHandler(whatsappReceiptHandler));
+// ★2026-09-30 toplu tik: agent 15 dk'da bir msgstore'dan okuyup yollar (ekran yok).
+agentRouter.post('/whatsapp/receipts', asyncHandler(whatsappReceiptBatchHandler));
 agentRouter.post('/vision/analyze', asyncHandler(visionAnalyzeHandler));
 agentRouter.post('/health-alert', asyncHandler(healthAlertHandler));

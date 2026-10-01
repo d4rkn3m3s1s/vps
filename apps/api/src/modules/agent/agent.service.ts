@@ -1952,7 +1952,16 @@ export class AgentService {
     const bySerial = new Map(devices.filter((d) => d.ipAddress && d.adbPort).map((d) => [`${d.ipAddress}:${d.adbPort}`, d]));
     let created = 0;
     const skipped: Array<{ serial: string; why: string }> = [];
+    // Eşzamanlılık tavanı: gece güncellemesi (acil olmayan) en çok 3 kurulum aynı anda.
+    // Ölçüldü: 3 paralel kurulumda dex2oat ~8 dk sürüyor; tur 15 dk — kurulum uzarsa yeni tur
+    // öncekilerin ÜSTÜNE eklenip CPU'yu yığmasın. Acil (süresi dolmuş) istekler tavana takılmaz.
+    const NIGHTLY_CAP = 3;
+    const running = await prisma.job.count({
+      where: { type: 'WA_UPDATE_APK', status: { in: ['PENDING', 'RUNNING'] }, deviceId: { in: devices.map((d) => d.id) } }
+    });
+    let nightlyRoom = Math.max(0, NIGHTLY_CAP - running);
     for (const it of input.items.slice(0, 20)) {
+      if (it.urgent !== true && nightlyRoom <= 0) { skipped.push({ serial: it.serial, why: 'eşzamanlı güncelleme tavanı' }); continue; }
       const d = bySerial.get(it.serial);
       if (!d) { skipped.push({ serial: it.serial, why: 'cihaz bulunamadı' }); continue; }
       const urgent = it.urgent === true;
@@ -1967,6 +1976,7 @@ export class AgentService {
       try {
         await createJobRecord('WA_UPDATE_APK', { deviceId: d.id, auto: true, reason: urgent ? 'expired' : 'nightly' } as unknown as JobPayload, d.id, d.workspaceId ?? undefined);
         created++;
+        if (!urgent) nightlyRoom--;
       } catch (e) {
         skipped.push({ serial: it.serial, why: String((e as Error).message).slice(0, 60) });
         continue;

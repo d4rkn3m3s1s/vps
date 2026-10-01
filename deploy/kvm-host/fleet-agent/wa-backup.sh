@@ -52,7 +52,9 @@ for inst in $INSTANCES; do
 done
 
 log "TAMAM: $COUNT yedeklendi, $FAILED başarısız. Toplam boyut: $(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)"
-exit 0
+# ★★2026-10-02 BU BLOK HİÇ ÇALIŞMIYORDU: `exit 0` bloğun ÜSTÜNDEYDİ → 15 Eyl'den beri ikinci
+# diske tek dosya gitmedi (/mnt/yedek/device-backups en yeni 14 Eyl = elle yapılan kopya),
+# servis her gece "başarılı" dedi. exit artık EN SONDA; rsync hatası da artık loglanır.
 
 # ★★★2026-09-15 OFF-SITE KOPYA (ikinci fiziksel disk).
 # Yedekler kok diskteydi; kok disk giderse yedek de giderdi.
@@ -60,7 +62,15 @@ exit 0
 # gecmis kaynaktaki retention'dan BAGIMSIZ, daha uzun kalsin.
 # Hata yedek betigini kirmaz (|| true): asil is zaten bitti.
 if mountpoint -q /mnt/yedek 2>/dev/null; then
-  rsync -a --quiet $BACKUP_DIR/ /mnt/yedek/device-backups/ 2>/dev/null || true
+  if ionice -c3 nice -n 19 rsync -a --quiet "$BACKUP_DIR/" /mnt/yedek/device-backups/; then
+    # Uzun saklama ama SINIRSIZ değil: --delete yok, gece ~8 GB birikir → 30 günden eskiyi buda
+    # (~250 GB'da sabitlenir; 3.3 TB disk). Yalnız bizim adlandırmamıza uyan dosyalar silinir.
+    find /mnt/yedek/device-backups -maxdepth 1 -type f -name 'wa-mi*-*.tgz' -mtime +30 -delete 2>/dev/null
+    log "off-site kopya tamam → /mnt/yedek/device-backups ($(du -sh /mnt/yedek/device-backups 2>/dev/null | cut -f1))"
+  else
+    log "UYARI: off-site kopya (rsync) BAŞARISIZ — /mnt/yedek kontrol edin"
+  fi
 else
   echo "$(date '+%F %T') UYARI: /mnt/yedek bagli degil — off-site kopya ATLANDI"
 fi
+exit 0

@@ -1417,7 +1417,7 @@ const JOB_TIMEOUTS_MS = {
   WHATSAPP_BLOCKLIST: 90 * 1000,
   WHATSAPP_MYNUMBER: 90 * 1000,
   WA_SET_AUTODOWNLOAD: 150 * 1000,   // UI: Ayarlar→Storage→3 satır×4 kutu (idempotent atlarsa saniyeler)
-  WA_UPDATE_APK: 240 * 1000,         // 141MB push + pm install -r (cold ~30s); idempotent atlarsa saniyeler
+  WA_UPDATE_APK: 600 * 1000,         // 147MB push + pm install -r; eşzamanlı kurulumda dex2oat ~6 dk (2026-10-02 ölçüldü)
   WHATSAPP_DELETE_MSG: 90 * 1000,
   WHATSAPP_CLEAR_CHAT: 90 * 1000,
   TELEGRAM_SEND: 100 * 1000,        // mirror WHATSAPP_SEND: normally 15-30s, 100s ceiling
@@ -7454,11 +7454,21 @@ async function waUpdateApk(serial, payload, jobId) {
   await prog(25, `APK cihaza yükleniyor (${apkMB} MB)`, 'RUNNING');
   await adbT(serial, ['push', apkPath, tmp], 120000);
   await prog(60, `Kuruluyor — hesap/mesaj korunuyor (${before || '?'} → ${target || 'yeni'})`, 'RUNNING');
-  const res = String(await adbT(serial, ['shell', 'pm', 'install', '-r', '-d', tmp], 180000) || '');
+  // ★2026-10-02 180 sn YETMİYORDU: 4 cihaz aynı anda güncellenince dex2oat 147 MB APK'yı ~6 dk
+  // derledi; pm install 3. dakikada öldürüldü → iş FAILED raporlandı ama kurulum cihazda SÜRDÜ
+  // ve başarıyla bitti (canlı: mi11/mi2/mi4/mi32, 2.26.25.81 → 2.26.31.78, sohbetler yerinde).
+  // Süre 8 dk; ayrıca sonuç ÇIKTIYA değil cihazdaki GERÇEK sürüme bakılarak verilir.
+  let res = '';
+  try {
+    res = String(await adbT(serial, ['shell', 'pm', 'install', '-r', '-d', tmp], 480000) || '');
+  } catch (err) {
+    res = `pm install hata/zaman aşımı: ${String(err && err.message || err).slice(0, 80)}`;
+  }
   await adb(serial, ['shell', 'rm', '-f', tmp]).catch(() => undefined);
-  const ok = /Success/i.test(res);
   await prog(90, 'Sürüm doğrulanıyor', 'RUNNING');
   const after = await readVer();
+  // Çıktı "Success" demese de (zaman aşımı) cihazda hedef sürüm kuruluysa başarılıdır.
+  const ok = /Success/i.test(res) || (!!target && after === target && before !== after);
   const status = ok ? (before === after ? 'AYNI_KALDI' : 'GUNCELLENDI') : 'BASARISIZ';
   await prog(100, ok ? `Tamamlandı: ${before || '?'} → ${after || '?'}` : `Başarısız: ${res.trim().slice(0, 80)}`,
     ok ? 'COMPLETED' : 'FAILED');

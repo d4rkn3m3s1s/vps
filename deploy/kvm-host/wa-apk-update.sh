@@ -36,14 +36,43 @@ MAGIC=$(head -c 4 "$TMP" | od -An -tx1 | tr -d ' \n')
 if [ "$MAGIC" != "504b0304" ]; then log "HATA: ZIP/APK magic yok (magic=$MAGIC) — geçerli APK değil, değiştirilmiyor"; exit 1; fi
 if ! file -b "$TMP" | grep -qi "android package"; then log "HATA: file APK olarak tanımadı — değiştirilmiyor"; exit 1; fi
 
-# 4) Değişti mi? (aynı dosyaysa boşuna yazma)
-if [ -f "$TARGET" ] && cmp -s "$TMP" "$TARGET"; then log "değişiklik yok (APK zaten güncel, $SIZE byte)"; exit 0; fi
+
+# ★2026-10-02 SÜRÜM DOSYASI: agent'ın WA sürüm bekçisi ve WA_UPDATE_APK hedef sürümü
+# "$TARGET.version"dan okur. Eskiden yazılmıyordu → güncelleme işi 15 Ağu'dan kalma
+# apk/whatsapp-latest.apk'ya (2.26.31.78) düşüyordu. Sürüm, APK'nın kendi
+# AndroidManifest.xml'inden okunur (aapt yok; python3 zipfile). Okunamazsa dosyaya dokunmaz.
+surum_yaz() {
+  V="$(python3 - "$TARGET" <<'PYEOF' 2>/dev/null
+import re, sys, zipfile
+d = zipfile.ZipFile(sys.argv[1]).read("AndroidManifest.xml")
+c = set()
+for enc, off in (("utf-16-le", 0), ("utf-16-le", 1), ("latin-1", 0)):
+    c |= set(re.findall(r"2\.2\d\.\d{1,2}\.\d{1,3}", d[off:].decode(enc, "ignore")))
+print(sorted(c)[-1] if len(c) == 1 else "")
+PYEOF
+)"
+  if printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    printf '%s\n' "$V" > "$TARGET.version.tmp" && mv -f "$TARGET.version.tmp" "$TARGET.version" && chmod 644 "$TARGET.version"
+    log "sürüm dosyası: $V"
+  else
+    log "UYARI: APK sürümü okunamadı — $TARGET.version değiştirilmedi"
+  fi
+}
+
+# 4) Değişti mi? (aynı dosyaysa boşuna yazma) — sürüm dosyası yoksa yine de yaz.
+if [ -f "$TARGET" ] && cmp -s "$TMP" "$TARGET"; then
+  log "değişiklik yok (APK zaten güncel, $SIZE byte)"
+  rm -f "$TMP"
+  [ -s "$TARGET.version" ] || surum_yaz
+  exit 0
+fi
 
 # 5) Eskisini yedekle + değiştir (atomik: mv aynı dosya sistemi).
 [ -f "$TARGET" ] && cp -f "$TARGET" "$TARGET.bak-$(date +%Y%m%d)" 2>/dev/null
 mv -f "$TMP" "$TARGET"
 chmod 644 "$TARGET"
 log "✓ whatsapp.apk GÜNCELLENDİ ($SIZE byte) — sonraki provision'lar bunu kuracak"
+surum_yaz
 
 # 6) Eski yedekleri buda (son 5 gün).
 find "$APK_DIR" -name 'whatsapp.apk.bak-*' -mtime +5 -delete 2>/dev/null

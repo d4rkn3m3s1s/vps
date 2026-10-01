@@ -1936,6 +1936,54 @@ export class AgentService {
     void notificationsService.dispatch(device.workspaceId ?? '', { title, detail }).catch(() => undefined);
   }
 
+  // ★2026-10-02 WHATSAPP SÜRÜM BEKÇİSİ. Agent cihazların WA sürümünü referans APK'yla
+  // kıyaslar ve güncelleme ister; işler NORMAL WA_UPDATE_APK işi olarak açılır ki meşgul-cihaz
+  // kalkanı, panel ilerlemesi ve denetim izi kendiliğinden çalışsın. Kök vaka: 2.26.25.81'in
+  // süresi doldu ("Update WhatsApp" duvarı) → mi11 21/21 CONNECTION_FAILED, mi2/mi4/mi32
+  // panelde ACTIVE ama günlerdir sağır. `urgent` = cihazda duvar GÖRÜLDÜ (saat beklenmez).
+  async requestWaAutoUpdate(
+    host: Host,
+    input: { target: string; items: Array<{ serial: string; version: string; urgent?: boolean | undefined }> }
+  ): Promise<{ created: number; skipped: Array<{ serial: string; why: string }> }> {
+    const devices = await prisma.device.findMany({
+      where: { hostId: host.id },
+      select: { id: true, name: true, ipAddress: true, adbPort: true, workspaceId: true, metadata: true }
+    });
+    const bySerial = new Map(devices.filter((d) => d.ipAddress && d.adbPort).map((d) => [`${d.ipAddress}:${d.adbPort}`, d]));
+    let created = 0;
+    const skipped: Array<{ serial: string; why: string }> = [];
+    for (const it of input.items.slice(0, 20)) {
+      const d = bySerial.get(it.serial);
+      if (!d) { skipped.push({ serial: it.serial, why: 'cihaz bulunamadı' }); continue; }
+      const urgent = it.urgent === true;
+      const [active, recentUpd, registering] = await Promise.all([
+        prisma.job.count({ where: { deviceId: d.id, status: { in: ['PENDING', 'RUNNING'] }, ...(urgent ? { type: 'WA_UPDATE_APK' as const } : {}) } }),
+        prisma.job.count({ where: { deviceId: d.id, type: 'WA_UPDATE_APK', createdAt: { gte: new Date(Date.now() - (urgent ? 1 : 6) * 3600 * 1000) } } }),
+        prisma.generatedAccount.count({ where: { deviceId: d.id, status: { in: ['REGISTERING', 'AWAITING_OTP'] } } })
+      ]);
+      if (registering) { skipped.push({ serial: it.serial, why: 'kayıt sürüyor' }); continue; }
+      if (active) { skipped.push({ serial: it.serial, why: 'cihazda iş var' }); continue; }
+      if (recentUpd) { skipped.push({ serial: it.serial, why: 'yakın zamanda denendi' }); continue; }
+      try {
+        await createJobRecord('WA_UPDATE_APK', { deviceId: d.id, auto: true, reason: urgent ? 'expired' : 'nightly' } as unknown as JobPayload, d.id, d.workspaceId ?? undefined);
+        created++;
+      } catch (e) {
+        skipped.push({ serial: it.serial, why: String((e as Error).message).slice(0, 60) });
+        continue;
+      }
+      if (urgent) {
+        const inst = String((d.metadata as { instance?: string } | null)?.instance ?? d.name);
+        const title = `🆙 WhatsApp sürümü süresi doldu: ${inst}`;
+        const detail = `${inst} cihazında WhatsApp "güncelleme gerekli" duvarında (sürüm ${it.version || '?'}) — mesaj gönderemez/alamaz. Otomatik güncelleme başlatıldı → ${input.target}. Hesap ve sohbetler korunur; ~5 dk sürer.`;
+        logger.warn('wa expired → auto update', { deviceId: d.id, instance: inst, version: it.version, target: input.target });
+        void alertsService.evaluate(d.workspaceId ?? undefined, 'ACCOUNT_BANNED', { title, detail });
+        void notificationsService.dispatch(d.workspaceId ?? '', { title, detail }).catch(() => undefined);
+      }
+    }
+    if (created) logger.info('wa auto-update jobs created', { created, target: input.target, skipped: skipped.length });
+    return { created, skipped };
+  }
+
   // Proactive health-watch alert from the host-side wd-health-watch.sh script: a
   // device's real exit IP drifted to the datacenter (proxy leak, imminent ban) or a
   // device went unreachable and was auto-reconnected. We surface it through the SAME

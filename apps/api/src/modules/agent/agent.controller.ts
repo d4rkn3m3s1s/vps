@@ -128,6 +128,16 @@ const whatsappReceiptBatchSchema = z.object({
   })).max(500)
 });
 
+// ★2026-10-02 WhatsApp sürüm bekçisi (agent → güncelleme isteği).
+const waAutoUpdateSchema = z.object({
+  target: z.string().regex(/^[0-9.]{3,20}$/),
+  items: z.array(z.object({
+    serial: z.string().min(1).max(64),
+    version: z.string().max(20),
+    urgent: z.boolean().optional()
+  })).max(50)
+});
+
 const healthAlertSchema = z.object({
   // ★2026-07-23 (Faz-4): + PROXY_DEAD (dead redsocks — health-watch already emits it) and
   // HEALTH_WATCH_HEARTBEAT (dead-man's-switch ping). Without these the API 400'd them.
@@ -307,4 +317,10 @@ export async function visionAnalyzeHandler(req: Request, res: Response): Promise
   const input = visionAnalyzeSchema.parse(req.body);
   const result = await aiService.locateOnScreen(input.image, input.target, input.hint);
   res.json({ data: result });
+}
+
+export async function waAutoUpdateHandler(req: Request, res: Response): Promise<void> {
+  const host = requireHost(req);
+  const input = waAutoUpdateSchema.parse(req.body);
+  res.json({ data: await agentService.requestWaAutoUpdate(host, input) });
 }

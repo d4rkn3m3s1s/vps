@@ -4864,6 +4864,9 @@ async function whatsappSend(serial, payload) {
     // 2'si). Ayri kod ile: yeniden denenebilir ve proxy sorunu gorunur olur.
     if (/couldn.?t connect|connection failed|bağlanılamadı|bağlantı kurulamadı/i.test(notice)) {
       await clearComposeDraft(serial, h, tlog);
+      // ★2026-10-02 Süresi dolmuş WA da sohbette yalnız "Couldn't connect" gösterir (mi11:
+      // 21/21). Sürüm referansın gerisindeyse acil güncelleme adayı (bekçi hemen işler).
+      void waMarkIfOutdated(serial, 'CONNECTION_FAILED').catch(() => undefined);
       return { status: 'CONNECTION_FAILED', note: 'Cihaz WhatsApp sunucusuna bağlanamadı (proxy/ağ) — tekrar denenebilir', to, screenTexts: notice.slice(0, 300) };
     }
     // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
@@ -7433,7 +7436,11 @@ async function waUpdateApk(serial, payload, jobId) {
   // yuzde+not gonderir (PROVISION ile ayni kanal → provision.progress WS event).
   const prog = (percent, note, status) =>
     (jobId ? reportProgress(jobId, 'wa-update', percent, note, status).catch(() => undefined) : Promise.resolve());
-  const apkPath = String(p(payload, 'apkPath', '') || '/opt/fleet-agent/apk/whatsapp-latest.apk');
+  // ★2026-10-02 VARSAYILAN APK BAYATTI: /opt/fleet-agent/apk/whatsapp-latest.apk 15 Ağu'dan
+  // kalma (2.26.31.78) — oysa wa-apk-update.timer 2 günde bir CDN'den apks/whatsapp.apk'yı
+  // tazeliyor (2 Eki: 2.26.38.74). Güncelleme işi cihazları 7 haftalık sürüme "yükseltiyordu".
+  // Sürüm dosyası (.version) olan taze APK tercih edilir; yoksa eski yol.
+  const apkPath = String(p(payload, 'apkPath', '') || waRefApk().path);
   if (!existsSync(apkPath)) throw new Error('referans APK bulunamadi: ' + apkPath);
   const readVer = async () => {
     // Sadece versionName satirini cek (tum dumpsys cikti ~100KB, maxBuffer bosuna sismesin).
@@ -11036,6 +11043,119 @@ async function pushOutgoingReceipt(serial, preNodes, preSw) {
   }
 }
 
+// ── ★2026-10-02 WHATSAPP SÜRÜM BEKÇİSİ ─────────────────────────────────────────
+// NEDEN: WhatsApp eski sürümleri belli bir tarihten sonra ÇALIŞTIRMAZ ("Update WhatsApp —
+// Your device's date is …" duvarı). 1 Eki'de 2.26.25.81'in süresi doldu: mi11 21/21 gönderim
+// CONNECTION_FAILED, mi2/mi4/mi32 panelde ACTIVE ama günlerdir sağırdı — kimse fark etmedi.
+// NE YAPAR: (1) gece penceresinde (varsayılan 23-03 UTC = 02-06 TSİ) referans APK'nın
+// gerisindeki cihazlardan tur başına en çok N tanesine (en eskiler önce) güncelleme İSTER;
+// (2) gönderimde CONNECTION_FAILED + sürüm geride → saat beklemeden ACİL istek (+ Telegram).
+// İşi API açar (normal WA_UPDATE_APK) → meşgul-cihaz kalkanı, panel ilerlemesi, denetim izi.
+// Kapatma: FLEET_WA_AUTOUPDATE=0 · pencere FLEET_WA_AUTOUPDATE_UTC="23-3" · tur başı FLEET_WA_AUTOUPDATE_BATCH=3
+const WA_AUTOUPD_ENABLED = process.env.FLEET_WA_AUTOUPDATE !== '0';
+const WA_AUTOUPD_MS = 15 * 60 * 1000;
+const WA_AUTOUPD_BATCH = Math.max(1, Math.min(10, Number(process.env.FLEET_WA_AUTOUPDATE_BATCH || 3)));
+const WA_AUTOUPD_WINDOW = String(process.env.FLEET_WA_AUTOUPDATE_UTC || '23-3');
+const waVerCache = new Map();   // serial -> { v, at }
+const waUpdUrgent = new Map();  // serial -> { version, at }
+let _waAutoUpdRunning = false;
+let _waAutoUpdLastFullScan = 0;
+
+function waRefApk() {
+  const cands = ['/opt/fleet-agent/apks/whatsapp.apk', '/opt/fleet-agent/apk/whatsapp-latest.apk'];
+  for (const path of cands) {
+    try {
+      if (!existsSync(path)) continue;
+      const v = String(readFileSync(path + '.version', 'utf8')).replace(/[^0-9.]/g, '');
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(v)) return { path, version: v };
+    } catch { /* sürüm dosyası yok → sıradaki aday */ }
+  }
+  return { path: cands[1], version: '' };
+}
+
+function waVerCmp(a, b) {
+  const x = String(a).split('.').map(Number);
+  const y = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+async function waReadVersion(serial) {
+  const out = await adbT(serial, ['shell', `dumpsys package ${WA_PKG} | grep -m1 versionName`], 8000).catch(() => '');
+  const v = (/versionName=([0-9.]+)/.exec(String(out || '')) || [])[1] || '';
+  if (v) waVerCache.set(serial, { v, at: Date.now() });
+  return v;
+}
+
+async function waMarkIfOutdated(serial, why) {
+  if (!WA_AUTOUPD_ENABLED) return;
+  const ref = waRefApk();
+  if (!ref.version) return;
+  const v = await waReadVersion(serial);
+  if (v && waVerCmp(v, ref.version) < 0) {
+    if (!waUpdUrgent.has(serial)) log(`wa sürüm bekçisi: ${serial} ${v} < ${ref.version} (${why}) → ACİL güncelleme kuyruğu`);
+    waUpdUrgent.set(serial, { version: v, at: Date.now() });
+  }
+}
+
+function waInAutoUpdWindow(d = new Date()) {
+  const m = /^(\d{1,2})-(\d{1,2})$/.exec(WA_AUTOUPD_WINDOW);
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = Number(m[2]);
+  const h = d.getUTCHours();
+  return a <= b ? (h >= a && h < b) : (h >= a || h < b);
+}
+
+async function waAutoUpdateTick() {
+  if (!WA_AUTOUPD_ENABLED || _waAutoUpdRunning) return;
+  _waAutoUpdRunning = true;
+  try {
+    const ref = waRefApk();
+    if (!ref.version) return;
+    // (1) ACİL: duvar şüphesi olanlar — saat beklemez.
+    if (waUpdUrgent.size) {
+      const items = [...waUpdUrgent.entries()].map(([serial, x]) => ({ serial, version: x.version, urgent: true }));
+      try {
+        const { data } = await api('/agent/whatsapp/auto-update', { method: 'POST', body: JSON.stringify({ target: ref.version, items }) }, { timeoutMs: 20000 });
+        for (const it of items) waUpdUrgent.delete(it.serial);
+        if (data && data.created) log(`wa sürüm bekçisi: ${data.created} ACİL güncelleme işi açıldı`);
+      } catch (err) {
+        if (!/->\s*404\b/.test(String(err && err.message))) log('wa sürüm bekçisi (acil) başarısız:', err.message);
+      }
+    }
+    // (2) Tam tarama: pencerede her tur, dışında 6 saatte bir (yalnız sayım/log).
+    const inWin = waInAutoUpdWindow();
+    if (!inWin && Date.now() - _waAutoUpdLastFullScan < 6 * 3600 * 1000) return;
+    _waAutoUpdLastFullScan = Date.now();
+    const serials = (await reachableSerials()).filter((s) => !busyDevices.has(s));
+    const outdated = [];
+    for (let i = 0; i < serials.length; i += 8) {
+      await Promise.all(serials.slice(i, i + 8).map(async (serial) => {
+        const v = await waReadVersion(serial).catch(() => '');
+        if (v && waVerCmp(v, ref.version) < 0) outdated.push({ serial, version: v });
+      }));
+    }
+    outdated.sort((a, b) => waVerCmp(a.version, b.version)); // en eskiler önce
+    log(`wa sürüm bekçisi: referans ${ref.version} · ${serials.length} cihaz tarandı · ${outdated.length} geride${inWin ? ' (gece penceresi)' : ''}`);
+    if (!inWin || !outdated.length) return;
+    const items = outdated.slice(0, WA_AUTOUPD_BATCH);
+    try {
+      const { data } = await api('/agent/whatsapp/auto-update', { method: 'POST', body: JSON.stringify({ target: ref.version, items }) }, { timeoutMs: 20000 });
+      if (data) log(`wa sürüm bekçisi: ${data.created} gece güncellemesi açıldı${data.skipped && data.skipped.length ? `, ${data.skipped.length} atlandı` : ''}`);
+    } catch (err) {
+      if (!/->\s*404\b/.test(String(err && err.message))) log('wa sürüm bekçisi başarısız:', err.message);
+    }
+  } catch (err) {
+    log('wa sürüm bekçisi tur hatası:', err.message);
+  } finally {
+    _waAutoUpdRunning = false;
+  }
+}
+
 // ── WhatsApp GELEN MEDYA yakalama (foto/video/belge + TEK GOSTERIMLIK) ─────────
 //
 // ★NEDEN: gelen medya bildirimde sadece "📷 Photo" olarak gorunur; dosyanin KENDISI
@@ -13513,6 +13633,9 @@ async function loop() {
   // (restart anında zaten yoğun olan ADB'ye binmesin), sonra 15 dk'da bir.
   const receiptSweepT = WA_RECEIPT_SWEEP_ENABLED ? setInterval(() => { receiptSweepTick().catch(() => undefined); }, WA_RECEIPT_SWEEP_MS) : null;
   if (WA_RECEIPT_SWEEP_ENABLED) setTimeout(() => { receiptSweepTick().catch(() => undefined); }, 180000).unref?.();
+  // ★WA SÜRÜM BEKÇİSİ: 15 dk'da bir (acil kuyruk + gece penceresi); ilk tur açılıştan 5 dk sonra.
+  const waAutoUpdT = WA_AUTOUPD_ENABLED ? setInterval(() => { waAutoUpdateTick().catch(() => undefined); }, WA_AUTOUPD_MS) : null;
+  if (WA_AUTOUPD_ENABLED) setTimeout(() => { waAutoUpdateTick().catch(() => undefined); }, 300000).unref?.();
   // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA
   // screen (60fps software spinner = 3-4 wasted cores each). Skips devices with a live job.
   const eulaReaperT = setInterval(() => { eulaReaperTick().catch(() => undefined); }, EULA_REAPER_MS);
@@ -13607,6 +13730,7 @@ async function loop() {
   if (waCapture) clearInterval(waCapture);
   clearInterval(otpWatchT);
   if (receiptSweepT) clearInterval(receiptSweepT);
+  if (waAutoUpdT) clearInterval(waAutoUpdT);
   clearInterval(eulaReaperT);
   clearInterval(orphanReaperT);
   clearInterval(adbRecoveryT);

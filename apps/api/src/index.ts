@@ -694,6 +694,16 @@ async function main(): Promise<void> {
       // tavan HİÇBİR kaydı yakalamıyordu — kod doğru ama etkisi sıfırdı.
       // 45 gün: 1168 eski kaydı temizler, son 6 haftayı operatöre bırakır.
       const alertAllDays = Number(process.env.FLEET_RETAIN_ALERTS_DAYS || 45);
+      // ★2026-10-02 OTOMATİK ONAY: panelde onaylama adımı kullanılmıyor → 45 günün tamamı
+      // (1548 alarm) "yeni" görünüyordu ve gerçek yeni alarmı gömüyordu. Alarmlar zaten
+      // anında Telegram'a gidiyor; 2 günden eski onaylanmamış olan "görüldü" sayılır, sonra
+      // yukarıdaki 30 günlük onaylı-saklama kuralıyla silinir. 0 = kapalı.
+      const alertAutoAckDays = Number(process.env.FLEET_ALERT_AUTOACK_DAYS ?? 2);
+      if (alertAutoAckDays > 0) {
+        results.alertsAutoAck = (await prisma.alertEvent
+          .updateMany({ where: { acknowledged: false, createdAt: { lt: days(alertAutoAckDays) } }, data: { acknowledged: true } })
+          .catch(() => ({ count: 0 }))).count;
+      }
       results.alerts =
         (await prisma.alertEvent.deleteMany({ where: { acknowledged: true, createdAt: { lt: days(alertAckDays) } } }).catch(() => ({ count: 0 }))).count +
         (await prisma.alertEvent.deleteMany({ where: { createdAt: { lt: days(alertAllDays) } } }).catch(() => ({ count: 0 }))).count;

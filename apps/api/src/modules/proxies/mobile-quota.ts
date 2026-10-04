@@ -51,13 +51,13 @@ async function tget<T>(path: string, params: Record<string, string>): Promise<T 
   if (!token) return null;
   const q = new URLSearchParams({ token, ...(key ? { key } : {}), ...params });
   // Thordata ardışık çağrıda 10011 "Frequent operations" döner (canlı: user-list'in hemen
-  // ardından usage-statistics) → kısa bekleyip bir kez daha dene.
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // ardından usage-statistics) → artan aralıkla (3 sn, 6 sn) iki kez daha dene.
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(`${API}${path}?${q.toString()}`, { signal: AbortSignal.timeout(12000) });
       const json = (await res.json()) as { code?: number; data?: T; msg?: string };
       if (json.code === 200) return (json.data ?? null) as T | null;
-      if (json.code === 10011 && attempt === 0) { await new Promise((r) => setTimeout(r, 2500)); continue; }
+      if (json.code === 10011 && attempt < 2) { await new Promise((r) => setTimeout(r, 3000 * (attempt + 1))); continue; }
       logger.warn('thordata api', { path, code: json.code, msg: json.msg });
       return null;
     } catch {
@@ -78,9 +78,18 @@ const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 let cache: { at: number; value: MobileQuota } | null = null;
 let lastGood: MobileQuota | null = null;
+// Aynı anda gelen sorgular (panel + Telegram + 30 dk kontrolü) Thordata'ya ayrı ayrı gidip
+// 10011'e takılıyordu (canlı: 4 Eki 19:42, 4 sn arayla iki çağrı) → uçuştaki tek sorguyu paylaş.
+let inflight: Promise<MobileQuota> | null = null;
 
 // Thordata o an cevap vermezse "okunamadı" yerine son başarılı değeri (6 saate kadar) göster.
 export async function getMobileQuota(force = false): Promise<MobileQuota> {
+  if (inflight) return inflight;
+  inflight = getMobileQuotaOnce(force).finally(() => { inflight = null; });
+  return inflight;
+}
+
+async function getMobileQuotaOnce(force: boolean): Promise<MobileQuota> {
   const v = await readMobileQuota(force);
   if (v.ok && v.remainingGb !== null) { lastGood = v; return v; }
   if (!v.ok && lastGood && Date.now() - new Date(lastGood.checkedAt).getTime() < 6 * 3600 * 1000) {

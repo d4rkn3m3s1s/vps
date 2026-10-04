@@ -4551,14 +4551,34 @@ async function dismissBlockingDialogs(serial, h) {
 // compose kutusu GERÇEKTEN varsa ve İÇİ DOLUYSA çalışır (kutu yoksa yapacak iş yok);
 // böylece "Couldn't connect" gibi kutunun hiç açılmadığı vakalarda boşa iş yapılmaz.
 // Asla throw etmez — temizlik başarısız olsa da asıl hata raporu bozulmamalı.
+// Bos kutuyu uiautomator yer tutucu metniyle bildirir ("Message") → bos say.
+const WA_ENTRY_HINT = /^(message|mesaj|type a message|bir mesaj yaz\S*)$/i;
+const entryEmpty = (t) => { const v = String(t || '').trim(); return !v || WA_ENTRY_HINT.test(v); };
 async function clearComposeDraft(serial, h, tlog) {
   try {
     const box = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
     if (!box) return false;                       // kutu yok → taslak da yok
     const cur = String(box.text || '').trim();
-    if (!cur) return false;                       // zaten boş
-    await h.tap(box).catch(() => undefined);
+    if (entryEmpty(cur)) return false;            // zaten boş (yer tutucu)
+    // ★2026-10-04: burada eskiden `h.tap(box)` vardi — waHelpers'ta `tap` YOK → TypeError,
+    // dis try onu yutup false donuyordu: bu temizlik 5 Agu'dan beri HIC calismamisti.
+    await h.tapSynNode(box).catch(() => undefined);
     await h.sleep(200);
+    // ★2026-10-04 CANLI (mi416): dokunus imleci metnin ORTASINA koyuyor, KEYCODE_DEL
+    // yalniz imlecin SOLUNU siliyor → "Sistem testi (otomatik) - yanit gerekmez" →
+    // " yanit gerekmez" kaldi (MOVE_END de bu IME'de islemedi). Musteri sohbetlerinde
+    // YARIM TASLAK birikmesinin sebebi buydu. ADBKeyboard'un ADB_CLEAR_TEXT yayini
+    // kutuyu TAMAMEN bosaltti (canli dogrulandi: kutu "Message" yer tutucusuna dondu).
+    // Once onu dene; bosalmazsa asagidaki DEL yolu yedek olarak calisir.
+    await adb(serial, ['shell', 'am', 'broadcast', '-a', 'ADB_CLEAR_TEXT']).catch(() => undefined);
+    await h.sleep(400);
+    {
+      const b2 = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+      if (b2 && entryEmpty(b2.text)) {
+        if (tlog) tlog(`draft cleared=true (was ${cur.length} chars, ADB_CLEAR_TEXT)`);
+        return true;
+      }
+    }
     // ★CANLI TEST (2026-08-05, cihaz 192.168.95.112, 17 karakterlik taslak):
     // Ctrl+A + DEL bu kurulumda ÇALIŞMADI — metin kutuda aynen kaldı (ADBKeyboard
     // IME'si seçim tuş kombinasyonunu iletmiyor). Tek tek KEYCODE_DEL ise metni
@@ -4587,7 +4607,7 @@ async function clearComposeDraft(serial, h, tlog) {
       if (tlog) tlog('draft: ses kaydi paneli acilmisti → BACK ile iptal edildi');
     }
     const fin = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
-    const ok = !String(fin?.text || '').trim();
+    const ok = entryEmpty(fin?.text);
     if (tlog) tlog(`draft cleared=${ok} (was ${cur.length} chars, ${n} DEL)`);
     return ok;
   } catch {
@@ -4682,6 +4702,57 @@ async function clearWaInfoCard(serial, h) {
   });
   if (btn) { await h.tapSyn(btn.cx, btn.cy); await h.sleep(600); return true; }
   return false;
+}
+
+// ★★2026-10-04 TASLAK KURTARMA — CHAT_NOT_OPENED'in BASKIN BICIMI.
+// CANLI OLCUM (7 gun): ~190 CHAT_NOT_OPENED'in 167'sinde hata anindaki ekran SOHBET
+// LISTESIYDI ve hedef satirda "Draft: <BIZIM MESAJ>" yaziyordu. Yani derin baglanti
+// sohbeti ACMIS, metni kutuya YAZMIS, sonra WhatsApp listeye geri DONMUS (sebep belirsiz:
+// ayni cihazda paralel is yok, canli-tutma degil, gelen mesajla iliskisi yok). Mesaj
+// GITMIYOR, taslak birikiyor; otomatik yeniden deneme de ayni sekilde dusuyordu.
+// COZUM: listede hedefin satirini bul (satirda taslak + mesajimizin basi gorunmeli),
+// ona dokun -> sohbet taslakla acilir; kutu mesajimizi tasiyorsa normal gonderim yolu
+// devam eder. Dar kapsam: yalniz WhatsApp on plandayken, hedef numara + "Draft"/"Taslak"
+// + mesaj basi AYNI satirda gorunuyorsa. Asla throw etmez.
+async function recoverDraftChat(serial, h, to, message, tlog) {
+  try {
+    const needle = String(message || '').trim().slice(0, 12);
+    const tail = String(to || '').replace(/\D/g, '').slice(-10);
+    if (!needle || tail.length < 10) return false;
+    const w = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+    const foc = (/mCurrentFocus=Window\{[^}]*\}/.exec(String(w)) || [''])[0];
+    if (!/com\.whatsapp\//.test(foc) || /Conversation/.test(foc)) return false;
+    await h.sleep(300);
+    // Yalniz METINLI dugumler: dump'ta metinsiz kapsayicilar da var, satir sirasi
+    // (ad | saat | "Draft:" | metin) ancak metinli dugumlerde ardisik gorunur.
+    const nodes = (await h.dump().catch(() => [])).filter((n) => n.text);
+    let row = null;
+    for (let i = 0; i < nodes.length && !row; i++) {
+      const digits = String(nodes[i].text || '').replace(/\D/g, '');
+      if (digits.length < 10 || !digits.endsWith(tail)) continue;
+      const after = nodes.slice(i + 1, i + 4).map((n) => String(n.text || '')).join(' | ');
+      if (/Draft|Taslak/i.test(after) && after.includes(needle) && nodes[i].cx > 0 && nodes[i].cy > 0) row = nodes[i];
+    }
+    if (!row) return false;
+    log(`wa taslak-kurtarma: ${serial} -> ${to} satira dokunuluyor (${foc.slice(-40)})`);
+    await adb(serial, ['shell', 'input', 'tap', String(Math.round(row.tapX ?? row.cx)), String(Math.round(row.tapY ?? row.cy))]);
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await h.sleep(500);
+      const f = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+      if (!/mCurrentFocus=Window\{[^}]*com\.whatsapp\.Conversation/.test(String(f))) continue;
+      const entry = await h.find('com.whatsapp:id/entry', 'id').catch(() => null);
+      if (!entry) continue;
+      const ok = String(entry.text || '').includes(needle);
+      log(`wa taslak-kurtarma: ${serial} -> ${to} sohbet acildi, kutu ${ok ? 'MESAJI TASIYOR' : 'farkli/bos'}`);
+      if (tlog) tlog(`draft recovery entry=${ok}`);
+      return ok;
+    }
+    log(`wa taslak-kurtarma: ${serial} -> ${to} sohbet 10 sn'de acilmadi`);
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 // ── WhatsApp: send a message ────────────────────────────────────────────────
@@ -4802,6 +4873,33 @@ async function whatsappSend(serial, payload) {
     }
     if (chatOpened) tlog('chat opened after Searching wait');
   }
+  // YALNIZ FLEET_TEST_JOB modunda (canli agent bunu ASLA calistirmaz): listeye geri
+  // sicramayi taklit et — sohbetten BACK ile cik, taslak kalsin, kurtarma yolu denensin.
+  const testMode = Boolean(process.env.FLEET_TEST_JOB);
+  if (testMode && payload?._testDraftBounce && chatOpened) {
+    for (let b = 0; b < 3; b++) {
+      const f = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+      if (!/mCurrentFocus=Window\{[^}]*com\.whatsapp\.Conversation/.test(String(f))) break;
+      await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);
+      await h.sleep(1200);
+    }
+    // Gercek hatada ekran WhatsApp SOHBET LISTESI; BACK ise launcher'a dusurebiliyor.
+    await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/.Main`]).catch(() => undefined);
+    await h.sleep(2500);
+    chatOpened = false;
+    console.error('[test] sicrama taklit edildi (BACK) — kurtarma deneniyor');
+  }
+  // ★2026-10-04 taslak kurtarma (bkz. recoverDraftChat).
+  if (!chatOpened && await recoverDraftChat(serial, h, to, message, tlog)) {
+    chatOpened = true;
+    tlog('chat opened via draft-row recovery');
+  }
+  if (testMode && payload?._testNoSend) {
+    const entry = chatOpened ? await h.find('com.whatsapp:id/entry', 'id').catch(() => null) : null;
+    const cleared = chatOpened ? await clearComposeDraft(serial, h, tlog) : false;
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_HOME']).catch(() => undefined);
+    return { status: 'TEST_NO_SEND', recovered: chatOpened, entryText: entry?.text ?? null, draftCleared: cleared };
+  }
   if (!chatOpened) {
     const notice = await h.screenText().catch(() => '');
     // ★BAN detection via the ACTIVITY name first — the most reliable signal. WhatsApp's
@@ -4873,7 +4971,12 @@ async function whatsappSend(serial, payload) {
     // ★2026-08-05 Ama dönmeden ÖNCE taslağı temizle: metin kutuya girmiş olabilir ve
     // WhatsApp onu SAKLAR ("Draft: …"), sonraki gönderim eski metinle karışır.
     await clearComposeDraft(serial, h, tlog);
-    return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to, screenTexts: notice.slice(0, 400) };
+    // ★2026-10-04 TESHIS: hata anindaki GERCEK odak. screenTexts cogu vakada sohbet listesi
+    // + "Draft: <mesajimiz>" — ama bu (a) WA gercekten listeye mi dondu, yoksa (b) sohbet
+    // ACIKKEN uiautomator arkadaki liste penceresini mi okudu? Odak bunu ayirt eder.
+    const focNow = await adbT(serial, ['shell', 'dumpsys', 'window'], 5000).catch(() => '');
+    const focus = ((/mCurrentFocus=Window\{[^}]*\}/.exec(String(focNow)) || [''])[0]).replace(/^mCurrentFocus=Window\{[0-9a-f]+ u0 /, '').slice(-70);
+    return { status: 'CHAT_NOT_OPENED', note: 'Sohbet ekranı açılamadı (mesaj kutusu görünmedi)', to, focus, screenTexts: notice.slice(0, 400) };
   }
   // An ANR ("<app> isn't responding") can pop while the deep link cold-opens the
   // chat — clear it first so the box/dialog sweep below sees the real UI, not the

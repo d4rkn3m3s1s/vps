@@ -18,6 +18,7 @@ import { startWebhookWorker } from './modules/webhooks/webhook.queue';
 import { syncAllWorkspaces } from './modules/vast/vast.service';
 import { farmService } from './modules/farm/farm.service';
 import { ProxyService } from './modules/proxies/proxy.service';
+import { checkMobileQuota } from './modules/proxies/mobile-quota';
 import { calendarService } from './modules/calendar/calendar.service';
 import { alertsService } from './modules/alerts/alerts.service';
 import { webhooksService } from './modules/webhooks/webhooks.service';
@@ -201,6 +202,10 @@ async function main(): Promise<void> {
     logger.warn('thordata credit check failed', { error: e instanceof Error ? e.message : String(e) }));
   setTimeout(runCreditCheck, 30_000).unref();
   setInterval(runCreditCheck, 12 * 60 * 60 * 1000).unref();
+  // ★2026-10-04 Mobil kota + kullanıcı adı değişimi kontrolü (30 dk'da bir; ilk 2 dk sonra).
+  const runMobileQuota = () => checkMobileQuota().catch(() => undefined);
+  setTimeout(runMobileQuota, 120_000).unref();
+  setInterval(runMobileQuota, 30 * 60 * 1000).unref();
 
   // Offline detection: flip devices/hosts ONLINE -> OFFLINE when their heartbeat
   // goes stale (>5 min) and fire DEVICE_OFFLINE / HOST_OFFLINE alerts. Without

@@ -65,7 +65,7 @@ const SELF_SERVICE = ['/api/auth/logout', '/api/auth/2fa', '/api/workspaces/swit
 // Yalnız admin: kullanıcı/yetki/anahtar/fatura/yedek yönetimi (backend'de de requireAdmin).
 const ADMIN_ONLY = ['/api/users', '/api/api-keys', '/api/permissions', '/api/billing', '/api/backups'];
 // Operatör OKUYABİLİR ama değiştiremez: altyapı ve entegrasyon ayarları.
-const ADMIN_WRITE = ['/api/hosts', '/api/vast', '/api/webhooks', '/api/workspaces', '/api/audit'];
+const ADMIN_WRITE = ['/api/hosts', '/api/vast', '/api/webhooks', '/api/workspaces', '/api/audit', '/api/proxies/mobile-quota'];
 const under = (path: string, list: string[]) => list.some((p) => path === p || path.startsWith(`${p}/`));
 
 // null = izin var; string = ret sebebi.

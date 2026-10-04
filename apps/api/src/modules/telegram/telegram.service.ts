@@ -31,7 +31,8 @@ import {
 } from './ops.service';
 import { splitLeadingPhone } from '../../lib/phone';
 import { tgRegister } from './tg-register.service';
-import { renderFleetHealthV2, renderStatusV2, renderDevicesV2, renderAccountsV2, renderBanWaveV2, renderBalanceV2 } from './tg-health';
+import { renderFleetHealthV2, renderStatusV2, renderDevicesV2, renderAccountsV2, renderBanWaveV2, renderBalanceV2, mobileQuotaLines } from './tg-health';
+import { setMobilePackage } from '../proxies/mobile-quota';
 
 const deviceService = new DeviceService();
 
@@ -375,6 +376,7 @@ const BOT_COMMANDS: Array<{ command: string; description: string }> = [
   // 2026-07-28: proxy KOTASI bitince cihazlar datacenter-IP'ye duser -> BAN. Bakiyeyi
   // operator bota sorabilsin (otomatik PROXY_CREDIT_LOW alarmi zaten var, bu ANLIK bakis).
   { command: 'bakiye', description: '💳 Proxy (thordata) kalan trafik + son kullanma' },
+  { command: 'mobilpaket', description: '📡 Yeni mobil paket alındı: /mobilpaket 100 (GB)' },
   { command: 'yardim', description: 'ℹ️ Komut listesi ve örnekler' }
 ];
 
@@ -1743,6 +1745,20 @@ async function handleCommand(
       await sendMessage(token, chatId, '🔎 Aramak istediğiniz <b>numarayı veya ismi</b> yazın:');
     }
   // ── Grup 1: Acil müdahale ──────────────────────────────────────────────────
+  } else if (lower === '/mobilpaket' || lower.startsWith('/mobilpaket ') || lower.startsWith('mobilpaket ')) {
+    // ★2026-10-04 Yeni mobil paket alındığında sayacı sıfırla: kalan = bu GB − bundan sonraki kullanım.
+    // (Thordata API'si kalan mobil kotayı vermiyor; bkz. proxies/mobile-quota.ts)
+    const gb = Number(cmd.replace(/^\/?mobilpaket\s*/i, '').replace(',', '.').replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(gb) || gb <= 0) {
+      await sendMessage(token, chatId, '📡 Kullanım: <code>/mobilpaket 100</code> — yeni aldığınız mobil paketin GB miktarı. Sayaç şu andan itibaren bu miktardan düşer.', MAIN_MENU);
+      return;
+    }
+    try {
+      const q = await setMobilePackage(gb);
+      await sendMessage(token, chatId, ['✅ <b>Mobil paket kaydedildi</b>', '', ...mobileQuotaLines(q), '', '<i>Kota azalınca (15 GB / 3 gün) otomatik uyarı gelir.</i>'].join('\n'), MAIN_MENU);
+    } catch (e) {
+      await sendMessage(token, chatId, `❌ Kaydedilemedi: ${esc(e instanceof Error ? e.message : 'hata')}`, MAIN_MENU);
+    }
   } else if (lower === '/bakiye' || lower === 'bakiye' || lower === '/kota') {
     // Proxy kotasi bitince cihaz datacenter-IP'ye duser (ban riski) — anlik bakiye.
     // ★2026-09-30 v2: 7 günlük kullanım grafiği + filo dağılımı; okunamazsa eski yol.

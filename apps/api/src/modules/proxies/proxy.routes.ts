@@ -4,6 +4,8 @@ import { authenticateJwt } from '../../middleware/authenticateJwt';
 import { optionalJwt } from '../../middleware/optionalJwt';
 import { requireApiKey } from '../../middleware/requireApiKey';
 import { heavyOperationRateLimiter } from '../../middleware/rateLimit';
+import { requireAdmin } from '../../middleware/requireAdmin';
+import { getMobileQuota, setMobilePackage } from './mobile-quota';
 import {
   assignCountryProxyHandler,
   autoAssignProxyHandler,
@@ -25,6 +27,16 @@ proxyRouter.get('/', requireApiKey, optionalJwt, asyncHandler(listProxiesHandler
 // '/:id' so "providers"/"countries" aren't captured as an id.
 proxyRouter.get('/providers', requireApiKey, optionalJwt, asyncHandler(listProvidersHandler));
 proxyRouter.get('/countries', requireApiKey, optionalJwt, asyncHandler(proxyCountriesHandler));
+// ★2026-10-04 Mobil proxy kotası (Thordata API'si kalan mobil kotayı vermez → paket − alımdan
+// beri kullanım). '/:id'den ÖNCE olmalı. POST = yeni paket alındı (sayaç sıfırlanır; admin).
+proxyRouter.get('/mobile-quota', requireApiKey, authenticateJwt, asyncHandler(async (req, res) => {
+  res.json({ data: await getMobileQuota(req.query.refresh === '1') });
+}));
+proxyRouter.post('/mobile-quota', requireApiKey, authenticateJwt, requireAdmin, asyncHandler(async (req, res) => {
+  const gb = Number((req.body as { packageGb?: unknown })?.packageGb);
+  if (!Number.isFinite(gb) || gb <= 0 || gb > 100000) { res.status(400).json({ error: 'packageGb (GB) gerekli' }); return; }
+  res.json({ data: await setMobilePackage(gb) });
+}));
 // Route a device through a provider proxy for a chosen exit country.
 proxyRouter.post('/assign-country', requireApiKey, authenticateJwt, asyncHandler(assignCountryProxyHandler));
 proxyRouter.post('/', requireApiKey, authenticateJwt, asyncHandler(createProxyHandler));

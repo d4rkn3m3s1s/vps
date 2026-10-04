@@ -17,6 +17,7 @@ import { readFile, readdir, stat, statfs } from 'node:fs/promises';
 import { networkInterfaces, cpus } from 'node:os';
 import { prisma } from '../../db/prisma';
 import { fleetHealthService } from '../fleet-health/fleet-health.service';
+import { getMobileQuota, type MobileQuota } from '../proxies/mobile-quota';
 
 const GB_KB = 1048576; // thordata usage-statistics birimi KB
 
@@ -206,6 +207,32 @@ async function hostVitals(): Promise<{ load1: number | null; cores: number; ramF
   };
 }
 
+
+// ★2026-10-04 MOBİL KOTA satırları (Thordata kalan mobil kotayı vermez → paket − alımdan beri
+// kullanım; bkz. proxies/mobile-quota.ts). compact=true → tek satır özet.
+export function mobileQuotaLines(q: MobileQuota | null, compact = false): string[] {
+  if (!q) return ['⚪️ Mobil kota okunamadı'];
+  const L: string[] = [];
+  if (q.userMismatch) L.push(`🚨 <b>Mobil kullanıcı DEĞİŞMİŞ</b>: sistem <code>${esc(q.configuredUser ?? '?')}</code> · Thordata <code>${esc(q.thordataUsers.map((u) => u.username).join(', ') || '-')}</code>`);
+  if (!q.ok) { L.push(`⚪️ Mobil kota okunamadı${q.error ? ` (${esc(q.error)})` : ''}`); return L; }
+  if (q.remainingGb === null || q.packageGb === null) {
+    L.push(`📡 Mobil: paket tanımlı değil — yeni paket alınca <code>/mobilpaket 100</code> yazın${q.avgDailyGb ? ` · günde ~${q.avgDailyGb.toFixed(1)} GB` : ''}`);
+    return L;
+  }
+  const p = q.packageGb > 0 ? Math.round((q.remainingGb * 100) / q.packageGb) : 0;
+  const dot = q.remainingGb < 15 || (q.daysLeft !== null && q.daysLeft < 3) ? '🔴' : q.remainingGb < 30 || (q.daysLeft !== null && q.daysLeft < 7) ? '🟡' : '🟢';
+  const days = q.daysLeft !== null ? ` · ~<b>${q.daysLeft.toFixed(1)} gün</b> yeter` : '';
+  const staleNote = q.stale ? ' <i>(önbellek)</i>' : '';
+  if (compact) {
+    L.push(`${dot} 📡 Mobil kota: <b>${q.remainingGb.toFixed(1)}</b>/${q.packageGb} GB${days}${staleNote}`);
+    return L;
+  }
+  L.push(`${dot} 📡 Mobil: <b>${q.remainingGb.toFixed(1)} GB</b> kaldı / ${q.packageGb} GB  ${bar(p, 10)} %${p}${staleNote}`);
+  L.push(`   Kullanılan ${q.usedGb?.toFixed(1) ?? '?'} GB · günde ~${q.avgDailyGb?.toFixed(1) ?? '?'} GB${days}`);
+  if (q.activeUser) L.push(`   <i>kullanıcı ${esc(q.activeUser)} · paket ${q.packageSetAt ? esc(q.packageSetAt.slice(0, 10)) : '?'}</i>`);
+  return L;
+}
+
 // ── rapor ────────────────────────────────────────────────────────────────────
 const ACC_RANK: Record<string, number> = { ACTIVE: 4, RESTRICTED: 3, LOGGED_OUT: 2, BANNED: 1 };
 
@@ -346,10 +373,11 @@ export async function renderFleetHealthV2(workspaceId: string): Promise<string> 
     const fleetOnMobile = !!split && split.mobile > split.residential;
     L.push(`${dot} Residential kota: <b>${quota.balanceGb.toFixed(1)} GB</b> · bitiş ${esc(quota.expiration)} (${daysLeftExp} gün)`);
     if (rate !== null && !fleetOnMobile) L.push(`   Günlük ~${rate.toFixed(1)} GB${daysByGb !== null ? ` · bu hızla ~${daysByGb.toFixed(1)} gün yeter` : ''}`);
-    if (fleetOnMobile) L.push('   ⚠️ <i>Filo MOBİL pakette — mobil kota bu token\'da görünmüyor, Thordata panelinden bakın (filo günde ~10 GB harcar)</i>');
+    void fleetOnMobile;
   } else {
-    L.push('⚪️ Kota okunamadı (token yok / Thordata cevap vermedi)');
+    L.push('⚪️ Residential kota okunamadı (token yok / Thordata cevap vermedi)');
   }
+  L.push(...mobileQuotaLines(await getMobileQuota().catch(() => null), true));
 
   // Sunucu
   L.push('', '<b>🖥 Sunucu</b>');
@@ -687,7 +715,7 @@ export async function renderProxyV2(workspaceId: string): Promise<string> {
 
   L.push('', '<b>💳 Kota</b>');
   L.push(quota ? `🏠 Residential: <b>${quota.balanceGb.toFixed(1)} GB</b> · bitiş ${esc(quota.expiration)}` : '⚪️ Residential kota okunamadı');
-  L.push('📡 <i>Mobil paket kotası bu token\'da görünmüyor → Thordata paneli</i>');
+  L.push(...mobileQuotaLines(await getMobileQuota().catch(() => null), true));
   L.push('', '<i>Geçmiş kullanım: /bakiye · onarım: /kurtar</i>');
   return L.join('\n');
 }
@@ -828,6 +856,16 @@ export async function renderBalanceV2(): Promise<string> {
     else if (rate && rate > 0.05) L.push(`⏳ Dün ${rate.toFixed(2)} GB → bu hızla ~${Math.floor(quota.balanceGb / rate)} gün yeter`);
   }
   if (split) L.push('', `📡 Filo: mobil <b>${split.mobile}</b> · residential <b>${split.residential}</b> cihaz`);
-  L.push('<i>Mobil paket kotası bu token\'da görünmüyor → Thordata paneli.</i>');
+  const mq = await getMobileQuota().catch(() => null);
+  L.push('', '<b>📡 Mobil paket</b>', ...mobileQuotaLines(mq));
+  if (mq?.lastDays.length) {
+    const md = mq.lastDays.slice(-7);
+    const max = Math.max(...md.map((d) => d.gb), 0.01);
+    for (const d of md) {
+      const n = Math.round((d.gb / max) * 12);
+      L.push(`<code>${d.date.slice(5)} ${'▇'.repeat(n)}${' '.repeat(12 - n)} ${d.gb.toFixed(2).padStart(6)} GB</code>`);
+    }
+  }
+  L.push('', '<i>Yeni mobil paket alınca: /mobilpaket &lt;GB&gt; (ör. /mobilpaket 100)</i>');
   return L.join('\n');
 }

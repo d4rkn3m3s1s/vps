@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { PageMotion } from '../../components/Motion';
 import { HoloHeader, HoloPanel, HoloStat, Reveal } from '../../components/hud';
+import { MobileQuotaPanel } from './MobileQuotaPanel';
 
 export type Proxy = {
   id: string;
@@ -192,6 +193,10 @@ export function ProxiesView({ proxies }: { proxies: Proxy[] }) {
           <HoloStat label="Başarısız" value={<span className="mono">{failedCount}</span>} sub="Yeniden denetim gerek" tone="error" icon={<Crosshair size={16} />} />
           <HoloStat label="Denetlenmedi" value={<span className="mono">{uncheckedCount}</span>} sub="Bekleyen kontroller" tone="warning" icon={<RefreshCcw size={16} />} />
         </div>
+      </Reveal>
+
+      <Reveal>
+        <MobileQuotaPanel />
       </Reveal>
 
       {importOpen ? (

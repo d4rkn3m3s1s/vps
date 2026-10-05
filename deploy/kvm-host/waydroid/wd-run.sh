@@ -17,6 +17,27 @@ case "$_pb" in ''|*[!0-9]*) _pb="" ;; esac
 date +%s > "/run/wd-boot-$INST" 2>/dev/null || true
 # ust surec pid’i (koruma kendi cagiran kabugunu "baska kopya" sanmasin diye)
 _ppid=$(awk '/^PPid:/{print $2}' "/proc/$$/status" 2>/dev/null)
+# ★★★2026-10-05 KENDI ALT KABUGUNU "BASKA KOPYA" SANIYORDU → SONSUZ DONGU.
+# Eski kontrol: _x=$(pgrep -f "wd-run[.]sh $INST$" | grep -vx $$ ...). $(...) bir ALT KABUK
+# acar ve onun komut satiri da "wd-run.sh <inst>" → pgrep onu bulur, $$ ve _ppid
+# filtresi onu ELEMEZ → "baska kopya" HER ZAMAN var gorunur. Onceki acilis 240 sn'den
+# yeniyse betik konteyneri HIC KURMADAN gozetime gecer, 60 sn sonra CONTAINER_DIED
+# ile cikar, systemd 10 sn sonra yeniden baslatir (damga yine ~74 sn) → kendiliginden
+# cikilamayan dongu. CANLI (mi363, 5 Eki 12:10-12:42): 25+ tur, cihaz 30 dk kapali.
+# FIX: ebeveyni BU betik ($$) olan surecler (kendi alt kabuklarimiz) ve arada bitenler
+# sayilmaz. Sonuc global _found'a yazilir (komut ikamesi YOK → yeni alt kabuk yok).
+wd_find_other_run() {
+  _found=""
+  local _p _pp
+  for _p in $(pgrep -f "wd-run[.]sh $INST$" 2>/dev/null); do
+    [ "$_p" = "$$" ] && continue
+    [ "$_p" = "${_ppid:-0}" ] && continue
+    _pp=$(awk '/^PPid:/{print $2}' "/proc/$_p/status" 2>/dev/null)
+    [ -n "$_pp" ] || continue            # surec arada bitti
+    [ "$_pp" = "$$" ] && continue        # kendi alt kabugumuz
+    _found=$_p; break
+  done
+}
 
 # ★★★2026-08-18 GOZCU (fonksiyon). Iki yerden cagrilir:
 #   (a) normal kurulum sonunda,
@@ -110,7 +131,7 @@ if ! flock -n 9; then
   # ⚠Yalnizca damga TAZE demek YETMEZ: kilidi olu bir fd tutuyorsa (dbus-daemon) ve damga
   # taze ise cihaz sonsuza kadar gozetime dusup HIC kurulmazdi. Bu yuzden gercekten CANLI
   # bir kardes wd-run sureci de sart. Kendi pid ve ust surecimiz haric tutulur.
-  _sib=$(pgrep -f "wd-run[.]sh $INST$" 2>/dev/null | grep -vx "$$" | grep -vx "${_ppid:-0}" | head -1)
+  wd_find_other_run; _sib=$_found
   if [ -n "$_sib" ] && [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ]; then
     echo "wd-run: $INST kilidi CANLI kopyada (pid $_sib, ${_prev_boot_age}sn once basladi) — yikim ATLANDI, GOZETIM devralindi" >&2
     wd_watchdog_loop
@@ -192,7 +213,7 @@ SUBNET=$(sh /opt/fleet-agent/waydroid/net-head.sh $INST)
 # o an CANLI baska wd-run YOK, koruma calismaz, normal temizle/yeniden-kur akisi isler.
 # Kilitlenme yok: ILK kopya damgayi bos bulur (yas=999999) ve insaya devam eder;
 # yalnizca SONRADAN gelen kopya, hala calisan oncekine gozetimi birakir.
-_other_run=$(pgrep -f "wd-run[.]sh $INST$" 2>/dev/null | grep -vx "$$" | grep -vx "${_ppid:-0}" | head -1)
+wd_find_other_run; _other_run=$_found
 if [ -n "$_other_run" ] && [ "${_prev_boot_age:-999999}" -lt "${WD_BOOT_RACE_S:-240}" ]; then
   echo "wd-run: $INST icin baska bir kopya ${_prev_boot_age}sn once basladi ve hala calisiyor (pid $_other_run) — yikim ATLANDI, GOZETIM devralindi (boot yarisi korumasi)"
   wd_watchdog_loop

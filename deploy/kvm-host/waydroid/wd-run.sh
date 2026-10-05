@@ -240,6 +240,15 @@ for _p in $(pgrep -f "instance $INST($|[^0-9])" 2>/dev/null); do
   [ "$_p" = "${_ppid:-0}" ] && continue
   kill -9 "$_p" 2>/dev/null
 done
+# ★★2026-10-05 YETIM SESSION DBUS: bu temizlik weston/oturum/dnsmasq'i olduruyor ama ESKI
+# `dbus-daemon --session --address=unix:path=/run/xdg-$INST/bus`'u OLDURMUYORDU; KillMode=process
+# yuzunden systemd de oldurmuyor → her yeniden kurulumda bir yetim birikiyor ve fd 9'u
+# (wd-run kilidi) miras aldigi icin OLU KILIT olusturuyordu. CANLI (5 Eki): 13 cihazda 19
+# yetim (mi73/mi416 x3, en eskisi 24 gun); mi363'te 5 yetim + kardes hatasi = sonsuz dongu.
+# Yol `/run/xdg-$INST/bus` ile TAM eslesir → mi18 temizlenirken mi180'e DOKUNMAZ.
+for _p in $(pgrep -f "dbus-daemon --session --address=unix:path=/run/xdg-$INST/bus( |\$)" 2>/dev/null); do
+  kill -9 "$_p" 2>/dev/null
+done
 rm -rf /run/wd-$INST /run/xdg-$INST 2>/dev/null; sleep 1
 # netfix: stale network_up marker bridge yeniden kurulmasini engeller (KOK NEDEN)
 rm -f /run/waydroid-$INST-lxc/network_up 2>/dev/null  # netfix
@@ -281,7 +290,8 @@ for i in $(seq 1 20); do [ -S $XRD/wayland-$INST ] && break; sleep 0.5; done
 setsid env XDG_RUNTIME_DIR=$XRD PYTHONPATH=$MI python3 $MI/waydroid.py --instance $INST container start >/var/log/$INST-ct.log 2>&1 < /dev/null &
 for i in $(seq 1 25); do dbus-send --system --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null | grep -q "id.waydro.Container.$INST" && break; sleep 1; done
 # 6 session bus
-[ -S $XRD/bus ] || { setsid dbus-daemon --session --address=unix:path=$XRD/bus --nofork --nopidfile >/var/log/$INST-sbus.log 2>&1 < /dev/null & sleep 2; }
+# 9>&- : dbus wd-run kilidini (fd 9) MIRAS ALMASIN — yoksa wd-run bittikten sonra da kilidi tutar.
+[ -S $XRD/bus ] || { setsid dbus-daemon --session --address=unix:path=$XRD/bus --nofork --nopidfile >/var/log/$INST-sbus.log 2>&1 < /dev/null 9>&- & sleep 2; }
 # 7 session start
 setsid env XDG_RUNTIME_DIR=$XRD WAYLAND_DISPLAY=wayland-$INST DBUS_SESSION_BUS_ADDRESS=unix:path=$XRD/bus PYTHONPATH=$MI python3 $MI/waydroid.py --instance $INST session start >/var/log/$INST-sess.log 2>&1 < /dev/null &
 # 8 boot bekle + ekran + ADB tcp

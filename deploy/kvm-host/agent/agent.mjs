@@ -4964,7 +4964,7 @@ async function whatsappSend(serial, payload) {
       await clearComposeDraft(serial, h, tlog);
       // ★2026-10-02 Süresi dolmuş WA da sohbette yalnız "Couldn't connect" gösterir (mi11:
       // 21/21). Sürüm referansın gerisindeyse acil güncelleme adayı (bekçi hemen işler).
-      void waMarkIfOutdated(serial, 'CONNECTION_FAILED').catch(() => undefined);
+      void waMarkIfOutdated(serial, 'CONNECTION_FAILED', to).catch(() => undefined);
       return { status: 'CONNECTION_FAILED', note: 'Cihaz WhatsApp sunucusuna bağlanamadı (proxy/ağ) — tekrar denenebilir', to, screenTexts: notice.slice(0, 300) };
     }
     // Unknown non-chat screen: still don't blind-tap send into it — report honestly.
@@ -5211,6 +5211,7 @@ async function whatsappSend(serial, payload) {
   // receipt reader when the title matches (saved-contact case); null here is fine.
   waLastSentPeer.set(serial, { to, at: Date.now(), peerName: null });
   waReceiptState.delete(serial); // new send → allow this chat's DELIVERED/READ to re-fire
+  waNoteSendOk(serial); // sürüm bekçisi: bağlantı ÇALIŞIYOR kanıtı (acil güncelleme gereksiz)
   // ★★★2026-08-19 TESLIM DOGRULAMASI — "SENT" DEMEDEN ONCE msgstore'a BAK.
   // Buraya kadarki dogrulama EKRANA bakiyor (yazma kutusu bosaldi + giden baloncuk
   // gorundu). Bu KISITLI hesapta da saglanir: baloncuk cikar ama WhatsApp mesaji
@@ -11193,13 +11194,46 @@ async function waReadVersion(serial) {
   return v;
 }
 
-async function waMarkIfOutdated(serial, why) {
+// ★★2026-10-07 ACİL güncelleme YALNIZ "gerçekten süresi dolmuş" belirtisinde.
+// CANLI (7 Eki): referans APK her sabah 04:35 UTC yenileniyor → filonun TAMAMI "geride" sayılıyor;
+// yoğun hesaplarda proxy kaynaklı TEK bir CONNECTION_FAILED (~%5, Thordata 10 sn boşta kesme)
+// İŞ SAATİNDE acil güncelleme tetikledi: 6 en yoğun hesap 10:16-12:01 TSİ arası 5-10 dk kapandı
+// → 14 CHAT_NOT_OPENED (odak=launcher), 13 "kuyrukta hiç çalıştırılmadı" + yanlış
+// "sürümü süresi doldu" alarmı. Gerçek süre dolmasında gönderimlerin HEPSİ düşer (mi11: 21/21);
+// geçici proxy hatasında araya başarılılar girer. Kural: son 6 saatte ≥3 CONNECTION_FAILED, bunlar
+// ≥2 FARKLI alıcıya (API tek mesajı 40 sn arayla 3 kez dener → tek mesajın 3 denemesi süre dolması
+// kanıtı DEĞİL), seri ≥5 dk sürmüş (kısa kesinti değil) VE ilk hatadan beri HİÇ başarı yok → acil.
+// Diğerleri gece penceresinde güncellenir. Geçmiş veriyle doğrulandı: mi11 (gerçek süre dolması,
+// 2 Eki) ve mi393 (saatlerce 0 gönderim) tetikler; 7 Eki'de gereksiz güncellenen 6 cihaz tetiklemez.
+const WA_URGENT_WINDOW_MS = 6 * 3600 * 1000; // seyrek kullanılan cihazda da (mi11: saatte 1 mesaj) yakalasın
+const WA_URGENT_MIN_CF = Math.max(1, Number(process.env.FLEET_WA_URGENT_MIN_CF || 3));
+const WA_URGENT_MIN_SPAN_MS = 5 * 60 * 1000; // hata serisi en az 5 dk sürmeli (kalıcı arıza)
+const waCfHist = new Map(); // serial -> { cf: Array<{ t: number, to: string }>, lastOk: number }
+function waNoteSendOk(serial) {
+  const h = waCfHist.get(serial) || { cf: [], lastOk: 0 };
+  h.cf = []; h.lastOk = Date.now();
+  waCfHist.set(serial, h);
+}
+// Saf karar fonksiyonu (test edilebilir): bu CF ile acil eşiği aşıldı mı?
+function waUrgentDue(h, now, to = '', windowMs = WA_URGENT_WINDOW_MS, minCf = WA_URGENT_MIN_CF) {
+  h.cf = h.cf.filter((x) => now - x.t < windowMs);
+  h.cf.push({ t: now, to: String(to || '') });
+  if (h.cf.length < minCf) return false;
+  if (new Set(h.cf.map((x) => x.to)).size < 2) return false; // tek mesajın tekrarları
+  if (now - h.cf[0].t < WA_URGENT_MIN_SPAN_MS) return false;  // kısa kesinti (mi426: 1,5 dk) ≠ süre dolması
+  return !(h.lastOk && h.lastOk >= h.cf[0].t); // ilk hatadan beri HİÇ başarı yok (başarı seriyi zaten sıfırlar)
+}
+
+async function waMarkIfOutdated(serial, why, to = '') {
   if (!WA_AUTOUPD_ENABLED) return;
   const ref = waRefApk();
   if (!ref.version) return;
+  const h = waCfHist.get(serial) || { cf: [], lastOk: 0 };
+  waCfHist.set(serial, h);
+  if (!waUrgentDue(h, Date.now(), to)) return; // tek/seyrek hata → gece penceresine bırak
   const v = await waReadVersion(serial);
   if (v && waVerCmp(v, ref.version) < 0) {
-    if (!waUpdUrgent.has(serial)) log(`wa sürüm bekçisi: ${serial} ${v} < ${ref.version} (${why}) → ACİL güncelleme kuyruğu`);
+    if (!waUpdUrgent.has(serial)) log(`wa sürüm bekçisi: ${serial} ${v} < ${ref.version} (${why} ×${h.cf.length}, ${new Set(h.cf.map((x) => x.to)).size} alıcı, başarı yok) → ACİL güncelleme kuyruğu`);
     waUpdUrgent.set(serial, { version: v, at: Date.now() });
   }
 }

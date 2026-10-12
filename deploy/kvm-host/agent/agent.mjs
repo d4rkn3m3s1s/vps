@@ -11381,8 +11381,27 @@ async function ensureContacts(serial, selfNumber) {
     // inmez. Bu yuzden EN YENI kayitlar once: `ORDER BY _id DESC`.
     + `GROUP BY user ORDER BY max(_id) DESC LIMIT 25`);
   if (!rows || !rows.length) return 0;
+  // Izinler her cagrida verilir (onbellek YOK: basarisiz grant'i "verildi" sanip cihazi
+  // kalici olarak rehbersiz birakmasin; ayni serial'da yeniden kurulan cihaz da kapsansin).
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.WRITE_CONTACTS'], 6000).catch(() => undefined);
   await adbT(serial, ['shell', 'pm', 'grant', 'com.android.shell', 'android.permission.READ_CONTACTS'], 6000).catch(() => undefined);
+  // ★★2026-10-12 TOPLU VARLIK KONTROLU — gelen mesaj gecikmesinin kalan koku.
+  // CANLI (12 Eki): numara basina ayri `content query` (~1 sn) x 25 = cihaz basina ~25 sn,
+  // 3 dk'da bir her aktif cihazda; 60 sn'lik ornekte ADB zamaninin 51 sn'si bu sorguydu.
+  // Rehberdeki TUM telefon numaralari TEK sorguda okunur, yalnizca EKSIK olanlara eklenir.
+  // Toplu sorgu taninmayan cikti verirse (null) eski numara-basina kontrole duser.
+  let existing = null;
+  {
+    const all = await adbT(serial, ['shell',
+      `content query --uri content://com.android.contacts/data --projection data1 --where "mimetype='vnd.android.cursor.item/phone_v2'" 2>/dev/null`], 15000).catch(() => null);
+    const s = all == null ? '' : String(all);
+    if (/data1=/.test(s)) {
+      existing = new Set();
+      for (const m of s.matchAll(/data1=\+?(\d{6,15})/g)) existing.add(m[1]);
+    } else if (/No result found/i.test(s)) {
+      existing = new Set();   // rehber bos — hepsi eklenecek
+    }
+  }
   // ★2026-08-15: cihazin KENDI numarasini rehbere EKLEME. Caller selfNumber
   // vermezse WhatsApp'in registration_jid prefs'inden oku (kendi E.164 numarasi).
   // Aksi halde cihaz kendi numarasini "kisi" olarak ekliyordu (kozmetik kirlilik).
@@ -11396,9 +11415,13 @@ async function ensureContacts(serial, selfNumber) {
   for (const n0 of rows) {
     const n = String(n0).replace(/[^\d]/g, '');
     if (!n || n === self) continue;
-    const has = await adbT(serial, ['shell',
-      `content query --uri content://com.android.contacts/data --projection data1 --where "data1='+${n}'" 2>/dev/null`], 6000).catch(() => '');
-    if (String(has).includes('data1=')) continue;
+    if (existing) {
+      if (existing.has(n)) continue;
+    } else {
+      const has = await adbT(serial, ['shell',
+        `content query --uri content://com.android.contacts/data --projection data1 --where "data1='+${n}'" 2>/dev/null`], 6000).catch(() => '');
+      if (String(has).includes('data1=')) continue;
+    }
     // ★★★2026-08-15 IKI GERCEK HATA DUZELTILDI (canli kanit: 113.230 rehberinde
     // "display_name=+905327329497, data1=+905349636768" — ISIM BASKA KISININ):
     //  (1) YANLIS EŞLEŞME: raw_contact id'si `--sort '_id DESC'` ile TAHMIN ediliyordu;
@@ -11422,8 +11445,31 @@ async function ensureContacts(serial, selfNumber) {
     await adbT(serial, ['shell',
       `content insert --uri content://com.android.contacts/data --bind raw_contact_id:i:${rid} --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:+${n} --bind data2:i:2`], 6000).catch(() => undefined);
     added++;
+    if (existing) existing.add(n);
   }
   return added;
+}
+
+// ★★2026-10-12 Rehber tamamlama gelen-mesaj turunu BEKLETMESIN: arka planda, ayni anda
+// en cok WA_CONTACTS_CONC cihazda, ayni cihazda ust uste degil. Tetik kurali AYNI
+// (gelen her yeni mesaj, cihaz basina 3 dk throttle) — yalnizca tur artik onu beklemiyor.
+const WA_CONTACTS_CONC = Math.max(1, Number(process.env.FLEET_WA_CONTACTS_CONC || 2));
+const _contactsInflight = new Set();
+const _contactsQueue = [];
+function scheduleEnsureContacts(serial) {
+  if (_contactsInflight.has(serial) || _contactsQueue.includes(serial)) return;
+  _contactsQueue.push(serial);
+  pumpEnsureContacts();
+}
+function pumpEnsureContacts() {
+  while (_contactsInflight.size < WA_CONTACTS_CONC && _contactsQueue.length) {
+    const serial = _contactsQueue.shift();
+    _contactsInflight.add(serial);
+    ensureContacts(serial)
+      .then((added) => { if (added) log(`wa media: ${serial} rehbere ${added} kisi eklendi (medya insin diye)`); })
+      .catch(() => undefined)
+      .finally(() => { _contactsInflight.delete(serial); pumpEnsureContacts(); });
+  }
 }
 
 async function pollWhatsappMedia(serial) {
@@ -11478,11 +11524,11 @@ async function pollWhatsappMedia(serial) {
       const last = WA_CONTACTS_AT.get(serial) || 0;
       if (Date.now() - last > 180000) {
         WA_CONTACTS_AT.set(serial, Date.now());
-        const added = await ensureContacts(serial).catch(() => 0);
-        // Taban ancak tetik TUKETILDIKTEN sonra ilerler.
+        // ★2026-10-12 Arka planda (tur BEKLEMEZ) — bkz. scheduleEnsureContacts.
+        scheduleEnsureContacts(serial);
+        // Taban tetik kuyruga alininca ilerler (ayni birikim bir daha tetiklemez).
         WA_MEDIA_TRIG_POS.set(serial, enBuyuk);
         saveWaPositionsSoon();
-        if (added) log(`wa media: ${serial} rehbere ${added} kisi eklendi (medya insin diye)`);
       }
     }
   }
@@ -11756,6 +11802,7 @@ async function whatsappInboxTick() {
   if (_inboxRunning) return; // previous tick still draining — skip this fire
   _inboxRunning = true;
   _inboxTickNo += 1;
+  const _tickT0 = Date.now();
   try {
   // Skip the inbox poll ONLY for devices that currently have a job running. A job's
   // WhatsApp RPA (uiautomator dump / screencap / taps) and the inbox poll's own
@@ -11798,6 +11845,9 @@ async function whatsappInboxTick() {
     log('wa inbox tick failed:', err.message);
   } finally {
     _inboxRunning = false;
+    // Tur suresi = gelen mesajin panele dusme gecikmesinin ust siniri (yalniz log).
+    const ms = Date.now() - _tickT0;
+    if (_inboxTickNo % 12 === 0 || ms > 30000) log(`wa inbox tick #${_inboxTickNo}: ${ms} ms`);
   }
 }
 

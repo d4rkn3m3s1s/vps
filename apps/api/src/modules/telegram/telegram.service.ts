@@ -2106,7 +2106,12 @@ async function handleCallback(
   const data = cb.data ?? '';
   await answerCallback(token, cb.id);
   const state = getChatState(bot, chatId);
-  if (data.startsWith('wr:')) {
+  // ★12 Eki: gelen-mesaj bildirimindeki "Cevapla" da `wr:<mesajId>` kullanıyor (2 parça,
+  // uzun cuid). Kayıt butonları ya 3+ parça ya da kısa eylem (wr:c, wr:ok, wr:y). Eskiden
+  // tüm `wr:` kayda gidiyordu → Cevapla "Bu kayıt artık takipte değil" diyordu.
+  const wrParts = data.split(':');
+  const isInboundReply = wrParts.length === 2 && (wrParts[1] ?? '').length >= 20;
+  if (data.startsWith('wr:') && !isInboundReply) {
     // /wakayit butonları (isim/yöntem/kod ekranı/iptal/tekrar dene).
     await tgRegister.handleCallback({ token, workspaceId, chatId }, data);
     return;

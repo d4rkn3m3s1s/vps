@@ -75,6 +75,10 @@ export class DeviceHub {
         if (socket.isAlive === false) { try { socket.terminate(); } catch { /* already gone */ } this.clients.delete(socket); continue; }
         socket.isAlive = false;
         try { socket.ping(); } catch { this.clients.delete(socket); }
+        // ★12 Eki: tarayıcı protokol ping'ini onmessage'a iletmez; panel 70 sn mesaj
+        // görmezse soketi kapatıp yeniden bağlanıyordu (sessiz alanda "kopma").
+        // Uygulama düzeyi hb ile sessizlik sayacı tazelenir; dinleyiciler türe göre süzer.
+        try { if (socket.readyState === 1) socket.send('{"type":"hb"}'); } catch { /* ignore */ }
       }
     }, HEARTBEAT_MS);
     pinger.unref?.();

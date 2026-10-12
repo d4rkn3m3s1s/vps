@@ -283,7 +283,17 @@ export class StreamHub {
       this.toAgent(device.hostId, { type: 'stream.start', deviceId, serial, fps: 20, quality: 60 });
 
       v.on('message', (raw) => this.onViewerMessage(v, raw as Buffer, device.hostId, serial));
-      v.on('close', () => this.removeViewer(deviceId, v, device.hostId, serial));
+      // ★12 Eki: çökmüş sekme / yarı açık bağlantı 'close' üretmez → izleyici kalır,
+      // agent ekran yakalamayı sürdürüp ADB kuyruğunu doldurur. 30 sn ping; cevap yoksa kapat.
+      let viewerAlive = true;
+      v.on('pong', () => { viewerAlive = true; });
+      const viewerPing = setInterval(() => {
+        if (!viewerAlive) { clearInterval(viewerPing); try { v.terminate(); } catch { /* gone */ } return; }
+        viewerAlive = false;
+        try { v.ping(); } catch { /* ignore */ }
+      }, 30_000);
+      viewerPing.unref?.();
+      v.on('close', () => { clearInterval(viewerPing); this.removeViewer(deviceId, v, device.hostId, serial); });
       v.on('error', () => undefined);
       v.send(JSON.stringify({ type: 'stream.connected', deviceId, hasHost: Boolean(device.hostId) }));
       // If we have a cached H.264 config (SPS/PPS) for this device, replay it so a

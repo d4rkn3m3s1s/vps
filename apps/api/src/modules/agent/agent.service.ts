@@ -1566,8 +1566,10 @@ export class AgentService {
     // testing that re-pushed the same old notification repeatedly. A short recency
     // guard collapses those without blocking a genuine repeat (a real user re-sending
     // "ok" 30s+ later still lands, since we only look back a few seconds).
+    // ★12 Eki: gerçek msgstore zaman damgası varsa dedupeKey zaten ms-kesin ve
+    // idempotent; bu kontrol orada GERÇEK tekrarları ("ok","tamam") siliyordu → atla.
     const RECENT_DUP_MS = 8000;
-    const recentDup = await prisma.whatsappMessage.findFirst({
+    const recentDup = hasRealTs ? null : await prisma.whatsappMessage.findFirst({
       where: {
         deviceId: device.id,
         peer,

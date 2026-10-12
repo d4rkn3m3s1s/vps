@@ -12215,6 +12215,7 @@ async function instanceSerialMap(serials) {
 }
 
 let _heartbeatPurgeAt = 0;
+let _metricsRunning = false;
 async function heartbeat() {
   try {
     const serials = await reachableSerials();
@@ -12240,9 +12241,16 @@ async function heartbeat() {
     knownInstancesAt = Date.now();
     // Per-device metrics are best-effort and reported separately so a slow
     // collection never delays/blocks the host heartbeat itself.
-    const devices = await collectDeviceMetrics();
-    if (devices.length > 0) {
-      await api('/agent/device-metrics', { method: 'POST', body: JSON.stringify({ devices }) }).catch(() => undefined);
+    // ★12 Eki: metrik turu (~100+ sn) 30 sn aralıktan uzun → turlar üst üste biniyor,
+    // ADB kuyruğunu gönderimle paylaşıyordu. Önceki tur sürerken yenisini başlatma.
+    if (!_metricsRunning) {
+      _metricsRunning = true;
+      try {
+        const devices = await collectDeviceMetrics();
+        if (devices.length > 0) {
+          await api('/agent/device-metrics', { method: 'POST', body: JSON.stringify({ devices }) }).catch(() => undefined);
+        }
+      } finally { _metricsRunning = false; }
     }
     // ★2026-07-23 (P-6): every ~5min, drop per-serial state for devices that vanished
     // (removed / re-provisioned to a new subnet) so the seen-sets don't leak forever.
@@ -12578,8 +12586,10 @@ function startCapture(ws, deviceId, serial, fps) {
           state.loggedBusyStuck = true;
           log(`stream: ${deviceId} ${Math.round(state.busyWaitMs / 1000)}s boyunca MESGUL isaretli — bayat kilit varsayilip yakalama zorlaniyor`);
         }
-        // Bayat kilidi temizle: gerçek bir iş varsa kendi bitişinde yine ekler.
-        busyDevices.delete(serial);
+        // ★12 Eki: busyDevices YALNIZ runJobTask ekler ve finally'de HER ZAMAN siler →
+        // kayıt bayat olamaz. Eskiden burada silinirdi; süren gönderim korumasız kalıp
+        // inbox/sağlık turları araya giriyordu. Artık silmiyoruz; yalnız bu kareyi alırız
+        // (screencap salt-okur) ve sayaç sıfırlanınca 20 sn'de bir kare gelir.
       }
       try {
         const img = await captureFrame(serial);
@@ -13038,6 +13048,7 @@ const otpCapturing = new Set();
 // Caps outstanding waiters at one per serial (ORCH-3) so a wedged device can't pile up
 // 120s busy-waiters when claim races deliver several jobs for the same serial.
 const sameDeviceWaiters = new Set();
+const sameDeviceQueue = new Map(); // serial -> ayni cihaz icin sirada bekleyen claim edilmis isler
 const OTP_WATCH_MS = Number(process.env.FLEET_OTP_WATCH_MS || 10000);
 const OTP_WATCH_TTL_MS = Number(process.env.FLEET_OTP_WATCH_TTL_MS || 15 * 60 * 1000); // stop after 15 min
 
@@ -13727,7 +13738,9 @@ async function runJobTask(job, waitForDevice) {
         // for this serial would run concurrent ADB against a half-finished flow.
         if (t.state.timedOut) pendingSettle = t.settled;
         lastErr = err;
-        if (attempt < MAX_TRIES && isTransient(err.message)) {
+        // ★12 Eki: süre sınırı aşıldıysa eski runJob HÂLÂ çalışıyor → yeniden deneme aynı
+        // cihazda ikinci akış başlatır (çift gönderim / taslakta kalma). Deneme YOK.
+        if (attempt < MAX_TRIES && !t.state.timedOut && isTransient(err.message)) {
           const backoff = 2500 * attempt; // 2.5s, 5s — give the session time to recover
           log(`job ${job.id} transient fail (try ${attempt}/${MAX_TRIES}): ${err.message} — retry in ${backoff}ms`);
           await sleep(backoff);
@@ -13890,12 +13903,37 @@ async function loop() {
       // busy-waiters (the API has no per-serial exclusivity, so claim races here are
       // routine). If one is already waiting for this serial, drop this claim — the API
       // reaper re-queues it, and we avoid unbounded slot/CPU consumption.
-      if (sameDeviceWaiters.has(job.serial)) {
-        await sleep(POLL_MS);
+      // ★12 Eki: eskiden ikinci iş BIRAKILIRDI → DB'de RUNNING kalır, kimse çalıştırmaz,
+      // reaper 6 dk sonra "hiç çalıştırılmadı" diye FAILED yapardı. Artık sıraya alınır.
+      const ser = job.serial;
+      if (sameDeviceWaiters.has(ser)) {
+        const q = sameDeviceQueue.get(ser) || [];
+        if (q.length >= 5) {
+          log(`same-device queue ${ser} dolu (${q.length}) — ${job.id} FAILED`);
+          void reportComplete(job.id, 'FAILED', { error: 'ayni cihaz sirasi dolu' }).catch(() => undefined);
+          continue;
+        }
+        job._qAt = Date.now();
+        q.push(job); sameDeviceQueue.set(ser, q);
+        log(`same-device queue ${ser} +${job.id} (${job.type}) sira=${q.length}`);
         continue;
       }
-      sameDeviceWaiters.add(job.serial);
-      void runJobTask(job, /*waitForDevice*/ true).finally(() => sameDeviceWaiters.delete(job.serial));
+      sameDeviceWaiters.add(ser);
+      void (async () => {
+        let j = job;
+        while (j) {
+          // API reaper RUNNING işi 6 dk'da FAILED yapar; ondan sonra çalıştırırsak mesaj
+          // gider ama panel FAILED gösterir (yeniden denemede çift gönderim). 5 dk sınır.
+          if (j._qAt && Date.now() - j._qAt > 300_000) {
+            log(`same-device queue ${ser}: ${j.id} 5 dk'dan uzun bekledi — calistirilmadi, FAILED`);
+            await reportComplete(j.id, 'FAILED', { error: 'sirada bekleme asildi (calistirilmadi)' }).catch(() => undefined);
+          } else {
+            await runJobTask(j, /*waitForDevice*/ true).catch(() => undefined);
+          }
+          j = (sameDeviceQueue.get(ser) || []).shift();
+        }
+        sameDeviceQueue.delete(ser);
+      })().finally(() => sameDeviceWaiters.delete(ser));
       continue;
     }
 

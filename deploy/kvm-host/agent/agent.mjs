@@ -11846,26 +11846,58 @@ const _hmsAge = (hms, nowHms) => {
   return (n - a + 86400) % 86400;
 };
 async function waStuckProbe(serial) {
-  const cmd = `su -c 'tail -c 600000 /data/data/${WA_PKG}/files/Logs/whatsapp.log | grep -a -e "await_login -> complete" -e ":XmppMessageRouter]" -e "isServerAckKick=true" | tail -400; date +%T'`;
+  const cmd = `su -c 'tail -c 600000 /data/data/${WA_PKG}/files/Logs/whatsapp.log | grep -a -e "await_login -> complete" -e ":XmppMessageRouter]" -e "isServerAckKick=true" -e "not-allowed/login-failed" | tail -400; date +%T'`;
   const out = String(await adbT(serial, ['shell', cmd], 10000));
   const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
   const nowHms = (lines[lines.length - 1] || '').slice(0, 8);
-  let login = null, router = null, kick = null;
+  let login = null, router = null, kick = null, fail = null;
   for (const l of lines) {
     if (l.includes('await_login -> complete')) login = l.slice(11, 19);
     else if (l.includes(':XmppMessageRouter]')) router = l.slice(11, 19);
     else if (l.includes('isServerAckKick=true')) kick = l.slice(11, 19);
+    else if (l.includes('not-allowed/login-failed')) fail = l.slice(11, 19);
   }
   const loginAge = _hmsAge(login, nowHms);
   const routerAge = _hmsAge(router, nowHms);
   const kickAge = _hmsAge(kick, nowHms);
-  // (a) giris taze ama mesaj isleyici sessiz (thread kilidi). Router satiri HIC yoksa
-  //     (rotasyon/format degisimi de olabilir) daha fazla ardisik olcum istenir.
-  const lockA = loginAge !== null && loginAge < 120 && (routerAge === null || routerAge > 300);
-  // (b) sunucu ack-kick ile atti ve o zamandan beri hic giris yok (>10 dk) — mi4 16:08'de
-  //     boyle 7 saat bagli kalmadi. 401/login-failed bu kurala GIRMEZ (ban/cikis olabilir).
-  const lockB = kickAge !== null && loginAge !== null && kickAge < loginAge && kickAge > 600;
-  return { stuck: lockA || lockB, kind: lockB ? 'ack-kick' : 'thread', needHits: (lockA && routerAge === null) ? 3 : 2, loginAge, routerAge, kickAge };
+  const failAge = _hmsAge(fail, nowHms);
+  // ★14 Eki: sunucu oturumu REDDEDIYOR (cikis/ban). Yeniden baslatmak COZMEZ — dokunma,
+  // yalniz ekrani okuyup paneli dogru damgala (bkz. waStuckTick).
+  const dead = failAge !== null && failAge < 1800 && (loginAge === null || failAge < loginAge);
+  // (a) giris taze ama mesaj isleyici sessiz (thread kilidi; tetikleyici gelen sesli arama).
+  const lockA = !dead && loginAge !== null && loginAge < 120 && (routerAge === null || routerAge > 300);
+  // (b) sunucu ack-kick ile atti ve o zamandan beri hic giris yok (>10 dk).
+  const lockB = !dead && kickAge !== null && loginAge !== null && kickAge < loginAge && kickAge > 600;
+  // (c) ★14 Eki: baglanti OLU — son basarili giris >5 dk once (saglamda ~13 sn'de bir).
+  //     Ag/proxy kesintisinden sonra FCM olmadigi icin WA kendiliginden donmuyor
+  //     (14 Eki 2 sa kesinti → 86/124 cihaz bagsiz kaldi; +905350395941 1 sa 40 dk sagir).
+  //     Hem giris hem mesaj isleyici >10 dk sessiz olmali (proxy kesmeyen saglam cihaz yanlis yakalanmasin).
+  const lockC = !dead && !lockB && loginAge !== null && loginAge > 600 && (routerAge === null || routerAge > 600);
+  const kind = lockB ? 'ack-kick' : lockA ? 'thread' : lockC ? 'baglanti-olu' : '';
+  return { stuck: lockA || lockB || lockC, dead, kind, needHits: (lockA && routerAge === null) ? 3 : 2, loginAge, routerAge, kickAge };
+}
+const _waDeadReportAt = new Map();   // serial -> son panel bildirimi (cikis/ban)
+let _waDeadReportsThisTick = 0;
+async function waReportDeadAccount(serial) {
+  const foc = String(await adbT(serial, ['shell', 'dumpsys', 'window'], 8000).catch(() => ''));
+  const m = /mCurrentFocus=[^\n]*/.exec(foc);
+  const f = m ? m[0] : '';
+  let state = null;
+  if (/BanAppeal|userban/i.test(f)) state = 'BANNED';
+  else if (/loginfailure|LogoutMessage/i.test(f)) state = 'LOGGED_OUT';
+  if (!state) return null;   // ekran kanit vermiyor → karar verme
+  if (Date.now() - (_waDeadReportAt.get(serial) || 0) < 6 * 60 * 60 * 1000) return state;   // yakinda bildirildi
+  if (WA_STUCK_MODE === 'shadow') { log(`wa-kilit GOLGE: ${serial} ekran ${state} — panele bildirilirdi`); return state; }
+  if (_waDeadReportsThisTick >= 3) return state;   // tur basina en fazla 3 panel bildirimi (bildirim seli/ban dalgasi alarmi olmasin)
+  _waDeadReportsThisTick++;
+  _waDeadReportAt.set(serial, Date.now());
+  const statusMap = { BANNED: 'ACCOUNT_BANNED', LOGGED_OUT: 'ACCOUNT_LOGGED_OUT' };
+  log(`wa-kilit: ${serial} oturum sunucuca reddediliyor → ${state} (${f.slice(0, 120)})`);
+  await api('/agent/whatsapp/health-probe', {
+    method: 'POST',
+    body: JSON.stringify({ serial, status: statusMap[state], state, evidence: `wa-kilit ekran: ${f.slice(0, 300)}` })
+  }).catch(() => undefined);
+  return state;
 }
 async function waStuckTick() {
   if (WA_STUCK_MODE === '0' || _waStuckRunning) return;
@@ -11873,12 +11905,23 @@ async function waStuckTick() {
   try {
     const serials = await reachableSerials();
     let fixes = 0;
+    _waDeadReportsThisTick = 0;
+    const MAX_FIXES = Math.max(1, Number(process.env.FLEET_WA_STUCK_MAXFIX || 4));
     const CONC = 4;
     for (let i = 0; i < serials.length; i += CONC) {
       await Promise.all(serials.slice(i, i + CONC).map(async (serial) => {
-        if (busyDevices.has(serial) || otpWatch.has(serial) || otpCapturing.has(serial)) return;
+        // ★14 Eki: MESGUL cihaz da OLCULUR (salt-okur log okuma, ekrana dokunmaz). Eskiden
+        // mesgulde olcum atlaniyordu → surekli gonderim alan kilitli cihaz (mi100, 80 dk)
+        // hic sayac biriktiremiyordu. Aksiyon yine yalniz bosken yapilir.
+        if (otpWatch.has(serial) || otpCapturing.has(serial)) return;
         let r;
         try { r = await waStuckProbe(serial); } catch { return; }
+        if (r.dead || r.loginAge === null) {
+          // red/cikis ya da hic giris yok: yeniden baslatma COZMEZ; ekran ban/cikis ise paneli damgala.
+          _waStuckHits.delete(serial);
+          if (!busyDevices.has(serial)) await waReportDeadAccount(serial).catch(() => undefined);
+          return;
+        }
         if (!r.stuck) { _waStuckHits.delete(serial); return; }
         const hits = (_waStuckHits.get(serial) || 0) + 1;
         _waStuckHits.set(serial, hits);
@@ -11888,8 +11931,17 @@ async function waStuckTick() {
         if (Date.now() - (_waStuckFixAt.get(serial) || 0) < 30 * 60 * 1000) return;
         const muted = _waEulaMuted.get(serial);
         if (muted && Date.now() - muted < WA_EULA_MUTE_MS) return;
-        if (fixes >= 2) return;
+        if (fixes >= MAX_FIXES) return;
         if (busyDevices.has(serial) || otpWatch.has(serial) || otpCapturing.has(serial)) return;
+        // Baglanti-olu: once ekrana bak — ban/cikis ekraniysa yeniden baslatma, panele bildir.
+        if (r.kind === 'baglanti-olu') {
+          const st = await waReportDeadAccount(serial).catch(() => null);
+          if (st === 'BANNED' || st === 'LOGGED_OUT') { _waStuckHits.delete(serial); return; }
+        }
+        // Aktif sesli/goruntulu arama varsa DOKUNMA (yeniden baslatma aramayi keser).
+        const focNow = String(await adbT(serial, ['shell', 'dumpsys', 'window'], 8000).catch(() => ''));
+        if (/mCurrentFocus=[^\n]*(Voip|Call)/i.test(focNow)) { log(`wa-kilit: ${serial} aramada — atlandi`); return; }
+        if (fixes >= MAX_FIXES || busyDevices.has(serial)) return;
         fixes++;
         _waStuckFixAt.set(serial, Date.now());
         _waStuckHits.delete(serial);

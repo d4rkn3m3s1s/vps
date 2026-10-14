@@ -11797,6 +11797,28 @@ async function pollInboxFromStore(serial) {
 // storms on top of each other — a leading driver of load 100. The flag makes a tick skip
 // if the previous one is still running; it resumes cleanly on the next interval.
 let _inboxRunning = false;
+// ★14 Eki WA BAGLANTI BEKCISI (GOLGE MOD — yalniz log, cihaza HICBIR komut yok).
+// KANIT: mi4'te WhatsApp sureci 13 saat ACIKTI ama sunucuya bagli degildi (pidof dolu →
+// canli-tutma hicbir sey yapmadi); 47 gonderim CONNECTION_FAILED dustu, gelen mesajlar
+// cihaza ancak surec olup yeniden acilinca (05:34) topluca ulasti. Bu bekci ayni cihazda
+// kisa surede >=3 CF gorunce "WhatsApp yeniden baslatilmali" der. Once gozlem; aksiyon
+// ancak loglar incelendikten sonra eklenecek.
+const _waConnFails = new Map();   // serial -> [ts...]
+const _waConnWarnAt = new Map();  // serial -> son uyari
+const WA_CONN_WIN_MS = 30 * 60 * 1000;
+function noteWaConnFail(serial) {
+  try {
+    const now = Date.now();
+    const arr = (_waConnFails.get(serial) || []).filter((t) => now - t < WA_CONN_WIN_MS);
+    arr.push(now);
+    _waConnFails.set(serial, arr);
+    if (arr.length >= 3 && now - (_waConnWarnAt.get(serial) || 0) > WA_CONN_WIN_MS) {
+      _waConnWarnAt.set(serial, now);
+      log(`wa-baglanti-bekcisi GOLGE: ${serial} son 30 dk'da ${arr.length} CONNECTION_FAILED — WhatsApp yeniden baslatilirdi (aksiyon KAPALI)`);
+    }
+  } catch { /* yalniz gozlem */ }
+}
+
 async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
   if (_inboxRunning) return; // previous tick still draining — skip this fire
@@ -13751,6 +13773,7 @@ async function runJobTask(job, waitForDevice) {
       }
     }
     if (lastErr) throw lastErr;
+    if (serial && result && result.status === 'CONNECTION_FAILED') noteWaConnFail(serial);
     await reportComplete(job.id, 'COMPLETED', { result });
     log(`completed ${job.id} [active=${activeJobCount - 1}]`);
   } catch (err) {

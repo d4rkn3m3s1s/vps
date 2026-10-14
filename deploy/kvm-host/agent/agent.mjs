@@ -719,7 +719,13 @@ async function waHealthProbe(serial) {
     || hasExact('com.whatsapp:id/send')
     || hasExact('com.whatsapp:id/emoji_picker_btn');
   let state = 'ACTIVE';
-  if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(scr) || readOnly) state = 'RESTRICTED';
+  // ★14 Eki YANLIS KISIT: tek bir sohbetin yazmaya kapali olmasi (read_only_chat_info) HESABIN
+  // kisitli oldugunu GOSTERMEZ — karsi taraf WhatsApp'i birakmis/engellemis olabilir. CANLI:
+  // +905340468851 ve +905300249213 'Kisi…' sohbeti yuzunden KISITLI damgalandi; WA'nin kendi
+  // logunda kisit YOK, hesap normal giris yapiyor. Gercek kisitta WA HER ZAMAN kendi banner
+  // cumlesini gosterir → yalniz banner RESTRICTED; banner'siz read-only → karar VERME.
+  if (/account is restricted|can.?t start new chats|hesab\w* kısıtl|yeni sohbet başlat/i.test(scr)) state = 'RESTRICTED';
+  else if (readOnly) { await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined); await adb(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/${WA_HOME_ACTS[0]}`]).catch(() => undefined); return { state: 'UNKNOWN', evidence: 'acilan sohbet yazmaya kapali ama kisit banneri YOK — karar verilmedi | ' + scr.slice(0, 200), unverified: true }; }
   else if (!convNodes.length) state = 'UNKNOWN';  // dump BOS geldi -> ekrani GORMEDIK, karar VERME
   else if (!entry) state = 'UNKNOWN';   // yazma kutusu yok ama banner da yok -> karar VERME
   await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_BACK']).catch(() => undefined);

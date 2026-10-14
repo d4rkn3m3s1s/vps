@@ -11819,6 +11819,96 @@ function noteWaConnFail(serial) {
   } catch { /* yalniz gozlem */ }
 }
 
+// ★14 Eki WA KILIT BEKCISI. KOK (whatsapp.log ile kanitli): WA sureci acik, sunucuya
+// ~13 sn'de bir giris yapiyor ama gelen mesajlari isleyen XmppMessageRouter/SignalExecutor
+// thread'leri kilitleniyor → mesaj cihaza ulasiyor ama islenmiyor/ack'lenmiyor; saatlerce
+// (mi4: 15 sa) gelen yok, sonra sunucu ack-kick ile baglantiyi kesiyor (CONNECTION_FAILED).
+// pidof ve /proc/net/tcp "saglam" der. Guvenilir iz: son "await_login -> complete" taze iken
+// son ":XmppMessageRouter]" satiri bayat/yok (121 cihazda saglamlarda ikisi esit, 9-11 sn).
+// Kurtarma = force-stop + ac (bekleyen mesajlar acilista islenir, kayip yok).
+// Korumalar: 2 ardisik olcum, mesgul/OTP/EULA-susturulmus cihaza dokunma, cihaz basina
+// 30 dk'da 1, tur basina en fazla 2 kurtarma. FLEET_WA_STUCK=0 kapatir, =shadow yalniz log.
+const WA_STUCK_MODE = process.env.FLEET_WA_STUCK || 'on';
+const WA_STUCK_MS = Number(process.env.FLEET_WA_STUCK_MS || 300000);
+const _waStuckHits = new Map();   // serial -> ardisik "kilitli" olcum sayisi
+const _waStuckFixAt = new Map();  // serial -> son kurtarma zamani
+let _waStuckRunning = false;
+const _hmsAge = (hms, nowHms) => {
+  const toS = (x) => { const m = /^(\d\d):(\d\d):(\d\d)$/.exec(x || ''); return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : null; };
+  const a = toS(hms), n = toS(nowHms);
+  if (a === null || n === null) return null;
+  return (n - a + 86400) % 86400;
+};
+async function waStuckProbe(serial) {
+  const cmd = `su -c 'tail -c 600000 /data/data/${WA_PKG}/files/Logs/whatsapp.log | grep -a -e "await_login -> complete" -e ":XmppMessageRouter]" -e "isServerAckKick=true" | tail -400; date +%T'`;
+  const out = String(await adbT(serial, ['shell', cmd], 10000));
+  const lines = out.split('\n').map((l) => l.trim()).filter(Boolean);
+  const nowHms = (lines[lines.length - 1] || '').slice(0, 8);
+  let login = null, router = null, kick = null;
+  for (const l of lines) {
+    if (l.includes('await_login -> complete')) login = l.slice(11, 19);
+    else if (l.includes(':XmppMessageRouter]')) router = l.slice(11, 19);
+    else if (l.includes('isServerAckKick=true')) kick = l.slice(11, 19);
+  }
+  const loginAge = _hmsAge(login, nowHms);
+  const routerAge = _hmsAge(router, nowHms);
+  const kickAge = _hmsAge(kick, nowHms);
+  // (a) giris taze ama mesaj isleyici sessiz (thread kilidi). Router satiri HIC yoksa
+  //     (rotasyon/format degisimi de olabilir) daha fazla ardisik olcum istenir.
+  const lockA = loginAge !== null && loginAge < 120 && (routerAge === null || routerAge > 300);
+  // (b) sunucu ack-kick ile atti ve o zamandan beri hic giris yok (>10 dk) — mi4 16:08'de
+  //     boyle 7 saat bagli kalmadi. 401/login-failed bu kurala GIRMEZ (ban/cikis olabilir).
+  const lockB = kickAge !== null && loginAge !== null && kickAge < loginAge && kickAge > 600;
+  return { stuck: lockA || lockB, kind: lockB ? 'ack-kick' : 'thread', needHits: (lockA && routerAge === null) ? 3 : 2, loginAge, routerAge, kickAge };
+}
+async function waStuckTick() {
+  if (WA_STUCK_MODE === '0' || _waStuckRunning) return;
+  _waStuckRunning = true;
+  try {
+    const serials = await reachableSerials();
+    let fixes = 0;
+    const CONC = 4;
+    for (let i = 0; i < serials.length; i += CONC) {
+      await Promise.all(serials.slice(i, i + CONC).map(async (serial) => {
+        if (busyDevices.has(serial) || otpWatch.has(serial) || otpCapturing.has(serial)) return;
+        let r;
+        try { r = await waStuckProbe(serial); } catch { return; }
+        if (!r.stuck) { _waStuckHits.delete(serial); return; }
+        const hits = (_waStuckHits.get(serial) || 0) + 1;
+        _waStuckHits.set(serial, hits);
+        if (hits < r.needHits) return;
+        const tag = `${r.kind}: giris ${r.loginAge}s once, mesaj isleyici ${r.routerAge === null ? 'hic yok' : r.routerAge + 's'} sessiz${r.kickAge !== null ? `, ack-kick ${r.kickAge}s once` : ''}`;
+        if (WA_STUCK_MODE === 'shadow') { log(`wa-kilit GOLGE: ${serial} KILITLI (${tag}) — yeniden baslatilirdi`); return; }
+        if (Date.now() - (_waStuckFixAt.get(serial) || 0) < 30 * 60 * 1000) return;
+        const muted = _waEulaMuted.get(serial);
+        if (muted && Date.now() - muted < WA_EULA_MUTE_MS) return;
+        if (fixes >= 2) return;
+        if (busyDevices.has(serial) || otpWatch.has(serial) || otpCapturing.has(serial)) return;
+        fixes++;
+        _waStuckFixAt.set(serial, Date.now());
+        _waStuckHits.delete(serial);
+        busyDevices.add(serial);   // kurtarma suresince is alma yolu bu cihaza dokunmasin
+        try {
+          await adbT(serial, ['shell', 'am', 'force-stop', WA_PKG], 10000);
+          await sleep(1500);
+          await adbT(serial, ['shell', 'am', 'start', '-n', `${WA_PKG}/com.whatsapp.home.ui.HomeActivity`], 10000);
+          await sleep(3000);
+          const pid = await adbT(serial, ['shell', 'pidof', WA_PKG], 8000).catch(() => '');
+          log(`wa-kilit: ${serial} WhatsApp KILITLIYDI (${tag}) -> yeniden baslatildi ${String(pid).trim() ? '(DOGRULANDI)' : '(SUREC YOK!)'}`);
+        } catch (e) {
+          log(`wa-kilit: ${serial} kurtarma hatasi: ${e.message}`);
+        } finally {
+          busyDevices.delete(serial);
+        }
+      }));
+    }
+  } catch (err) {
+    log('wa-kilit tick failed:', err.message);
+  } finally {
+    _waStuckRunning = false;
+  }
+}
+
 async function whatsappInboxTick() {
   if (!WA_INBOX_ENABLED) return;
   if (_inboxRunning) return; // previous tick still draining — skip this fire
@@ -13862,6 +13952,8 @@ async function loop() {
   // ★EULA-STUCK REAPER: force-stops WhatsApp on devices abandoned on the registration/EULA
   // screen (60fps software spinner = 3-4 wasted cores each). Skips devices with a live job.
   const eulaReaperT = setInterval(() => { eulaReaperTick().catch(() => undefined); }, EULA_REAPER_MS);
+  const waStuckT = setInterval(() => { waStuckTick().catch(() => undefined); }, WA_STUCK_MS);
+  waStuckT.unref?.();
   // ★ORPHAN-INSTANCE REAPER: destroys Waydroid instances running on the host but no longer
   // in the DB (a delete whose DEVICE_DESTROY was lost, or a legacy pre-destroy delete).
   const orphanReaperT = setInterval(() => { orphanReaperTick().catch(() => undefined); }, ORPHAN_REAPER_MS);
@@ -13980,6 +14072,7 @@ async function loop() {
   if (receiptSweepT) clearInterval(receiptSweepT);
   if (waAutoUpdT) clearInterval(waAutoUpdT);
   clearInterval(eulaReaperT);
+  clearInterval(waStuckT);
   clearInterval(orphanReaperT);
   clearInterval(adbRecoveryT);
   log('shutting down.');
